@@ -13,7 +13,7 @@ Ways to suggest ideas:
 	* For corrections to website pages, note that every page has an _Edit this page on GitHub_ link, which goes straight to the page's source. Make your edits there and submit a PR! This is the best way to help us fix typos and make other small improvements.
 * Post a [discussion topic](https://github.com/The-AI-Alliance/cube-standard/discussions){:target="discussions"} 
 * Post an [issue](https://github.com/The-AI-Alliance/cube-standard/issues){:target="issues"} 
-	* See also the [project board](The-AI-Alliance/34_URL){:target="dashboard"}
+	* See also the [project board](https://github.com/orgs/The-AI-Alliance/projects/47/views/1){:target="dashboard"}
 * Send us [email](mailto:contact@thealliance.ai?subject=Suggestions for CUBE Standard). This is a general email address, so be sure to mention this particular project.
 
 For general information about contributing to AI Alliance projects, visit [this `community` repo](https://github.com/The-AI-Alliance/community/){:target="community"}, specifically the [`CONTRIBUTING` page](https://github.com/The-AI-Alliance/community/blob/main/CONTRIBUTING.md){:target="community"} for general information about contributing. 
@@ -25,17 +25,9 @@ Keep the following anchor in case you change the section "Join..." text.
 The link is used by the default docs/_includes/header_buttons_custom.html, for example.
 {% endcomment %}
 <a name="join-this-project"></a>
-## Join this Project Work Group
+## Join the Alliance or This Project Work Group
 
-Want to help us drive the evolution of this project? Please join our work group. 
-
-Use the form on the Alliance's [Become a collaborator](https://aialliance.org/become-a-collaborator){:target="join-collab"} page to let us know your interests. 
-
-Check the boxes on the form that look most appropriate.
-
-In the &ldquo;Message&rdquo; box mention this project, **CUBE Standard**, and add anything else you would like us to know.
-
-If your organization would like to join the AI Alliance, go [here](https://aialliance.org/membership){:target="join-org"}.
+Want to help us drive the evolution of this project? Please join our work group or the Alliance as a whole. See [this page](https://www.aialliance.org/join){:target="aia-join"} for more information.
 
 ## Other Notes on Contributing
 
