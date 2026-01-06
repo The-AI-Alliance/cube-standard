@@ -4,17 +4,9 @@ title: Contributing
 nav_order: 90
 ---
 
-# Contributors
-
-The following people and organizations have contributed to the creation and maintenance of this project:
-
-* TODO
-
 # How to Contribute to this Project
 
 We welcome your contributions! 
-
-TODO: more specific ways to contribute.
 
 Ways to suggest ideas:
 * Post a [pull request](https://github.com/The-AI-Alliance/cube-standard/pulls){:target="prs"}! 
@@ -37,15 +29,13 @@ The link is used by the default docs/_includes/header_buttons_custom.html, for e
 
 Want to help us drive the evolution of this project? Please join our work group. 
 
-Use the form on the Alliance's [Become a collaborator](https://thealliance.ai/become-a-collaborator){:target="join-collab"} page to let us know your interests. 
+Use the form on the Alliance's [Become a collaborator](https://aialliance.org/become-a-collaborator){:target="join-collab"} page to let us know your interests. 
 
-Check these boxes on the form:
-
-- [ ] TODO
+Check the boxes on the form that look most appropriate.
 
 In the &ldquo;Message&rdquo; box mention this project, **CUBE Standard**, and add anything else you would like us to know.
 
-If your organization would like to join the AI Alliance, go [here](https://thealliance.ai/membership){:target="join-org"}.
+If your organization would like to join the AI Alliance, go [here](https://aialliance.org/membership){:target="join-org"}.
 
 ## Other Notes on Contributing
 

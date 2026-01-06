@@ -205,7 +205,7 @@ _**You only need to edit the first file**_, the [`README.md`](https://github.com
 
 After editing the [`README.md`](https://github.com/The-AI-Alliance/.github/blob/main/profile/README.md), notify Dean Wampler ([email](mailto:dwampler@thealliance.ai), [Slack](https://ai-alliance-workspace.slack.com/team/U068AL1C30E)), who will run a tool that will copy the changes to the [https://the-ai-alliance.github.io/](https://the-ai-alliance.github.io/) site. (This process is documented in the [Appendix](#appendix) below.)
 
-Finally, talk to your focus area leaders about updating the main [AI Alliance website](https://thealliance.ai) with information about your project site.
+Finally, talk to your focus area leaders about updating the main [AI Alliance website](https://aialliance.org) with information about your project site.
 
 ### 10. Delete the files `README-instructions.md`, `finish-microsite.sh`, and any of the `LICENSE.*` files that don't apply to your project.
 
