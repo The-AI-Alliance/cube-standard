@@ -1,0 +1,26 @@
+---
+layout: abs_redirect
+---
+
+{% comment %}
+The template for _absolute_ redirects. Experiment with the definition for 
+`redirect_url` to make sure it works! See also `docs/_layouts/redirect.html`
+for _relative_ redirects within the same web site.
+{% endcomment %}
+
+<html>
+  <head>
+    <meta
+      http-equiv="refresh"
+      content="0;{{page.redirect_url}}"
+    />
+  </head>
+  <body>
+    <p>
+      If your browser supports Refresh, you'll be transported to the
+      <a href="{{page.redirect_url}}">correct page</a>
+      immediately.
+    </p>
+    <p>If not, please click the link manually.</p>
+  </body>
+</html>
