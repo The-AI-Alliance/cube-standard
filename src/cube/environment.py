@@ -1,5 +1,3 @@
-"""Environment, Benchmark and Task abstractions."""
-
 from abc import ABC, abstractmethod
 from typing import List
 

@@ -1,5 +1,3 @@
-"""Base classes for AgentLab2."""
-
 import importlib
 
 from pydantic import BaseModel, model_serializer, model_validator
