@@ -5,6 +5,7 @@ description = "Common Unified Benchmark Environments"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "litellm>=1.80.15",
     "pillow>=12.1.0",
     "pydantic>=2.12.5",
 ]

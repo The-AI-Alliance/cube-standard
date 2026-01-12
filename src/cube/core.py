@@ -4,8 +4,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Protocol, Self, TypeAlias
 
-
-
+import litellm.utils
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
@@ -27,6 +26,12 @@ class ActionSchema(TypedBaseModel):
     name: str
     description: str
     parameters: dict = Field(default_factory=dict)
+
+    @classmethod
+    def from_function(cls, func: Callable) -> Self:
+        """Create tool object from python function."""
+        schema = litellm.utils.function_to_dict(func)
+        return cls(**schema)
 
     def as_dict(self) -> dict[str, Any]:
         """Produce dict that could be passed as tool schema into LLM api."""
@@ -64,6 +69,7 @@ _image_prefix = "data:image/png;base64,"
 
 class Content(TypedBaseModel):
     """Represents a piece of content in an observation."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     tool_call_id: str | None = None  # content could be result of a tool call
@@ -180,6 +186,7 @@ class Task(ABC):
 
     id: str
     _tool: Any  # access to the environment tool, initialized in setup()
+    validate_per_step: bool = False
 
     @abstractmethod
     def setup(self, tool: Any) -> tuple[Observation, dict]:
