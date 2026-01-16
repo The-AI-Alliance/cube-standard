@@ -64,20 +64,15 @@ Issue PRs for the `main` branch. Note that some of our microsite repos are confi
 > [!NOTE]
 > If you are curious, the details of how the publication process is configured are discussed [below](#configuring-github-pages-in-the-repo-settings).
 
-### Updating the Website Version
+### Updating the Website Version and Last Modified Date
 
-By default, `docs/index.markdown` shows a table at the top with the authors of the site and the latest version and timestamp. We don't require you to include this information nor do we require that you update it according to any specific requirements, if you decide to keep it. However, if you keep this information, you'll want to edit update the version and timestamp periodically.
-
-You will find these strings around lines 96-97 in `docs/config.yml`:
+By default, the footer of the pages shows the latest version and laste modified date. We don't require you to include this information nor do we require that you update it according to any specific requirements, if you decide to keep it. However, if you keep this information, you'll want to update this information periodically around lines 96-97 in `docs/config.yml`:
 
 ```
-last_edit_time_format: "%Y-%m-%d %H:%M %z" # uses ruby's time format...
-last_modified_timestamp: 2025-07-18
+last_edit_time_format: "%Y-%m-%d" # uses ruby's time format...
+last_modified_date: 2025-07-18
 last_version: V0.2.2
 ```
-
-(Ignore the fact that `last_edit_time_format` includes `%H:%M %z`.) Edit `last_modified_timestamp` and `last_version` as desired.
-
 
 ## Editing Conventions and Tips
 
