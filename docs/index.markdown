@@ -7,8 +7,6 @@ has_children: false
 
 # CUBE Standard
 
-| **Last Update** | {{site.last_version}}, {{site.last_modified_timestamp}} |
-
 Welcome to the **The AI Alliance**: **CUBE Standard** project. 
 
 {: .tip }
