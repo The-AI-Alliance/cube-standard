@@ -5,7 +5,18 @@ description = "Common Unified Benchmark Environments"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.115.0",
     "litellm>=1.80.15",
     "pillow>=12.1.0",
     "pydantic>=2.12.5",
+    "pydantic-settings>=2.8.0",
+    "uvicorn[standard]>=0.34.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",  # For testing FastAPI
+    "ruff>=0.8.0",
 ]
