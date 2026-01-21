@@ -1,6 +1,5 @@
 """Configuration management for CUBE server."""
 
-import os
 from typing import Literal
 
 from pydantic import Field

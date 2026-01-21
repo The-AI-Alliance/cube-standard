@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from cube.core import ActionSchema, Content, Observation
+
 
 # =============================================================================
 # Common Schemas
@@ -103,18 +105,10 @@ class ShutdownResponse(BaseModel):
 # Task-Level API Schemas (MCP-compatible)
 # =============================================================================
 
-class ToolSchema(BaseModel):
-    """Schema for a tool/action."""
-
-    name: str = Field(..., description="Tool name")
-    description: str = Field(..., description="Tool description")
-    parameters: dict[str, Any] = Field(default_factory=dict, description="JSON schema for parameters")
-
-
 class ToolListResponse(BaseModel):
     """Response for listing tools."""
 
-    tools: list[ToolSchema] = Field(..., description="List of available tools")
+    tools: list[ActionSchema] = Field(..., description="List of available tools")
 
 
 class ToolCallRequest(BaseModel):
@@ -124,18 +118,10 @@ class ToolCallRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
 
 
-class ContentItem(BaseModel):
-    """A piece of content in the response."""
-
-    data: Any = Field(..., description="Content data (can be string, number, dict, etc.)")
-    tool_call_id: str | None = Field(default=None, description="ID of the tool call this responds to")
-    name: str | None = Field(default=None, description="Optional content name")
-
-
 class ToolCallResponse(BaseModel):
     """Response from calling a tool."""
 
-    content: list[ContentItem] = Field(..., description="Response content")
+    content: list[Content] = Field(..., description="Response content")
     isError: bool = Field(default=False, description="Whether an error occurred")
 
 
@@ -160,31 +146,16 @@ class ResourceReadResponse(BaseModel):
     content: Any = Field(..., description="Resource content")
 
 
-class EvaluationResponse(BaseModel):
-    """Response for task evaluation."""
-
-    reward: float = Field(..., description="Reward value")
-    done: bool = Field(..., description="Whether the task is complete")
-    step: int = Field(..., description="Current step number")
-    info: dict[str, Any] = Field(default_factory=dict, description="Additional evaluation info")
-
-
 class ResetRequest(BaseModel):
     """Request to reset a task."""
 
     seed: int | None = Field(default=None, description="Random seed for reset")
 
 
-class ObservationData(BaseModel):
-    """Observation data structure."""
-
-    contents: list[ContentItem] = Field(..., description="List of content items in observation")
-
-
 class ResetResponse(BaseModel):
     """Response from resetting a task."""
 
-    observation: ObservationData = Field(..., description="Initial observation after reset")
+    observation: Observation = Field(..., description="Initial observation after reset")
     info: dict[str, Any] = Field(default_factory=dict, description="Additional reset info")
 
 

@@ -148,6 +148,7 @@ class EnvironmentOutput(TypedBaseModel):
     obs: Observation
     reward: float = 0.0
     done: bool = False
+    step: int = 0
     info: dict = Field(default_factory=dict)
 
 
