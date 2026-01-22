@@ -75,19 +75,7 @@ The discovery and metadata layer. Enables filtering and automated installation.
 
 ### 1. Layered Architecture
 
-Each API layer builds on the previous one but remains independently useful:
-
-```
-Registry Layer
-    ↓
-Package Layer
-    ↓
-Benchmark Layer
-    ↓
-Task Layer
-```
-
-A simple benchmark might only implement the Task Layer (single static task). A complex benchmark suite implements all layers.
+Each API layer serves a specific purpose in the benchmark integration stack.
 
 ### 2. Build on Standards
 
@@ -105,14 +93,6 @@ All APIs have two representations:
 2. **RPC/HTTP interface** - For remote or sandboxed execution
 
 The APIs are **1:1 equivalent**. Switching between local and remote requires no code changes beyond initial connection.
-
-### 4. Progressive Disclosure
-
-APIs are designed for gradual learning:
-
-- **Basic usage**: Just call methods, sensible defaults
-- **Advanced usage**: Full control over seeds, tool configs, resource limits
-- **Expert usage**: Extend via custom protocols
 
 ## Implementation Patterns
 
