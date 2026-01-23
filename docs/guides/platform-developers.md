@@ -313,10 +313,10 @@ Want to help shape this guide?
 
 ## Related Documentation
 
-- [Overview](../overview.html) - Understanding CUBE's architecture
-- [API Reference](../api/) - Complete API specifications
-- [Benchmark Author Guide](benchmark-authors.html) - For benchmark implementers
-- [Quick Start](../quickstart.html) - Basic usage examples
+- [Overview]({{site.baseurl}}/overview) - Understanding CUBE's architecture
+- [API Reference]({{site.baseurl}}/api/) - Complete API specifications
+- [Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors) - For benchmark implementers
+- [Quick Start]({{site.baseurl}}/quickstart) - Basic usage examples
 
 ---
 
@@ -327,9 +327,9 @@ Want to help shape this guide?
 
 Until this full guide is available, refer to:
 
-1. **[Quick Start Guide](../quickstart.html)** - Basic usage patterns
-2. **[API Reference](../api/)** - Complete API specifications
-3. **[Benchmark Author Guide](benchmark-authors.html)** - Shows the other side of integration
+1. **[Quick Start Guide]({{site.baseurl}}/quickstart)** - Basic usage patterns
+2. **[API Reference]({{site.baseurl}}/api/)** - Complete API specifications
+3. **[Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors)** - Shows the other side of integration
 4. **[GitHub Discussions](https://github.com/The-AI-Alliance/cube-standard/discussions)** - Ask specific questions
 
 ## Contributing

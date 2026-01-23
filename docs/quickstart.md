@@ -25,7 +25,7 @@ pip install cube-benchmark-miniwob
 ```
 
 {: .tip }
-> You can discover all available CUBE benchmarks using the registry (see [Registry Guide](api/registry.html)).
+> You can discover all available CUBE benchmarks using the registry (see [Registry Guide]({{site.baseurl}}/api/registry)).
 
 ## Your First Evaluation
 
@@ -263,9 +263,9 @@ safe_benchmarks = registry.list(
 
 Now that you've run your first CUBE evaluation:
 
-1. **Understand the APIs**: Read the [API Reference](api/) to learn about all available methods
-2. **Create your own wrapper**: Follow the [Benchmark Author Guide](guides/benchmark-authors.html) to make your benchmark CUBE-compliant
-3. **Integrate with your platform**: See the [Platform Developer Guide](guides/platform-developers.html) to add CUBE support to your evaluation harness
+1. **Understand the APIs**: Read the [API Reference]({{site.baseurl}}/api/) to learn about all available methods
+2. **Create your own wrapper**: Follow the [Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors) to make your benchmark CUBE-compliant
+3. **Integrate with your platform**: See the [Platform Developer Guide]({{site.baseurl}}/guides/platform-developers) to add CUBE support to your evaluation harness
 4. **Explore examples**: Check out [Examples](examples/) for more advanced use cases
 
 ## Common Issues
@@ -321,6 +321,6 @@ task = benchmark.spawn(task_id="slow-task", timeout=600)  # 10 minutes for this 
 ---
 
 **Continue learning**:
-- [Overview](overview.html): Understand CUBE's architecture
-- [API Reference](api/): Complete specification
-- [Benchmark Authors Guide](guides/benchmark-authors.html): Create CUBE benchmarks
+- [Overview]({{site.baseurl}}/overview): Understand CUBE's architecture
+- [API Reference]({{site.baseurl}}/api/): Complete specification
+- [Benchmark Authors Guide]({{site.baseurl}}/guides/benchmark-authors): Create CUBE benchmarks

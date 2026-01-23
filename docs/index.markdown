@@ -9,6 +9,9 @@ has_children: false
 
 **Common Unified Benchmark Environments**
 
+{: .warning }
+> **Early Documentation**: This specification is in active development. APIs and documentation may change as we gather community feedback and refine the standard. Code examples are placeholders and may not work until the specification is finalized.
+
 A protocol standard that eliminates the integration tax of agentic benchmarks by providing a universal interface between benchmarks and evaluation frameworks.
 
 {: .note }
@@ -80,21 +83,21 @@ for bench_info in benchmarks:
 
 ### Getting Started
 
-- **[Overview](overview.html)** - Understanding CUBE's architecture and design
-- **[Quick Start](quickstart.html)** - Get running in 5 minutes
+- **[Overview]({{site.baseurl}}/overview)** - Understanding CUBE's architecture and design
+- **[Quick Start]({{site.baseurl}}/quickstart)** - Get running in 5 minutes
 
 ### API Reference
 
-- **[API Overview](api/)** - Complete specification
-  - [Task-Level API](api/task-level.html) - Agent-environment interaction
-  - [Benchmark-Level API](api/benchmark-level.html) - Task orchestration
-  - [Package-Level Standard](api/package-level.html) - Installation & deployment
-  - [Registry Standard](api/registry.html) - Discovery & metadata
+- **[API Overview]({{site.baseurl}}/api/)** - Complete specification
+  - [Task-Level API]({{site.baseurl}}/api/task-level) - Agent-environment interaction
+  - [Benchmark-Level API]({{site.baseurl}}/api/benchmark-level) - Task orchestration
+  - [Package-Level Standard]({{site.baseurl}}/api/package-level) - Installation & deployment
+  - [Registry Standard]({{site.baseurl}}/api/registry) - Discovery & metadata
 
 ### Implementation Guides
 
-- **[Benchmark Author Guide](guides/benchmark-authors.html)** - Wrap your benchmark for CUBE
-- **[Platform Developer Guide](guides/platform-developers.html)** - Integrate CUBE support *(Coming Soon)*
+- **[Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors)** - Wrap your benchmark for CUBE
+- **[Platform Developer Guide]({{site.baseurl}}/guides/platform-developers)** - Integrate CUBE support *(Coming Soon)*
 
 ## Core Principles
 

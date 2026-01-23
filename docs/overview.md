@@ -170,10 +170,10 @@ A CUBE-compliant benchmark must:
 
 Ready to use or create CUBE-compliant benchmarks?
 
-- **[Quick Start Guide](quickstart.html)**: Get up and running in 5 minutes
-- **[API Reference](api/)**: Complete specification of all APIs
-- **[Benchmark Author Guide](guides/benchmark-authors.html)**: Wrap your first benchmark
-- **[Platform Developer Guide](guides/platform-developers.html)**: Integrate CUBE support into your harness
+- **[Quick Start Guide]({{site.baseurl}}/quickstart)**: Get up and running in 5 minutes
+- **[API Reference]({{site.baseurl}}/api/)**: Complete specification of all APIs
+- **[Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors)**: Wrap your first benchmark
+- **[Platform Developer Guide]({{site.baseurl}}/guides/platform-developers)**: Integrate CUBE support into your harness
 
 ## Community & Governance
 
@@ -184,7 +184,7 @@ CUBE is an open standard developed under [The AI Alliance](https://aialliance.or
 - **Vendor-neutral**: No single company controls the standard
 - **Apache 2.0 licensed**: Free to implement and extend
 
-See our [Contributing Guide](contributing.html) to get involved.
+See our [Contributing Guide]({{site.baseurl}}/contributing) to get involved.
 
 ## FAQ
 
@@ -209,6 +209,6 @@ A: No. While CUBE builds on Gym concepts, it's designed for diverse agentic benc
 ---
 
 **Next Steps**:
-- Try the [Quick Start](quickstart.html) to see CUBE in action
-- Explore the [API Reference](api/) to understand the specification
+- Try the [Quick Start]({{site.baseurl}}/quickstart) to see CUBE in action
+- Explore the [API Reference]({{site.baseurl}}/api/) to understand the specification
 - Join the discussion on [GitHub](https://github.com/The-AI-Alliance/cube-standard)

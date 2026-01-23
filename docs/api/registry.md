@@ -217,7 +217,7 @@ validate_metadata(metadata)
 
 ## Submission Process (Proposed)
 
-1. **Implement CUBE Wrapper**: Follow [Benchmark Author Guide](../guides/benchmark-authors.html)
+1. **Implement CUBE Wrapper**: Follow [Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors)
 2. **Create Metadata**: Fill out registry metadata JSON
 3. **Validate Locally**: Run compliance tests
 4. **Submit PR**: Add metadata to registry repository
@@ -330,10 +330,10 @@ To contribute to the Registry Standard:
 
 ## Related Documentation
 
-- [Task-Level API](task-level.html) - How agents interact with tasks
-- [Benchmark-Level API](benchmark-level.html) - How tasks are orchestrated
-- [Package-Level Standard](package-level.html) - Installation and deployment
-- [Benchmark Author Guide](../guides/benchmark-authors.html) - How to submit benchmarks
+- [Task-Level API]({{site.baseurl}}/api/task-level) - How agents interact with tasks
+- [Benchmark-Level API]({{site.baseurl}}/api/benchmark-level) - How tasks are orchestrated
+- [Package-Level Standard]({{site.baseurl}}/api/package-level) - Installation and deployment
+- [Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors) - How to submit benchmarks
 
 ---
 

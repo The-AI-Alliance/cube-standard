@@ -13,10 +13,10 @@ The CUBE standard defines four layers of API specifications. Each layer serves a
 
 | Layer | Purpose | Audience |
 |-------|---------|----------|
-| [Task Level](task-level.html) | Define how agents interact with individual task instances | Agent developers, benchmark authors |
-| [Benchmark Level](benchmark-level.html) | Define task discovery, spawning, and lifecycle management | Platform developers, benchmark authors |
-| [Package Level](package-level.html) | Define installation, deployment, and parallelization | Infrastructure engineers, benchmark authors |
-| [Registry](registry.html) | Define metadata schema for benchmark discovery | All users, registry maintainers |
+| [Task Level]({{site.baseurl}}/api/task-level) | Define how agents interact with individual task instances | Agent developers, benchmark authors |
+| [Benchmark Level]({{site.baseurl}}/api/benchmark-level) | Define task discovery, spawning, and lifecycle management | Platform developers, benchmark authors |
+| [Package Level]({{site.baseurl}}/api/package-level) | Define installation, deployment, and parallelization | Infrastructure engineers, benchmark authors |
+| [Registry]({{site.baseurl}}/api/registry) | Define metadata schema for benchmark discovery | All users, registry maintainers |
 
 ## Quick Reference
 
@@ -32,7 +32,7 @@ The agent-environment interaction layer. Combines MCP for actions and CUBE for e
 - `cube/reset` - Reset task to initial state
 - `cube/close` - Cleanup task resources
 
-**[Full Task-Level Specification →](task-level.html)**
+**[Full Task-Level Specification →]({{site.baseurl}}/api/task-level)**
 
 ### Benchmark-Level API
 
@@ -45,7 +45,7 @@ The task orchestration layer. Manages shared infrastructure and task spawning.
 - `cube/status` - Check health of running tasks
 - `cube/shutdown` - Cleanup task instances
 
-**[Full Benchmark-Level Specification →](benchmark-level.html)**
+**[Full Benchmark-Level Specification →]({{site.baseurl}}/api/benchmark-level)**
 
 ### Package-Level Standard
 
@@ -57,7 +57,7 @@ The deployment and installation layer. Defines how benchmarks are packaged and d
 - Parallelization support
 - Deployment models (local, containerized, remote)
 
-**[Full Package-Level Specification →](package-level.html)**
+**[Full Package-Level Specification →]({{site.baseurl}}/api/package-level)**
 
 ### Registry Standard
 
@@ -69,7 +69,7 @@ The discovery and metadata layer. Enables filtering and automated installation.
 - Requirements (runtime, hardware)
 - Economics (task_count, estimated_tokens)
 
-**[Full Registry Specification →](registry.html)**
+**[Full Registry Specification →]({{site.baseurl}}/api/registry)**
 
 ## Design Principles
 
@@ -105,7 +105,7 @@ You implement CUBE by providing:
 3. **A package setup** following Package-Level requirements
 4. **Registry metadata** for discovery
 
-See the [Benchmark Author Guide](../guides/benchmark-authors.html) for step-by-step instructions.
+See the [Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors) for step-by-step instructions.
 
 ### For Platform Developers
 
@@ -116,7 +116,7 @@ You integrate CUBE by:
 3. **Interacting with tasks** via the Task-Level API
 4. **Filtering benchmarks** via the Registry API
 
-See the [Platform Developer Guide](../guides/platform-developers.html) for integration patterns.
+See the [Platform Developer Guide]({{site.baseurl}}/guides/platform-developers) for integration patterns.
 
 ### For End Users (Researchers)
 
@@ -126,7 +126,7 @@ You use CUBE by:
 2. **Installing benchmarks** via pip
 3. **Running evaluations** using Task-Level methods
 
-See the [Quick Start Guide](../quickstart.html) for examples.
+See the [Quick Start Guide]({{site.baseurl}}/quickstart) for examples.
 
 ## API Conventions
 
@@ -193,11 +193,11 @@ class TaskInfo:
 
 ## Next Steps
 
-- **[Task-Level API](task-level.html)**: Learn the agent-environment interaction protocol
-- **[Benchmark-Level API](benchmark-level.html)**: Learn task orchestration
-- **[Package-Level Standard](package-level.html)**: Learn deployment requirements
-- **[Registry Standard](registry.html)**: Learn metadata schema
+- **[Task-Level API]({{site.baseurl}}/api/task-level)**: Learn the agent-environment interaction protocol
+- **[Benchmark-Level API]({{site.baseurl}}/api/benchmark-level)**: Learn task orchestration
+- **[Package-Level Standard]({{site.baseurl}}/api/package-level)**: Learn deployment requirements
+- **[Registry Standard]({{site.baseurl}}/api/registry)**: Learn metadata schema
 
 Or jump to the guides:
-- **[Benchmark Author Guide](../guides/benchmark-authors.html)**: Wrap your benchmark
-- **[Platform Developer Guide](../guides/platform-developers.html)**: Integrate CUBE support
+- **[Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors)**: Wrap your benchmark
+- **[Platform Developer Guide]({{site.baseurl}}/guides/platform-developers)**: Integrate CUBE support
