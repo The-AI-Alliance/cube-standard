@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 
 from pydantic import Field
 
+from cube.apis.benchmark import BenchmarkMetadata
 from cube.core import Task, TypedBaseModel
 from cube.environment import EnvConfig
 from cube.tool import ToolConfig
@@ -10,7 +11,7 @@ from cube.tool import ToolConfig
 class Benchmark(TypedBaseModel, ABC):
     """Represents a benchmark consisting of multiple tasks and an environment."""
 
-    metadata: dict = Field(default_factory=dict)
+    metadata: BenchmarkMetadata
     tool_config: ToolConfig
 
     @abstractmethod

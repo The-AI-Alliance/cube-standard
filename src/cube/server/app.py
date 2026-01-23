@@ -13,7 +13,7 @@ from cube.server.middleware import (
     general_exception_handler,
     request_logging_middleware,
 )
-from cube.server.schemas import HealthResponse
+from cube.apis import HealthResponse
 
 # Configure logging
 logging.basicConfig(

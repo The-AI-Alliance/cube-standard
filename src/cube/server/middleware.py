@@ -7,7 +7,7 @@ from typing import Callable
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 
-from cube.server.schemas import ErrorDetail, ErrorResponse
+from cube.apis import ErrorDetail, ErrorResponse
 
 logger = logging.getLogger(__name__)
 

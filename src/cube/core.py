@@ -8,6 +8,7 @@ import litellm.utils
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
+from cube.apis.benchmark import TaskMetadata
 from cube.base import TypedBaseModel
 
 
@@ -185,9 +186,17 @@ ActionSubset: TypeAlias = tuple[Callable, ...]
 class Task(ABC):
     """Represents a task that an agent must complete in an environment."""
 
-    id: str
+    metadata: TaskMetadata
     _tool: Any  # access to the environment tool, initialized in setup()
     validate_per_step: bool = False
+
+    @property
+    def id(self) -> str:
+        return self.metadata.id
+    
+    @property
+    def seed(self) -> int | None:
+        return self.metadata.seed
 
     @abstractmethod
     def setup(self, tool: Any) -> tuple[Observation, dict]:
