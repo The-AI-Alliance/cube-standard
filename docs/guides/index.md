@@ -11,7 +11,7 @@ Step-by-step guides for different CUBE user personas.
 
 ## Available Guides
 
-### [Benchmark Author Guide](benchmark-authors.html)
+### [Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors)
 
 **For**: Researchers and developers who have created a benchmark and want to make it CUBE-compliant
 
@@ -24,7 +24,7 @@ Step-by-step guides for different CUBE user personas.
 
 **Time**: 1-2 hours to wrap a simple benchmark
 
-### [Platform Developer Guide](platform-developers.html) *(Coming Soon)*
+### [Platform Developer Guide]({{site.baseurl}}/guides/platform-developers) *(Coming Soon)*
 
 **For**: Developers building evaluation harnesses, training platforms, or agent frameworks
 
@@ -93,32 +93,32 @@ Before integrating CUBE, you should have:
 
 If you just want to get started quickly:
 
-1. Read the [Overview](../overview.html) (10 min)
-2. Follow the [Quick Start](../quickstart.html) to see CUBE in action (10 min)
-3. Start the [Benchmark Author Guide](benchmark-authors.html) tutorial (10 min initial setup)
+1. Read the [Overview]({{site.baseurl}}/overview) (10 min)
+2. Follow the [Quick Start]({{site.baseurl}}/quickstart) to see CUBE in action (10 min)
+3. Start the [Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors) tutorial (10 min initial setup)
 
 ### Path 2: Understand Before Implementing (1 hour)
 
 If you prefer to understand the full picture first:
 
-1. Read the [Overview](../overview.html) (10 min)
-2. Study the [API Reference](../api/) (30 min)
-   - [Task-Level API](../api/task-level.html)
-   - [Benchmark-Level API](../api/benchmark-level.html)
-3. Review the [Quick Start](../quickstart.html) examples (10 min)
+1. Read the [Overview]({{site.baseurl}}/overview) (10 min)
+2. Study the [API Reference]({{site.baseurl}}/api/) (30 min)
+   - [Task-Level API]({{site.baseurl}}/api/task-level)
+   - [Benchmark-Level API]({{site.baseurl}}/api/benchmark-level)
+3. Review the [Quick Start]({{site.baseurl}}/quickstart) examples (10 min)
 4. Begin the appropriate guide (10 min)
 
 ### Path 3: Deep Dive (2-3 hours)
 
 For a comprehensive understanding:
 
-1. Read the [Overview](../overview.html) (10 min)
-2. Complete the [Quick Start](../quickstart.html) tutorial (20 min)
-3. Read all [API Reference](../api/) pages (45 min)
-   - [Task-Level API](../api/task-level.html)
-   - [Benchmark-Level API](../api/benchmark-level.html)
-   - [Package-Level Standard](../api/package-level.html)
-   - [Registry Standard](../api/registry.html)
+1. Read the [Overview]({{site.baseurl}}/overview) (10 min)
+2. Complete the [Quick Start]({{site.baseurl}}/quickstart) tutorial (20 min)
+3. Read all [API Reference]({{site.baseurl}}/api/) pages (45 min)
+   - [Task-Level API]({{site.baseurl}}/api/task-level)
+   - [Benchmark-Level API]({{site.baseurl}}/api/benchmark-level)
+   - [Package-Level Standard]({{site.baseurl}}/api/package-level)
+   - [Registry Standard]({{site.baseurl}}/api/registry)
 4. Review community examples (30 min)
 5. Complete the relevant guide (1-2 hours)
 
@@ -138,7 +138,7 @@ Learn from existing CUBE-compliant benchmarks:
 
 As you work through the guides:
 
-- **API Questions**: Check the [API Reference](../api/)
+- **API Questions**: Check the [API Reference]({{site.baseurl}}/api/)
 - **Implementation Issues**: Search [GitHub Issues](https://github.com/The-AI-Alliance/cube-standard/issues)
 - **Community Discussion**: Join [GitHub Discussions](https://github.com/The-AI-Alliance/cube-standard/discussions)
 - **Direct Help**: Email [contact@thealliance.ai](mailto:contact@thealliance.ai?subject=CUBE%20Guide%20Question)
@@ -157,5 +157,5 @@ We're constantly improving these guides based on community feedback!
 ---
 
 **Ready to start?**
-- [Benchmark Author Guide →](benchmark-authors.html)
-- [Platform Developer Guide →](platform-developers.html) *(Coming Soon)*
+- [Benchmark Author Guide →]({{site.baseurl}}/guides/benchmark-authors)
+- [Platform Developer Guide →]({{site.baseurl}}/guides/platform-developers) *(Coming Soon)*

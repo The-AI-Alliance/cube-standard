@@ -10,7 +10,7 @@ nav_order: 2
 The Benchmark-Level API defines how evaluation harnesses discover, spawn, and manage task instances. This layer handles shared infrastructure, resource allocation, and task lifecycle management.
 
 {: .note }
-> This API describes benchmark orchestration. For agent-task interaction, see the [Task-Level API](task-level.html).
+> This API describes benchmark orchestration. For agent-task interaction, see the [Task-Level API]({{site.baseurl}}/api/task-level).
 
 ## Overview
 
@@ -704,6 +704,6 @@ server.start()
 
 ## Next Steps
 
-- **[Task-Level API](task-level.html)**: Learn the agent-task interaction protocol
-- **[Package-Level Standard](package-level.html)**: Learn deployment requirements
-- **[Benchmark Author Guide](../guides/benchmark-authors.html)**: Complete implementation tutorial
+- **[Task-Level API]({{site.baseurl}}/api/task-level)**: Learn the agent-task interaction protocol
+- **[Package-Level Standard]({{site.baseurl}}/api/package-level)**: Learn deployment requirements
+- **[Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors)**: Complete implementation tutorial

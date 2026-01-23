@@ -195,10 +195,10 @@ This specification is being developed collaboratively. To contribute:
 
 ## Related Documentation
 
-- [Task-Level API](task-level.html) - How agents interact with tasks
-- [Benchmark-Level API](benchmark-level.html) - How tasks are orchestrated
-- [Registry Standard](registry.html) - How benchmarks are discovered
-- [Benchmark Author Guide](../guides/benchmark-authors.html) - Implementation guide
+- [Task-Level API]({{site.baseurl}}/api/task-level) - How agents interact with tasks
+- [Benchmark-Level API]({{site.baseurl}}/api/benchmark-level) - How tasks are orchestrated
+- [Registry Standard]({{site.baseurl}}/api/registry) - How benchmarks are discovered
+- [Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors) - Implementation guide
 
 ---
 
