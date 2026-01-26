@@ -4,7 +4,7 @@ from typing import Any, Callable, Dict, Protocol, Self, TypeAlias
 import litellm.utils
 from pydantic import ConfigDict, Field
 
-from cube.apis.benchmark import TaskMetadata
+from cube.apis.benchmark import TaskMetadata, TaskStatus
 from cube.base import TypedBaseModel
 
 
@@ -104,6 +104,7 @@ class Task(ABC):
     """Represents a task that an agent must complete in an environment."""
 
     metadata: TaskMetadata
+    status: TaskStatus | None = None  # will get instantiated once we call benchmark.spawn() or cube/spawn
     _tool: Any  # access to the environment tool, initialized in setup()
     validate_per_step: bool = False
 

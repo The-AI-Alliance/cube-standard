@@ -22,6 +22,85 @@ The Benchmark-Level API provides five core capabilities:
 4. **Health Monitoring** - Check status of running tasks
 5. **Lifecycle Management** - Shutdown tasks and cleanup resources
 
+## Python Interface
+
+CUBE packages provide a Python interface for instantiation and usage:
+
+```python
+from cube_webarena import WebArenaBenchmark, WebArenaToolConfig
+
+# Instantiate the benchmark
+benchmark = WebArenaBenchmark()
+tool_config = WebArenaToolConfig()
+
+# Deploy the benchmark on local server
+endpoint = benchmark.setup(available_ports=[8000, 8001, 8002], tool_config=tool_config)
+
+# From this point on, all benchmark-level endpoints are available:
+# 1. Through Python API: benchmark.spawn(...)
+# 2. Through HTTP API: POST to endpoint/cube/spawn
+```
+
+CUBE benchmarks inherit from the abstract `Benchmark` class and implement required methods:
+
+```python
+from cube import Benchmark
+from cube.apis.benchmark import (
+    BenchmarkMetadata, SpawnRequest, SpawnResponse,
+    StatusRequest, StatusResponse, ShutdownRequest, ShutdownResponse
+)
+from cube.tool import ToolConfig
+
+class WebArenaToolConfig(ToolConfig):
+    def make(self):
+      # TODO
+      pass
+
+class WebArenaBenchmark(Benchmark):
+    """WebArena benchmark implementation."""
+
+    metadata = BenchmarkMetadata(
+        name="WebArena",
+        version="1.0.0",
+        description="Web navigation benchmark",
+        authors=["Authors"],
+        license="MIT",
+        requirements={"ram_gb": 16},
+        num_tasks=812,
+        other={}
+    )
+
+    def setup(self, available_ports: list[int], tool_config: ToolConfig) -> str:
+        """Initialize shared infrastructure and start benchmark server."""
+        # Initialize shared infrastructure
+        # Start benchmark server on available port
+        # Return endpoint URL
+        self.tool_config = tool_config
+        pass
+
+    def load_tasks(self) -> list[Task]:
+        """Return list of Task objects."""
+        pass
+
+    def spawn(self, request: SpawnRequest) -> SpawnResponse:
+        """Spawn task instance."""
+        pass
+
+    def get_task_status(self, request: StatusRequest) -> StatusResponse:
+        """Return status of running tasks."""
+        pass
+
+    def shutdown(self, request: ShutdownRequest) -> ShutdownResponse:
+        """Shutdown task sessions and cleanup."""
+        pass
+
+    def close(self):
+        """Cleanup shared resources."""
+        pass
+```
+
+Benchmarks expose both Python and HTTP/JSON-RPC interfaces for all operations.
+
 ## Why a Separate Benchmark Layer?
 
 Many benchmarks require **shared infrastructure** that spans multiple tasks:
@@ -54,55 +133,67 @@ Get metadata about the benchmark including name, version, capabilities, and reso
 **Response:**
 ```json
 {
-  "id": "webarena-verified",
   "name": "WebArena Verified",
   "version": "1.2.0",
   "description": "Realistic web navigation tasks with verifiable gold trajectories",
-  "task_count": 812,
   "authors": ["Jane Researcher", "John Developer"],
-  "paper_url": "https://arxiv.org/abs/...",
-  "homepage_url": "https://webarena.dev",
   "license": "CC-BY-NC-4.0",
-  "capabilities": {
-    "tool_reconfiguration": true,
-    "parallel_tasks": 10,
-    "supports_seeds": true,
-    "deterministic": false
-  },
-  "hardware_requirements": {
+  "requirements": {
     "ram_gb": 16,
     "disk_gb": 50,
     "gpu": false
   },
-  "estimated_cost": {
-    "avg_tokens_per_task": 25000,
-    "avg_time_minutes": 15
+  "num_tasks": 812,
+  "other": {
+    "paper_url": "https://arxiv.org/abs/...",
+    "homepage_url": "https://webarena.dev",
+    "capabilities": {
+      "tool_reconfiguration": true,
+      "parallel_tasks": 10,
+      "supports_seeds": true,
+      "deterministic": false
+    },
+    "estimated_cost": {
+      "avg_tokens_per_task": 25000,
+      "avg_time_minutes": 15
+    }
   }
 }
 ```
 
 **Python interface:**
 ```python
-from cube import LocalRunner
+from cube_webarena import WebArenaBenchmark, WebArenaToolConfig
 
-benchmark = LocalRunner("cube-benchmark-webarena")
+# Instantiate the benchmark
+benchmark = WebArenaBenchmark()
+
+# Access info via Python API (no setup required for metadata)
 info = benchmark.info()
-
 print(f"Benchmark: {info.name} v{info.version}")
-print(f"Tasks: {info.task_count}")
-print(f"RAM required: {info.hardware_requirements.ram_gb}GB")
-print(f"Supports parallel execution: {info.capabilities.parallel_tasks} tasks")
+print(f"Tasks: {info.num_tasks}")
+print(f"RAM required: {info.requirements.get('ram_gb', 0)}GB")
+print(f"Capabilities: {info.other}")
+
+# Or deploy benchmark and use HTTP endpoint
+tool_config = WebArenaToolConfig()
+endpoint = benchmark.setup(available_ports=[8000, 8001, 8002], tool_config=tool_config)
+
+import requests
+response = requests.post(f"{endpoint}/cube/info", json={"method": "cube/info", "params": {}})
+info_data = response.json()
 ```
 
 **Key fields:**
 
-- `id` (string): Unique identifier matching registry
-- `name` (string): Human-readable name
-- `version` (string): Semantic version
-- `task_count` (int): Total number of tasks
-- `capabilities` (object): Feature flags (tool reconfiguration, parallelization, etc.)
-- `hardware_requirements` (object): Minimum resource requirements
-- `estimated_cost` (object): Expected token usage and time per task
+- `name` (string, required): Human-readable name
+- `version` (string, required): Semantic version
+- `description` (string, required): Benchmark description
+- `authors` (list[string], default: []): List of benchmark author names
+- `license` (string, required): Benchmark license
+- `requirements` (object, default: {}): Hardware requirements to install and run the benchmark
+- `num_tasks` (int, required): Total number of tasks
+- `other` (object, default: {}): Additional metadata (capabilities, URLs, estimated costs, etc.)
 
 ### `cube/tasks`
 
@@ -113,6 +204,7 @@ List available tasks with optional filtering and pagination.
 {
   "method": "cube/tasks",
   "params": {
+    "task_id": null,
     "offset": 0,
     "limit": 10,
     "filter": {
@@ -130,22 +222,24 @@ List available tasks with optional filtering and pagination.
   "tasks": [
     {
       "id": "shopping-cart-123",
+      "seed": null,
       "description": "Add items to cart and complete checkout",
-      "difficulty": "medium",
       "tags": ["e-commerce", "form-filling", "multi-step"],
-      "estimated_steps": 15,
-      "metadata": {
+      "other": {
+        "difficulty": "medium",
+        "estimated_steps": 15,
         "domain": "e-commerce",
         "requires_payment": false
       }
     },
     {
       "id": "product-search-456",
+      "seed": null,
       "description": "Search for specific product and add to wishlist",
-      "difficulty": "medium",
       "tags": ["e-commerce", "search"],
-      "estimated_steps": 8,
-      "metadata": {
+      "other": {
+        "difficulty": "medium",
+        "estimated_steps": 8,
         "domain": "e-commerce"
       }
     }
@@ -158,37 +252,73 @@ List available tasks with optional filtering and pagination.
 
 **Python interface:**
 ```python
-# List all tasks
-tasks = benchmark.list_tasks()
-print(f"Total tasks: {len(tasks)}")
+from cube_webarena import WebArenaBenchmark, WebArenaToolConfig
+from cube.apis.benchmark import TaskRequest
+
+# Instantiate the benchmark
+benchmark = WebArenaBenchmark()
+
+# Setup benchmark (required for loading tasks)
+tool_config = WebArenaToolConfig()
+endpoint = benchmark.setup(available_ports=[8000, 8001, 8002], tool_config=tool_config)
+
+# List all tasks via Python API
+request = TaskRequest()
+result = benchmark.list_tasks(request)
+print(f"Total tasks: {result.total}")
+
+# Get specific task
+request = TaskRequest(task_id="shopping-cart-123")
+task_result = benchmark.list_tasks(request)
 
 # Pagination
-page1 = benchmark.list_tasks(offset=0, limit=20)
-page2 = benchmark.list_tasks(offset=20, limit=20)
+request = TaskRequest(offset=0, limit=20)
+page1 = benchmark.list_tasks(request)
 
-# Filtering
-medium_tasks = benchmark.list_tasks(
-    filter={"difficulty": "medium"}
-)
+request = TaskRequest(offset=20, limit=20)
+page2 = benchmark.list_tasks(request)
 
-ecommerce_tasks = benchmark.list_tasks(
-    filter={"domain": "e-commerce", "tags": ["form-filling"]}
-)
+# Filtering (benchmark-specific)
+request = TaskRequest(filter={"difficulty": "medium"})
+medium_tasks = benchmark.list_tasks(request)
 
 # Print task details
-for task in medium_tasks:
+for task in medium_tasks.tasks:
     print(f"{task.id}: {task.description}")
-    print(f"  Difficulty: {task.difficulty}")
     print(f"  Tags: {', '.join(task.tags)}")
+    if 'difficulty' in task.other:
+        print(f"  Difficulty: {task.other['difficulty']}")
+
+# Or via HTTP endpoint
+import requests
+response = requests.post(
+    f"{endpoint}/cube/tasks",
+    json={
+        "method": "cube/tasks",
+        "params": {"offset": 0, "limit": 10}
+    }
+)
+tasks_data = response.json()
 ```
 
 **Parameters:**
 
+- `task_id` (string, optional): Unique task identifier. If provided, fetches only that specific task (default: None)
 - `offset` (int, optional): Skip first N tasks (default: 0)
-- `limit` (int, optional): Return at most N tasks (default: all tasks)
-- `filter` (object, optional): Filter criteria (benchmark-specific fields)
+- `limit` (int, optional): Return at most N tasks. Use -1 for no limit (default: -1)
+- `filter` (object, optional): Filter criteria (benchmark-specific fields, default: {})
 
-**Filter fields** are benchmark-specific but commonly include:
+**Response fields:**
+
+Each task in the response has:
+
+- `id` (string, required): Unique task identifier
+- `seed` (int | null, optional): Random seed for the task, if applicable
+- `description` (string, default: ""): Task description
+- `tags` (list[string], default: []): List of task tags
+- `other` (object, default: {}): Additional task metadata (difficulty, domain, estimated_steps, etc.)
+
+**Filter fields** are benchmark-specific and stored in the `other` field, but commonly include:
 - `difficulty`: Task difficulty level
 - `domain`: Task domain/category
 - `tags`: List of task tags
@@ -204,10 +334,7 @@ Create a new task instance. Returns an endpoint URL where the task exposes the T
   "method": "cube/spawn",
   "params": {
     "task_id": "shopping-cart-123",
-    "seed": 42,
-    "tool_config": {
-      "browser_mode": "vision-based"
-    }
+    "seed": 42
   }
 }
 ```
@@ -215,9 +342,9 @@ Create a new task instance. Returns an endpoint URL where the task exposes the T
 **Response:**
 ```json
 {
-  "session_id": "task-abc123def456",
   "url": "http://localhost:8001",
-  "info": {
+  "session_id": "task-abc123def456",
+  "other": {
     "task_id": "shopping-cart-123",
     "seed": 42,
     "spawned_at": "2026-01-22T10:30:00Z",
@@ -228,53 +355,45 @@ Create a new task instance. Returns an endpoint URL where the task exposes the T
 
 **Python interface:**
 ```python
-# Spawn a task
-session = benchmark.spawn(
-    task_id="shopping-cart-123",
-    seed=42
+from cube_webarena import WebArenaBenchmark, WebArenaToolConfig
+from cube.apis.benchmark import SpawnRequest, ShutdownRequest
+
+# Instantiate the benchmark
+benchmark = WebArenaBenchmark()
+
+# Setup benchmark (required for spawning tasks)
+tool_config = WebArenaToolConfig()
+endpoint = benchmark.setup(available_ports=[8000, 8001, 8002], tool_config=tool_config)
+
+# Spawn a task via Python API
+request = SpawnRequest(task_id="shopping-cart-123", seed=42)
+session = benchmark.spawn(request)
+
+print(f"Task endpoint: {session.url}")  # exposes Task-Level API
+print(f"Session ID: {session.session_id}")
+
+
+# Or via HTTP endpoint
+response = requests.post(
+    f"{endpoint}/cube/spawn",
+    json={
+        "method": "cube/spawn",
+        "params": {"task_id": "shopping-cart-123", "seed": 42}
+    }
 )
-
-print(f"Task endpoint: {session.url}")
-print(f"Session ID: {session.id}")
-
-# Connect to the task instance (exposes Task-Level API)
-from cube import RemoteRunner
-task = RemoteRunner(session.url)
-
-# Now use Task-Level API
-state = task.reset()
-tools = task.list_tools()
-result = task.call_tool("click", {"x": 100, "y": 100})
-eval_state = task.evaluate()
-
-# Cleanup
-task.close()
-
-# Or spawn multiple tasks in parallel
-sessions = []
-for task_id in ["task-1", "task-2", "task-3"]:
-    session = benchmark.spawn(task_id=task_id, seed=42)
-    sessions.append(session)
-
-# Evaluate them in parallel
-# ... your parallel execution logic ...
-
-# Cleanup all
-for session in sessions:
-    benchmark.shutdown(session_id=session.id)
+session_data = response.json()
 ```
 
 **Parameters:**
 
 - `task_id` (string, required): ID of the task to spawn (from `cube/tasks`)
-- `seed` (int, optional): Random seed for reproducibility
-- `tool_config` (object, optional): Tool configuration overrides (if benchmark supports it)
+- `seed` (int, optional): Random seed for reproducibility (default: None)
 
 **Returns:**
 
-- `session_id` (string): Unique identifier for this task instance
-- `url` (string): Endpoint URL exposing the Task-Level API
-- `info` (object): Metadata about the spawned task
+- `url` (string, required): Endpoint URL exposing the Task-Level API
+- `session_id` (string, required): Unique identifier for this task instance
+- `other` (object, default: {}): Additional session information (spawned_at, expires_at, etc.)
 
 {: .note }
 > The returned `url` is where the task instance runs. Connect to this URL to interact with the task using the Task-Level API.
@@ -287,7 +406,12 @@ Check the health and status of running task instances.
 ```json
 {
   "method": "cube/status",
-  "params": {}
+  "params": {
+    "session_id": null,
+    "offset": 0,
+    "limit": -1,
+    "filter": {}
+  }
 }
 ```
 
@@ -299,52 +423,96 @@ Check the health and status of running task instances.
       "session_id": "task-abc123",
       "task_id": "shopping-cart-123",
       "status": "running",
-      "uptime_seconds": 145,
-      "resource_usage": {
-        "ram_mb": 512,
-        "cpu_percent": 15.2
+      "created_at": "2026-01-22T10:30:00Z",
+      "other": {
+        "uptime_seconds": 145,
+        "resource_usage": {
+          "ram_mb": 512,
+          "cpu_percent": 15.2
+        }
       }
     },
     {
       "session_id": "task-def456",
       "task_id": "product-search-456",
-      "status": "idle",
-      "uptime_seconds": 892,
-      "resource_usage": {
-        "ram_mb": 480,
-        "cpu_percent": 2.1
+      "status": "running",
+      "created_at": "2026-01-22T09:15:00Z",
+      "other": {
+        "uptime_seconds": 892,
+        "resource_usage": {
+          "ram_mb": 480,
+          "cpu_percent": 2.1
+        }
       }
     }
-  ],
-  "benchmark_status": {
-    "shared_services_healthy": true,
-    "available_task_slots": 7,
-    "total_ram_usage_mb": 4096
-  }
+  ]
 }
 ```
 
 **Python interface:**
 ```python
-status = benchmark.status()
+from cube_webarena import WebArenaBenchmark, WebArenaToolConfig
+from cube.apis.benchmark import StatusRequest
+
+# Instantiate the benchmark
+benchmark = WebArenaBenchmark()
+
+# Setup benchmark (required before spawning tasks)
+tool_config = WebArenaToolConfig()
+endpoint = benchmark.setup(available_ports=[8000, 8001, 8002], tool_config=tool_config)
+
+# Get status of all tasks via Python API
+request = StatusRequest()
+status = benchmark.get_task_status(request)
+
+# Get status of a specific session
+request = StatusRequest(session_id="task-abc123")
+status = benchmark.get_task_status(request)
+
+# With pagination and filtering
+request = StatusRequest(offset=0, limit=10, filter={"status": "running"})
+status = benchmark.get_task_status(request)
 
 # Check individual tasks
 for task_status in status.tasks:
     print(f"Task {task_status.session_id}: {task_status.status}")
-    print(f"  Uptime: {task_status.uptime_seconds}s")
-    print(f"  RAM: {task_status.resource_usage.ram_mb}MB")
+    print(f"  Created at: {task_status.created_at}")
+    if 'uptime_seconds' in task_status.other:
+        print(f"  Uptime: {task_status.other['uptime_seconds']}s")
+    if 'resource_usage' in task_status.other:
+        print(f"  RAM: {task_status.other['resource_usage']['ram_mb']}MB")
 
-# Check benchmark health
-if status.benchmark_status.shared_services_healthy:
-    print("✓ Benchmark infrastructure healthy")
-    print(f"Available slots: {status.benchmark_status.available_task_slots}")
+# Or via HTTP endpoint (benchmark.get_task_status() and POST to endpoint/cube/status do the same thing)
+import requests
+response = requests.post(
+    f"{endpoint}/cube/status",
+    json={"method": "cube/status", "params": {}}
+)
+status_data = response.json()
 ```
 
+**Parameters:**
+
+- `session_id` (string, optional): Unique task session identifier. If provided, fetches only that specific session (default: None)
+- `offset` (int, optional): Skip first N tasks (default: 0)
+- `limit` (int, optional): Return at most N tasks. Use -1 for no limit (default: -1)
+- `filter` (object, optional): Filter criteria (benchmark-specific fields, default: {})
+
+**Response fields:**
+
+Each task status has:
+
+- `session_id` (string, required): Session identifier
+- `task_id` (string, required): Task identifier
+- `status` (string, required): Task status (one of: "running", "stopped", "error")
+- `created_at` (datetime, required): Session creation timestamp
+- `other` (object, default: {}): Additional status information (uptime_seconds, resource_usage, etc.)
+
 **Status values:**
-- `running` - Task is actively being used
-- `idle` - Task is spawned but not currently in use
+
+- `running` - Task is running
+- `stopped` - Task has been stopped
 - `error` - Task encountered an error
-- `shutting_down` - Task is cleaning up
 
 ### `cube/shutdown`
 
@@ -371,309 +539,222 @@ Shutdown task instances and cleanup resources.
 **Response:**
 ```json
 {
-  "shutdown": [
-    {
-      "session_id": "task-abc123",
-      "status": "success"
-    }
-  ]
+  "success": true,
+  "cleaned": ["task-abc123"]
 }
 ```
 
 **Python interface:**
 ```python
-# Shutdown a specific task
-benchmark.shutdown(session_id="task-abc123")
+from cube_webarena import WebArenaBenchmark, WebArenaToolConfig
+from cube.apis.benchmark import ShutdownRequest, SpawnRequest
+
+# Instantiate the benchmark
+benchmark = WebArenaBenchmark()
+
+# Setup benchmark
+tool_config = WebArenaToolConfig()
+endpoint = benchmark.setup(available_ports=[8000, 8001, 8002], tool_config=tool_config)
+
+# Shutdown a specific task via Python API
+request = ShutdownRequest(session_id="task-abc123")
+result = benchmark.shutdown(request)
 
 # Shutdown all running tasks
-benchmark.shutdown()
+request = ShutdownRequest()
+result = benchmark.shutdown(request)
+print(f"Successfully cleaned up {len(result.cleaned)} sessions")
 
-# Common pattern: cleanup in a finally block
-session = None
-try:
-    session = benchmark.spawn(task_id="example")
-    task = RemoteRunner(session.url)
-    # ... evaluation logic ...
-finally:
-    if session:
-        benchmark.shutdown(session_id=session.id)
 
-# Or use context manager (recommended)
-with benchmark.spawn_context(task_id="example") as task:
-    # task is already connected and ready to use
-    state = task.reset()
-    # ... evaluation logic ...
-    # Automatic cleanup on exit
-```
-
-## Resource Management Patterns
-
-### Pattern 1: Single Task Sequential Execution
-
-Simplest pattern - spawn one task at a time:
-
-```python
-benchmark = LocalRunner("cube-benchmark-example")
-tasks = benchmark.list_tasks(limit=10)
-
-for task_info in tasks:
-    session = benchmark.spawn(task_id=task_info.id, seed=42)
-    task = RemoteRunner(session.url)
-
-    try:
-        # Evaluate
-        state = task.reset()
-        # ... agent logic ...
-        result = task.evaluate()
-    finally:
-        task.close()
-        benchmark.shutdown(session_id=session.id)
-```
-
-### Pattern 2: Parallel Task Execution
-
-Spawn multiple tasks and evaluate in parallel:
-
-```python
-import concurrent.futures
-
-def evaluate_task(benchmark, task_id, agent_fn):
-    session = benchmark.spawn(task_id=task_id, seed=42)
-    task = RemoteRunner(session.url)
-
-    try:
-        return agent_fn(task)
-    finally:
-        task.close()
-        benchmark.shutdown(session_id=session.id)
-
-benchmark = LocalRunner("cube-benchmark-example")
-tasks = benchmark.list_tasks(limit=50)
-
-# Check max parallelism
-info = benchmark.info()
-max_parallel = info.capabilities.parallel_tasks
-
-# Evaluate in parallel
-with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
-    futures = [
-        executor.submit(evaluate_task, benchmark, task.id, my_agent)
-        for task in tasks
-    ]
-
-    results = [f.result() for f in concurrent.futures.as_completed(futures)]
-```
-
-### Pattern 3: Long-Running Persistent Tasks
-
-Keep tasks alive for multiple evaluation episodes:
-
-```python
-# Spawn once
-session = benchmark.spawn(task_id="persistent-task")
-task = RemoteRunner(session.url)
-
-# Evaluate multiple times with different parameters
-for trial in range(100):
-    state = task.reset(seed=trial)
-    # ... evaluation ...
-    result = task.evaluate()
-
-    # Don't close - reuse the same instance
-
-# Cleanup after all trials
-task.close()
-benchmark.shutdown(session_id=session.id)
-```
-
-### Pattern 4: Resource-Aware Batching
-
-Batch task execution based on available resources:
-
-```python
-benchmark = LocalRunner("cube-benchmark-example")
-info = benchmark.info()
-
-# Calculate how many tasks we can run in parallel
-available_ram_gb = 32  # Your machine's RAM
-task_ram_gb = info.hardware_requirements.ram_gb
-batch_size = min(
-    available_ram_gb // task_ram_gb,
-    info.capabilities.parallel_tasks
+# Or via HTTP endpoint (benchmark.shutdown() and POST to endpoint/cube/shutdown do the same thing)
+import requests
+response = requests.post(
+    f"{endpoint}/cube/shutdown",
+    json={"method": "cube/shutdown", "params": {"session_id": "task-abc123"}}
 )
-
-print(f"Running {batch_size} tasks in parallel")
-
-# Process in batches
-tasks = benchmark.list_tasks()
-for i in range(0, len(tasks), batch_size):
-    batch = tasks[i:i+batch_size]
-
-    # Spawn batch
-    sessions = [benchmark.spawn(task_id=t.id) for t in batch]
-
-    # Evaluate batch in parallel
-    # ... parallel execution ...
-
-    # Cleanup batch
-    for session in sessions:
-        benchmark.shutdown(session_id=session.id)
+result = response.json()
 ```
+
+**Returns:**
+
+- `success` (bool, required): Whether shutdown was successful
+- `cleaned` (list[string], required): List of session IDs that were cleaned up
 
 ## Implementation Guide for Benchmark Authors
 
 ### Python Class Implementation
 
-Implement a benchmark server class:
+CUBE benchmarks must inherit from the abstract `Benchmark` class and implement required methods:
 
 ```python
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
+from cube import Benchmark, Task
+from cube.apis.benchmark import (
+    BenchmarkMetadata, TaskRequest, TaskListResponse,
+    SpawnRequest, SpawnResponse,
+    StatusRequest, StatusResponse,
+    ShutdownRequest, ShutdownResponse
+)
+from cube.tool import ToolConfig
 import uuid
 
-@dataclass
-class TaskInfo:
-    id: str
-    description: str
-    difficulty: str
-    tags: List[str]
-
-class MyBenchmarkServer:
+class MyBenchmark(Benchmark):
     """CUBE-compliant benchmark implementation."""
 
-    def __init__(self):
-        # Initialize shared infrastructure
-        self._shared_services = self._start_shared_services()
-        self._active_sessions = {}
-
-    def info(self) -> Dict[str, Any]:
-        """Return benchmark metadata."""
-        return {
-            "id": "my-benchmark",
-            "name": "My Benchmark",
-            "version": "1.0.0",
-            "task_count": len(self._get_all_tasks()),
+    # Define benchmark metadata
+    metadata = BenchmarkMetadata(
+        name="My Benchmark",
+        version="1.0.0",
+        description="A CUBE-compliant benchmark implementation",
+        authors=["Benchmark Author"],
+        license="MIT",
+        requirements={
+            "ram_gb": 8,
+            "disk_gb": 20,
+            "gpu": False
+        },
+        num_tasks=100,  # Update with actual count
+        other={
             "capabilities": {
-                "tool_reconfiguration": False,
                 "parallel_tasks": 5,
-                "supports_seeds": True,
-                "deterministic": False
-            },
-            "hardware_requirements": {
-                "ram_gb": 8,
-                "disk_gb": 20,
-                "gpu": False
+                "supports_seeds": True
             }
         }
+    )
 
-    def list_tasks(
-        self,
-        offset: int = 0,
-        limit: Optional[int] = None,
-        filter: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """List available tasks."""
-        all_tasks = self._get_all_tasks()
+    def __init__(self):
+        super().__init__()
+        self._shared_services = None
+        self._active_sessions = {}
+        self._tasks = []
+        self._benchmark_server = None
 
-        # Apply filters
-        if filter:
-            all_tasks = self._filter_tasks(all_tasks, filter)
+    def setup(self, available_ports: list[int], tool_config: ToolConfig) -> str:
+        """Initialize shared infrastructure and deploy benchmark server."""
+        # Store tool config
+        self.tool_config = tool_config
 
-        # Apply pagination
-        total = len(all_tasks)
-        tasks = all_tasks[offset:offset+limit if limit else None]
+        # Start Docker containers, VMs, databases, etc.
+        self._shared_services = self._start_shared_services()
 
-        return {
-            "tasks": [t.__dict__ for t in tasks],
-            "total": total,
-            "offset": offset,
-            "limit": limit
-        }
+        # Start benchmark server on an available port
+        from cube.server import CubeBenchmarkServer
+        benchmark_port = available_ports[0]
+        self._benchmark_server = CubeBenchmarkServer(self, host="localhost", port=benchmark_port)
+        self._benchmark_server.start_async()
 
-    def spawn(
-        self,
-        task_id: str,
-        seed: Optional[int] = None,
-        tool_config: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        # Return endpoint URL
+        endpoint = f"http://localhost:{benchmark_port}"
+        return endpoint
+
+    def close(self):
+        """Clean up shared resources."""
+        # Stop benchmark server
+        if self._benchmark_server:
+            self._benchmark_server.stop()
+
+        # Stop shared services
+        if self._shared_services:
+            self._stop_shared_services()
+
+    def load_tasks(self) -> list[Task]:
+        """Load and return the list of tasks for this benchmark."""
+        if not self._tasks:
+            # Load tasks from disk, database, etc.
+            self._tasks = self._load_tasks_from_source()
+        return self._tasks
+
+    def spawn(self, request: SpawnRequest) -> SpawnResponse:
         """Spawn a new task instance."""
         # Generate unique session ID
         session_id = f"task-{uuid.uuid4().hex}"
 
-        # Create task instance
-        from .task import MyBenchmarkTask
-        task = MyBenchmarkTask(
-            task_id=task_id,
-            seed=seed,
-            tool_config=tool_config,
-            shared_services=self._shared_services
-        )
+        # Find the task
+        tasks = self.load_tasks()
+        task = next((t for t in tasks if t.id == request.task_id), None)
+        if not task:
+            raise ValueError(f"Task {request.task_id} not found")
 
-        # Start RPC server for this task
+        # Start task server on a new port
         from cube.server import CubeTaskServer
         port = self._allocate_port()
         server = CubeTaskServer(task, host="localhost", port=port)
         server.start_async()
 
         # Track session
+        from datetime import datetime
         self._active_sessions[session_id] = {
             "task": task,
             "server": server,
-            "task_id": task_id,
-            "port": port
+            "task_id": request.task_id,
+            "port": port,
+            "created_at": datetime.now()
         }
 
-        return {
-            "session_id": session_id,
-            "url": f"http://localhost:{port}",
-            "info": {
-                "task_id": task_id,
-                "seed": seed,
+        return SpawnResponse(
+            url=f"http://localhost:{port}",
+            session_id=session_id,
+            other={
+                "task_id": request.task_id,
+                "seed": request.seed,
                 "spawned_at": datetime.now().isoformat()
             }
-        }
+        )
 
-    def status(self) -> Dict[str, Any]:
+    def get_task_status(self, request: StatusRequest) -> StatusResponse:
         """Get status of running tasks."""
+        from cube.apis.benchmark import TaskStatus, TaskStatusEnum
+
         tasks_status = []
-        for session_id, session in self._active_sessions.items():
-            tasks_status.append({
-                "session_id": session_id,
-                "task_id": session["task_id"],
-                "status": "running",
-                "uptime_seconds": session["server"].uptime()
-            })
+        sessions = self._active_sessions
 
-        return {
-            "tasks": tasks_status,
-            "benchmark_status": {
-                "shared_services_healthy": self._check_health(),
-                "available_task_slots": 5 - len(self._active_sessions)
-            }
-        }
+        # Filter to specific session if requested
+        if request.session_id:
+            sessions = {request.session_id: self._active_sessions[request.session_id]} if request.session_id in self._active_sessions else {}
 
-    def shutdown(self, session_id: Optional[str] = None):
+        # Build status list
+        for sid, session in sessions.items():
+            tasks_status.append(TaskStatus(
+                session_id=sid,
+                task_id=session["task_id"],
+                status=TaskStatusEnum.running,
+                created_at=session["created_at"],
+                other={
+                    "uptime_seconds": (datetime.now() - session["created_at"]).total_seconds()
+                }
+            ))
+
+        # Apply pagination
+        if request.limit == -1:
+            paginated_tasks = tasks_status[request.offset:]
+        else:
+            paginated_tasks = tasks_status[request.offset:request.offset+request.limit]
+
+        return StatusResponse(tasks=paginated_tasks)
+
+    def shutdown(self, request: ShutdownRequest) -> ShutdownResponse:
         """Shutdown task instances."""
-        if session_id:
+        cleaned = []
+
+        if request.session_id:
             # Shutdown specific task
-            if session_id in self._active_sessions:
-                session = self._active_sessions[session_id]
-                session["task"].close()
+            if request.session_id in self._active_sessions:
+                session = self._active_sessions[request.session_id]
                 session["server"].stop()
-                del self._active_sessions[session_id]
+                del self._active_sessions[request.session_id]
+                cleaned.append(request.session_id)
         else:
             # Shutdown all tasks
             for sid in list(self._active_sessions.keys()):
-                self.shutdown(session_id=sid)
+                sub_request = ShutdownRequest(session_id=sid)
+                result = self.shutdown(sub_request)
+                cleaned.extend(result.cleaned)
 
-    def _get_all_tasks(self) -> List[TaskInfo]:
-        """Get all available tasks."""
-        # Your logic to enumerate tasks
-        pass
+        return ShutdownResponse(success=True, cleaned=cleaned)
 
-    def _filter_tasks(self, tasks: List[TaskInfo], filter: Dict) -> List[TaskInfo]:
-        """Apply filter criteria to tasks."""
-        # Your filtering logic
+    # Helper methods
+    def _load_tasks_from_source(self) -> list[Task]:
+        """Load tasks from your data source."""
+        # Your logic to load tasks
         pass
 
     def _start_shared_services(self):
@@ -681,25 +762,58 @@ class MyBenchmarkServer:
         # Start Docker containers, VMs, databases, etc.
         pass
 
-    def _check_health(self) -> bool:
-        """Check if shared services are healthy."""
-        # Health check logic
+    def _stop_shared_services(self):
+        """Stop shared infrastructure."""
+        # Stop Docker containers, VMs, databases, etc.
         pass
 
     def _allocate_port(self) -> int:
         """Allocate an available port for task instance."""
-        # Port allocation logic
-        pass
+        import socket
+        with socket.socket() as s:
+            s.bind(('', 0))
+            return s.getsockname()[1]
 ```
 
-### Exposing as RPC Server
+### Usage Example
+
+Once implemented, users can use your benchmark like this:
 
 ```python
-from cube.server import CubeBenchmarkServer
+from my_cube import MyBenchmark
+from cube.apis.benchmark import SpawnRequest, ShutdownRequest
+from cube.tool import ToolConfig
+import requests
 
-benchmark = MyBenchmarkServer()
-server = CubeBenchmarkServer(benchmark, host="0.0.0.0", port=8000)
-server.start()
+# Instantiate the benchmark
+benchmark = MyBenchmark()
+
+# Deploy the benchmark on local server
+tool_config = ToolConfig()
+endpoint = benchmark.setup(available_ports=[8000, 8001, 8002], tool_config=tool_config)
+
+print(f"Benchmark server running at: {endpoint}")
+
+# Use Python API
+spawn_request = SpawnRequest(task_id="task-1", seed=42)
+session = benchmark.spawn(spawn_request)
+print(f"Task running at: {session.url}")
+
+# Or use HTTP API (both do the same thing)
+response = requests.post(
+    f"{endpoint}/cube/spawn",
+    json={
+        "method": "cube/spawn",
+        "params": {"task_id": "task-1", "seed": 42}
+    }
+)
+session_data = response.json()
+print(f"Task running at: {session_data['url']}")
+
+# Cleanup
+shutdown_request = ShutdownRequest(session_id=session.session_id)
+benchmark.shutdown(shutdown_request)
+benchmark.close()
 ```
 
 ## Next Steps
