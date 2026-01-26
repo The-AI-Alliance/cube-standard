@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 
-from pydantic import Field
 
 from cube.apis.benchmark import BenchmarkMetadata, ShutdownRequest, ShutdownResponse, SpawnRequest, SpawnResponse, StatusRequest, StatusResponse, TaskListResponse, TaskRequest
 from cube.core import Task, TypedBaseModel

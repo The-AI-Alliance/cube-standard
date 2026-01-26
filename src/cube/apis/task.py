@@ -1,9 +1,7 @@
-
 # =============================================================================
 # Task-Level API Schemas (MCP-compatible)
 # =============================================================================
 
-from typing import Any
 from typing import Any
 from pydantic import BaseModel, Field
 from cube.core import ActionSchema, Content, Observation
@@ -11,6 +9,7 @@ from cube.core import ActionSchema, Content, Observation
 # TODO:
 # 1) review docs/api/task-level.md, and remove stuff if too detailed/verbose
 # 2) Align classes below to the examples in task-level.md
+
 
 class ToolListResponse(BaseModel):
     """Response for listing tools."""
@@ -22,7 +21,9 @@ class ToolCallRequest(BaseModel):
     """Request to call a tool."""
 
     tool_name: str = Field(..., description="Name of the tool to call")
-    arguments: dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
+    arguments: dict[str, Any] = Field(
+        default_factory=dict, description="Tool arguments"
+    )
 
 
 class ToolCallResponse(BaseModel):
@@ -35,7 +36,9 @@ class ToolCallResponse(BaseModel):
 class ResourceInfo(BaseModel):
     """Resource metadata."""
 
-    uri: str = Field(..., description="Resource URI (e.g., cube://session/abc123/observation)")
+    uri: str = Field(
+        ..., description="Resource URI (e.g., cube://session/abc123/observation)"
+    )
     name: str = Field(..., description="Human-readable resource name")
     description: str = Field(default="", description="Resource description")
     mimeType: str = Field(default="application/json", description="MIME type")
@@ -44,7 +47,9 @@ class ResourceInfo(BaseModel):
 class ResourceListResponse(BaseModel):
     """Response for listing resources."""
 
-    resources: list[ResourceInfo] = Field(..., description="List of available resources")
+    resources: list[ResourceInfo] = Field(
+        ..., description="List of available resources"
+    )
 
 
 class ResourceReadResponse(BaseModel):
@@ -63,11 +68,15 @@ class ResetResponse(BaseModel):
     """Response from resetting a task."""
 
     observation: Observation = Field(..., description="Initial observation after reset")
-    info: dict[str, Any] = Field(default_factory=dict, description="Additional reset info")
+    info: dict[str, Any] = Field(
+        default_factory=dict, description="Additional reset info"
+    )
 
 
 class CloseResponse(BaseModel):
     """Response from closing a task."""
 
     success: bool = Field(..., description="Whether close was successful")
-    profiling: dict[str, Any] | None = Field(default=None, description="Optional profiling data")
+    profiling: dict[str, Any] | None = Field(
+        default=None, description="Optional profiling data"
+    )

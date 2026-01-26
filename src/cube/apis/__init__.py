@@ -1,24 +1,33 @@
 from .benchmark import *
 from .task import *
+from pydantic import BaseModel, Field
+from typing import Any
 
 # =============================================================================
 # Common Schemas
 # =============================================================================
+
 
 class ErrorDetail(BaseModel):
     """Standard error response."""
 
     code: str = Field(..., description="Error code (e.g., TASK_NOT_FOUND)")
     message: str = Field(..., description="Human-readable error message")
-    details: dict[str, Any] = Field(default_factory=dict, description="Additional error details")
+    details: dict[str, Any] = Field(
+        default_factory=dict, description="Additional error details"
+    )
+
 
 class ErrorResponse(BaseModel):
     """Error response wrapper."""
+
     error: ErrorDetail
+
 
 # =============================================================================
 # Health Check
 # =============================================================================
+
 
 class HealthResponse(BaseModel):
     """Health check response."""
