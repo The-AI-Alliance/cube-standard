@@ -9,14 +9,8 @@ from pydantic import BaseModel, Field
 from cube.core import ActionSchema, Content, Observation
 
 # TODO:
-# 1)
-# copy the input/output json schemas from:
-# https://github.com/The-AI-Alliance/cube-standard/blob/1eaeda50f59c31ba728614bb79eb9990017698ed/docs/api/task-level.md
-# into README.md
-# 2) review README.md examples, and remove stuff if too detailed/verbose
-# 3) Align classes below to the examples in the README.md
-
-# TODO: Aman check
+# 1) review docs/api/task-level.md, and remove stuff if too detailed/verbose
+# 2) Align classes below to the examples in task-level.md
 
 class ToolListResponse(BaseModel):
     """Response for listing tools."""
