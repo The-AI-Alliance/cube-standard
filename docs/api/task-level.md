@@ -288,6 +288,106 @@ if state.terminated:
     print(f"Task completed: {'Success' if success else 'Failure'}")
 ```
 
+### `cube/step`
+
+Execute an action and immediately get the evaluation state. This is a convenience method that combines `tools/call` and `cube/evaluation` in a single RPC call, reducing latency and simplifying agent code.
+
+{: .note }
+> This endpoint is automatically available whenever a task implements both `tools/call` and `cube/evaluation`. Benchmark developers don't need to implement it separately.
+
+**Request:**
+```json
+{
+  "method": "cube/step",
+  "params": {
+    "name": "click",
+    "arguments": {
+      "x": 150,
+      "y": 200
+    }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "tool_result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Clicked element: <button id='submit'>Submit</button>"
+      }
+    ],
+    "isError": false
+  },
+  "evaluation": {
+    "observation": {
+      "type": "html",
+      "content": "<html>...</html>",
+      "screenshot": "data:image/png;base64,..."
+    },
+    "reward": 1.0,
+    "terminated": true,
+    "truncated": false,
+    "info": {
+      "step_count": 6,
+      "success": true,
+      "tokens_used": 1350,
+      "time_elapsed": 13.5
+    }
+  }
+}
+```
+
+**Fields:**
+
+- `tool_result` (object): The result from executing the tool (same format as `tools/call`)
+  - `content` (array): MCP content blocks returned by the tool
+  - `isError` (bool): Whether the tool execution failed
+- `evaluation` (object): The evaluation state after the tool execution (same format as `cube/evaluation`)
+  - `observation` (any): Current state observation
+  - `reward` (float): Reward received from this action
+  - `terminated` (bool): Whether the task reached a terminal state
+  - `truncated` (bool): Whether the task was truncated
+  - `info` (object): Additional metadata
+
+**Python interface:**
+```python
+# Instead of two separate calls:
+# result = task.call_tool("click", {"x": 150, "y": 200})
+# state = task.evaluate()
+
+# Use cube/step for a single call:
+result = task.step(
+    name="click",
+    arguments={"x": 150, "y": 200}
+)
+
+print(f"Tool result: {result.tool_result.content}")
+print(f"Reward: {result.evaluation.reward}")
+print(f"Done: {result.evaluation.terminated or result.evaluation.truncated}")
+
+if result.evaluation.terminated:
+    success = result.evaluation.info.get("success", False)
+    print(f"Task completed: {'Success' if success else 'Failure'}")
+```
+
+**Benefits:**
+
+- **Reduced latency**: Eliminates one round-trip for remote tasks (RPC overhead)
+- **Simpler agent code**: Single call instead of two sequential calls
+- **Atomic operation**: Guarantees evaluation happens immediately after action
+- **Better performance**: Especially important for high-latency network connections
+
+**When to use:**
+
+- ✅ Use `cube/step` when you need both the tool result and evaluation state
+- ✅ Use for typical agent control loops (act → observe → evaluate)
+- ✅ Use for remote RPC tasks to minimize network overhead
+- ❌ Use `tools/call` alone if you don't need immediate evaluation
+- ❌ Use `cube/evaluation` alone if you want to check state without acting
+
 ### `cube/reset`
 
 Reset the task to its initial state. Optionally accepts a seed for reproducibility.
@@ -379,7 +479,7 @@ Benchmarks can define additional URIs as needed, but should document them clearl
 
 ## Evaluation Loop Pattern
 
-The standard agent-task interaction loop:
+The standard agent-task interaction loop using `cube/step`:
 
 ```python
 from cube import LocalRunner
@@ -401,14 +501,14 @@ while not done:
     tools = task.list_tools()
     selected_tool = agent_policy(task_desc, current_obs, tools)
 
-    # Agent acts
-    result = task.call_tool(
+    # Agent acts and evaluates (single call)
+    result = task.step(
         name=selected_tool.name,
         arguments=selected_tool.args
     )
 
-    # Evaluate result
-    state = task.evaluate()
+    # Process results
+    state = result.evaluation
     total_reward += state.reward
     done = state.terminated or state.truncated
 
@@ -418,6 +518,27 @@ while not done:
         print(f"Success: {state.info.get('success', False)}")
 
 task.close()
+```
+
+**Alternative: Using separate calls**
+
+If you need fine-grained control or don't need evaluation after every action:
+
+```python
+# Agent acts
+result = task.call_tool(
+    name=selected_tool.name,
+    arguments=selected_tool.args
+)
+
+# Check tool result before evaluating
+if result.isError:
+    print(f"Tool failed: {result.content}")
+    # Handle error...
+
+# Evaluate when needed
+state = task.evaluate()
+total_reward += state.reward
 ```
 
 ## Tool Reconfiguration
@@ -471,6 +592,9 @@ Common errors:
 ### Python Class Implementation
 
 Implement a Python class with the required methods:
+
+{: .note }
+> **Bonus**: When you implement `call_tool()` and `evaluate()`, you automatically get `cube/step()` for free. The CUBE runtime provides this convenience method by calling your two methods sequentially, so benchmark developers only need to implement the core functionality.
 
 ```python
 from typing import Any, Dict, List, Optional

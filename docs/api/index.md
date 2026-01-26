@@ -29,6 +29,7 @@ The agent-environment interaction layer. Combines MCP for actions and CUBE for e
 - `tools/call` - Execute an action
 - `resources/read` - Read observations and task descriptions
 - `cube/evaluation` - Get reward, termination, and info
+- `cube/step` - Execute action and evaluate in one call (convenience method)
 - `cube/reset` - Reset task to initial state
 - `cube/close` - Cleanup task resources
 
