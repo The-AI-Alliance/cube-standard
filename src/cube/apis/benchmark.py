@@ -92,7 +92,7 @@ class TaskStatus(BaseModel):
     session_id: str = Field(..., description="Session identifier")
     task_id: str = Field(..., description="Task identifier")
     status: TaskStatusEnum = Field(..., description="Task status (running, stopped, error)")
-    created_at: datetime = Field(..., description="Session creation timestamp")
+    created_at: datetime.datetime = Field(..., description="Session creation timestamp")
     other: dict[str, Any] = Field(default_factory=dict, description="Additional status information")
     # TODO: discuss if we add step_count, last_updated, resource_usage, etc. or we keep this in the other field
 
