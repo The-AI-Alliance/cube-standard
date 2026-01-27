@@ -1,0 +1,479 @@
+"""
+Core type definitions for CUBE.
+
+This module contains shared type definitions that are used across both
+core domain logic and API schemas. Separating these types prevents
+circular import dependencies.
+"""
+
+import datetime
+import importlib
+from typing import Any, Callable, Self
+from enum import Enum
+from pydantic import BaseModel, Field, ConfigDict, model_serializer, model_validator
+
+from mcp.types import (
+    Resource as MCPResource,
+    TextContent as MCPTextContent,
+    BlobResourceContents as MCPBlobResource,
+    TextResourceContents as MCPTextResource,
+    Tool as MCPTool,
+)
+
+
+# =============================================================================
+# Base Classes
+# =============================================================================
+
+
+class TypedBaseModel(BaseModel):
+    """
+    Base class for Pydantic models that can save and load their type information.
+
+    When serialized, includes `_type` field with the fully qualified class name.
+    When deserialized, uses `_type` to instantiate the correct subclass.
+
+    This allows saving/loading configs where the field type is an abstract base class
+    but the actual value is a concrete subclass (e.g., AgentConfig -> ReactAgentConfig).
+    """
+
+    @model_serializer(mode="wrap")
+    def _serialize_with_type(self, handler):
+        data = handler(self)
+        data["_type"] = f"{self.__class__.__module__}.{self.__class__.__name__}"
+        return data
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _deserialize_with_type(cls, value, handler):
+        if isinstance(value, dict) and "_type" in value:
+            type_path = value.pop("_type")
+            module_name, class_name = type_path.rsplit(".", 1)
+            module = importlib.import_module(module_name)
+            actual_cls = getattr(module, class_name)
+            return actual_cls.model_validate(value)
+        return handler(value)
+
+
+# =============================================================================
+# Core Domain Models
+# =============================================================================
+
+
+class Action(TypedBaseModel):
+    """
+    A class representing a function call.
+
+    Attributes:
+        id (str): The identifier for the tool call.
+        name (str): The name of the function being called.
+        arguments (Any): The arguments to be passed to the function.
+    """
+
+    id: str | None = None
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class Content(TypedBaseModel):
+    """
+    Represents a piece of content in an observation.
+
+    This is CUBE's domain model for observation content. While MCP has TextContent,
+    ImageContent, etc., CUBE uses a simpler unified Content model since observations
+    may contain arbitrary data types beyond MCP's content types.
+
+    For MCP protocol responses (tool results, resources), use MCP's content types directly.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    type: str = Field(default="text", description="Content type (text, image, etc.)")
+    tool_call_id: str | None = None  # content could be result of a tool call
+    name: str | None = None  # optional name of the content
+    data: str | bytes
+
+
+class Observation(TypedBaseModel):
+    """Represents an observation from the environment."""
+
+    contents: list[Content] = Field(default_factory=list)
+
+    @classmethod
+    def from_text(cls, text: str) -> Self:
+        return cls(contents=[Content(data=text)])
+
+    def __add__(self, other: Self) -> Self:
+        self.contents += other.contents
+        return self
+
+
+class EnvironmentOutput(TypedBaseModel):
+    """Represents the result of an environment step."""
+
+    obs: Observation
+    reward: float = 0.0
+    terminated: bool = False
+    truncated: bool = False
+    step: int = 0
+    info: dict = Field(default_factory=dict)
+
+
+# =============================================================================
+# Benchmark-Level API Schemas
+# =============================================================================
+
+
+class BenchmarkMetadata(BaseModel):
+    """
+    Metadata describing a benchmark.
+
+    Used by:
+    - Core: Benchmark.metadata attribute
+    - API endpoint: cube/info
+    """
+
+    name: str = Field(..., description="Benchmark name")
+    version: str = Field(..., description="Benchmark version")
+    description: str = Field(..., description="Benchmark description")
+    authors: list[str] = Field(default_factory=list, description="List of benchmark author names")
+    license: str = Field(default="", description="Benchmark license")
+    requirements: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Hardware requirements to install and run the benchmark"
+    )
+    num_tasks: int = Field(default=0, description="Total number of tasks")
+    other: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    tags: list[str] = Field(default_factory=list, description="Benchmark tags")
+
+
+# =============================================================================
+# cube/tasks endpoint
+# =============================================================================
+
+
+class TaskRequest(BaseModel):
+    """
+    Request schema for cube/tasks endpoint.
+
+    Used by: cube/tasks (parameters for filtering results)
+    """
+
+    task_id: str | None = Field(
+        default=None, description="Unique task identifier. If None, fetches all task"
+    )
+    offset: int = Field(default=0, description="Offset for pagination")
+    limit: int = Field(
+        default=-1, description="Limit for number od tasks to return. -1 means no limit"
+    )
+    filter: dict[str, Any] = Field(
+        default_factory=dict, description="Filter criteria for tasks"
+    )
+
+
+class TaskMetadata(BaseModel):
+    """
+    Metadata describing a task.
+
+    Used by:
+    - Core: Task.metadata attribute
+    - API endpoint: cube/tasks (list of TaskMetadata in response)
+    """
+
+    id: str = Field(..., description="Unique task identifier")
+    seed: int | None = Field(default=None, description="Random seed for the task, if applicable")
+    description: str = Field(default="", description="Task description")
+    tags: list[str] = Field(default_factory=list, description="List of task tags")
+    max_steps: int | None = Field(default=None, description="Maximum number of steps allowed")
+    difficulty: str | None = Field(default=None, description="Task difficulty level")
+    domain: str | None = Field(default=None, description="Task domain (e.g., 'web', 'coding')")
+    other: dict[str, Any] = Field(default_factory=dict, description="Additional task metadata")
+
+
+class TaskListResponse(BaseModel):
+    """
+    Response schema for cube/tasks endpoint.
+
+    Used by: cube/tasks (list of tasks with pagination info)
+    """
+
+    tasks: list[TaskMetadata] = Field(..., description="List of tasks")
+    total: int = Field(..., description="Total number of tasks available")
+    offset: int = Field(default=0, description="Offset used for pagination")
+    limit: int = Field(default=-1, description="Limit used for pagination")
+
+
+# =============================================================================
+# cube/spawn endpoint
+# =============================================================================
+
+
+class SpawnRequest(BaseModel):
+    """
+    Request schema for cube/spawn endpoint.
+
+    Used by: cube/spawn
+    """
+
+    task_id: str = Field(..., description="Task ID to spawn")
+    seed: int | None = Field(
+        default=None, description="Random seed for reproducibility"
+    )
+
+
+class SpawnResponse(BaseModel):
+    """
+    Response schema for cube/spawn endpoint.
+
+    Used by: cube/spawn
+    """
+
+    url: str = Field(..., description="URL endpoint for the spawned task session")
+    session_id: str = Field(..., description="Unique session identifier")
+    other: dict[str, Any] = Field(
+        default_factory=dict, description="Additional session information"
+    )
+    # TODO: discuss adding fields such as spawned_time, expiration_time, etc. or keep them in other
+
+
+# =============================================================================
+# cube/status endpoint
+# =============================================================================
+
+
+class TaskStatusEnum(str, Enum):
+    """
+    Status of a running task session.
+
+    Used by: cube/status
+    """
+
+    running = "running"
+    stopped = "stopped"
+    error = "error"
+
+
+class StatusRequest(BaseModel):
+    """
+    Request schema for cube/status endpoint.
+
+    Used by: cube/status (parameters for filtering results)
+    """
+
+    session_id: str | None = Field(
+        default=None,
+        description="Unique task session identifier. If None, fetches all running tasks",
+    )
+    offset: int = Field(default=0, description="Offset for pagination")
+    limit: int = Field(
+        default=-1, description="Limit for number od tasks to return. -1 means no limit"
+    )
+    filter: dict[str, Any] = Field(
+        default_factory=dict, description="Filter criteria for tasks"
+    )
+
+
+class TaskStatus(BaseModel):
+    """
+    Status information for a running task session.
+
+    Used by:
+    - Core: For tracking session state
+    - API endpoint: cube/status (in response)
+    """
+
+    session_id: str = Field(..., description="Session identifier")
+    task_id: str = Field(..., description="Task identifier")
+    status: TaskStatusEnum = Field(..., description="Task status (running, stopped, error)")
+    created_at: datetime.datetime = Field(..., description="Session creation timestamp")
+    step_count: int = Field(default=0, description="Number of steps executed")
+    last_updated: datetime.datetime | None = Field(default=None, description="Last update timestamp")
+    other: dict[str, Any] = Field(default_factory=dict, description="Additional status information")
+
+
+class StatusResponse(BaseModel):
+    """
+    Response schema for cube/status endpoint.
+
+    Used by: cube/status
+    """
+
+    tasks: list[TaskStatus] = Field(..., description="List of running task statuses")
+
+
+# =============================================================================
+# cube/shutdown endpoint
+# =============================================================================
+
+
+class ShutdownRequest(BaseModel):
+    """
+    Request schema for cube/shutdown endpoint.
+
+    Used by: cube/shutdown
+    """
+
+    session_id: str | None = Field(
+        default=None, description="Specific session to shutdown (omit for all)"
+    )
+
+
+class ShutdownResponse(BaseModel):
+    """
+    Response schema for cube/shutdown endpoint.
+
+    Used by: cube/shutdown
+    """
+
+    success: bool = Field(..., description="Whether shutdown was successful")
+    cleaned: list[str] = Field(
+        ..., description="List of session IDs that were cleaned up"
+    )
+
+
+# =============================================================================
+# Task-Level API Schemas (MCP-compatible)
+# =============================================================================
+
+
+class ToolListResponse(BaseModel):
+    """
+    Response schema for listing tools.
+
+    Used by: MCP tools/list
+    """
+
+    tools: list[MCPTool] = Field(
+        ..., description="List of available tools (MCP Tool type)"
+    )
+
+
+class ToolCallRequest(BaseModel):
+    """
+    Request schema to call a tool.
+
+    Used by: MCP tools/call
+    """
+
+    name: str = Field(..., description="Name of the tool to call")
+    arguments: dict[str, Any] = Field(
+        default_factory=dict, description="Tool arguments"
+    )
+
+
+class ToolCallResponse(BaseModel):
+    """
+    Response schema from calling a tool.
+
+    Used by: MCP tools/call
+    This wraps MCP's CallToolResult. For direct MCP usage, prefer CallToolResult.
+    """
+
+    content: list[MCPTextContent] = Field(
+        ..., description="Response content (MCP TextContent)"
+    )
+    isError: bool = Field(default=False, description="Whether an error occurred")
+
+
+class ResourceListResponse(BaseModel):
+    """
+    Response schema for listing resources.
+
+    Used by: MCP resources/list
+    Uses MCP's Resource type directly for resource metadata.
+    """
+
+    resources: list[MCPResource] = Field(
+        ..., description="List of available resources (MCP Resource type)"
+    )
+
+
+class ResourceReadResponse(BaseModel):
+    """
+    Response schema for reading a resource.
+
+    Used by: MCP resources/read
+    MCP specifies that resource read responses have a 'contents' array.
+    Each content item can be TextResourceContents or BlobResourceContents.
+    """
+
+    contents: list[MCPTextResource | MCPBlobResource] = Field(
+        ..., description="Array of resource content (MCP types)"
+    )
+
+
+# =============================================================================
+# cube/reset endpoint
+# =============================================================================
+
+
+class ResetRequest(BaseModel):
+    """
+    Request schema to reset a task.
+
+    Used by: cube/reset
+    """
+
+    seed: int | None = Field(default=None, description="Random seed for reset")
+
+
+class ResetResponse(BaseModel):
+    """
+    Response schema from resetting a task.
+
+    Used by: cube/reset
+    """
+
+    observation: Observation = Field(..., description="Initial observation after reset")
+    info: dict[str, Any] = Field(
+        default_factory=dict, description="Additional reset info"
+    )
+
+
+# =============================================================================
+# cube/close endpoint
+# =============================================================================
+
+
+class CloseResponse(BaseModel):
+    """
+    Response schema from closing a task.
+
+    Used by: cube/close
+    """
+
+    success: bool = Field(..., description="Whether close was successful")
+    profiling: dict[str, Any] | None = Field(
+        default=None, description="Optional profiling data"
+    )
+
+
+# =============================================================================
+# cube/step endpoint (CUBE extension)
+# =============================================================================
+
+
+class StepRequest(BaseModel):
+    """
+    Request schema to execute a step (tool call + evaluation).
+
+    Used by: cube/step (CUBE extension)
+    """
+
+    name: str = Field(..., description="Name of the tool to call")
+    arguments: dict[str, Any] = Field(
+        default_factory=dict, description="Tool arguments"
+    )
+
+
+class StepResponse(BaseModel):
+    """
+    Response schema from executing a step.
+
+    Used by: cube/step (combines tool result and evaluation)
+    """
+
+    tool_result: ToolCallResponse = Field(..., description="Result from tool execution")
+    evaluation: EnvironmentOutput = Field(
+        ..., description="Environment state after tool execution"
+    )

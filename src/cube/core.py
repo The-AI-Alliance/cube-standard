@@ -1,94 +1,14 @@
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Protocol, Self, TypeAlias
+from typing import Any, Callable, Protocol, TypeAlias
 
-import litellm.utils
-from pydantic import ConfigDict, Field
+from mcp.types import Tool as MCPTool
 
-from cube.apis.benchmark import TaskMetadata, TaskStatus
-from cube.base import TypedBaseModel
+from cube.types import (
+    Observation,
+    TaskMetadata,
+    TaskStatus,
+)
 
-
-class ActionSchema(TypedBaseModel):
-    """
-    Represents a function specification with a type, name, description and arguments.
-    Compatible with OAI, Anthropic and VLLM definitions.
-
-    Attributes:
-        type (Literal["function"]): The type of the tool, which is always "function".
-        name (str): The name of the function.
-        description (str): A brief description of the function.
-        parameters (dict): A dictionary containing the parameters of the function.
-    """
-
-    name: str
-    description: str
-    parameters: dict = Field(default_factory=dict)
-
-    @classmethod
-    def from_function(cls, func: Callable) -> Self:
-        """Create tool object from python function."""
-        schema = litellm.utils.function_to_dict(func)
-        return cls(**schema)
-
-    def as_dict(self) -> dict[str, Any]:
-        """Produce dict that could be passed as tool schema into LLM api."""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
-        }
-
-
-class Action(TypedBaseModel):
-    """
-    A class representing a function call.
-
-    Attributes:
-        id (str): The identifier for the tool call.
-        name (str): The name of the function being called.
-        arguments (Any): The arguments to be passed to the function.
-    """
-
-    id: str | None = None
-    name: str
-    arguments: Dict[str, Any] = Field(default_factory=dict)
-
-
-class Content(TypedBaseModel):
-    """Represents a piece of content in an observation."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    tool_call_id: str | None = None  # content could be result of a tool call
-    name: str | None = None  # optional name of the content
-    data: str | bytes
-
-
-class Observation(TypedBaseModel):
-    """Represents an observation from the environment."""
-
-    contents: list[Content] = Field(default_factory=list)
-
-    @classmethod
-    def from_text(cls, text: str) -> Self:
-        return cls(contents=[Content(data=text)])
-
-    def __add__(self, other: Self) -> Self:
-        self.contents += other.contents
-        return self
-
-
-class EnvironmentOutput(TypedBaseModel):
-    """Represents the result of an environment step."""
-
-    obs: Observation
-    reward: float = 0.0
-    done: bool = False
-    step: int = 0
-    info: dict = Field(default_factory=dict)
 
 
 class ActionSpace(Protocol):
@@ -136,7 +56,7 @@ class Task(ABC):
         pass
 
     @abstractmethod
-    def filter_actions(self, actions: list[ActionSchema]) -> list[ActionSchema]:
+    def filter_actions(self, actions: list[MCPTool]) -> list[MCPTool]:
         """Allows the task to whitelist subset of all the actions provided by the environment."""
         pass
 

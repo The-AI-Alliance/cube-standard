@@ -1,8 +1,18 @@
 from abc import ABC, abstractmethod
 
-
-from cube.apis.benchmark import BenchmarkMetadata, ShutdownRequest, ShutdownResponse, SpawnRequest, SpawnResponse, StatusRequest, StatusResponse, TaskListResponse, TaskRequest
-from cube.core import Task, TypedBaseModel
+from cube.types import (
+    BenchmarkMetadata,
+    ShutdownRequest,
+    ShutdownResponse,
+    SpawnRequest,
+    SpawnResponse,
+    StatusRequest,
+    StatusResponse,
+    TaskListResponse,
+    TaskRequest,
+    TypedBaseModel,
+)
+from cube.core import Task
 from cube.environment import EnvConfig
 from cube.tool import ToolConfig
 
