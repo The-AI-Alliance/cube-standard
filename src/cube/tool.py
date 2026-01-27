@@ -1,10 +1,17 @@
+"""
+@Nicolas, Not sure why we need this for CUBE specifications after shifting to MCP python API.    
+"""
+
+
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable, List, Type
 
 from typing_extensions import get_protocol_members
+from mcp.types import Tool as MCPTool
+import litellm.utils
 
-from cube.core import Action, ActionSchema, ActionSpace, Content, Observation, TypedBaseModel
+from cube.types import TypedBaseModel, Action, Content, Observation
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +32,7 @@ class AbstractTool(ABC):
         pass
 
     @abstractmethod
-    def get_actions(self) -> List[ActionSchema]:
+    def get_actions(self) -> List[MCPTool]:
         """Returns list of actions supported by that tool."""
         pass
 
@@ -67,7 +74,15 @@ class Tool(AbstractTool):
             logger.exception(action_result)
         return Observation(contents=[Content(data=action_result, tool_call_id=action.id)])
 
-    def get_actions(self) -> List[ActionSchema]:
+    def get_actions(self) -> List[MCPTool]:
         """Returns list of actions supported by that tool."""
         action_names = get_protocol_members(self.action_space)
-        return [ActionSchema.from_function(getattr(self, name)) for name in action_names]
+        tools = []
+        for name in action_names:
+            func = getattr(self, name)
+            schema = litellm.utils.function_to_dict(func)
+            # litellm returns 'parameters', rename to 'inputSchema' for MCP compliance
+            if "parameters" in schema:
+                schema["inputSchema"] = schema.pop("parameters")
+            tools.append(MCPTool(**schema))
+        return tools

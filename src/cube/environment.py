@@ -1,10 +1,18 @@
 from abc import ABC, abstractmethod
 from typing import List
 
-from cube.core import Action, ActionSchema, EnvironmentOutput, Observation, Task
-from cube.tool import AbstractTool, ToolConfig
+from mcp.types import Tool as MCPTool
 
-STOP_ACTION = ActionSchema(name="final_step", description="Stop the task execution.")
+from cube.types import Action, EnvironmentOutput, Observation
+from cube.tool import AbstractTool, ToolConfig
+from cube.core import Task
+
+STOP_ACTION = MCPTool(
+    name="final_step",
+    description="Stop the task execution.",
+    inputSchema={"type": "object", "properties": {}},
+)
+
 
 class AbstractEnvironment(ABC):
     """Abstract interface for environments that agents interact with."""
@@ -19,7 +27,7 @@ class AbstractEnvironment(ABC):
         pass
 
     @abstractmethod
-    def get_actions(self) -> List[ActionSchema]:
+    def get_actions(self) -> List[MCPTool]:
         """Returns list of actions supported by that environment."""
         pass
 
@@ -31,6 +39,7 @@ class AbstractEnvironment(ABC):
     def close(self) -> None:
         """Optional clean up environment resources."""
         pass
+
 
 class EnvConfig:
     """Runtime configuration for the Environment."""
@@ -51,7 +60,7 @@ class Environment(AbstractEnvironment):
         self.task = task
         self.tool = tool
 
-    def get_actions(self) -> list[ActionSchema]:
+    def get_actions(self) -> list[MCPTool]:
         return self.tool.get_actions()
 
     def reset(self) -> EnvironmentOutput:
@@ -63,22 +72,39 @@ class Environment(AbstractEnvironment):
     def step(self, action: Action | list[Action]) -> EnvironmentOutput:
         """Execute a single or multiple actions using the appropriate tools, combine observations."""
         actions = [action] if isinstance(action, Action) else action
-        done = False
+        terminated = False
+        truncated = False
         reward = 0.0
         info = {}
         tool_results: list[Observation] = []
+
         for action in actions:
             if action.name == STOP_ACTION.name and self.task.accept_agent_stop():
-                tool_results.append(Observation.from_text("Task finished by the agent."))
-                done = True
+                tool_results.append(
+                    Observation.from_text("Task finished by the agent.")
+                )
+                terminated = True
                 break
             tool_results.append(self.tool.execute_action(action))
+
         obs = Observation(contents=[c for o in tool_results for c in o.contents])
-        done = done or self.task.finished()
-        if self.task.validate_per_step or done:
+        terminated = terminated or self.task.finished()
+
+        # TODO: Add truncation logic based on step limits or time limits
+        # For now, truncated remains False. Benchmarks can set this via info dict
+        # or by extending Task with a check_truncation() method
+
+        if self.task.validate_per_step or terminated:
             reward, info = self.task.validate_task(obs)
+
         obs = self.task.obs_postprocess(obs)
-        return EnvironmentOutput(obs=obs, reward=reward, info=info, done=done)
+        return EnvironmentOutput(
+            obs=obs,
+            reward=reward,
+            terminated=terminated,
+            truncated=truncated,
+            info=info,
+        )
 
     def close(self):
         """Clean up resources used by all tools and the task in the right order."""
