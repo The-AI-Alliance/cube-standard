@@ -181,7 +181,7 @@ All APIs use standard JSON types with optional JSON Schema validation:
 Python implementations should use type hints:
 
 ```python
-from typing import Dict, List, Optional
+from typing import Optional
 from dataclasses import dataclass
 
 @dataclass
@@ -189,7 +189,7 @@ class TaskInfo:
     id: str
     description: str
     difficulty: Optional[float] = None
-    tags: List[str] = None
+    tags: list[str] = None
 ```
 
 ## Next Steps

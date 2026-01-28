@@ -5,12 +5,13 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable, List, Type
+from typing import Any, Callable, Type
 
 from typing_extensions import get_protocol_members
 from mcp.types import Tool as MCPTool
 import litellm.utils
 
+from cube.core import ActionSpace
 from cube.types import TypedBaseModel, Action, Content, Observation
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ class AbstractTool(ABC):
         pass
 
     @abstractmethod
-    def get_actions(self) -> List[MCPTool]:
+    def get_actions(self) -> list[MCPTool]:
         """Returns list of actions supported by that tool."""
         pass
 
@@ -74,7 +75,7 @@ class Tool(AbstractTool):
             logger.exception(action_result)
         return Observation(contents=[Content(data=action_result, tool_call_id=action.id)])
 
-    def get_actions(self) -> List[MCPTool]:
+    def get_actions(self) -> list[MCPTool]:
         """Returns list of actions supported by that tool."""
         action_names = get_protocol_members(self.action_space)
         tools = []

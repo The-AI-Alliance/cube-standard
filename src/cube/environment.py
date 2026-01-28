@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import List
 
 from mcp.types import Tool as MCPTool
 
@@ -27,7 +26,7 @@ class AbstractEnvironment(ABC):
         pass
 
     @abstractmethod
-    def get_actions(self) -> List[MCPTool]:
+    def get_actions(self) -> list[MCPTool]:
         """Returns list of actions supported by that environment."""
         pass
 

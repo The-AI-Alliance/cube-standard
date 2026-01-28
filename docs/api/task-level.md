@@ -597,14 +597,14 @@ Implement a Python class with the required methods:
 > **Bonus**: When you implement `call_tool()` and `evaluate()`, you automatically get `cube/step()` for free. The CUBE runtime provides this convenience method by calling your two methods sequentially, so benchmark developers only need to implement the core functionality.
 
 ```python
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from dataclasses import dataclass
 
 @dataclass
 class ToolSchema:
     name: str
     description: str
-    input_schema: Dict[str, Any]
+    input_schema: dict[str, Any]
 
 @dataclass
 class Resource:
@@ -623,7 +623,7 @@ class MyBenchmarkTask:
         self._env = self._create_environment()
 
     # MCP Methods
-    def list_tools(self) -> List[ToolSchema]:
+    def list_tools(self) -> list[ToolSchema]:
         """Return available tools/actions."""
         return [
             ToolSchema(
@@ -640,7 +640,7 @@ class MyBenchmarkTask:
             )
         ]
 
-    def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Execute a tool/action."""
         if name == "click":
             x, y = arguments["x"], arguments["y"]
@@ -655,7 +655,7 @@ class MyBenchmarkTask:
                 "isError": True
             }
 
-    def list_resources(self) -> List[Resource]:
+    def list_resources(self) -> list[Resource]:
         """Return available resources."""
         return [
             Resource(
@@ -672,7 +672,7 @@ class MyBenchmarkTask:
             )
         ]
 
-    def read_resource(self, uri: str) -> Dict[str, Any]:
+    def read_resource(self, uri: str) -> dict[str, Any]:
         """Read a specific resource."""
         if uri == "task://description":
             return {
@@ -694,7 +694,7 @@ class MyBenchmarkTask:
             raise ResourceNotFoundError(f"Resource not found: {uri}")
 
     # CUBE Methods
-    def evaluate(self) -> Dict[str, Any]:
+    def evaluate(self) -> dict[str, Any]:
         """Get current evaluation state."""
         obs = self._env.get_observation()
         reward = self._env.get_reward()
@@ -712,7 +712,7 @@ class MyBenchmarkTask:
             }
         }
 
-    def reset(self, seed: Optional[int] = None) -> Dict[str, Any]:
+    def reset(self, seed: Optional[int] = None) -> dict[str, Any]:
         """Reset task to initial state."""
         if seed is not None:
             self.seed = seed
