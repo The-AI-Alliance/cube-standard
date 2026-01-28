@@ -5,16 +5,23 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Type
+from typing import Any, Callable, Type, TypeAlias, Protocol
 
 from typing_extensions import get_protocol_members
 from mcp.types import Tool as MCPTool
 import litellm.utils
 
-from cube.core import ActionSpace
 from cube.types import TypedBaseModel, Action, Content, Observation
 
 logger = logging.getLogger(__name__)
+
+class ActionSpace(Protocol):
+    """Base class for action spaces."""
+
+    pass
+
+
+ActionSubset: TypeAlias = tuple[Callable, ...]
 
 
 class AbstractTool(ABC):

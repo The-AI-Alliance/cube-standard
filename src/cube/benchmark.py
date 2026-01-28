@@ -12,7 +12,7 @@ from cube.types import (
     TaskRequest,
     TypedBaseModel,
 )
-from cube.core import Task
+from cube.task import Task
 from cube.environment import EnvConfig
 from cube.tool import ToolConfig
 

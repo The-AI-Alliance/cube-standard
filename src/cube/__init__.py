@@ -3,7 +3,7 @@
 __version__ = "0.1.0"
 
 # Core abstractions
-from cube.core import Task
+from cube.task import Task
 from cube.types import (
     Action,
     Observation,

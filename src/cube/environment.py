@@ -4,7 +4,7 @@ from mcp.types import Tool as MCPTool
 
 from cube.types import Action, EnvironmentOutput, Observation
 from cube.tool import AbstractTool, ToolConfig
-from cube.core import Task
+from cube.task import Task
 
 STOP_ACTION = MCPTool(
     name="final_step",
