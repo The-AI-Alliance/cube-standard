@@ -8,7 +8,7 @@ circular import dependencies.
 
 import datetime
 import importlib
-from typing import Any, Callable, Self
+from typing import Any, Self
 from enum import Enum
 from pydantic import BaseModel, Field, ConfigDict, model_serializer, model_validator
 
