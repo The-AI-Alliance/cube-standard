@@ -24,15 +24,15 @@ from cube.types import (
     CloseResponse,
     ResetRequest,
     ResetResponse,
-    ResourceListResponse,
-    ResourceReadResponse,
+    MCPListResourcesResult,
+    MCPReadResourceResult,
     StepRequest,
     StepResponse,
     TaskMetadata,
     TaskStatus,
-    ToolCallRequest,
-    ToolCallResponse,
-    ToolListResponse,
+    MCPCallToolRequest,
+    MCPCallToolResult,
+    MCPListToolsResult,
 )
 from cube.types import Action, EnvironmentOutput, Observation
 from cube.environment import Environment
@@ -135,7 +135,7 @@ class TaskSession:
         >>>
         >>> # MCP protocol
         >>> tools = session.list_tools()
-        >>> result = session.call_tool(ToolCallRequest(tool_name="click", arguments={"x": 10}))
+        >>> result = session.call_tool(MCPCallToolRequest(tool_name="click", arguments={"x": 10}))
         >>>
         >>> # CUBE extensions
         >>> state = session.evaluate()
@@ -164,12 +164,12 @@ class TaskSession:
     # MCP Protocol Methods
     # =============================================================================
 
-    def list_tools(self) -> ToolListResponse:
+    def list_tools(self) -> MCPListToolsResult:
         """
         List available tools/actions for this task (MCP tools/list).
 
         Returns:
-            ToolListResponse with list of available ActionSchema objects
+            MCPListToolsResult with list of available ActionSchema objects
 
         Raises:
             TaskClosedException: If the session has been closed
@@ -180,17 +180,17 @@ class TaskSession:
         actions = self.env.get_actions()
         filtered_actions = self.env.task.filter_actions(actions)
 
-        return ToolListResponse(tools=filtered_actions)
+        return MCPListToolsResult(tools=filtered_actions)
 
-    def call_tool(self, request: ToolCallRequest) -> ToolCallResponse:
+    def call_tool(self, request: MCPCallToolRequest) -> MCPCallToolResult:
         """
         Execute a tool/action (MCP tools/call).
 
         Args:
-            request: ToolCallRequest with tool name and arguments
+            request: MCPCallToolRequest with tool name and arguments
 
         Returns:
-            ToolCallResponse with content and isError flag
+            MCPCallToolResult with content and isError flag
 
         Raises:
             TaskClosedException: If the session has been closed
@@ -217,7 +217,7 @@ class TaskSession:
                 for c in result.obs.contents
             ]
 
-            return ToolCallResponse(content=mcp_content, isError=False)
+            return MCPCallToolResult(content=mcp_content, isError=False)
 
         except Exception as e:
             logger.exception(f"Tool execution failed: {e}")
@@ -226,9 +226,9 @@ class TaskSession:
                     type="text", text=f"Error executing tool {request.name}: {str(e)}"
                 )
             ]
-            return ToolCallResponse(content=error_content, isError=True)
+            return MCPCallToolResult(content=error_content, isError=True)
 
-    def list_resources(self) -> ResourceListResponse:
+    def list_resources(self) -> MCPListResourcesResult:
         """
         List available resources (MCP resources/list).
 
@@ -237,7 +237,7 @@ class TaskSession:
         - obs://current - Current observation state
 
         Returns:
-            ResourceListResponse with list of available resources
+            MCPListResourcesResult with list of available resources
 
         Raises:
             TaskClosedException: If the session has been closed
@@ -265,9 +265,9 @@ class TaskSession:
             additional_resources = self.env.task.get_resources()
             resources.extend(additional_resources)
 
-        return ResourceListResponse(resources=resources)
+        return MCPListResourcesResult(resources=resources)
 
-    def read_resource(self, uri: str) -> ResourceReadResponse:
+    def read_resource(self, uri: str) -> MCPReadResourceResult:
         """
         Read a specific resource by URI (MCP resources/read).
 
@@ -279,7 +279,7 @@ class TaskSession:
             uri: Resource URI to read
 
         Returns:
-            ResourceReadResponse with resource content
+            MCPReadResourceResult with resource content
 
         Raises:
             TaskClosedException: If the session has been closed
@@ -290,7 +290,7 @@ class TaskSession:
 
         if uri == "task://description":
             description = self.env.task.metadata.description
-            return ResourceReadResponse(
+            return MCPReadResourceResult(
                 contents=[
                     TextResourceContents(
                         uri=uri, mimeType="text/plain", text=description
@@ -300,7 +300,7 @@ class TaskSession:
 
         if uri == "obs://current":
             if self.last_state is None:
-                return ResourceReadResponse(
+                return MCPReadResourceResult(
                     contents=[
                         TextResourceContents(
                             uri=uri,
@@ -322,7 +322,7 @@ class TaskSession:
                     for c in self.last_state.obs.contents
                 ]
             }
-            return ResourceReadResponse(
+            return MCPReadResourceResult(
                 contents=[
                     TextResourceContents(
                         uri=uri, mimeType="application/json", text=json.dumps(obs_data)
@@ -405,7 +405,7 @@ class TaskSession:
         if self.is_closed:
             raise TaskClosedException(self.session_id)
 
-        tool_request = ToolCallRequest(name=request.name, arguments=request.arguments)
+        tool_request = MCPCallToolRequest(name=request.name, arguments=request.arguments)
         tool_result = self.call_tool(tool_request)
 
         evaluation = self.evaluate()

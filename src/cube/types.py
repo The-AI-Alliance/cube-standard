@@ -12,14 +12,6 @@ from typing import Any, Self
 from enum import Enum
 from pydantic import BaseModel, Field, ConfigDict, model_serializer, model_validator
 
-from mcp.types import (
-    Resource as MCPResource,
-    TextContent as MCPTextContent,
-    BlobResourceContents as MCPBlobResource,
-    TextResourceContents as MCPTextResource,
-    Tool as MCPTool,
-)
-
 
 # =============================================================================
 # Base Classes

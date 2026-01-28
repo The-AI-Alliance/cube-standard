@@ -630,10 +630,7 @@ Implement a Python class with the required methods:
 
 ```python
 from typing import Any, Optional
-from mcp.types import (
-    Tool, Resource, CallToolResult, ListToolsResult, ListResourcesResult,
-    ReadResourceResult, TextResourceContents, BlobResourceContents, TextContent
-)
+from mcp.types import Tool, Resource, CallToolResult, ListToolsResult, ListResourcesResult, ReadResourceResult, TextResourceContents, BlobResourceContents
 
 class MyBenchmarkTask:
     """CUBE-compliant task implementation."""
@@ -670,12 +667,12 @@ class MyBenchmarkTask:
             x, y = arguments["x"], arguments["y"]
             result = self._env.click(x, y)
             return CallToolResult(
-                content=[TextContent(type="text", text=result)],
+                content=[{"type": "text", "text": result}],
                 isError=False
             )
         else:
             return CallToolResult(
-                content=[TextContent(type="text", text=f"Unknown tool: {name}")],
+                content=[{"type": "text", "text": f"Unknown tool: {name}"}],
                 isError=True
             )
 
