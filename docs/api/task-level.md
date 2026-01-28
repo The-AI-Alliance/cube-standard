@@ -97,7 +97,7 @@ Discover the available actions (tools) for this task.
 tools = task.list_tools()
 for tool in tools:
     print(f"{tool.name}: {tool.description}")
-    print(f"  Parameters: {tool.input_schema}")
+    print(f"  Parameters: {tool.inputSchema}")
 ```
 
 ### `tools/call`
@@ -138,7 +138,7 @@ result = task.call_tool(
     arguments={"x": 150, "y": 200}
 )
 
-if result.is_error:
+if result.isError:
     print(f"Action failed: {result.content}")
 else:
     print(f"Success: {result.content}")
@@ -251,36 +251,47 @@ Get the current evaluation state: observation, reward, termination status, and m
 **Response:**
 ```json
 {
-  "observation": {
-    "type": "html",
-    "content": "<html>...</html>",
-    "screenshot": "data:image/png;base64,..."
-  },
-  "reward": 0.0,
-  "terminated": false,
-  "truncated": false,
-  "info": {
-    "step_count": 5,
-    "tokens_used": 1250,
-    "time_elapsed": 12.3
+  "response": {
+    "obs": {
+      "contents": [
+        {
+          "type": "text",
+          "data": "<html>...</html>"
+        }
+      ]
+    },
+    "reward": 0.0,
+    "terminated": false,
+    "truncated": false,
+    "step": 5,
+    "info": {
+      "tokens_used": 1250,
+      "time_elapsed": 12.3
+    }
   }
 }
 ```
 
 **Fields:**
 
-- `observation` (any): Current state observation. Format varies by benchmark (structured JSON, text, image, etc.)
-- `reward` (float): Reward received since last evaluation. Range typically [0, 1] but benchmark-specific.
-- `terminated` (bool): Whether the task reached a terminal state (success or failure)
-- `truncated` (bool): Whether the task was truncated due to time/step limits
-- `info` (object): Additional metadata (step count, performance metrics, debug info, etc.)
+The response contains an `EnvironmentOutput` object with:
+
+- `obs` (Observation): Current state observation containing a list of Content objects
+  - `contents` (list): List of content items, each with `type`, `data`, and optional `tool_call_id` and `name`
+- `reward` (float, default: 0.0): Reward received since last evaluation. Range typically [0, 1] but benchmark-specific.
+- `terminated` (bool, default: false): Whether the task reached a terminal state (success or failure)
+- `truncated` (bool, default: false): Whether the task was truncated due to time/step limits
+- `step` (int, default: 0): Current step count
+- `info` (object, default: {}): Additional metadata (performance metrics, debug info, etc.)
 
 **Python interface:**
 ```python
-state = task.evaluate()
+result = task.evaluate()
+state = result.response
 
-print(f"Observation: {state.observation}")
+print(f"Observation: {state.obs}")
 print(f"Reward: {state.reward}")
+print(f"Step: {state.step}")
 print(f"Done: {state.terminated or state.truncated}")
 
 if state.terminated:
@@ -312,26 +323,21 @@ Execute an action and immediately get the evaluation state. This is a convenienc
 **Response:**
 ```json
 {
-  "tool_result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "Clicked element: <button id='submit'>Submit</button>"
-      }
-    ],
-    "isError": false
-  },
-  "evaluation": {
-    "observation": {
-      "type": "html",
-      "content": "<html>...</html>",
-      "screenshot": "data:image/png;base64,..."
+  "response": {
+    "obs": {
+      "contents": [
+        {
+          "type": "text",
+          "tool_call_id": "call_123",
+          "data": "Clicked element: <button id='submit'>Submit</button>"
+        }
+      ]
     },
     "reward": 1.0,
     "terminated": true,
     "truncated": false,
+    "step": 6,
     "info": {
-      "step_count": 6,
       "success": true,
       "tokens_used": 1350,
       "time_elapsed": 13.5
@@ -342,15 +348,15 @@ Execute an action and immediately get the evaluation state. This is a convenienc
 
 **Fields:**
 
-- `tool_result` (object): The result from executing the tool (same format as `tools/call`)
-  - `content` (array): MCP content blocks returned by the tool
-  - `isError` (bool): Whether the tool execution failed
-- `evaluation` (object): The evaluation state after the tool execution (same format as `cube/evaluation`)
-  - `observation` (any): Current state observation
-  - `reward` (float): Reward received from this action
-  - `terminated` (bool): Whether the task reached a terminal state
-  - `truncated` (bool): Whether the task was truncated
-  - `info` (object): Additional metadata
+The response contains an `EnvironmentOutput` object with:
+
+- `obs` (Observation): Current state observation containing a list of Content objects
+  - `contents` (list): List of content items, including tool results with `tool_call_id` field
+- `reward` (float, default: 0.0): Reward received from this action
+- `terminated` (bool, default: false): Whether the task reached a terminal state
+- `truncated` (bool, default: false): Whether the task was truncated
+- `step` (int, default: 0): Current step count after the action
+- `info` (object, default: {}): Additional metadata
 
 **Python interface:**
 ```python
@@ -364,12 +370,14 @@ result = task.step(
     arguments={"x": 150, "y": 200}
 )
 
-print(f"Tool result: {result.tool_result.content}")
-print(f"Reward: {result.evaluation.reward}")
-print(f"Done: {result.evaluation.terminated or result.evaluation.truncated}")
+state = result.response
+print(f"Observation: {state.obs}")
+print(f"Reward: {state.reward}")
+print(f"Step: {state.step}")
+print(f"Done: {state.terminated or state.truncated}")
 
-if result.evaluation.terminated:
-    success = result.evaluation.info.get("success", False)
+if state.terminated:
+    success = state.info.get("success", False)
     print(f"Task completed: {'Success' if success else 'Failure'}")
 ```
 
@@ -405,14 +413,24 @@ Reset the task to its initial state. Optionally accepts a seed for reproducibili
 **Response:**
 ```json
 {
-  "observation": {
-    "type": "html",
-    "content": "<html>...</html>"
-  },
-  "info": {
-    "task_id": "click-button-v0",
-    "task_description": "Click the Submit button",
-    "seed": 42
+  "response": {
+    "obs": {
+      "contents": [
+        {
+          "type": "text",
+          "data": "<html>...</html>"
+        }
+      ]
+    },
+    "reward": 0.0,
+    "terminated": false,
+    "truncated": false,
+    "step": 0,
+    "info": {
+      "task_id": "click-button-v0",
+      "task_description": "Click the Submit button",
+      "seed": 42
+    }
   }
 }
 ```
@@ -420,11 +438,14 @@ Reset the task to its initial state. Optionally accepts a seed for reproducibili
 **Python interface:**
 ```python
 # Reset with specific seed for reproducibility
-state = task.reset(seed=42)
-print(f"Initial observation: {state.observation}")
+result = task.reset(seed=42)
+state = result.response
+print(f"Initial observation: {state.obs}")
+print(f"Initial step: {state.step}")
 
 # Reset with random seed
-state = task.reset()
+result = task.reset()
+state = result.response
 ```
 
 {: .note }
@@ -444,7 +465,14 @@ Cleanup task resources and shutdown the instance.
 
 **Response:**
 ```json
-{}
+{
+  "success": true,
+  "profiling": {
+    "total_steps": 15,
+    "total_time": 45.2,
+    "total_tokens": 5000
+  }
+}
 ```
 
 **Python interface:**
@@ -455,9 +483,11 @@ task.close()
 # Or use context manager (recommended)
 with benchmark.spawn(task_id="example") as task:
     # Use task
-    state = task.reset()
-    result = task.call_tool("click", {"x": 100, "y": 100})
-    eval_state = task.evaluate()
+    reset_result = task.reset()
+    state = reset_result.response
+    tool_result = task.call_tool("click", {"x": 100, "y": 100})
+    eval_result = task.evaluate()
+    eval_state = eval_result.response
     # Automatic cleanup on exit
 ```
 
@@ -488,14 +518,15 @@ benchmark = LocalRunner("cube-benchmark-example")
 task = benchmark.spawn(task_id="example-task", seed=42)
 
 # Reset to initial state
-state = task.reset()
+reset_result = task.reset()
+state = reset_result.response
 total_reward = 0
 done = False
 
 while not done:
     # Agent observes
     task_desc = task.read_resource("task://description")
-    current_obs = state.observation
+    current_obs = state.obs
 
     # Agent decides (your logic here)
     tools = task.list_tools()
@@ -508,7 +539,7 @@ while not done:
     )
 
     # Process results
-    state = result.evaluation
+    state = result.response
     total_reward += state.reward
     done = state.terminated or state.truncated
 
@@ -537,7 +568,8 @@ if result.isError:
     # Handle error...
 
 # Evaluate when needed
-state = task.evaluate()
+eval_result = task.evaluate()
+state = eval_result.response
 total_reward += state.reward
 ```
 
@@ -598,20 +630,10 @@ Implement a Python class with the required methods:
 
 ```python
 from typing import Any, Optional
-from dataclasses import dataclass
-
-@dataclass
-class ToolSchema:
-    name: str
-    description: str
-    input_schema: dict[str, Any]
-
-@dataclass
-class Resource:
-    uri: str
-    name: str
-    description: str
-    mime_type: str
+from mcp.types import (
+    Tool, Resource, CallToolResult, ListToolsResult, ListResourcesResult,
+    ReadResourceResult, TextResourceContents, BlobResourceContents, TextContent
+)
 
 class MyBenchmarkTask:
     """CUBE-compliant task implementation."""
@@ -623,73 +645,82 @@ class MyBenchmarkTask:
         self._env = self._create_environment()
 
     # MCP Methods
-    def list_tools(self) -> list[ToolSchema]:
+    def list_tools(self) -> ListToolsResult:
         """Return available tools/actions."""
-        return [
-            ToolSchema(
-                name="click",
-                description="Click at coordinates",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "x": {"type": "number"},
-                        "y": {"type": "number"}
-                    },
-                    "required": ["x", "y"]
-                }
-            )
-        ]
+        return ListToolsResult(
+            tools=[
+                Tool(
+                    name="click",
+                    description="Click at coordinates",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "x": {"type": "number"},
+                            "y": {"type": "number"}
+                        },
+                        "required": ["x", "y"]
+                    }
+                )
+            ]
+        )
 
-    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
         """Execute a tool/action."""
         if name == "click":
             x, y = arguments["x"], arguments["y"]
             result = self._env.click(x, y)
-            return {
-                "content": [{"type": "text", "text": result}],
-                "isError": False
-            }
-        else:
-            return {
-                "content": [{"type": "text", "text": f"Unknown tool: {name}"}],
-                "isError": True
-            }
-
-    def list_resources(self) -> list[Resource]:
-        """Return available resources."""
-        return [
-            Resource(
-                uri="task://description",
-                name="Task Description",
-                description="The goal of this task",
-                mime_type="text/plain"
-            ),
-            Resource(
-                uri="obs://current",
-                name="Current Observation",
-                description="Current environment state",
-                mime_type="application/json"
+            return CallToolResult(
+                content=[TextContent(type="text", text=result)],
+                isError=False
             )
-        ]
+        else:
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"Unknown tool: {name}")],
+                isError=True
+            )
 
-    def read_resource(self, uri: str) -> dict[str, Any]:
+    def list_resources(self) -> ListResourcesResult:
+        """Return available resources."""
+        return ListResourcesResult(
+            resources=[
+                Resource(
+                    uri="task://description",
+                    name="Task Description",
+                    description="The goal of this task",
+                    mimeType="text/plain"
+                ),
+                Resource(
+                    uri="obs://current",
+                    name="Current Observation",
+                    description="Current environment state",
+                    mimeType="application/json"
+                )
+            ]
+        )
+
+    def read_resource(self, uri: str) -> ReadResourceResult:
         """Read a specific resource."""
         if uri == "task://description":
-            return {
-                "contents": [{
-                    "uri": uri,
-                    "mimeType": "text/plain",
-                    "text": self._env.get_task_description()
-                }]
-            }
+            return ReadResourceResult(
+                contents=[
+                    TextResourceContents(
+                        uri=uri,
+                        mimeType="text/plain",
+                        text=self._env.get_task_description()
+                    )
+                ]
+            )
         elif uri == "obs://current":
-            return {
-                "contents": [{
-                    "uri": uri,
-                    "mimeType": "application/json",
-                    "json": self._env.get_observation()
-                }]
-            }
+            obs_data = self._env.get_observation()
+            return ReadResourceResult(
+                contents=[
+                    TextResourceContents(
+                        uri=uri,
+                        mimeType="application/json",
+                        text=str(obs_data)  # Serialize to JSON string
+                    )
+                ]
+            )
         else:
             raise ResourceNotFoundError(f"Resource not found: {uri}")
 
@@ -702,13 +733,15 @@ class MyBenchmarkTask:
         truncated = self._env.is_truncated()
 
         return {
-            "observation": obs,
-            "reward": reward,
-            "terminated": terminated,
-            "truncated": truncated,
-            "info": {
-                "step_count": self._env.step_count,
-                "success": self._env.is_successful() if terminated else False
+            "response": {
+                "obs": {"contents": [{"type": "text", "data": obs}]},
+                "reward": reward,
+                "terminated": terminated,
+                "truncated": truncated,
+                "step": self._env.step_count,
+                "info": {
+                    "success": self._env.is_successful() if terminated else False
+                }
             }
         }
 
@@ -720,16 +753,28 @@ class MyBenchmarkTask:
 
         obs = self._env.get_observation()
         return {
-            "observation": obs,
-            "info": {
-                "task_id": self.task_id,
-                "seed": self.seed
+            "response": {
+                "obs": {"contents": [{"type": "text", "data": obs}]},
+                "reward": 0.0,
+                "terminated": False,
+                "truncated": False,
+                "step": 0,
+                "info": {
+                    "task_id": self.task_id,
+                    "seed": self.seed
+                }
             }
         }
 
-    def close(self):
+    def close(self) -> dict[str, Any]:
         """Cleanup resources."""
+        profiling = self._env.get_profiling_data()
         self._env.cleanup()
+
+        return {
+            "success": True,
+            "profiling": profiling
+        }
 
     def _create_environment(self):
         """Initialize your actual environment."""

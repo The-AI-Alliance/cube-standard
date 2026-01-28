@@ -67,6 +67,7 @@ class WebArenaBenchmark(Benchmark):
         license="MIT",
         requirements={"ram_gb": 16},
         num_tasks=812,
+        tags=["web", "navigation"],
         other={}
     )
 
@@ -144,6 +145,7 @@ Get metadata about the benchmark including name, version, capabilities, and reso
     "gpu": false
   },
   "num_tasks": 812,
+  "tags": ["web", "navigation", "gui"],
   "other": {
     "paper_url": "https://arxiv.org/abs/...",
     "homepage_url": "https://webarena.dev",
@@ -190,9 +192,10 @@ info_data = response.json()
 - `version` (string, required): Semantic version
 - `description` (string, required): Benchmark description
 - `authors` (list[string], default: []): List of benchmark author names
-- `license` (string, required): Benchmark license
+- `license` (string, default: ""): Benchmark license
 - `requirements` (object, default: {}): Hardware requirements to install and run the benchmark
-- `num_tasks` (int, required): Total number of tasks
+- `num_tasks` (int, default: 0): Total number of tasks
+- `tags` (list[string], default: []): Benchmark tags
 - `other` (object, default: {}): Additional metadata (capabilities, URLs, estimated costs, etc.)
 
 ### `cube/tasks`
@@ -225,10 +228,11 @@ List available tasks with optional filtering and pagination.
       "seed": null,
       "description": "Add items to cart and complete checkout",
       "tags": ["e-commerce", "form-filling", "multi-step"],
+      "max_steps": 20,
+      "difficulty": "medium",
+      "domain": "e-commerce",
       "other": {
-        "difficulty": "medium",
         "estimated_steps": 15,
-        "domain": "e-commerce",
         "requires_payment": false
       }
     },
@@ -237,10 +241,11 @@ List available tasks with optional filtering and pagination.
       "seed": null,
       "description": "Search for specific product and add to wishlist",
       "tags": ["e-commerce", "search"],
+      "max_steps": 15,
+      "difficulty": "medium",
+      "domain": "e-commerce",
       "other": {
-        "difficulty": "medium",
-        "estimated_steps": 8,
-        "domain": "e-commerce"
+        "estimated_steps": 8
       }
     }
   ],
@@ -316,13 +321,15 @@ Each task in the response has:
 - `seed` (int | null, optional): Random seed for the task, if applicable
 - `description` (string, default: ""): Task description
 - `tags` (list[string], default: []): List of task tags
-- `other` (object, default: {}): Additional task metadata (difficulty, domain, estimated_steps, etc.)
+- `max_steps` (int | null, optional): Maximum number of steps allowed
+- `difficulty` (string | null, optional): Task difficulty level
+- `domain` (string | null, optional): Task domain (e.g., 'web', 'coding')
+- `other` (object, default: {}): Additional task metadata
 
-**Filter fields** are benchmark-specific and stored in the `other` field, but commonly include:
+**Filter fields** are benchmark-specific but commonly include:
 - `difficulty`: Task difficulty level
 - `domain`: Task domain/category
 - `tags`: List of task tags
-- `estimated_steps`: Approximate number of agent actions needed
 
 ### `cube/spawn`
 
@@ -424,6 +431,8 @@ Check the health and status of running task instances.
       "task_id": "shopping-cart-123",
       "status": "running",
       "created_at": "2026-01-22T10:30:00Z",
+      "step_count": 5,
+      "last_updated": "2026-01-22T10:32:25Z",
       "other": {
         "uptime_seconds": 145,
         "resource_usage": {
@@ -437,6 +446,8 @@ Check the health and status of running task instances.
       "task_id": "product-search-456",
       "status": "running",
       "created_at": "2026-01-22T09:15:00Z",
+      "step_count": 12,
+      "last_updated": "2026-01-22T09:29:52Z",
       "other": {
         "uptime_seconds": 892,
         "resource_usage": {
@@ -477,6 +488,9 @@ status = benchmark.get_task_status(request)
 for task_status in status.tasks:
     print(f"Task {task_status.session_id}: {task_status.status}")
     print(f"  Created at: {task_status.created_at}")
+    print(f"  Step count: {task_status.step_count}")
+    if task_status.last_updated:
+        print(f"  Last updated: {task_status.last_updated}")
     if 'uptime_seconds' in task_status.other:
         print(f"  Uptime: {task_status.other['uptime_seconds']}s")
     if 'resource_usage' in task_status.other:
@@ -506,6 +520,8 @@ Each task status has:
 - `task_id` (string, required): Task identifier
 - `status` (string, required): Task status (one of: "running", "stopped", "error")
 - `created_at` (datetime, required): Session creation timestamp
+- `step_count` (int, default: 0): Number of steps executed
+- `last_updated` (datetime | null, optional): Last update timestamp
 - `other` (object, default: {}): Additional status information (uptime_seconds, resource_usage, etc.)
 
 **Status values:**
@@ -613,6 +629,7 @@ class MyBenchmark(Benchmark):
             "gpu": False
         },
         num_tasks=100,  # Update with actual count
+        tags=["example", "tutorial"],
         other={
             "capabilities": {
                 "parallel_tasks": 5,
@@ -718,6 +735,8 @@ class MyBenchmark(Benchmark):
                 task_id=session["task_id"],
                 status=TaskStatusEnum.running,
                 created_at=session["created_at"],
+                step_count=session.get("step_count", 0),
+                last_updated=session.get("last_updated"),
                 other={
                     "uptime_seconds": (datetime.now() - session["created_at"]).total_seconds()
                 }
