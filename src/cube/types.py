@@ -123,13 +123,15 @@ class EnvironmentOutput(TypedBaseModel):
 # Benchmark-Level API Schemas
 # =============================================================================
 
-
+# =============================================================================
+# cube/info endpoint
+# =============================================================================
 class BenchmarkMetadata(BaseModel):
     """
     Metadata describing a benchmark.
 
     Used by:
-    - Core: Benchmark.metadata attribute
+    - Benchmark: metadata attribute
     - API endpoint: cube/info
     """
 
@@ -143,8 +145,9 @@ class BenchmarkMetadata(BaseModel):
         description="Hardware requirements to install and run the benchmark"
     )
     num_tasks: int = Field(default=0, description="Total number of tasks")
-    other: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     tags: list[str] = Field(default_factory=list, description="Benchmark tags")
+    other: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    # TODO: discuss adding fields such as homepage, repository, citation, etc.
 
 
 # =============================================================================
@@ -176,7 +179,7 @@ class TaskMetadata(BaseModel):
     Metadata describing a task.
 
     Used by:
-    - Core: Task.metadata attribute
+    - Task: metadata attribute
     - API endpoint: cube/tasks (list of TaskMetadata in response)
     """
 
@@ -188,7 +191,7 @@ class TaskMetadata(BaseModel):
     difficulty: str | None = Field(default=None, description="Task difficulty level")
     domain: str | None = Field(default=None, description="Task domain (e.g., 'web', 'coding')")
     other: dict[str, Any] = Field(default_factory=dict, description="Additional task metadata")
-
+    # TODO: discuss adding fields such as created_at, updated_at, etc.
 
 class TaskListResponse(BaseModel):
     """
@@ -278,7 +281,7 @@ class TaskStatus(BaseModel):
     Status information for a running task session.
 
     Used by:
-    - Core: For tracking session state
+    - Task: status attribute for tracking session state
     - API endpoint: cube/status (in response)
     """
 
@@ -289,6 +292,7 @@ class TaskStatus(BaseModel):
     step_count: int = Field(default=0, description="Number of steps executed")
     last_updated: datetime.datetime | None = Field(default=None, description="Last update timestamp")
     other: dict[str, Any] = Field(default_factory=dict, description="Additional status information")
+    # TODO: discuss adding fields such as error_message, started_at, ended_at, etc.
 
 
 class StatusResponse(BaseModel):
@@ -332,75 +336,60 @@ class ShutdownResponse(BaseModel):
 
 
 # =============================================================================
-# Task-Level API Schemas (MCP-compatible)
+# Task-Level API Schemas
 # =============================================================================
 
+# =============================================================================
+# tools/list endpoint -- use MCP types
+# =============================================================================
 
-class ToolListResponse(BaseModel):
+from mcp.types import (
+    ListToolsRequest as MCPListToolsRequest,
+    ListToolsResult as MCPListToolsResult,
+)
+
+# =============================================================================
+# tools/call endpoint -- use MCP types
+# =============================================================================
+
+from mcp.types import (
+    CallToolRequest as MCPCallToolRequest,
+    CallToolRequestParams as MCPCallToolRequestParams,
+    CallToolResult as MCPCallToolResult,
+)
+
+# =============================================================================
+# resources/list endpoint -- use MCP types
+# =============================================================================
+
+from mcp.types import (
+    ListResourcesRequest as MCPListResourcesRequest,
+    ListResourcesResult as MCPListResourcesResult,
+    Resource as MCPResource,
+)
+
+# =============================================================================
+# resources/read endpoint -- use MCP types
+# =============================================================================
+
+from mcp.types import (
+    ReadResourceRequest as MCPReadResourceRequest,
+    ReadResourceRequestParams as MCPReadResourceRequestParams,
+    ReadResourceResult as MCPReadResourceResult,
+)
+
+# =============================================================================
+# cube/evaluation endpoint
+# =============================================================================
+
+class EvaluationResponse(BaseModel):
     """
-    Response schema for listing tools.
+    Response schema from evaluating the environment state.
 
-    Used by: MCP tools/list
-    """
-
-    tools: list[MCPTool] = Field(
-        ..., description="List of available tools (MCP Tool type)"
-    )
-
-
-class ToolCallRequest(BaseModel):
-    """
-    Request schema to call a tool.
-
-    Used by: MCP tools/call
-    """
-
-    name: str = Field(..., description="Name of the tool to call")
-    arguments: dict[str, Any] = Field(
-        default_factory=dict, description="Tool arguments"
-    )
-
-
-class ToolCallResponse(BaseModel):
-    """
-    Response schema from calling a tool.
-
-    Used by: MCP tools/call
-    This wraps MCP's CallToolResult. For direct MCP usage, prefer CallToolResult.
-    """
-
-    content: list[MCPTextContent] = Field(
-        ..., description="Response content (MCP TextContent)"
-    )
-    isError: bool = Field(default=False, description="Whether an error occurred")
-
-
-class ResourceListResponse(BaseModel):
-    """
-    Response schema for listing resources.
-
-    Used by: MCP resources/list
-    Uses MCP's Resource type directly for resource metadata.
-    """
-
-    resources: list[MCPResource] = Field(
-        ..., description="List of available resources (MCP Resource type)"
-    )
-
-
-class ResourceReadResponse(BaseModel):
-    """
-    Response schema for reading a resource.
-
-    Used by: MCP resources/read
-    MCP specifies that resource read responses have a 'contents' array.
-    Each content item can be TextResourceContents or BlobResourceContents.
+    Used by: cube/evaluation
     """
 
-    contents: list[MCPTextResource | MCPBlobResource] = Field(
-        ..., description="Array of resource content (MCP types)"
-    )
-
+    response: EnvironmentOutput = Field(..., description="Environment output after evaluation")
 
 # =============================================================================
 # cube/reset endpoint
@@ -424,10 +413,7 @@ class ResetResponse(BaseModel):
     Used by: cube/reset
     """
 
-    observation: Observation = Field(..., description="Initial observation after reset")
-    info: dict[str, Any] = Field(
-        default_factory=dict, description="Additional reset info"
-    )
+    response: EnvironmentOutput = Field(..., description="Environment output after reset")
 
 
 # =============================================================================
@@ -444,7 +430,7 @@ class CloseResponse(BaseModel):
 
     success: bool = Field(..., description="Whether close was successful")
     profiling: dict[str, Any] | None = Field(
-        default=None, description="Optional profiling data"
+        default_factory=dict, description="Optional profiling data"
     )
 
 
@@ -460,11 +446,11 @@ class StepRequest(BaseModel):
     Used by: cube/step (CUBE extension)
     """
 
-    name: str = Field(..., description="Name of the tool to call")
-    arguments: dict[str, Any] = Field(
-        default_factory=dict, description="Tool arguments"
-    )
+    params: MCPCallToolRequestParams = Field(..., description="Parameters for tool call")
 
+    # TODO: when calling this endpoint, we should create a MCP CallToolRequest and submit it
+    # we should then call cube/evaluation internally to get the evaluation response
+    # finally we return the reponse as a EnvironmentOutput wrapped in StepResponse
 
 class StepResponse(BaseModel):
     """
@@ -473,7 +459,4 @@ class StepResponse(BaseModel):
     Used by: cube/step (combines tool result and evaluation)
     """
 
-    tool_result: ToolCallResponse = Field(..., description="Result from tool execution")
-    evaluation: EnvironmentOutput = Field(
-        ..., description="Environment state after tool execution"
-    )
+    response: EnvironmentOutput = Field(..., description="Environment output after step")
