@@ -173,6 +173,8 @@ class TaskSession:
 
         Raises:
             TaskClosedException: If the session has been closed
+
+        ==> Source code in .venv/lib/python3.12/site-packages/mcp/client/session.py
         """
         if self.is_closed:
             raise TaskClosedException(self.session_id)
@@ -194,6 +196,8 @@ class TaskSession:
 
         Raises:
             TaskClosedException: If the session has been closed
+        
+        ==> Source code in .venv/lib/python3.12/site-packages/mcp/client/session.py
         """
         if self.is_closed:
             raise TaskClosedException(self.session_id)
@@ -241,6 +245,8 @@ class TaskSession:
 
         Raises:
             TaskClosedException: If the session has been closed
+        
+        ==> Source code in .venv/lib/python3.12/site-packages/mcp/client/session.py
         """
         if self.is_closed:
             raise TaskClosedException(self.session_id)
@@ -284,6 +290,8 @@ class TaskSession:
         Raises:
             TaskClosedException: If the session has been closed
             ResourceNotFoundException: If the URI is not found
+
+        ==> Source code in .venv/lib/python3.12/site-packages/mcp/client/session.py
         """
         if self.is_closed:
             raise TaskClosedException(self.session_id)
@@ -405,12 +413,12 @@ class TaskSession:
         if self.is_closed:
             raise TaskClosedException(self.session_id)
 
-        tool_request = MCPCallToolRequest(name=request.name, arguments=request.arguments)
+        tool_request = MCPCallToolRequest(params=request.params)
         tool_result = self.call_tool(tool_request)
 
         evaluation = self.evaluate()
 
-        return StepResponse(tool_result=tool_result, evaluation=evaluation)
+        return StepResponse(response=evaluation)
 
     def reset(self, request: ResetRequest) -> ResetResponse:
         """
@@ -431,20 +439,15 @@ class TaskSession:
 
         try:
             result = self.env.reset()
+            result.info["task_id"] = self.task_id
+            result.info["session_id"] = self.session_id
+            result.info["seed"] = request.seed
 
             self.step_count = 0
             self.total_reward = 0.0
             self.last_state = result
 
-            return ResetResponse(
-                observation=result.obs,
-                info={
-                    "task_id": self.task_id,
-                    "session_id": self.session_id,
-                    "seed": request.seed,
-                    **result.info,
-                },
-            )
+            return ResetResponse(result)
 
         except Exception as e:
             logger.exception(f"Reset failed: {e}")

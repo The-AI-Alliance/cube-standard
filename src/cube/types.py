@@ -76,6 +76,12 @@ class Content(TypedBaseModel):
     may contain arbitrary data types beyond MCP's content types.
 
     For MCP protocol responses (tool results, resources), use MCP's content types directly.
+
+    Attributes:
+        type (str): Content type (text, image, etc.) (default: "text")
+        tool_call_id (str | None): Content could be result of a tool call (default: None)
+        name (str | None): Optional name of the content (default: None)
+        data (str | bytes): The actual content data
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -87,7 +93,16 @@ class Content(TypedBaseModel):
 
 
 class Observation(TypedBaseModel):
-    """Represents an observation from the environment."""
+    """
+    Represents an observation from the environment.
+
+    An observation encapsulates the information returned from the environment
+    after an action is taken. It can contain multiple pieces of content with
+    different types (text, images, etc.).
+
+    Attributes:
+        contents (list[Content]): List of content pieces that make up this observation.
+    """
 
     contents: list[Content] = Field(default_factory=list)
 
@@ -101,7 +116,20 @@ class Observation(TypedBaseModel):
 
 
 class EnvironmentOutput(TypedBaseModel):
-    """Represents the result of an environment step."""
+    """
+    Represents the result of an environment step.
+
+    This follows the Gymnasium API standard for environment responses,
+    containing the observation, reward, termination flags, and additional info.
+
+    Attributes:
+        obs (Observation): The observation from the environment after the step.
+        reward (float): The reward received for the step (default: 0.0).
+        terminated (bool): Whether the episode has terminated (default: False).
+        truncated (bool): Whether the episode was truncated due to step limit (default: False).
+        step (int): The current step number in the episode (default: 0).
+        info (dict): Additional information about the step (default: empty dict).
+    """
 
     obs: Observation
     reward: float = 0.0
@@ -125,6 +153,17 @@ class BenchmarkMetadata(BaseModel):
     Used by:
     - Benchmark: metadata attribute
     - API endpoint: cube/info
+
+    Attributes:
+        name (str): Benchmark name
+        version (str): Benchmark version
+        description (str): Benchmark description
+        authors (list[str]): List of benchmark author names (default: empty list)
+        license (str): Benchmark license (default: empty string)
+        requirements (dict[str, Any]): Hardware requirements to install and run the benchmark (default: empty dict)
+        num_tasks (int): Total number of tasks (default: 0)
+        tags (list[str]): Benchmark tags (default: empty list)
+        other (dict[str, Any]): Additional metadata (default: empty dict)
     """
 
     name: str = Field(..., description="Benchmark name")
@@ -152,6 +191,12 @@ class TaskRequest(BaseModel):
     Request schema for cube/tasks endpoint.
 
     Used by: cube/tasks (parameters for filtering results)
+
+    Attributes:
+        task_id (str | None): Unique task identifier. If None, fetches all tasks (default: None)
+        offset (int): Offset for pagination (default: 0)
+        limit (int): Limit for number of tasks to return. -1 means no limit (default: -1)
+        filter (dict[str, Any]): Filter criteria for tasks (default: empty dict)
     """
 
     task_id: str | None = Field(
@@ -173,6 +218,16 @@ class TaskMetadata(BaseModel):
     Used by:
     - Task: metadata attribute
     - API endpoint: cube/tasks (list of TaskMetadata in response)
+
+    Attributes:
+        id (str): Unique task identifier
+        seed (int | None): Random seed for the task, if applicable (default: None)
+        description (str): Task description (default: empty string)
+        tags (list[str]): List of task tags (default: empty list)
+        max_steps (int | None): Maximum number of steps allowed (default: None)
+        difficulty (str | None): Task difficulty level (default: None)
+        domain (str | None): Task domain (e.g., 'web', 'coding') (default: None)
+        other (dict[str, Any]): Additional task metadata (default: empty dict)
     """
 
     id: str = Field(..., description="Unique task identifier")
@@ -190,6 +245,12 @@ class TaskListResponse(BaseModel):
     Response schema for cube/tasks endpoint.
 
     Used by: cube/tasks (list of tasks with pagination info)
+
+    Attributes:
+        tasks (list[TaskMetadata]): List of tasks
+        total (int): Total number of tasks available
+        offset (int): Offset used for pagination (default: 0)
+        limit (int): Limit used for pagination (default: -1)
     """
 
     tasks: list[TaskMetadata] = Field(..., description="List of tasks")
@@ -208,6 +269,10 @@ class SpawnRequest(BaseModel):
     Request schema for cube/spawn endpoint.
 
     Used by: cube/spawn
+
+    Attributes:
+        task_id (str): Task ID to spawn
+        seed (int | None): Random seed for reproducibility (default: None)
     """
 
     task_id: str = Field(..., description="Task ID to spawn")
@@ -221,6 +286,11 @@ class SpawnResponse(BaseModel):
     Response schema for cube/spawn endpoint.
 
     Used by: cube/spawn
+
+    Attributes:
+        url (str): URL endpoint for the spawned task session
+        session_id (str): Unique session identifier
+        other (dict[str, Any]): Additional session information (default: empty dict)
     """
 
     url: str = Field(..., description="URL endpoint for the spawned task session")
@@ -253,6 +323,12 @@ class StatusRequest(BaseModel):
     Request schema for cube/status endpoint.
 
     Used by: cube/status (parameters for filtering results)
+
+    Attributes:
+        session_id (str | None): Unique task session identifier. If None, fetches all running tasks (default: None)
+        offset (int): Offset for pagination (default: 0)
+        limit (int): Limit for number of tasks to return. -1 means no limit (default: -1)
+        filter (dict[str, Any]): Filter criteria for tasks (default: empty dict)
     """
 
     session_id: str | None = Field(
@@ -275,6 +351,15 @@ class TaskStatus(BaseModel):
     Used by:
     - Task: status attribute for tracking session state
     - API endpoint: cube/status (in response)
+
+    Attributes:
+        session_id (str): Session identifier
+        task_id (str): Task identifier
+        status (TaskStatusEnum): Task status (running, stopped, error)
+        created_at (datetime.datetime): Session creation timestamp
+        step_count (int): Number of steps executed (default: 0)
+        last_updated (datetime.datetime | None): Last update timestamp (default: None)
+        other (dict[str, Any]): Additional status information (default: empty dict)
     """
 
     session_id: str = Field(..., description="Session identifier")
@@ -292,6 +377,9 @@ class StatusResponse(BaseModel):
     Response schema for cube/status endpoint.
 
     Used by: cube/status
+
+    Attributes:
+        tasks (list[TaskStatus]): List of running task statuses
     """
 
     tasks: list[TaskStatus] = Field(..., description="List of running task statuses")
@@ -307,6 +395,9 @@ class ShutdownRequest(BaseModel):
     Request schema for cube/shutdown endpoint.
 
     Used by: cube/shutdown
+
+    Attributes:
+        session_id (str | None): Specific session to shutdown (omit for all) (default: None)
     """
 
     session_id: str | None = Field(
@@ -319,6 +410,10 @@ class ShutdownResponse(BaseModel):
     Response schema for cube/shutdown endpoint.
 
     Used by: cube/shutdown
+
+    Attributes:
+        success (bool): Whether shutdown was successful
+        cleaned (list[str]): List of session IDs that were cleaned up
     """
 
     success: bool = Field(..., description="Whether shutdown was successful")
@@ -379,6 +474,9 @@ class EvaluationResponse(BaseModel):
     Response schema from evaluating the environment state.
 
     Used by: cube/evaluation
+
+    Attributes:
+        response (EnvironmentOutput): Environment output after evaluation
     """
 
     response: EnvironmentOutput = Field(..., description="Environment output after evaluation")
@@ -393,6 +491,9 @@ class ResetRequest(BaseModel):
     Request schema to reset a task.
 
     Used by: cube/reset
+
+    Attributes:
+        seed (int | None): Random seed for reset (default: None)
     """
 
     seed: int | None = Field(default=None, description="Random seed for reset")
@@ -403,6 +504,9 @@ class ResetResponse(BaseModel):
     Response schema from resetting a task.
 
     Used by: cube/reset
+
+    Attributes:
+        response (EnvironmentOutput): Environment output after reset
     """
 
     response: EnvironmentOutput = Field(..., description="Environment output after reset")
@@ -418,6 +522,10 @@ class CloseResponse(BaseModel):
     Response schema from closing a task.
 
     Used by: cube/close
+
+    Attributes:
+        success (bool): Whether close was successful
+        profiling (dict[str, Any] | None): Optional profiling data (default: empty dict)
     """
 
     success: bool = Field(..., description="Whether close was successful")
@@ -436,6 +544,9 @@ class StepRequest(BaseModel):
     Request schema to execute a step (tool call + evaluation).
 
     Used by: cube/step (CUBE extension)
+
+    Attributes:
+        params (MCPCallToolRequestParams): Parameters for tool call
     """
 
     params: MCPCallToolRequestParams = Field(..., description="Parameters for tool call")
@@ -449,6 +560,9 @@ class StepResponse(BaseModel):
     Response schema from executing a step.
 
     Used by: cube/step (combines tool result and evaluation)
+
+    Attributes:
+        response (EnvironmentOutput): Environment output after step
     """
 
     response: EnvironmentOutput = Field(..., description="Environment output after step")
