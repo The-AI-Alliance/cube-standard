@@ -10,7 +10,7 @@ nav_order: 1
 The Task-Level API defines how agents interact with individual task instances. It combines the Model Context Protocol (MCP) for action execution with CUBE extensions for evaluation semantics.
 
 {: .note }
-> This API describes a single task instance. For managing multiple tasks and shared infrastructure, see the [Benchmark-Level API]({{site.baseurl}}/api/benchmark-level).
+> This API describes a single task instance. For managing multiple tasks and shared infrastructure, see the [Benchmark-Level API](benchmark-level.md).
 
 ## Overview
 
