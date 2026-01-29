@@ -196,7 +196,7 @@ class TaskSession:
 
         Raises:
             TaskClosedException: If the session has been closed
-        
+
         ==> Source code in .venv/lib/python3.12/site-packages/mcp/client/session.py
         """
         if self.is_closed:
@@ -245,7 +245,7 @@ class TaskSession:
 
         Raises:
             TaskClosedException: If the session has been closed
-        
+
         ==> Source code in .venv/lib/python3.12/site-packages/mcp/client/session.py
         """
         if self.is_closed:
