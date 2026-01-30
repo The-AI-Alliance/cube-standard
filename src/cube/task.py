@@ -131,7 +131,7 @@ class TaskSession:
         >>> from cube.environment import Environment
         >>>
         >>> env = Environment(task, tool)
-        >>> session = TaskSession(session_id="abc-123", task_id="task-1", env=env)
+        >>> session = TaskSession(task_id="task-1", env=env)
         >>>
         >>> # MCP protocol
         >>> tools = session.list_tools()
@@ -142,16 +142,15 @@ class TaskSession:
         >>> session.reset(ResetRequest(seed=42))
     """
 
-    def __init__(self, session_id: str, task_id: str, env: Environment):
+    def __init__(self, task_id: str, env: Environment):
         """
         Initialize a new task session.
 
         Args:
-            session_id: Unique identifier for this session
             task_id: The task ID this session is running
             env: Environment instance wrapping the task and tool
         """
-        self.session_id = session_id
+        self.session_id = str(uuid.uuid4())
         self.task_id = task_id
         self.env = env
         self.step_count = 0

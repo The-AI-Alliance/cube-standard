@@ -47,6 +47,21 @@ class TypedBaseModel(BaseModel):
         return handler(value)
 
 
+class JSONRPCRequest(TypedBaseModel):
+    """JSON-RPC 2.0 request format."""
+    jsonrpc: str = "2.0"
+    method: str
+    params: dict[str, Any] | None = None
+    id: str | int | None = None
+
+
+class JSONRPCResponse(TypedBaseModel):
+    """JSON-RPC 2.0 response format."""
+    jsonrpc: str = "2.0"
+    result: Any | None = None
+    error: dict[str, Any] | None = None
+    id: str | int | None = None
+
 # =============================================================================
 # Core Domain Models
 # =============================================================================
@@ -146,7 +161,7 @@ class EnvironmentOutput(TypedBaseModel):
 # =============================================================================
 # cube/info endpoint
 # =============================================================================
-class BenchmarkMetadata(BaseModel):
+class BenchmarkMetadata(TypedBaseModel):
     """
     Metadata describing a benchmark.
 
@@ -186,7 +201,7 @@ class BenchmarkMetadata(BaseModel):
 # =============================================================================
 
 
-class TaskRequest(BaseModel):
+class TaskRequest(TypedBaseModel):
     """
     Request schema for cube/tasks endpoint.
 
@@ -211,7 +226,7 @@ class TaskRequest(BaseModel):
     )
 
 
-class TaskMetadata(BaseModel):
+class TaskMetadata(TypedBaseModel):
     """
     Metadata describing a task.
 
@@ -240,7 +255,7 @@ class TaskMetadata(BaseModel):
     other: dict[str, Any] = Field(default_factory=dict, description="Additional task metadata")
     # TODO: discuss adding fields such as created_at, updated_at, etc.
 
-class TaskListResponse(BaseModel):
+class TaskListResponse(TypedBaseModel):
     """
     Response schema for cube/tasks endpoint.
 
@@ -264,7 +279,7 @@ class TaskListResponse(BaseModel):
 # =============================================================================
 
 
-class SpawnRequest(BaseModel):
+class SpawnRequest(TypedBaseModel):
     """
     Request schema for cube/spawn endpoint.
 
@@ -281,19 +296,19 @@ class SpawnRequest(BaseModel):
     )
 
 
-class SpawnResponse(BaseModel):
+class SpawnResponse(TypedBaseModel):
     """
     Response schema for cube/spawn endpoint.
 
     Used by: cube/spawn
 
     Attributes:
-        url (str): URL endpoint for the spawned task session
+        url (str | None): URL endpoint for the spawned task session
         session_id (str): Unique session identifier
         other (dict[str, Any]): Additional session information (default: empty dict)
     """
 
-    url: str = Field(..., description="URL endpoint for the spawned task session")
+    url: str | None = Field(default=None, description="URL endpoint for the spawned task session")
     session_id: str = Field(..., description="Unique session identifier")
     other: dict[str, Any] = Field(
         default_factory=dict, description="Additional session information"
@@ -318,7 +333,7 @@ class TaskStatusEnum(str, Enum):
     error = "error"
 
 
-class StatusRequest(BaseModel):
+class StatusRequest(TypedBaseModel):
     """
     Request schema for cube/status endpoint.
 
@@ -344,7 +359,7 @@ class StatusRequest(BaseModel):
     )
 
 
-class TaskStatus(BaseModel):
+class TaskStatus(TypedBaseModel):
     """
     Status information for a running task session.
 
@@ -372,7 +387,7 @@ class TaskStatus(BaseModel):
     # TODO: discuss adding fields such as error_message, started_at, ended_at, etc.
 
 
-class StatusResponse(BaseModel):
+class StatusResponse(TypedBaseModel):
     """
     Response schema for cube/status endpoint.
 
@@ -390,7 +405,7 @@ class StatusResponse(BaseModel):
 # =============================================================================
 
 
-class ShutdownRequest(BaseModel):
+class ShutdownRequest(TypedBaseModel):
     """
     Request schema for cube/shutdown endpoint.
 
@@ -405,7 +420,7 @@ class ShutdownRequest(BaseModel):
     )
 
 
-class ShutdownResponse(BaseModel):
+class ShutdownResponse(TypedBaseModel):
     """
     Response schema for cube/shutdown endpoint.
 
@@ -469,7 +484,7 @@ from mcp.types import (
 # cube/evaluation endpoint
 # =============================================================================
 
-class EvaluationResponse(BaseModel):
+class EvaluationResponse(TypedBaseModel):
     """
     Response schema from evaluating the environment state.
 
@@ -486,7 +501,7 @@ class EvaluationResponse(BaseModel):
 # =============================================================================
 
 
-class ResetRequest(BaseModel):
+class ResetRequest(TypedBaseModel):
     """
     Request schema to reset a task.
 
@@ -499,7 +514,7 @@ class ResetRequest(BaseModel):
     seed: int | None = Field(default=None, description="Random seed for reset")
 
 
-class ResetResponse(BaseModel):
+class ResetResponse(TypedBaseModel):
     """
     Response schema from resetting a task.
 
@@ -517,7 +532,7 @@ class ResetResponse(BaseModel):
 # =============================================================================
 
 
-class CloseResponse(BaseModel):
+class CloseResponse(TypedBaseModel):
     """
     Response schema from closing a task.
 
@@ -539,7 +554,7 @@ class CloseResponse(BaseModel):
 # =============================================================================
 
 
-class StepRequest(BaseModel):
+class StepRequest(TypedBaseModel):
     """
     Request schema to execute a step (tool call + evaluation).
 
@@ -555,7 +570,7 @@ class StepRequest(BaseModel):
     # we should then call cube/evaluation internally to get the evaluation response
     # finally we return the reponse as a EnvironmentOutput wrapped in StepResponse
 
-class StepResponse(BaseModel):
+class StepResponse(TypedBaseModel):
     """
     Response schema from executing a step.
 
