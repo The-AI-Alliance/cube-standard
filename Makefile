@@ -18,3 +18,6 @@ lint:
 
 run:
 	uv run python -m cube
+	
+test:
+	uv run pytest tests/
