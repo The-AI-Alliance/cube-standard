@@ -1,9 +1,12 @@
 """Manages the lifecycle of task server subprocesses, handles port allocation, tracks active sessions."""
+
+from __future__ import annotations
+
 import logging
 import multiprocessing
 import uuid
 from datetime import datetime
-from typing import Dict
+from typing import TYPE_CHECKING, Dict
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,8 +18,10 @@ from cube.types import (
     SpawnRequest, SpawnResponse, StatusRequest, StatusResponse,
     ShutdownRequest, ShutdownResponse, TaskStatus, TaskStatusEnum
 )
-from cube.benchmark import Benchmark
 from cube.environment import EnvConfig
+
+if TYPE_CHECKING:
+    from cube.benchmark import Benchmark
 
 
 logger = logging.getLogger(__name__)

@@ -1,9 +1,15 @@
 """FastAPI server exposing benchmark-level APIs."""
+
+from __future__ import annotations
+
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from cube.benchmark import Benchmark
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cube.benchmark import Benchmark
 from cube.types import (
     TaskRequest, SpawnRequest, StatusRequest,
     ShutdownRequest, JSONRPCRequest, JSONRPCResponse

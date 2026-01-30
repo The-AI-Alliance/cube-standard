@@ -1,10 +1,14 @@
+from __future__ import annotations
+from typing import TYPE_CHECKING
 from abc import ABC, abstractmethod
 
 from mcp.types import Tool as MCPTool
 
 from cube.types import Action, EnvironmentOutput, Observation
 from cube.tool import AbstractTool, ToolConfig
-from cube.task import Task
+
+if TYPE_CHECKING:
+    from cube.task import Task
 
 STOP_ACTION = MCPTool(
     name="final_step",
@@ -16,9 +20,9 @@ STOP_ACTION = MCPTool(
 class AbstractEnvironment(ABC):
     """Abstract interface for environments that agents interact with."""
 
-    def __init__(self, task: "Task", *args, **kwargs) -> None:
+    def __init__(self, task: Task, *args, **kwargs) -> None:
         super().__init__()
-        self.task: "Task" = task
+        self.task: Task = task
 
     @abstractmethod
     def reset(self) -> EnvironmentOutput:
@@ -43,7 +47,7 @@ class AbstractEnvironment(ABC):
 class EnvConfig:
     """Runtime configuration for the Environment."""
 
-    def __init__(self, task: "Task", tool_config: ToolConfig) -> None:
+    def __init__(self, task: Task, tool_config: ToolConfig) -> None:
         self.task = task
         self.tool_config = tool_config
 
