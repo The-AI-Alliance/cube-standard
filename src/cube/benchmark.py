@@ -34,6 +34,7 @@ class Benchmark(TypedBaseModel, ABC):
 
     metadata: BenchmarkMetadata  # cube/info returns this
     tool_config: ToolConfig  # set in setup()
+    _task_list: list[Task]
     _local_sessions: dict[str, TaskSession] = {}  # track task session in python mode
     _session_manager: SessionManager | None = None  # set in setup() when server_mode is True
     _server_process: multiprocessing.Process | None = None  # set in setup() when server_mode is True
@@ -88,10 +89,12 @@ class Benchmark(TypedBaseModel, ABC):
         return self.metadata
 
     @abstractmethod
-    def load_tasks(self) -> list[Task]:
+    def load_tasks(self, force_reload=False) -> list[Task]:
         """
         Load and return the list of tasks for this benchmark.
         """
+        if len(self._task_list) > 0 and not force_reload:
+            return self._task_list
         pass
 
     def list_tasks(self, request: TaskRequest) -> TaskListResponse:
