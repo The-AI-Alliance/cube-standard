@@ -1,11 +1,12 @@
-import os  
-import sys  
-import pandas as pd  
-from github import Github, GithubException
-from datetime import datetime, timedelta, timezone # Added timezone  
-import time  
-import requests
 import json
+import os
+import sys
+import time
+from datetime import datetime, timedelta, timezone  # Added timezone
+
+import pandas as pd
+import requests
+from github import Github, GithubException
 
 
 # --- GraphQL Helper ---  
@@ -561,7 +562,7 @@ try:
   
 except Exception as e:  
     print(f"Error creating DataFrame or writing Parquet file: {e}")  
-    import traceback  
+    import traceback
     traceback.print_exc() # Print full traceback for debugging  
     sys.exit(1)  
   

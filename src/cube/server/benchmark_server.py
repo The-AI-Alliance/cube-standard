@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
     from cube.benchmark import Benchmark
-from cube.types import (
-    TaskRequest, SpawnRequest, StatusRequest,
-    ShutdownRequest, JSONRPCRequest, JSONRPCResponse
-)
-
+from cube.types import JSONRPCRequest, JSONRPCResponse, ShutdownRequest, SpawnRequest, StatusRequest, TaskRequest
 
 logger = logging.getLogger(__name__)
 

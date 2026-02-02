@@ -1,11 +1,12 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
+
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from mcp.types import Tool as MCPTool
 
-from cube.types import Action, EnvironmentOutput, Observation
 from cube.tool import AbstractTool, ToolConfig
+from cube.types import Action, EnvironmentOutput, Observation
 
 if TYPE_CHECKING:
     from cube.task import Task

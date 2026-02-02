@@ -5,13 +5,13 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Type, TypeAlias, Protocol
+from typing import Any, Callable, Protocol, Type, TypeAlias
 
-from typing_extensions import get_protocol_members
-from mcp.types import Tool as MCPTool
 import litellm.utils
+from mcp.types import Tool as MCPTool
+from typing_extensions import get_protocol_members
 
-from cube.types import TypedBaseModel, Action, Content, Observation
+from cube.types import Action, Content, Observation, TypedBaseModel
 
 logger = logging.getLogger(__name__)
 

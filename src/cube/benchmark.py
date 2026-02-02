@@ -1,8 +1,13 @@
-from abc import ABC, abstractmethod
 import logging
 import multiprocessing
+from abc import ABC, abstractmethod
+
 import uvicorn
 
+from cube.environment import EnvConfig
+from cube.server import SessionManager, create_benchmark_server_app
+from cube.task import Task, TaskSession
+from cube.tool import ToolConfig
 from cube.types import (
     BenchmarkMetadata,
     ShutdownRequest,
@@ -16,12 +21,6 @@ from cube.types import (
     TaskStatusEnum,
     TypedBaseModel,
 )
-from cube.task import Task, TaskSession
-from cube.environment import EnvConfig
-from cube.tool import ToolConfig
-
-from cube.server import SessionManager, create_benchmark_server_app
-
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +31,7 @@ class Benchmark(TypedBaseModel, ABC):
     metadata: BenchmarkMetadata  # cube/info returns this
     tool_config: ToolConfig  # set in setup()
     _task_list: list[Task]
-    _local_sessions: dict[str, TaskSession] = {}  # track task session in python mode
+    _local_sessions: dict[str, TaskSession] = {}  # track task sessions in python mode
     _session_manager: SessionManager | None = None  # set in setup() when server_mode is True
     _server_process: multiprocessing.Process | None = None  # set in setup() when server_mode is True
 
@@ -195,9 +194,9 @@ class Benchmark(TypedBaseModel, ABC):
         Get the status of running tasks.
         cube/status calls this method.
         """
-        logger.debug(f"[ENTRY] Benchmark.get_task_status")
+        logger.debug("[ENTRY] Benchmark.get_task_status")
         if self._session_manager:
-            logger.debug(f"[EXIT] Benchmark.get_task_status - delegating to SessionManager")
+            logger.debug("[EXIT] Benchmark.get_task_status - delegating to SessionManager")
             return self._session_manager.get_status(request)
         else:
             # Python mode: get status from local sessions
@@ -219,14 +218,43 @@ class Benchmark(TypedBaseModel, ABC):
                 return StatusResponse(tasks=tasks_status)
 
 
+    def _shutdown_one_local_session(self, session_id: str) -> bool:
+        session = self._local_sessions.pop(session_id, None)
+        if session:
+            resp = session.close()
+            return resp.success
+        return False
+
     @abstractmethod
     def shutdown(self, request: ShutdownRequest) -> ShutdownResponse:
         """
         Shutdown a running task session.
         cube/shutdown calls this method.
         """
-        # TODO: implement based on claude plan...
-        pass
+        logger.debug(f"[ENTRY] Benchmark.shutdown for session_id={request.session_id}")
+        if self._session_manager:
+            logger.debug(f"[EXIT] Benchmark.shutdown - delegating to SessionManager for session_id={request.session_id}")
+            return self._session_manager.shutdown(request)
+        else:
+            cleaned = []
+            if request.session_id:
+                # shutdown single session
+                if self._shutdown_one_local_session(request.session_id):
+                    cleaned.append(request.session_id)
+                else:
+                    logger.debug(f"[EXIT] Benchmark.shutdown - failed to close session_id={request.session_id}")
+                    return ShutdownResponse(success=False, cleaned=cleaned)
+            else:
+                # shutdown all sessions
+                for session_id in self._local_sessions:
+                    if self._shutdown_one_local_session(session_id):
+                        cleaned.append(session_id)
+                if len(self._local_sessions) != 0:
+                    logger.debug("[EXIT] Benchmark.shutdown - failed to close all local sessions")
+                    return ShutdownResponse(success=False, cleaned=cleaned)
+            logger.debug(f"[EXIT] Benchmark.shutdown - cleaned={cleaned}")
+            return ShutdownResponse(success=True, cleaned=cleaned)
+
 
     @abstractmethod
     def close(self):

@@ -1,17 +1,18 @@
 """Basic test for benchmark server creation."""
 
 from fastapi import FastAPI
+
+from cube.benchmark import Benchmark
 from cube.server import create_benchmark_server_app
+from cube.task import Task
+from cube.tool import ToolConfig
 from cube.types import (
     BenchmarkMetadata,
-    TaskMetadata,
+    Observation,
     ShutdownRequest,
     ShutdownResponse,
-    Observation,
+    TaskMetadata,
 )
-from cube.tool import ToolConfig
-from cube.task import Task
-from cube.benchmark import Benchmark
 
 
 def test_create_server_app():

@@ -6,37 +6,45 @@ the task-level API for managing individual task instances. It handles both MCP
 protocol methods (tools/*, resources/*) and CUBE extensions (cube/*).
 """
 
+import json
 import logging
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any
-import json
 
 from mcp.types import (
     Resource as MCPResource,
+)
+from mcp.types import (
     TextContent as MCPTextContent,
+)
+from mcp.types import (
     TextResourceContents,
+)
+from mcp.types import (
     Tool as MCPTool,
 )
 
+from cube.environment import Environment
 from cube.types import (
+    Action,
     CloseResponse,
+    EnvironmentOutput,
+    MCPCallToolRequest,
+    MCPCallToolResult,
+    MCPListResourcesResult,
+    MCPListToolsResult,
+    MCPReadResourceResult,
+    Observation,
     ResetRequest,
     ResetResponse,
-    MCPListResourcesResult,
-    MCPReadResourceResult,
     StepRequest,
     StepResponse,
     TaskMetadata,
     TaskStatus,
-    MCPCallToolRequest,
-    MCPCallToolResult,
-    MCPListToolsResult,
     TaskStatusEnum,
 )
-from cube.types import Action, EnvironmentOutput, Observation
-from cube.environment import Environment
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +167,10 @@ class TaskSession:
         self.last_state: EnvironmentOutput | None = None
         self.last_updated: datetime | None = None
         self.status: TaskStatusEnum = TaskStatusEnum.stopped
+    
+    @property
+    def seed(self) -> int | None:
+        return self.env.task.seed
 
     def get_status(self) -> TaskStatus:
         """
@@ -436,10 +448,8 @@ class TaskSession:
             raise TaskClosedException(self.session_id)
 
         tool_request = MCPCallToolRequest(params=request.params)
-        tool_result = self.call_tool(tool_request)
-
+        self.call_tool(tool_request)
         evaluation = self.evaluate()
-
         return StepResponse(response=evaluation)
 
     def reset(self, request: ResetRequest) -> ResetResponse:

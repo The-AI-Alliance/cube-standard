@@ -3,20 +3,19 @@
 __version__ = "0.1.0"
 
 # Core abstractions
-from cube.task import Task
+from cube.benchmark import Benchmark
+from cube.environment import EnvConfig, Environment
+
+# Server applications & managers
+from cube.server import SessionManager, create_benchmark_server_app, create_task_server_app
+from cube.task import Task, TaskSession
+from cube.tool import AbstractTool, Tool, ToolConfig
 from cube.types import (
     Action,
-    Observation,
     Content,
     EnvironmentOutput,
+    Observation,
 )
-
-from cube.benchmark import Benchmark
-from cube.environment import Environment, EnvConfig
-from cube.tool import AbstractTool, Tool, ToolConfig
-
-# Session interface (for server implementations)
-from cube.task import TaskSession
 
 __all__ = [
     # Core
@@ -33,6 +32,9 @@ __all__ = [
     "AbstractTool",
     "Tool",
     "ToolConfig",
-    # Session Management
+    # Server managers & apps
     "TaskSession",
+    "create_benchmark_server_app",
+    "create_task_server_app",
+    "SessionManager",
 ]

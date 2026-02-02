@@ -4,20 +4,24 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
-import uuid
 from typing import TYPE_CHECKING, Dict
 
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-import uvicorn
-
-from cube.task import Task, TaskSession
-from cube.types import (
-    SpawnRequest, SpawnResponse, StatusRequest, StatusResponse,
-    ShutdownRequest, ShutdownResponse, TaskStatus, TaskStatusEnum
-)
 from cube.environment import EnvConfig
+from cube.task import TaskSession
+from cube.types import (
+    ShutdownRequest,
+    ShutdownResponse,
+    SpawnRequest,
+    SpawnResponse,
+    StatusRequest,
+    StatusResponse,
+    TaskStatus,
+    TaskStatusEnum,
+)
 
 if TYPE_CHECKING:
     from cube.benchmark import Benchmark
@@ -104,9 +108,8 @@ class SessionManager:
         # Create TaskSession
         session = TaskSession(task_id=request.task_id, env=env)
 
-        # Create task server app (Phase 1: minimal placeholder server)
-        app = create_task_server_app(request.task_id, request.seed)
-        # TODO: Phase 2: app = create_task_server_app(session)  # Pass the entire session instead
+        # Create task server app
+        app = create_task_server_app(session)
 
         # Start task server in subprocess
         def run_server():
@@ -133,12 +136,12 @@ class SessionManager:
 
     def get_status(self, request: StatusRequest) -> StatusResponse:
         """Get status of one or many task sessions."""
-        logger.debug(f"[ENTRY] SessionManager.get_status")
+        logger.debug("[ENTRY] SessionManager.get_status")
 
         if request.session_id:
             # Single session status
             if request.session_id not in self.active_sessions:
-                logger.debug(f"[EXIT] SessionManager.get_status - session not found, returning empty")
+                logger.debug("[EXIT] SessionManager.get_status - session not found, returning empty")
                 return StatusResponse(tasks=[])
 
             server_proc = self.active_sessions[request.session_id]
@@ -173,7 +176,7 @@ class SessionManager:
 
     def shutdown(self, request: ShutdownRequest) -> ShutdownResponse:
         """Shutdown one or all task server subprocesses."""
-        logger.debug(f"[ENTRY] SessionManager.shutdown")
+        logger.debug("[ENTRY] SessionManager.shutdown")
         cleaned = []
 
         if request.session_id:
@@ -194,10 +197,10 @@ class SessionManager:
         return ShutdownResponse(success=True, cleaned=cleaned)
 
 
-def create_task_server_app(task_id: str, seed: int | None) -> FastAPI:
+def create_task_server_app(session: TaskSession) -> FastAPI:
     app = FastAPI(
-        title=f"CUBE Task Server - {task_id}",
-        description=f"Task-level API placeholder for task {task_id}",
+        title=f"CUBE Task Server - {session.task_id}",
+        description=f"Task-level API placeholder for task {session.task_id}",
         version="1.0.0"
     )
 
@@ -215,8 +218,8 @@ def create_task_server_app(task_id: str, seed: int | None) -> FastAPI:
         """Health check endpoint."""
         return {
             "status": "ok",
-            "task_id": task_id,
-            "seed": seed,
+            "task_id": session.task_id,
+            "seed": session.seed,
             "message": "Task server running (Phase 1 - no task endpoints yet)"
         }
 
@@ -229,5 +232,5 @@ def create_task_server_app(task_id: str, seed: int | None) -> FastAPI:
     # - POST /cube/step (CUBE)
     # - POST /cube/reset (CUBE)
     # - POST /cube/close (CUBE)
-    logger.info(f"Task server for task '{task_id}/{seed}' created.")
+    logger.info(f"Task server for task '{session.task_id}/{session.seed}' created.")
     return app
