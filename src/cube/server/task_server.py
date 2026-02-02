@@ -29,9 +29,8 @@ logger = logging.getLogger(__name__)
 
 class TaskServerProcess:
     """Represents a running task server subprocess."""
-    def __init__(self, session_id: str, task: Task, port: int, process: multiprocessing.Process):
-        self.session_id = session_id
-        self.task = task
+    def __init__(self, session: TaskSession, port: int, process: multiprocessing.Process):
+        self.session = session
         self.port = port
         self.process = process
         self.created_at = datetime.now()
@@ -106,19 +105,11 @@ class SessionManager:
         task_process.start()
 
         # Track session
-        server_process = TaskServerProcess(session.session_id, task, port, task_process)
+        server_process = TaskServerProcess(session, port, task_process)
         self.active_sessions[session.session_id] = server_process
 
         # Update task status
-        task.status = TaskStatus(
-            session_id=session.session_id,
-            task_id=request.task_id,
-            status=TaskStatusEnum.running,
-            created_at=server_process.created_at,
-            step_count=0,
-            last_updated=None,
-            other={}
-        )
+        session.status = TaskStatusEnum.running
 
         response = SpawnResponse(
             url=f"http://{self.host}:{port}",
@@ -129,7 +120,7 @@ class SessionManager:
         return response
 
     def get_status(self, request: StatusRequest) -> StatusResponse:
-        """Get status of one or all task sessions."""
+        """Get status of one or many task sessions."""
         logger.debug(f"[ENTRY] SessionManager.get_status")
 
         if request.session_id:
@@ -139,25 +130,26 @@ class SessionManager:
                 return StatusResponse(tasks=[])
 
             server_proc = self.active_sessions[request.session_id]
-            task = server_proc.task
-
-            if task and task.status:
-                logger.debug(f"[EXIT] SessionManager.get_status - returning status for session_id={request.session_id}")
-                return StatusResponse(tasks=[task.status])
-            logger.debug(f"[EXIT] SessionManager.get_status - no status found for session_id={request.session_id}")
-            return StatusResponse(tasks=[])
+            session = server_proc.session
+            logger.debug(f"[EXIT] SessionManager.get_status - returning status for session_id={request.session_id}")
+            return StatusResponse(tasks=[session.get_status()])
 
         # All sessions status
         all_statuses = []
         for session_id, server_proc in self.active_sessions.items():
-            task = server_proc.task
-            if task and task.status:
-                all_statuses.append(task.status)
+            session = server_proc.session
+            all_statuses.append(session.get_status())
+        
+        # Apply offset and limit
+        if request.limit == -1:
+            limited_statuses = all_statuses[request.offset:]
+        else:
+            limited_statuses = all_statuses[request.offset : request.offset + request.limit]
 
-        # TOD: check request.limit .offset and .filter for filtering results
+        # TODO: check request.filter for filtering results
 
-        logger.debug(f"[EXIT] SessionManager.get_status - returning {len(all_statuses)} statuses")
-        return StatusResponse(tasks=all_statuses)
+        logger.debug(f"[EXIT] SessionManager.get_status - returning {len(limited_statuses)} statuses")
+        return StatusResponse(tasks=limited_statuses)
 
     def _shutdown_one_process(self, server_proc: TaskServerProcess):
         """Shutdown a single task server subprocess."""

@@ -49,7 +49,7 @@ class Benchmark(TypedBaseModel, ABC):
             available_ports (list[int]): List of ports available for task servers.
             tool_config (ToolConfig): Configuration for the tools to be used in the benchmark.
             server_mode (bool): If True, starts a benchmark server.
-            server_host (str): Host for the benchmark server.
+            server_host (str): Host for the benchmark & task servers.
             server_port (int): Port for the benchmark server.
 
         Returns:
@@ -59,6 +59,7 @@ class Benchmark(TypedBaseModel, ABC):
 
         if server_mode:
             # Create session manager
+            assert len(available_ports) > 0, "No available ports provided for server mode."
             self._session_manager = SessionManager(
                 benchmark=self,
                 available_ports=available_ports,
@@ -89,11 +90,11 @@ class Benchmark(TypedBaseModel, ABC):
         return self.metadata
 
     @abstractmethod
-    def load_tasks(self, force_reload=False) -> list[Task]:
+    def load_tasks(self, cache=True) -> list[Task]:
         """
         Load and return the list of tasks for this benchmark.
         """
-        if len(self._task_list) > 0 and not force_reload:
+        if len(self._task_list) > 0 and cache:
             return self._task_list
         pass
 
@@ -118,6 +119,7 @@ class Benchmark(TypedBaseModel, ABC):
         task_metadata_list = [
             task.metadata for task in limited_tasks
         ]
+        # TODO: check request.filter for filtering results
 
         return TaskListResponse(
             tasks=task_metadata_list,
@@ -175,17 +177,9 @@ class Benchmark(TypedBaseModel, ABC):
             session = TaskSession(task_id=request.task_id, env=env)
             # Track sessions locally
             self._local_sessions[session.session_id] = session
-
             # Update task status
-            task.status = TaskStatus(
-                session_id=session.session_id,
-                task_id=request.task_id,
-                status=TaskStatusEnum.running,
-                created_at=datetime.now(),
-                step_count=0,
-                last_updated=None,
-                other={}
-            )
+            session.status = TaskStatusEnum.running
+
             response = SpawnResponse(
                 url=None,  # No URL in Python mode
                 session_id=session.session_id,
@@ -211,19 +205,15 @@ class Benchmark(TypedBaseModel, ABC):
                 # Single session
                 session = self._local_sessions.get(request.session_id)  # TODO: check if we can get the task directly attaced to the session
                 if session:
-                    task = next((t for t in self.load_tasks() if t.id == session.task_id), None)
-                    if task and task.status:
-                        logger.debug(f"[EXIT] Benchmark.get_task_status - returning status for session_id={request.session_id}")
-                        return StatusResponse(tasks=[task.status])
+                    logger.debug(f"[EXIT] Benchmark.get_task_status - returning status for session_id={request.session_id}")
+                    return StatusResponse(tasks=[session.get_status()])
                 logger.debug(f"[EXIT] Benchmark.get_task_status - session_id={request.session_id} not found, returning empty")
                 return StatusResponse(tasks=[])
             else:
                 # All sessions
                 tasks_status = []
                 for session_id, session in self._local_sessions.items():
-                    task = next((t for t in self.load_tasks() if t.id == session.task_id), None)
-                    if task and task.status:
-                        tasks_status.append(task.status)
+                    tasks_status.append(session.get_status())
                 logger.debug(f"[EXIT] Benchmark.get_task_status - returning status for {len(tasks_status)} local sessions")
                 return StatusResponse(tasks=tasks_status)
 

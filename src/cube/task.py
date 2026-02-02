@@ -33,6 +33,7 @@ from cube.types import (
     MCPCallToolRequest,
     MCPCallToolResult,
     MCPListToolsResult,
+    TaskStatusEnum,
 )
 from cube.types import Action, EnvironmentOutput, Observation
 from cube.environment import Environment
@@ -44,7 +45,6 @@ class Task(ABC):
     """Represents a task that an agent must complete in an environment."""
 
     metadata: TaskMetadata
-    status: TaskStatus | None = None  # will get instantiated once we call benchmark.spawn() or cube/spawn
     _tool: Any  # access to the environment tool, initialized in setup()
     validate_per_step: bool = False
 
@@ -157,7 +157,29 @@ class TaskSession:
         self.total_reward = 0.0
         self.created_at = datetime.now()
         self.last_state: EnvironmentOutput | None = None
-        self.is_closed = False
+        self.last_updated: datetime | None = None
+        self.status: TaskStatusEnum = TaskStatusEnum.stopped
+
+    def get_status(self) -> TaskStatus:
+        """
+        Get the current status of the task session.
+
+        Returns:
+            TaskStatus with current session information
+        """
+        status = TaskStatus(
+            session_id=self.session_id,
+            task_id=self.task_id,
+            status=self.status,
+            created_at=self.created_at,
+            step_count=self.step_count,
+            last_updated=self.last_updated,
+            other={
+                "total_reward": self.total_reward,
+                "last_state": self.last_state,
+            }
+        )
+        return status
 
     # =============================================================================
     # MCP Protocol Methods
