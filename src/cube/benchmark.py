@@ -1,8 +1,6 @@
 from abc import ABC, abstractmethod
-from datetime import datetime
 import logging
 import multiprocessing
-import uuid
 import uvicorn
 
 from cube.types import (
@@ -15,7 +13,6 @@ from cube.types import (
     StatusResponse,
     TaskListResponse,
     TaskRequest,
-    TaskStatus,
     TaskStatusEnum,
     TypedBaseModel,
 )
@@ -38,6 +35,10 @@ class Benchmark(TypedBaseModel, ABC):
     _local_sessions: dict[str, TaskSession] = {}  # track task session in python mode
     _session_manager: SessionManager | None = None  # set in setup() when server_mode is True
     _server_process: multiprocessing.Process | None = None  # set in setup() when server_mode is True
+
+    @property
+    def name(self) -> str:
+        return self.metadata.name
 
     @abstractmethod
     def setup(self, available_ports: list[int], tool_config: ToolConfig, server_mode: bool = False, server_host: str = "localhost", server_port: int = 8000) -> str | None:
@@ -96,7 +97,7 @@ class Benchmark(TypedBaseModel, ABC):
         """
         if len(self._task_list) > 0 and cache:
             return self._task_list
-        pass
+        raise NotImplementedError("load_tasks() must be implemented in subclass.")
 
     def list_tasks(self, request: TaskRequest) -> TaskListResponse:
         """

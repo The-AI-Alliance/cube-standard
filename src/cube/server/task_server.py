@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import uuid
-from datetime import datetime
 from typing import TYPE_CHECKING, Dict
 
 from fastapi import FastAPI
@@ -33,8 +32,21 @@ class TaskServerProcess:
         self.session = session
         self.port = port
         self.process = process
-        self.created_at = datetime.now()
-        self.step_count = 0
+
+    @property
+    def session_id(self) -> str:
+        return self.session.session_id
+
+    @property
+    def task_id(self) -> str:
+        return self.session.task_id
+
+    @property
+    def seed(self) -> int | None:
+        return self.session.env.task.seed
+
+    def get_status(self) -> TaskStatus:
+        return self.session.get_status()
 
 
 class SessionManager:
@@ -130,15 +142,13 @@ class SessionManager:
                 return StatusResponse(tasks=[])
 
             server_proc = self.active_sessions[request.session_id]
-            session = server_proc.session
             logger.debug(f"[EXIT] SessionManager.get_status - returning status for session_id={request.session_id}")
-            return StatusResponse(tasks=[session.get_status()])
+            return StatusResponse(tasks=[server_proc.get_status()])
 
         # All sessions status
         all_statuses = []
         for session_id, server_proc in self.active_sessions.items():
-            session = server_proc.session
-            all_statuses.append(session.get_status())
+            all_statuses.append(server_proc.get_status())
         
         # Apply offset and limit
         if request.limit == -1:
@@ -159,7 +169,7 @@ class SessionManager:
         # Return port to pool
         self.available_ports.append(server_proc.port)
         self.used_ports.remove(server_proc.port)
-        logger.debug(f"[EXIT] SessionManager._shutdown_one_process - task {server_proc.task.task_id}/{server_proc.task.seed} process terminated on session_id={server_proc.session_id}, port={server_proc.port} returned to pool")
+        logger.debug(f"[EXIT] SessionManager._shutdown_one_process - task {server_proc.task_id}/{server_proc.seed} process terminated on session_id={server_proc.session_id}, port={server_proc.port} returned to pool")
 
     def shutdown(self, request: ShutdownRequest) -> ShutdownResponse:
         """Shutdown one or all task server subprocesses."""
