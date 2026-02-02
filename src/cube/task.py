@@ -197,7 +197,7 @@ class TaskSession:
 
         ==> Source code in .venv/lib/python3.12/site-packages/mcp/client/session.py
         """
-        if self.is_closed:
+        if self.status == TaskStatusEnum.stopped:
             raise TaskClosedException(self.session_id)
 
         actions = self.env.get_actions()
@@ -220,7 +220,7 @@ class TaskSession:
 
         ==> Source code in .venv/lib/python3.12/site-packages/mcp/client/session.py
         """
-        if self.is_closed:
+        if self.status == TaskStatusEnum.stopped:
             raise TaskClosedException(self.session_id)
 
         try:
@@ -235,6 +235,7 @@ class TaskSession:
             self.step_count += 1
             self.total_reward += result.reward
             self.last_state = result
+            self.last_updated = datetime.now()
 
             # Convert CUBE Content to MCP TextContent
             mcp_content = [
@@ -269,7 +270,7 @@ class TaskSession:
 
         ==> Source code in .venv/lib/python3.12/site-packages/mcp/client/session.py
         """
-        if self.is_closed:
+        if self.status == TaskStatusEnum.stopped:
             raise TaskClosedException(self.session_id)
 
         resources = [
@@ -314,7 +315,7 @@ class TaskSession:
 
         ==> Source code in .venv/lib/python3.12/site-packages/mcp/client/session.py
         """
-        if self.is_closed:
+        if self.status == TaskStatusEnum.stopped:
             raise TaskClosedException(self.session_id)
 
         if uri == "task://description":
@@ -385,7 +386,7 @@ class TaskSession:
         Raises:
             TaskClosedException: If the session has been closed
         """
-        if self.is_closed:
+        if self.status == TaskStatusEnum.stopped:
             raise TaskClosedException(self.session_id)
 
         if self.last_state is None:
@@ -431,7 +432,7 @@ class TaskSession:
         Raises:
             TaskClosedException: If the session has been closed
         """
-        if self.is_closed:
+        if self.status == TaskStatusEnum.stopped:
             raise TaskClosedException(self.session_id)
 
         tool_request = MCPCallToolRequest(params=request.params)
@@ -455,7 +456,7 @@ class TaskSession:
             TaskClosedException: If the session has been closed
             ValueError: If reset fails
         """
-        if self.is_closed:
+        if self.status == TaskStatusEnum.stopped:
             raise TaskClosedException(self.session_id)
 
         try:
@@ -467,6 +468,7 @@ class TaskSession:
             self.step_count = 0
             self.total_reward = 0.0
             self.last_state = result
+            self.last_updated = datetime.now()
 
             return ResetResponse(result)
 
@@ -481,12 +483,13 @@ class TaskSession:
         Returns:
             CloseResponse with success flag and profiling data
         """
-        if self.is_closed:
+        if self.status == TaskStatusEnum.stopped:
             return CloseResponse(success=True, profiling=None)
 
         try:
             self.env.close()
-            self.is_closed = True
+            self.status = TaskStatusEnum.stopped
+            self.last_updated = datetime.now()
 
             profiling = {
                 "total_steps": self.step_count,
