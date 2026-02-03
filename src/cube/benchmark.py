@@ -3,6 +3,7 @@ import multiprocessing
 from abc import ABC, abstractmethod
 
 import uvicorn
+from pydantic import PrivateAttr
 
 from cube.environment import EnvConfig
 from cube.server import SessionManager, create_benchmark_server_app
@@ -30,7 +31,7 @@ class Benchmark(TypedBaseModel, ABC):
 
     metadata: BenchmarkMetadata  # cube/info returns this
     tool_config: ToolConfig  # set in setup()
-    _task_list: list[Task]
+    _task_list: list[Task] = PrivateAttr(default_factory=list)  # cache loaded tasks
     _local_sessions: dict[str, TaskSession] = {}  # track task sessions in python mode
     _session_manager: SessionManager | None = None  # set in setup() when server_mode is True
     _server_process: multiprocessing.Process | None = None  # set in setup() when server_mode is True
@@ -40,7 +41,14 @@ class Benchmark(TypedBaseModel, ABC):
         return self.metadata.name
 
     @abstractmethod
-    def setup(self, available_ports: list[int], tool_config: ToolConfig, server_mode: bool = False, server_host: str = "localhost", server_port: int = 8000) -> str | None:
+    def setup(
+        self,
+        available_ports: list[int],
+        tool_config: ToolConfig,
+        server_mode: bool = False,
+        server_host: str = "localhost",
+        server_port: int = 8000,
+    ) -> str | None:
         """
         Perform common steps necessary to prepare the environment for all tasks,
         like running web server, launching containers, etc.
@@ -60,11 +68,7 @@ class Benchmark(TypedBaseModel, ABC):
         if server_mode:
             # Create session manager
             assert len(available_ports) > 0, "No available ports provided for server mode."
-            self._session_manager = SessionManager(
-                benchmark=self,
-                available_ports=available_ports,
-                host=server_host
-            )
+            self._session_manager = SessionManager(benchmark=self, available_ports=available_ports, host=server_host)
 
             # Create benchmark server app
             app = create_benchmark_server_app(self)
@@ -112,13 +116,11 @@ class Benchmark(TypedBaseModel, ABC):
 
         # Apply offset and limit
         if request.limit == -1:
-            limited_tasks = tasks[request.offset:]
+            limited_tasks = tasks[request.offset :]
         else:
             limited_tasks = tasks[request.offset : request.offset + request.limit]
 
-        task_metadata_list = [
-            task.metadata for task in limited_tasks
-        ]
+        task_metadata_list = [task.metadata for task in limited_tasks]
         # TODO: check request.filter for filtering results
 
         return TaskListResponse(
@@ -157,7 +159,9 @@ class Benchmark(TypedBaseModel, ABC):
         logger.debug(f"[ENTRY] Benchmark.spawn - task_id={request.task_id} seed={request.seed}")
 
         if self._session_manager:
-            logger.debug(f"[EXIT] Benchmark.spawn - delegating to SessionManager for task {request.task_id}/{request.seed}")
+            logger.debug(
+                f"[EXIT] Benchmark.spawn - delegating to SessionManager for task {request.task_id}/{request.seed}"
+            )
             return self._session_manager.spawn(request)
         else:
             # Python mode: Create TaskSession in-process
@@ -183,11 +187,12 @@ class Benchmark(TypedBaseModel, ABC):
             response = SpawnResponse(
                 url=None,  # No URL in Python mode
                 session_id=session.session_id,
-                other={"session": session}
+                other={"session": session},
             )
-            logger.debug(f"[EXIT] Benchmark.spawn - created local session_id={session.session_id} for task {request.task_id}/{request.seed}")
+            logger.debug(
+                f"[EXIT] Benchmark.spawn - created local session_id={session.session_id} for task {request.task_id}/{request.seed}"
+            )
             return response
-
 
     def get_task_status(self, request: StatusRequest) -> StatusResponse:
         """
@@ -203,20 +208,27 @@ class Benchmark(TypedBaseModel, ABC):
 
             if request.session_id:
                 # Single session
-                session = self._local_sessions.get(request.session_id)  # TODO: check if we can get the task directly attaced to the session
+                session = self._local_sessions.get(
+                    request.session_id
+                )  # TODO: check if we can get the task directly attaced to the session
                 if session:
-                    logger.debug(f"[EXIT] Benchmark.get_task_status - returning status for session_id={request.session_id}")
+                    logger.debug(
+                        f"[EXIT] Benchmark.get_task_status - returning status for session_id={request.session_id}"
+                    )
                     return StatusResponse(tasks=[session.get_status()])
-                logger.debug(f"[EXIT] Benchmark.get_task_status - session_id={request.session_id} not found, returning empty")
+                logger.debug(
+                    f"[EXIT] Benchmark.get_task_status - session_id={request.session_id} not found, returning empty"
+                )
                 return StatusResponse(tasks=[])
             else:
                 # All sessions
                 tasks_status = []
                 for session_id, session in self._local_sessions.items():
                     tasks_status.append(session.get_status())
-                logger.debug(f"[EXIT] Benchmark.get_task_status - returning status for {len(tasks_status)} local sessions")
+                logger.debug(
+                    f"[EXIT] Benchmark.get_task_status - returning status for {len(tasks_status)} local sessions"
+                )
                 return StatusResponse(tasks=tasks_status)
-
 
     def _shutdown_one_local_session(self, session_id: str) -> bool:
         session = self._local_sessions.pop(session_id, None)
@@ -233,7 +245,9 @@ class Benchmark(TypedBaseModel, ABC):
         """
         logger.debug(f"[ENTRY] Benchmark.shutdown for session_id={request.session_id}")
         if self._session_manager:
-            logger.debug(f"[EXIT] Benchmark.shutdown - delegating to SessionManager for session_id={request.session_id}")
+            logger.debug(
+                f"[EXIT] Benchmark.shutdown - delegating to SessionManager for session_id={request.session_id}"
+            )
             return self._session_manager.shutdown(request)
         else:
             cleaned = []
@@ -254,7 +268,6 @@ class Benchmark(TypedBaseModel, ABC):
                     return ShutdownResponse(success=False, cleaned=cleaned)
             logger.debug(f"[EXIT] Benchmark.shutdown - cleaned={cleaned}")
             return ShutdownResponse(success=True, cleaned=cleaned)
-
 
     @abstractmethod
     def close(self):
