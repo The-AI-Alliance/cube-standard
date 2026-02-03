@@ -110,6 +110,7 @@ class Task(ABC):
 # Simple exception classes for task session management
 class TaskClosedException(Exception):
     """Raised when trying to interact with a closed task session."""
+
     def __init__(self, session_id: str):
         super().__init__(f"Task session {session_id} has been closed")
         self.session_id = session_id
@@ -117,6 +118,7 @@ class TaskClosedException(Exception):
 
 class ResourceNotFoundException(Exception):
     """Raised when a requested resource is not found."""
+
     def __init__(self, uri: str):
         super().__init__(f"Resource not found: {uri}")
         self.uri = uri
@@ -167,7 +169,7 @@ class TaskSession:
         self.last_state: EnvironmentOutput | None = None
         self.last_updated: datetime | None = None
         self.status: TaskStatusEnum = TaskStatusEnum.stopped
-    
+
     @property
     def seed(self) -> int | None:
         return self.env.task.seed
@@ -189,7 +191,7 @@ class TaskSession:
             other={
                 "total_reward": self.total_reward,
                 "last_state": self.last_state,
-            }
+            },
         )
         return status
 
@@ -238,8 +240,8 @@ class TaskSession:
         try:
             action = Action(
                 id=str(uuid.uuid4()),
-                name=request.name,  # Updated from request.tool_name to request.name (MCP format)
-                arguments=request.arguments,
+                name=request.params.name,  # MCP format: request.params.name
+                arguments=request.params.arguments or {},
             )
 
             result = self.env.step(action)
@@ -250,20 +252,13 @@ class TaskSession:
             self.last_updated = datetime.now()
 
             # Convert CUBE Content to MCP TextContent
-            mcp_content = [
-                MCPTextContent(type="text", text=str(c.data))
-                for c in result.obs.contents
-            ]
+            mcp_content = [MCPTextContent(type="text", text=str(c.data)) for c in result.obs.contents]
 
             return MCPCallToolResult(content=mcp_content, isError=False)
 
         except Exception as e:
             logger.exception(f"Tool execution failed: {e}")
-            error_content = [
-                MCPTextContent(
-                    type="text", text=f"Error executing tool {request.name}: {str(e)}"
-                )
-            ]
+            error_content = [MCPTextContent(type="text", text=f"Error executing tool {request.params.name}: {str(e)}")]
             return MCPCallToolResult(content=error_content, isError=True)
 
     def list_resources(self) -> MCPListResourcesResult:
@@ -333,11 +328,7 @@ class TaskSession:
         if uri == "task://description":
             description = self.env.task.metadata.description
             return MCPReadResourceResult(
-                contents=[
-                    TextResourceContents(
-                        uri=uri, mimeType="text/plain", text=description
-                    )
-                ]
+                contents=[TextResourceContents(uri=uri, mimeType="text/plain", text=description)]
             )
 
         if uri == "obs://current":
@@ -365,11 +356,7 @@ class TaskSession:
                 ]
             }
             return MCPReadResourceResult(
-                contents=[
-                    TextResourceContents(
-                        uri=uri, mimeType="application/json", text=json.dumps(obs_data)
-                    )
-                ]
+                contents=[TextResourceContents(uri=uri, mimeType="application/json", text=json.dumps(obs_data))]
             )
 
         # Allow tasks to handle custom resource URIs
@@ -403,9 +390,7 @@ class TaskSession:
 
         if self.last_state is None:
             return EnvironmentOutput(
-                obs=Observation.from_text(
-                    "No observation yet. Call reset() first."
-                ),
+                obs=Observation.from_text("No observation yet. Call reset() first."),
                 reward=0.0,
                 terminated=False,
                 truncated=False,
@@ -480,7 +465,7 @@ class TaskSession:
             self.last_state = result
             self.last_updated = datetime.now()
 
-            return ResetResponse(result)
+            return ResetResponse(response=result)
 
         except Exception as e:
             logger.exception(f"Reset failed: {e}")
@@ -504,9 +489,7 @@ class TaskSession:
             profiling = {
                 "total_steps": self.step_count,
                 "total_reward": self.total_reward,
-                "duration_seconds": (
-                    datetime.now() - self.created_at
-                ).total_seconds(),
+                "duration_seconds": (datetime.now() - self.created_at).total_seconds(),
             }
 
             logger.info(f"Session {self.session_id} closed successfully")
@@ -515,5 +498,3 @@ class TaskSession:
         except Exception as e:
             logger.exception(f"Error closing session: {e}")
             return CloseResponse(success=False, profiling=None)
-
-
