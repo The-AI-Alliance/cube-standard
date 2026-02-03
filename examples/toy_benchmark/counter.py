@@ -161,10 +161,13 @@ class CounterBenchmark(Benchmark):
 
     def load_tasks(self, cache: bool = True):
         """Load counter tasks."""
-        return [
+        if len(self._task_list) > 0 and cache:
+            return self._task_list
+        self._task_list = [
             ReachTargetTask("count-to-3", target=3),
             ReachTargetTask("count-to-5", target=5),
         ]
+        return self._task_list
 
     def shutdown(self, request: ShutdownRequest) -> ShutdownResponse:
         """Shutdown task sessions."""
