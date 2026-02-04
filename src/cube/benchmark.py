@@ -41,7 +41,7 @@ class Benchmark(TypedBaseModel, ABC):
         return self.metadata.name
 
     @abstractmethod
-    def setup_benchmark_resources(self, tool_config: ToolConfig | None) -> None:
+    def setup_benchmark_resources(self, tool_config: ToolConfig | None, **kwargs) -> None:
         """
         Optional method to set up any benchmark-level resources.
         This can include downloading datasets, initializing databases, setting up Dockers,  etc.
