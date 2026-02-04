@@ -58,20 +58,14 @@ def test_create_server_app():
                 tool_config=MinimalToolConfig(),
             )
 
-        def setup(
+        def setup_benchmark_resources(
             self,
-            available_ports,
             tool_config,
-            server_mode=False,
-            server_host="localhost",
-            server_port=8000,
         ):
             """Minimal setup."""
-            return super().setup(
-                available_ports, tool_config, server_mode, server_host, server_port
-            )
+            return super().setup_benchmark_resources(tool_config=tool_config)
 
-        def load_tasks(self):
+        def load_tasks(self, cache: bool = True):
             """Return a list of minimal tasks."""
             return [MinimalTask("task-1"), MinimalTask("task-2")]
 

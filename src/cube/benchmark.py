@@ -41,30 +41,39 @@ class Benchmark(TypedBaseModel, ABC):
         return self.metadata.name
 
     @abstractmethod
+    def setup_benchmark_resources(self, tool_config: ToolConfig | None) -> None:
+        """
+        Optional method to set up any benchmark-level resources.
+        This can include downloading datasets, initializing databases, setting up Dockers,  etc.
+        This is supposed to be implemented by Benchmark *creators*.
+        """
+        if tool_config is not None:
+            self.tool_config = tool_config
+
     def setup(
         self,
-        available_ports: list[int],
-        tool_config: ToolConfig,
+        tool_config: ToolConfig | None = None,
         server_mode: bool = False,
+        available_ports: list[int] = [],
         server_host: str = "localhost",
         server_port: int = 8000,
     ) -> str | None:
         """
-        Perform common steps necessary to prepare the environment for all tasks,
-        like running web server, launching containers, etc.
+        Check if server_mode is enabled, and set up the benchmark accordingly.
+        This is the main entry point to set up the benchmark for benchmark *users*.
 
         Args:
-            available_ports (list[int]): List of ports available for task servers.
             tool_config (ToolConfig): Configuration for the tools to be used in the benchmark.
             server_mode (bool): If True, starts a benchmark server.
+            available_ports (list[int]): List of ports available for task servers.
             server_host (str): Host for the benchmark & task servers.
             server_port (int): Port for the benchmark server.
 
         Returns:
             str | None: If server_mode is True, returns the address of the benchmark server, else None.
         """
-        self.tool_config = tool_config
-
+        self.setup_benchmark_resources(tool_config)  # Prepare benchmark-level resources
+        # Then set up server or python mode
         if server_mode:
             # Create session manager
             assert len(available_ports) > 0, "No available ports provided for server mode."

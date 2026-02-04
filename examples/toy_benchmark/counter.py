@@ -139,25 +139,12 @@ class CounterBenchmark(Benchmark):
         tool_config = CounterToolConfig()
         super().__init__(metadata=metadata, tool_config=tool_config)
 
-    def setup(
+    def setup_benchmark_resources(
         self,
-        available_ports: list[int],
         tool_config: Any = None,
-        server_mode: bool = False,
-        server_host: str = "localhost",
-        server_port: int = 8000,
     ):
         """Set up the benchmark."""
-        if tool_config is not None:
-            self.tool_config = tool_config
-
-        return super().setup(
-            available_ports=available_ports,
-            tool_config=self.tool_config,
-            server_mode=server_mode,
-            server_host=server_host,
-            server_port=server_port,
-        )
+        return super().setup_benchmark_resources(tool_config=self.tool_config)
 
     def load_tasks(self, cache: bool = True):
         """Load counter tasks."""
