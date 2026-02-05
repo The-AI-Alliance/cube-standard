@@ -531,3 +531,221 @@ evaluation = response.json()
 ```
 
 All changes shown in this document are uncommitted work-in-progress and subject to review before committing.
+
+---
+
+## ✅ Implementation Complete (2026-02-04)
+
+### Final Architecture: Approach 1 with ToolConfig
+
+We implemented **Approach 1 (HTTP Proxy to MCP)** with a key modification: instead of `Task.register_mcp_tools()`, we use **ToolConfig** for research flexibility.
+
+**Flow**: Agent → HTTP (FastAPI) → TaskSession.call_tool() → MCP Server (in-memory) → ToolConfig-defined tools
+
+### Key Design Decision: ToolConfig as the Single Source of Truth
+
+Instead of defining tools on the Task class via `register_mcp_tools()`, we introduced **ToolConfig** as an abstract base class that:
+- Enables researchers to swap tool implementations without modifying benchmark code
+- Provides configuration parameters for tool behavior (e.g., browser type, enable_decrement)
+- Allows different tool sets (basic vs advanced)
+- Maintains clean separation between task logic and action space definition
+
+**Rationale**: This preserves tool variability for research while keeping the HTTP proxy architecture simple for agents.
+
+### Implementation Summary
+
+#### 6 Commits Created (Signed-off):
+
+1. **c2947ea** - Add ToolConfig abstract base class for defining task action spaces
+   - New `src/cube/tool.py` with ToolConfig.create_mcp_server() abstract method
+   - Replaced old Tool/AbstractTool/ActionSpace architecture
+   - Task state accessed via closure in tool implementations
+   - Updated exports in `src/cube/__init__.py`
+
+2. **852b7f0** - Add tool_config field to Benchmark for MCP server creation
+   - Added `tool_config: ToolConfig | None = None` as regular field
+   - Enables `setup_benchmark_resources()` to set tool configuration
+   - SessionManager.spawn() can access benchmark's tool_config
+
+3. **b6c8efb** - Update TaskSession to use in-memory MCP server for tool execution
+   - TaskSession.__init__() accepts optional `mcp_server` parameter
+   - `list_tools()` is now async, gets tools from MCP server
+   - `call_tool()` is now async, routes to MCP server
+   - `step()` is now async (awaits call_tool)
+   - Fallback to env.step() for backwards compatibility
+
+4. **dd590a6** - Add MCP server factory and update SessionManager to create MCP servers
+   - New `src/cube/server/mcp_task_server.py` with `create_task_mcp_server()` factory
+   - Requires ToolConfig parameter (raises ValueError if None)
+   - SessionManager.spawn() creates MCP server via factory
+   - Passes tool_config from benchmark to factory
+   - TaskSession receives mcp_server in constructor
+
+5. **27b11ef** - Update counter benchmark to use ToolConfig for tool definition
+   - Added CounterToolConfig class with create_mcp_server() method
+   - Removed register_mcp_tools() from ReachTargetTask
+   - CounterBenchmark.setup_benchmark_resources() provides default ToolConfig
+   - Tools (increment, get_value) now defined in CounterToolConfig
+
+6. **614c264** - Add counter_with_toolconfig.py example demonstrating research flexibility
+   - CounterToolConfig with enable_decrement/enable_reset parameters
+   - DoubleIncrementToolConfig that increments by 2
+   - Test showing default CounterToolConfig usage
+   - All tests pass
+
+### Architecture Diagram (Final)
+
+```
+┌─────────┐     HTTP POST         ┌──────────────────┐
+│  Agent  │ ────────────────────> │  FastAPI         │
+└─────────┘   /tools/call         │  Task Server     │
+                                   └────────┬─────────┘
+                                            │ in-process call
+                                            v
+                                   ┌────────────────────┐
+                                   │ TaskSession        │
+                                   │ .call_tool()       │
+                                   └────────┬───────────┘
+                                            │ await
+                                            v
+                                   ┌────────────────────┐
+                                   │ MCP Server         │
+                                   │ (in-memory FastMCP)│
+                                   └────────┬───────────┘
+                                            │
+                                            v
+                                   ┌────────────────────┐
+                                   │ ToolConfig         │
+                                   │ .create_mcp_server │
+                                   └────────┬───────────┘
+                                            │ closure
+                                            v
+                                   ┌────────────────────┐
+                                   │ Task State         │
+                                   │ (self.counter, etc)│
+                                   └────────────────────┘
+```
+
+### Key Benefits Achieved
+
+1. **Simple for Agents** - HTTP only, no MCP client needed
+2. **Research Flexibility** - ToolConfig enables tool experimentation
+3. **Low Resource Usage** - 1 process per task (FastAPI only)
+4. **Clean Architecture** - Clear separation of concerns
+5. **Type Safety** - ToolConfig uses Pydantic for validation
+6. **Backwards Compatible** - Falls back to env.step() if no MCP server
+
+### Breaking Changes
+
+- TaskSession methods now async: `list_tools()`, `call_tool()`, `step()`
+- Callers must use `await` when invoking these methods
+- FastAPI endpoints already async, no changes needed for HTTP clients
+- ToolConfig is now the only way to define task tools (no Task.register_mcp_tools)
+
+### Example: Counter Benchmark with ToolConfig
+
+```python
+from cube.tool import ToolConfig
+from mcp.server.fastmcp import FastMCP
+
+class CounterToolConfig(ToolConfig):
+    """Tool configuration for counter benchmark."""
+
+    def create_mcp_server(self, task: Task) -> FastMCP:
+        mcp = FastMCP(f"Counter Task: {task.metadata.id}")
+
+        # Cast to specific task type
+        assert isinstance(task, ReachTargetTask)
+        reach_task = task
+
+        @mcp.tool()
+        def increment() -> str:
+            """Increment the counter by 1"""
+            reach_task.counter += 1  # Access task state via closure
+            reach_task.history.append("increment")
+            return f"Counter is now {reach_task.counter}"
+
+        @mcp.tool()
+        def get_value() -> str:
+            """Get the current counter value"""
+            return f"Counter value is: {reach_task.counter}"
+
+        return mcp
+
+class CounterBenchmark(Benchmark):
+    def setup_benchmark_resources(self, tool_config: Any = None, **kwargs):
+        # Use provided tool_config or default to CounterToolConfig
+        if tool_config is None:
+            tool_config = CounterToolConfig()
+        return super().setup_benchmark_resources(tool_config=tool_config, **kwargs)
+```
+
+### Research Flexibility Example
+
+Researchers can swap tool implementations without modifying benchmark code:
+
+```python
+# Example 1: Add optional tools
+class ExtendedCounterToolConfig(ToolConfig):
+    enable_decrement: bool = True  # Add decrement tool
+    enable_reset: bool = False      # Add reset tool
+
+    def create_mcp_server(self, task: Task) -> FastMCP:
+        mcp = FastMCP(f"Counter: {task.metadata.id}")
+
+        # ... register increment, get_value ...
+
+        if self.enable_decrement:
+            @mcp.tool()
+            def decrement() -> str:
+                task.counter -= 1
+                return f"Counter is now {task.counter}"
+
+        return mcp
+
+# Example 2: Change tool behavior
+class DoubleIncrementToolConfig(ToolConfig):
+    def create_mcp_server(self, task: Task) -> FastMCP:
+        mcp = FastMCP(f"Counter: {task.metadata.id}")
+
+        @mcp.tool()
+        def increment() -> str:
+            task.counter += 2  # Increment by 2 instead of 1
+            return f"Counter is now {task.counter}"
+
+        return mcp
+```
+
+### Tests Passing
+
+- `examples/toy_benchmark/counter.py::test_simple_counting` ✅
+- `examples/toy_benchmark/counter_with_toolconfig.py` (all 3 tests) ✅
+
+### Files Modified
+
+**New Files:**
+- `src/cube/tool.py` - ToolConfig abstract base class
+- `src/cube/server/mcp_task_server.py` - MCP server factory
+- `examples/toy_benchmark/counter_with_toolconfig.py` - Research flexibility examples
+
+**Modified Files:**
+- `src/cube/__init__.py` - Export ToolConfig
+- `src/cube/benchmark.py` - Add tool_config field
+- `src/cube/task.py` - Async TaskSession methods with MCP server
+- `src/cube/server/task_server.py` - SessionManager creates MCP servers
+- `src/cube/environment.py` - Updated to work with ToolConfig
+- `examples/toy_benchmark/counter.py` - Use CounterToolConfig
+
+### Commit Log
+
+```bash
+git log --oneline -6
+614c264 Add counter_with_toolconfig.py example demonstrating research flexibility
+27b11ef Update counter benchmark to use ToolConfig for tool definition
+dd590a6 Add MCP server factory and update SessionManager to create MCP servers
+b6c8efb Update TaskSession to use in-memory MCP server for tool execution
+852b7f0 Add tool_config field to Benchmark for MCP server creation
+c2947ea Add ToolConfig abstract base class for defining task action spaces
+```
+
+All commits include DCO sign-off and passed pre-commit hooks (ruff, formatting).
