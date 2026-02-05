@@ -121,7 +121,7 @@ class CounterBenchmark(Benchmark):
         # Use provided tool_config or default to CounterToolConfig
         if tool_config is None:
             tool_config = CounterToolConfig()
-        return super().setup_benchmark_resources(tool_config=tool_config, **kwargs)
+        return super().setup(tool_config=tool_config, **kwargs)
 
     def load_tasks(self, cache: bool = True):
         """Load counter tasks."""

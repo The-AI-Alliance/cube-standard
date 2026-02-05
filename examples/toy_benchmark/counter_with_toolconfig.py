@@ -98,7 +98,7 @@ async def test_basic_toolconfig():
     # Create benchmark with custom ToolConfig
     benchmark = CounterBenchmark()
     tool_config = CounterToolConfig(enable_decrement=True, enable_reset=False)
-    benchmark.setup_benchmark_resources(tool_config=tool_config)
+    benchmark.setup(tool_config=tool_config)
 
     # Load task
     task: ReachTargetTask = benchmark.load_tasks()[0]  # type: ignore
@@ -132,7 +132,7 @@ async def test_double_increment_toolconfig():
     # Create benchmark with different ToolConfig
     benchmark = CounterBenchmark()
     tool_config = DoubleIncrementToolConfig()
-    benchmark.setup_benchmark_resources(tool_config=tool_config)
+    benchmark.setup(tool_config=tool_config)
 
     # Load task
     task: ReachTargetTask = benchmark.load_tasks()[0]  # type: ignore
@@ -159,7 +159,7 @@ async def test_default_toolconfig():
 
     # Create benchmark - uses default CounterToolConfig from setup_benchmark_resources
     benchmark = CounterBenchmark()
-    benchmark.setup_benchmark_resources()  # Sets up default CounterToolConfig
+    benchmark.setup()  # Sets up default CounterToolConfig
 
     # Load task
     task: ReachTargetTask = benchmark.load_tasks()[0]  # type: ignore
