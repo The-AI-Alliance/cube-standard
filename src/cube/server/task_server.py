@@ -11,7 +11,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from cube.environment import EnvConfig
-from cube.server.mcp_task_server import create_task_mcp_server
 from cube.task import TaskSession
 from cube.types import (
     MCPCallToolRequest,
@@ -110,10 +109,15 @@ class SessionManager:
 
         # Create in-memory MCP server (with tool_config if available)
         tool_config = getattr(self.benchmark, "tool_config", None)
-        mcp_server = create_task_mcp_server(task, tool_config=tool_config)
+        if tool_config is None:
+            raise ValueError(
+                f"ToolConfig is required to create MCP server for task {task.id}. "
+                "Benchmark must provide a ToolConfig that defines the action space."
+            )
+        mcp_server = tool_config.create_mcp_server(task)
 
         # Create environment (still needed for lifecycle)
-        env_config = EnvConfig(task=task, tool_config=self.benchmark.tool_config)
+        env_config = EnvConfig(task=task)
         env = env_config.make()
         env.reset()  # TODO: pass the seed
 

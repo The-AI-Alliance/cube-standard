@@ -81,4 +81,4 @@ class ToolConfig(TypedBaseModel, ABC):
             ...
             ...     return mcp
         """
-        pass
+        raise NotImplementedError("Subclasses must implement create_mcp_server() method.")

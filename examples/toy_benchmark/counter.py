@@ -175,19 +175,17 @@ def test_simple_counting():
     tasks = benchmark.load_tasks()
     assert len(tasks) == 2, "Expected 2 tasks"
 
-    task = tasks[0]  # count-to-3
+    task: ReachTargetTask = tasks[0]  # type: ignore
     assert task.metadata.id == "count-to-3"
     assert task.target == 3
 
     # Test MCP tool registration
     import asyncio
 
-    from cube.server.mcp_task_server import create_task_mcp_server
-
     async def test_mcp_tools():
         # Create MCP server for the task using ToolConfig
         tool_config = CounterToolConfig()
-        mcp_server = create_task_mcp_server(task, tool_config=tool_config)
+        mcp_server = tool_config.create_mcp_server(task)
 
         # List tools
         tools = await mcp_server.list_tools()

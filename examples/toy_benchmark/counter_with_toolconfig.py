@@ -10,6 +10,7 @@ import asyncio
 from counter import CounterBenchmark, ReachTargetTask
 from mcp.server.fastmcp import FastMCP
 
+from cube.task import Task
 from cube.tool import ToolConfig
 
 
@@ -20,22 +21,26 @@ class CounterToolConfig(ToolConfig):
     enable_decrement: bool = False  # example config parameter: allow decrementing?
     enable_reset: bool = False  # example config parameter: allow reset?
 
-    def create_mcp_server(self, task: ReachTargetTask) -> FastMCP:
+    def create_mcp_server(self, task: Task) -> FastMCP:
         """Create MCP server with configurable tools."""
         mcp = FastMCP(f"Counter Task: {task.metadata.id}")
+
+        # Cast to ReachTargetTask for type safety
+        assert isinstance(task, ReachTargetTask)
+        reach_task = task
 
         # Core tools (always available)
         @mcp.tool()
         def increment() -> str:
             """Increment the counter by 1"""
-            task.counter += 1
-            task.history.append("increment")
-            return f"Counter is now {task.counter}"
+            reach_task.counter += 1
+            reach_task.history.append("increment")
+            return f"Counter is now {reach_task.counter}"
 
         @mcp.tool()
         def get_value() -> str:
             """Get the current counter value"""
-            return f"Counter value is: {task.counter}"
+            return f"Counter value is: {reach_task.counter}"
 
         # Optional tools based on configuration
         if self.enable_decrement:
@@ -43,17 +48,17 @@ class CounterToolConfig(ToolConfig):
             @mcp.tool()
             def decrement() -> str:
                 """Decrement the counter by 1"""
-                task.counter -= 1
-                task.history.append("decrement")
-                return f"Counter is now {task.counter}"
+                reach_task.counter -= 1
+                reach_task.history.append("decrement")
+                return f"Counter is now {reach_task.counter}"
 
         if self.enable_reset:
 
             @mcp.tool()
             def reset() -> str:
                 """Reset counter to 0"""
-                task.counter = 0
-                task.history.append("reset")
+                reach_task.counter = 0
+                reach_task.history.append("reset")
                 return "Counter reset to 0"
 
         return mcp
@@ -63,21 +68,25 @@ class CounterToolConfig(ToolConfig):
 class DoubleIncrementToolConfig(ToolConfig):
     """Alternative tool implementation that increments by 2."""
 
-    def create_mcp_server(self, task: ReachTargetTask) -> FastMCP:
+    def create_mcp_server(self, task: Task) -> FastMCP:
         """Create MCP server with double increment."""
         mcp = FastMCP(f"Double Counter: {task.metadata.id}")
+
+        # Cast to ReachTargetTask for type safety
+        assert isinstance(task, ReachTargetTask)
+        reach_task = task
 
         @mcp.tool()
         def increment() -> str:
             """Increment the counter by 2 (research variant)"""
-            task.counter += 2
-            task.history.append("increment")
-            return f"Counter is now {task.counter} (incremented by 2)"
+            reach_task.counter += 2
+            reach_task.history.append("increment")
+            return f"Counter is now {reach_task.counter} (incremented by 2)"
 
         @mcp.tool()
         def get_value() -> str:
             """Get the current counter value"""
-            return f"Counter value is: {task.counter}"
+            return f"Counter value is: {reach_task.counter}"
 
         return mcp
 
@@ -92,12 +101,10 @@ async def test_basic_toolconfig():
     benchmark.setup_benchmark_resources(tool_config=tool_config)
 
     # Load task
-    task = benchmark.load_tasks()[0]
+    task: ReachTargetTask = benchmark.load_tasks()[0]  # type: ignore
 
     # Create MCP server using ToolConfig
-    from cube.server.mcp_task_server import create_task_mcp_server
-
-    mcp_server = create_task_mcp_server(task, tool_config=tool_config)
+    mcp_server = tool_config.create_mcp_server(task)
 
     # List tools
     tools = await mcp_server.list_tools()
@@ -128,12 +135,10 @@ async def test_double_increment_toolconfig():
     benchmark.setup_benchmark_resources(tool_config=tool_config)
 
     # Load task
-    task = benchmark.load_tasks()[0]
+    task: ReachTargetTask = benchmark.load_tasks()[0]  # type: ignore
 
     # Create MCP server using ToolConfig
-    from cube.server.mcp_task_server import create_task_mcp_server
-
-    mcp_server = create_task_mcp_server(task, tool_config=tool_config)
+    mcp_server = tool_config.create_mcp_server(task)
 
     # Test double increment
     result = await mcp_server.call_tool("increment", {})
@@ -157,7 +162,7 @@ async def test_default_toolconfig():
     benchmark.setup_benchmark_resources()  # Sets up default CounterToolConfig
 
     # Load task
-    task = benchmark.load_tasks()[0]
+    task: ReachTargetTask = benchmark.load_tasks()[0]  # type: ignore
 
     # Import the default CounterToolConfig from counter.py
     from counter import CounterToolConfig as DefaultCounterToolConfig
@@ -165,9 +170,7 @@ async def test_default_toolconfig():
     tool_config = DefaultCounterToolConfig()
 
     # Create MCP server using default ToolConfig
-    from cube.server.mcp_task_server import create_task_mcp_server
-
-    mcp_server = create_task_mcp_server(task, tool_config=tool_config)
+    mcp_server = tool_config.create_mcp_server(task)
 
     # List tools
     tools = await mcp_server.list_tools()

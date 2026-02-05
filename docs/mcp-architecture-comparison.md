@@ -36,8 +36,6 @@ Both approaches eliminate `tool.py` and use FastMCP for task-specific tools. The
 ```python
 # src/cube/server/task_server.py
 
-from cube.server.mcp_task_server import create_task_mcp_server
-
 class SessionManager:
     def spawn(self, request: SpawnRequest) -> SpawnResponse:
         # Get task
@@ -51,7 +49,10 @@ class SessionManager:
         self.used_ports.append(port)
 
         # Create MCP server (in-memory, not running as subprocess)
-        mcp_server = create_task_mcp_server(task)
+        tool_config = getattr(self.benchmark, "tool_config", None)
+        if tool_config is None:
+            raise ValueError(f"ToolConfig is required for task {task.id}")
+        mcp_server = tool_config.create_mcp_server(task)
 
         # Create Environment (still needed for lifecycle)
         env_config = EnvConfig(task=task)
@@ -235,8 +236,6 @@ evaluation = response.json()
 ```python
 # src/cube/server/task_server.py
 
-from cube.server.mcp_task_server import create_task_mcp_server
-
 class SessionManager:
     def spawn(self, request: SpawnRequest) -> SpawnResponse:
         # Get task
@@ -254,7 +253,10 @@ class SessionManager:
         self.used_ports.extend([mcp_port, fastapi_port])
 
         # Create MCP server
-        mcp_server = create_task_mcp_server(task)
+        tool_config = getattr(self.benchmark, "tool_config", None)
+        if tool_config is None:
+            raise ValueError(f"ToolConfig is required for task {task.id}")
+        mcp_server = tool_config.create_mcp_server(task)
 
         # Start MCP server in subprocess
         def run_mcp_server():
@@ -475,9 +477,9 @@ evaluation = response.json()
 **All changes below are uncommitted and being reviewed:**
 
 #### New Files Created:
-1. **src/cube/server/mcp_task_server.py** - NEW FILE (untracked)
-   - Created `create_task_mcp_server(task)` factory
-   - Calls `task.register_mcp_tools(mcp)`
+1. **src/cube/server/mcp_task_server.py** - REMOVED (no longer needed)
+   - The wrapper function was unnecessary indirection
+   - Now call `tool_config.create_mcp_server(task)` directly
 
 2. **docs/mcp-architecture-comparison.md** - NEW FILE (untracked)
    - This comparison document
@@ -511,9 +513,9 @@ evaluation = response.json()
 
 ### 🔴 Still TODO (Not Yet Started):
 
-1. **src/cube/server/task_server.py** - NOT MODIFIED YET
+1. **src/cube/server/task_server.py** - MODIFIED
    - Update `SessionManager.spawn()`:
-     - Create in-memory MCP server via `create_task_mcp_server(task)`
+     - Create in-memory MCP server via `tool_config.create_mcp_server(task)`
      - Pass MCP server to TaskSession
      - Update EnvConfig to not use tool_config
    - Keep single subprocess (FastAPI only)
@@ -574,10 +576,10 @@ Instead of defining tools on the Task class via `register_mcp_tools()`, we intro
    - `step()` is now async (awaits call_tool)
    - Fallback to env.step() for backwards compatibility
 
-4. **dd590a6** - Add MCP server factory and update SessionManager to create MCP servers
-   - New `src/cube/server/mcp_task_server.py` with `create_task_mcp_server()` factory
-   - Requires ToolConfig parameter (raises ValueError if None)
-   - SessionManager.spawn() creates MCP server via factory
+4. **dd590a6** - Add MCP server factory and update SessionManager to create MCP servers (later simplified)
+   - Originally added `src/cube/server/mcp_task_server.py` with wrapper function
+   - Later removed as unnecessary - now call `tool_config.create_mcp_server(task)` directly
+   - SessionManager.spawn() creates MCP server via ToolConfig
    - Passes tool_config from benchmark to factory
    - TaskSession receives mcp_server in constructor
 
@@ -725,8 +727,10 @@ class DoubleIncrementToolConfig(ToolConfig):
 
 **New Files:**
 - `src/cube/tool.py` - ToolConfig abstract base class
-- `src/cube/server/mcp_task_server.py` - MCP server factory
 - `examples/toy_benchmark/counter_with_toolconfig.py` - Research flexibility examples
+
+**Removed Files:**
+- `src/cube/server/mcp_task_server.py` - Wrapper function removed as unnecessary
 
 **Modified Files:**
 - `src/cube/__init__.py` - Export ToolConfig
