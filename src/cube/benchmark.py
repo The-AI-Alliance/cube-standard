@@ -142,7 +142,7 @@ class Benchmark(TypedBaseModel, ABC):
     def env_configs(self) -> list[EnvConfig]:
         """Generate environment configurations for all tasks in the benchmark."""
         tasks = self.load_tasks()
-        configs = [EnvConfig(task=task, tool_config=self.tool_config) for task in tasks]
+        configs = [EnvConfig(task=task) for task in tasks]
         return configs
 
     def install(self):
@@ -182,7 +182,7 @@ class Benchmark(TypedBaseModel, ABC):
                 raise ValueError(f"Task {request.task_id} not found")
 
             # Create environment
-            env_config = EnvConfig(task=task, tool_config=self.tool_config)
+            env_config = EnvConfig(task=task)
             env = env_config.make()
             env.reset()  # TODO: pass the seed
 
