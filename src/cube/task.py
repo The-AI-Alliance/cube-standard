@@ -152,17 +152,19 @@ class TaskSession:
         >>> session.reset(ResetRequest(seed=42))
     """
 
-    def __init__(self, task_id: str, env: Environment):
+    def __init__(self, task_id: str, env: Environment, mcp_server: Any = None):
         """
         Initialize a new task session.
 
         Args:
             task_id: The task ID this session is running
             env: Environment instance wrapping the task and tool
+            mcp_server: Optional in-memory MCP server for task-specific tools
         """
         self.session_id = str(uuid.uuid4())
         self.task_id = task_id
         self.env = env
+        self.mcp_server = mcp_server  # In-memory MCP server reference
         self.step_count = 0
         self.total_reward = 0.0
         self.created_at = datetime.now()
@@ -199,7 +201,7 @@ class TaskSession:
     # MCP Protocol Methods
     # =============================================================================
 
-    def list_tools(self) -> MCPListToolsResult:
+    async def list_tools(self) -> MCPListToolsResult:
         """
         List available tools/actions for this task (MCP tools/list).
 
@@ -214,12 +216,20 @@ class TaskSession:
         if self.status == TaskStatusEnum.stopped:
             raise TaskClosedException(self.session_id)
 
+        # Get tools from MCP server if available
+        if self.mcp_server:
+            # FastMCP server provides async list_tools() method
+            tools = await self.mcp_server.list_tools()
+            filtered_tools = self.env.task.filter_actions(tools)
+            return MCPListToolsResult(tools=filtered_tools)
+
+        # Fallback to environment actions (for backwards compatibility)
         actions = self.env.get_actions()
         filtered_actions = self.env.task.filter_actions(actions)
 
         return MCPListToolsResult(tools=filtered_actions)
 
-    def call_tool(self, request: MCPCallToolRequest) -> MCPCallToolResult:
+    async def call_tool(self, request: MCPCallToolRequest) -> MCPCallToolResult:
         """
         Execute a tool/action (MCP tools/call).
 
@@ -238,27 +248,59 @@ class TaskSession:
             raise TaskClosedException(self.session_id)
 
         try:
-            action = Action(
-                id=str(uuid.uuid4()),
-                name=request.params.name,  # MCP format: request.params.name
-                arguments=request.params.arguments or {},
-            )
+            tool_name = request.params.name
+            tool_args = request.params.arguments or {}
 
-            result = self.env.step(action)
+            # Call MCP server directly (in-memory, no HTTP)
+            if self.mcp_server:
+                # FastMCP server provides async call_tool() method
+                # Returns Sequence[ContentBlock] or dict
+                result = await self.mcp_server.call_tool(tool_name, tool_args)
 
+                # Extract text from result (FastMCP returns ContentBlock sequence or dict)
+                if isinstance(result, dict):
+                    result_text = str(result)
+                elif hasattr(result, "__iter__"):
+                    # ContentBlock sequence - extract text from first text block
+                    result_text = next((block.text for block in result if hasattr(block, "text")), str(result))
+                else:
+                    result_text = str(result)
+            else:
+                # Fallback to environment step (for backwards compatibility)
+                action = Action(
+                    id=str(uuid.uuid4()),
+                    name=tool_name,
+                    arguments=tool_args,
+                )
+                result = self.env.step(action)
+                result_text = str(result.obs)
+
+            # Update tracking
             self.step_count += 1
-            self.total_reward += result.reward
-            self.last_state = result
             self.last_updated = datetime.now()
 
-            # Convert CUBE Content to MCP TextContent
-            mcp_content = [MCPTextContent(type="text", text=str(c.data)) for c in result.obs.contents]
+            # Create observation for validation
+            obs = Observation.from_text(result_text)
 
+            # Check if task is complete or validate per step
+            if self.env.task.validate_per_step or self.env.task.finished():
+                reward, info = self.env.task.validate_task(obs)
+                self.total_reward += reward
+                self.last_state = EnvironmentOutput(
+                    obs=obs,
+                    reward=reward,
+                    terminated=self.env.task.finished(),
+                    truncated=False,
+                    info=info,
+                )
+
+            # Return MCP format
+            mcp_content = [MCPTextContent(type="text", text=result_text)]
             return MCPCallToolResult(content=mcp_content, isError=False)
 
         except Exception as e:
             logger.exception(f"Tool execution failed: {e}")
-            error_content = [MCPTextContent(type="text", text=f"Error executing tool {request.params.name}: {str(e)}")]
+            error_content = [MCPTextContent(type="text", text=f"Error executing tool {tool_name}: {str(e)}")]
             return MCPCallToolResult(content=error_content, isError=True)
 
     def list_resources(self) -> MCPListResourcesResult:
@@ -413,7 +455,7 @@ class TaskSession:
             info=enriched_info,
         )
 
-    def step(self, request: StepRequest) -> StepResponse:
+    async def step(self, request: StepRequest) -> StepResponse:
         """
         Execute a tool and return both tool result and evaluation (CUBE cube/step).
 
@@ -433,7 +475,7 @@ class TaskSession:
             raise TaskClosedException(self.session_id)
 
         tool_request = MCPCallToolRequest(params=request.params)
-        self.call_tool(tool_request)
+        await self.call_tool(tool_request)
         evaluation = self.evaluate()
         return StepResponse(response=evaluation)
 
