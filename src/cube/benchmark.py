@@ -27,10 +27,10 @@ logger = logging.getLogger(__name__)
 
 
 class Benchmark(TypedBaseModel, ABC):
-    """Represents a benchmark consisting of multiple tasks and an environment."""
+    """Represents a benchmark consisting of multiple tasks."""
 
     metadata: BenchmarkMetadata  # cube/info returns this
-    tool_config: ToolConfig  # set in setup()
+    tool_config: ToolConfig | None = None  # ToolConfig for MCP server creation
     _task_list: list[Task] = PrivateAttr(default_factory=list)  # cache loaded tasks
     _local_sessions: dict[str, TaskSession] = {}  # track task sessions in python mode
     _session_manager: SessionManager | None = None  # set in setup() when server_mode is True
