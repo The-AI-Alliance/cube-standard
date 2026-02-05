@@ -1,96 +1,84 @@
 """
-@Nicolas, Not sure why we need this for CUBE specifications after shifting to MCP python API.    
+Tool configuration for CUBE benchmarks.
+
+ToolConfig allows researchers to swap MCP server implementations for experimentation,
+enabling research on different tool sets, implementations, and configurations without
+modifying benchmark code.
 """
 
-
-import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Protocol, Type, TypeAlias
+from typing import TYPE_CHECKING
 
-import litellm.utils
-from mcp.types import Tool as MCPTool
-from typing_extensions import get_protocol_members
+from mcp.server.fastmcp import FastMCP
 
-from cube.types import Action, Content, Observation, TypedBaseModel
+from cube.types import TypedBaseModel
 
-logger = logging.getLogger(__name__)
-
-class ActionSpace(Protocol):
-    """Base class for action spaces."""
-
-    pass
-
-
-ActionSubset: TypeAlias = tuple[Callable, ...]
-
-
-class AbstractTool(ABC):
-    """
-    Abstract interface for objects that can react on a list of actions.
-    List defined by the ActionSpace that tool inherits.
-    """
-
-    def reset(self) -> None:
-        """Optional reset the tool to its initial state."""
-        pass
-
-    @abstractmethod
-    def execute_action(self, action: Action) -> Any:
-        """Execute a single action and return the result."""
-        pass
-
-    @abstractmethod
-    def get_actions(self) -> list[MCPTool]:
-        """Returns list of actions supported by that tool."""
-        pass
-
-    def close(self) -> None:
-        """Optional clean up tool resources."""
-        pass
+# Forward reference to avoid circular import
+if TYPE_CHECKING:
+    from cube.task import Task
 
 
 class ToolConfig(TypedBaseModel, ABC):
-    """Base class for tool configurations."""
+    """
+    Configuration for creating MCP servers with task-specific tools.
+
+    ToolConfig enables research on tool variability by allowing researchers to:
+    - Swap out different tool implementations (e.g., Playwright vs Selenium)
+    - Provide different tool sets (e.g., basic vs advanced browser tools)
+    - Use different MCP server implementations
+    - Configure tool behavior (e.g., browser types, shell environments)
+
+    Example:
+        >>> class BrowserToolConfig(ToolConfig):
+        ...     browser_type: str = "chromium"
+        ...     headless: bool = True
+        ...
+        ...     def create_mcp_server(self, task: WebTask) -> FastMCP:
+        ...         mcp = FastMCP(f"Browser: {task.id}")
+        ...
+        ...         @mcp.tool()
+        ...         def navigate(url: str) -> str:
+        ...             return task.navigate_with_browser(url, self.browser_type)
+        ...
+        ...         @mcp.tool()
+        ...         def click(selector: str) -> str:
+        ...             return task.click_element(selector)
+        ...
+        ...         return mcp
+    """
 
     @abstractmethod
-    def make(self) -> AbstractTool:
+    def create_mcp_server(self, task: "Task") -> FastMCP:
+        """
+        Create and configure an MCP server for the given task.
+
+        This method provides full control over MCP server creation:
+        - Choose which tools to register
+        - Implement tools with different behaviors
+        - Configure tool parameters based on research needs
+
+        Args:
+            task: The task instance with state and metadata. Task state
+                  (e.g., self.counter, self.browser) can be accessed via closure.
+
+        Returns:
+            FastMCP server with tools registered
+
+        Example:
+            >>> def create_mcp_server(self, task: CounterTask) -> FastMCP:
+            ...     mcp = FastMCP(f"Counter: {task.id}")
+            ...
+            ...     @mcp.tool()
+            ...     def increment() -> str:
+            ...         task.counter += 1
+            ...         return f"Counter is now {task.counter}"
+            ...
+            ...     if self.enable_decrement:  # Configurable feature
+            ...         @mcp.tool()
+            ...         def decrement() -> str:
+            ...             task.counter -= 1
+            ...             return f"Counter is now {task.counter}"
+            ...
+            ...     return mcp
+        """
         pass
-
-
-class Tool(AbstractTool):
-    """
-    Base class for tool that implements an action space protocol.
-
-    :var Returns: Description
-    """
-
-    action_space: Type[ActionSpace]
-
-    def get_action_method(self, action) -> Callable:
-        if not getattr(self.action_space, action.name, None):
-            raise ValueError(f"Action {action.name} is not a part of {self.action_space}.")
-        if not (fn := getattr(self, action.name, None)):
-            raise ValueError(f"Action {action.name} is not implemented in {self.__class__.__name__}.")
-        return fn
-
-    def execute_action(self, action: Action) -> Observation:
-        fn = self.get_action_method(action)
-        try:
-            action_result = fn(**action.arguments) or "Success"
-        except Exception as e:
-            action_result = f"Error executing action {action.name}: {e}"
-            logger.exception(action_result)
-        return Observation(contents=[Content(data=action_result, tool_call_id=action.id)])
-
-    def get_actions(self) -> list[MCPTool]:
-        """Returns list of actions supported by that tool."""
-        action_names = get_protocol_members(self.action_space)
-        tools = []
-        for name in action_names:
-            func = getattr(self, name)
-            schema = litellm.utils.function_to_dict(func)
-            # litellm returns 'parameters', rename to 'inputSchema' for MCP compliance
-            if "parameters" in schema:
-                schema["inputSchema"] = schema.pop("parameters")
-            tools.append(MCPTool(**schema))
-        return tools
