@@ -14,13 +14,14 @@ from datetime import datetime
 from typing import Any
 
 from mcp.types import (
+    ContentBlock,
+    TextResourceContents,
+)
+from mcp.types import (
     Resource as MCPResource,
 )
 from mcp.types import (
     TextContent as MCPTextContent,
-)
-from mcp.types import (
-    TextResourceContents,
 )
 from mcp.types import (
     Tool as MCPTool,
@@ -247,10 +248,9 @@ class TaskSession:
         if self.status == TaskStatusEnum.stopped:
             raise TaskClosedException(self.session_id)
 
+        tool_name = request.params.name
+        tool_args = request.params.arguments or {}
         try:
-            tool_name = request.params.name
-            tool_args = request.params.arguments or {}
-
             # Call MCP server directly (in-memory, no HTTP)
             if self.mcp_server:
                 # FastMCP server provides async call_tool() method
@@ -295,12 +295,14 @@ class TaskSession:
                 )
 
             # Return MCP format
-            mcp_content = [MCPTextContent(type="text", text=result_text)]
+            mcp_content: list[ContentBlock] = [MCPTextContent(type="text", text=result_text)]
             return MCPCallToolResult(content=mcp_content, isError=False)
 
         except Exception as e:
             logger.exception(f"Tool execution failed: {e}")
-            error_content = [MCPTextContent(type="text", text=f"Error executing tool {tool_name}: {str(e)}")]
+            error_content: list[ContentBlock] = [
+                MCPTextContent(type="text", text=f"Error executing tool {tool_name}: {str(e)}")
+            ]
             return MCPCallToolResult(content=error_content, isError=True)
 
     def list_resources(self) -> MCPListResourcesResult:

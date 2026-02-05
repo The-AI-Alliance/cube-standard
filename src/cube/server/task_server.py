@@ -98,7 +98,7 @@ class SessionManager:
         # Get port from pool
         if not self.available_ports:
             raise RuntimeError("No available ports for task server")
-        port = self.available_ports.pop(0)
+        port = self.available_ports.pop(0)  # TODO: do not rely on available_ports and allocate port dynamically
         self.used_ports.append(port)
 
         # Find task
