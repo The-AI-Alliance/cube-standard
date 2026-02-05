@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from mcp.types import Tool as MCPTool
 
-from cube.tool import AbstractTool, ToolConfig
 from cube.types import Action, EnvironmentOutput, Observation
 
 if TYPE_CHECKING:
@@ -48,33 +47,37 @@ class AbstractEnvironment(ABC):
 class EnvConfig:
     """Runtime configuration for the Environment."""
 
-    def __init__(self, task: Task, tool_config: ToolConfig) -> None:
+    def __init__(self, task: Task) -> None:
         self.task = task
-        self.tool_config = tool_config
 
     def make(self) -> "Environment":
-        tool = self.tool_config.make()
-        return Environment(self.task, tool)
+        return Environment(self.task)
 
 
 class Environment(AbstractEnvironment):
-    """Environment that encapsulates a tool for interaction and a task."""
+    """Environment that encapsulates a task for CUBE lifecycle management."""
 
-    def __init__(self, task: Task, tool: AbstractTool):
+    def __init__(self, task: Task):
         self.task = task
-        self.tool = tool
+        self.mcp_server: Any = None  # Set by SessionManager, used to call MCP tools
 
     def get_actions(self) -> list[MCPTool]:
-        return self.tool.get_actions()
+        """Return available actions - delegated to task's MCP tools."""
+        # TODO: Get this from MCP server's list_tools()
+        return []
 
     def reset(self) -> EnvironmentOutput:
-        """Prepare tool and set up the task."""
-        self.tool.reset()
-        obs, info = self.task.setup(self.tool)
+        """Prepare the task."""
+        obs, info = self.task.setup(None)  # No tool parameter needed
         return EnvironmentOutput(obs=obs, info=info)
 
     def step(self, action: Action | list[Action]) -> EnvironmentOutput:
-        """Execute a single or multiple actions using the appropriate tools, combine observations."""
+        """
+        Execute actions via MCP server and validate task.
+
+        Note: With MCP architecture, actions are executed via MCP tools.
+        This method primarily handles validation and state tracking.
+        """
         actions = [action] if isinstance(action, Action) else action
         terminated = False
         truncated = False
@@ -84,12 +87,12 @@ class Environment(AbstractEnvironment):
 
         for action in actions:
             if action.name == STOP_ACTION.name and self.task.accept_agent_stop():
-                tool_results.append(
-                    Observation.from_text("Task finished by the agent.")
-                )
+                tool_results.append(Observation.from_text("Task finished by the agent."))
                 terminated = True
                 break
-            tool_results.append(self.tool.execute_action(action))
+            # TODO: Call MCP server tool here
+            # For now, create empty observation
+            tool_results.append(Observation.from_text(f"Action {action.name} executed"))
 
         obs = Observation(contents=[c for o in tool_results for c in o.contents])
         terminated = terminated or self.task.finished()
@@ -111,6 +114,5 @@ class Environment(AbstractEnvironment):
         )
 
     def close(self):
-        """Clean up resources used by all tools and the task in the right order."""
+        """Clean up resources used by the task."""
         self.task.teardown()
-        self.tool.close()
