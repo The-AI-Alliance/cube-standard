@@ -1,79 +1,50 @@
 """Minimal counter benchmark - toy bench"""
 
-from typing import Any, Protocol
+from typing import Any
 
+from mcp.server.fastmcp import FastMCP
 from mcp.types import Tool as MCPTool
 
 from cube.benchmark import Benchmark
 from cube.task import Task
-from cube.tool import AbstractTool, Tool, ToolConfig
+from cube.tool import ToolConfig
 from cube.types import (
     BenchmarkMetadata,
-    MCPCallToolRequest,
-    MCPCallToolRequestParams,
     Observation,
-    ResetRequest,
     ShutdownRequest,
     ShutdownResponse,
-    SpawnRequest,
     TaskMetadata,
 )
 
 
-# 1. Action Space
-class CounterActions(Protocol):
-    """Protocol defining counter actions."""
-
-    def increment(self) -> str:
-        """Increment counter by 1."""
-        ...
-
-    def get_value(self) -> str:
-        """Get current counter value."""
-        ...
-
-
-# 2. Tool Implementation
-class CounterTool(Tool):
-    """A simple counter tool with minimal state."""
-
-    action_space = CounterActions
-
-    def __init__(self):
-        """Initialize counter at 0."""
-        self.value = 0
-        self.history = []
-
-    def reset(self) -> None:
-        """Reset counter to 0."""
-        self.value = 0
-        self.history = []
-
-    def increment(self) -> str:
-        """Increment counter by 1."""
-        self.value += 1
-        self.history.append("increment")
-        return "Counter incremented"
-
-    def get_value(self) -> str:
-        """Get current counter value."""
-        return f"Counter value is: {self.value}"
-
-    def close(self) -> None:
-        """Clean up resources."""
-        self.history = []
-
-
-# 3. Tool Config
+# ToolConfig Implementation
 class CounterToolConfig(ToolConfig):
-    """Configuration for counter tool."""
+    """Tool configuration for counter benchmark."""
 
-    def make(self) -> AbstractTool:
-        """Create and return a CounterTool instance."""
-        return CounterTool()
+    def create_mcp_server(self, task: Task) -> FastMCP:
+        """Create MCP server with counter tools."""
+        mcp = FastMCP(f"Counter Task: {task.metadata.id}")
+
+        # Cast to ReachTargetTask for type safety
+        assert isinstance(task, ReachTargetTask)
+        reach_task = task
+
+        @mcp.tool()
+        def increment() -> str:
+            """Increment the counter by 1"""
+            reach_task.counter += 1
+            reach_task.history.append("increment")
+            return f"Counter is now {reach_task.counter}"
+
+        @mcp.tool()
+        def get_value() -> str:
+            """Get the current counter value"""
+            return f"Counter value is: {reach_task.counter}"
+
+        return mcp
 
 
-# 4. Task Implementation
+# 1. Task Implementation
 class ReachTargetTask(Task):
     """Task: Increment counter to reach target value."""
 
@@ -87,31 +58,34 @@ class ReachTargetTask(Task):
             domain="counter",
             max_steps=target + 2,
         )
+        # State as Task attributes
+        self.counter = 0
         self.target = target
-        self._tool = None
+        self.history: list[str] = []
 
-    def setup(self, tool: AbstractTool) -> tuple[Observation, dict[str, Any]]:
+    def setup(self, tool: Any) -> tuple[Observation, dict[str, Any]]:
         """Set up the task."""
-        self._tool = tool
+        self.counter = 0
+        self.history = []
         obs = Observation.from_text(f"Counter starts at 0. Use 'increment' action to reach {self.target}.")
         return obs, {"task_type": "reach_target", "target": self.target}
 
     def validate_task(self, obs: Observation) -> tuple[float, dict[str, Any]]:
         """Validate if counter reached target."""
-        if self._tool.value == self.target:
+        if self.counter == self.target:
             return 1.0, {
                 "solved": True,
-                "value": self._tool.value,
-                "steps": len(self._tool.history),
+                "value": self.counter,
+                "steps": len(self.history),
             }
 
         # Partial reward based on progress
-        progress = min(1.0, self._tool.value / self.target) if self.target > 0 else 0.0
+        progress = min(1.0, self.counter / self.target) if self.target > 0 else 0.0
         return progress * 0.5, {
             "solved": False,
-            "value": self._tool.value,
+            "value": self.counter,
             "target": self.target,
-            "steps": len(self._tool.history),
+            "steps": len(self.history),
         }
 
     def filter_actions(self, actions: list[MCPTool]) -> list[MCPTool]:
@@ -120,10 +94,10 @@ class ReachTargetTask(Task):
 
     def finished(self) -> bool:
         """Check if task is complete."""
-        return self._tool.value == self.target
+        return self.counter == self.target
 
 
-# 5. Benchmark Implementation
+# 2. Benchmark Implementation
 class CounterBenchmark(Benchmark):
     """Minimal benchmark with counter tasks."""
 
@@ -136,15 +110,18 @@ class CounterBenchmark(Benchmark):
             num_tasks=2,
             tags=["toy", "counter", "minimal"],
         )
-        tool_config = CounterToolConfig()
-        super().__init__(metadata=metadata, tool_config=tool_config)
+        super().__init__(metadata=metadata)
 
     def setup_benchmark_resources(
         self,
         tool_config: Any = None,
+        **kwargs,
     ):
         """Set up the benchmark."""
-        return super().setup_benchmark_resources(tool_config=self.tool_config)
+        # Use provided tool_config or default to CounterToolConfig
+        if tool_config is None:
+            tool_config = CounterToolConfig()
+        return super().setup_benchmark_resources(tool_config=tool_config, **kwargs)
 
     def load_tasks(self, cache: bool = True):
         """Load counter tasks."""
@@ -186,39 +163,69 @@ class CounterBenchmark(Benchmark):
             self._local_sessions = {}
 
 
-# 6. Test Function
+# 3. Test Function
 def test_simple_counting():
-    """Test the counter benchmark."""
-    print("Starting counter benchmark test...")
+    """Test the counter benchmark with MCP integration."""
+    print("Starting counter benchmark test with MCP integration...")
 
-    # Create and setup benchmark
+    # Create benchmark
     benchmark = CounterBenchmark()
-    benchmark.setup(available_ports=[9000], server_mode=False)
 
-    # Spawn task "count-to-3"
-    spawn_resp = benchmark.spawn(SpawnRequest(task_id="count-to-3"))
-    session = spawn_resp.other["session"]
+    # Load tasks
+    tasks = benchmark.load_tasks()
+    assert len(tasks) == 2, "Expected 2 tasks"
 
-    # Reset task
-    session.reset(ResetRequest())
+    task = tasks[0]  # count-to-3
+    assert task.metadata.id == "count-to-3"
+    assert task.target == 3
 
-    # Call increment() 3 times
-    for i in range(3):
-        result = session.call_tool(MCPCallToolRequest(params=MCPCallToolRequestParams(name="increment", arguments={})))
-        print(f"Step {i + 1}: {result.content[0].text}")
+    # Test MCP tool registration
+    import asyncio
 
-    # Evaluate - should be solved
-    eval_result = session.evaluate()
-    print(f"\nEvaluation: reward={eval_result.reward}, info={eval_result.info}")
+    from cube.server.mcp_task_server import create_task_mcp_server
 
-    assert eval_result.reward == 1.0, f"Expected reward 1.0, got {eval_result.reward}"
-    assert eval_result.info["solved"], "Task should be solved"
+    async def test_mcp_tools():
+        # Create MCP server for the task using ToolConfig
+        tool_config = CounterToolConfig()
+        mcp_server = create_task_mcp_server(task, tool_config=tool_config)
 
-    # Cleanup
-    benchmark.shutdown(ShutdownRequest(session_id=spawn_resp.session_id))
-    benchmark.close()
+        # List tools
+        tools = await mcp_server.list_tools()
+        tool_names = [tool.name for tool in tools]
+        assert "increment" in tool_names, "Expected 'increment' tool"
+        assert "get_value" in tool_names, "Expected 'get_value' tool"
+        print(f"✓ Found tools: {tool_names}")
 
-    print("\n✓ Test passed!")
+        # Test increment tool
+        result = await mcp_server.call_tool("increment", {})
+        assert "Counter is now 1" in str(result), f"Unexpected result: {result}"
+        print(f"✓ Increment result: {result}")
+
+        # Test get_value tool
+        result = await mcp_server.call_tool("get_value", {})
+        assert "Counter value is: 1" in str(result), f"Unexpected result: {result}"
+        print(f"✓ Get value result: {result}")
+
+        # Increment twice more to reach target
+        await mcp_server.call_tool("increment", {})
+        await mcp_server.call_tool("increment", {})
+
+        # Verify counter reached target
+        assert task.counter == 3, f"Expected counter to be 3, got {task.counter}"
+        assert task.finished(), "Task should be finished"
+        print(f"✓ Counter reached target: {task.counter}")
+
+        # Test validation
+        obs = Observation.from_text("Task complete")
+        reward, info = task.validate_task(obs)
+        assert reward == 1.0, f"Expected reward 1.0, got {reward}"
+        assert info["solved"] is True
+        print(f"✓ Task validation: reward={reward}, solved={info['solved']}")
+
+    # Run async test
+    asyncio.run(test_mcp_tools())
+
+    print("✓ All tests passed! MCP integration working correctly.")
 
 
 # 7. Main
