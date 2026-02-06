@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from mcp.types import Tool as MCPTool
 
@@ -59,7 +59,6 @@ class Environment(AbstractEnvironment):
 
     def __init__(self, task: Task):
         self.task = task
-        self.mcp_server: Any = None  # Set by SessionManager, used to call MCP tools
 
     def get_actions(self) -> list[MCPTool]:
         """Return available actions - delegated to task's MCP tools."""

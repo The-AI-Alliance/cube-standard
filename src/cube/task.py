@@ -145,7 +145,7 @@ class TaskSession:
         >>> session = TaskSession(task_id="task-1", env=env)
         >>>
         >>> # MCP protocol
-        >>> tools = session.list_tools()
+        >>> tools = await session.list_tools()
         >>> result = session.call_tool(MCPCallToolRequest(tool_name="click", arguments={"x": 10}))
         >>>
         >>> # CUBE extensions
@@ -214,6 +214,7 @@ class TaskSession:
 
         ==> Source code in .venv/lib/python3.12/site-packages/mcp/client/session.py
         """
+        logger.debug(f"[ENTRY] TaskSession.list_tools - {self.session_id} listing tools")
         if self.status == TaskStatusEnum.stopped:
             raise TaskClosedException(self.session_id)
 
@@ -221,7 +222,9 @@ class TaskSession:
         if self.mcp_server:
             # FastMCP server provides async list_tools() method
             tools = await self.mcp_server.list_tools()
-            filtered_tools = self.env.task.filter_actions(tools)
+            filtered_tools = self.env.task.filter_actions(
+                tools
+            )  # TODO: filter_actions expects list[Tool], may need to adapt for MCPListToolsResult
             return MCPListToolsResult(tools=filtered_tools)
 
         # Fallback to environment actions (for backwards compatibility)
@@ -339,11 +342,6 @@ class TaskSession:
             ),
         ]
 
-        # Allow tasks to provide additional resources
-        if hasattr(self.env.task, "get_resources"):
-            additional_resources = self.env.task.get_resources()
-            resources.extend(additional_resources)
-
         return MCPListResourcesResult(resources=resources)
 
     def read_resource(self, uri: str) -> MCPReadResourceResult:
@@ -372,7 +370,7 @@ class TaskSession:
         if uri == "task://description":
             description = self.env.task.metadata.description
             return MCPReadResourceResult(
-                contents=[TextResourceContents(uri=uri, mimeType="text/plain", text=description)]
+                contents=[TextResourceContents(uri=uri, mimeType="text/plain", text=description)]  # type: ignore
             )
 
         if uri == "obs://current":
@@ -384,7 +382,7 @@ class TaskSession:
                             mimeType="text/plain",
                             text="No observation yet. Call reset() first.",
                         )
-                    ]
+                    ]  # type: ignore
                 )
 
             # Convert observation contents to JSON string
