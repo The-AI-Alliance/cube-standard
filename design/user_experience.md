@@ -190,18 +190,3 @@ We should target the following workflow for CUBE-Developers
 4. Run our provided stress tests to provide various metrics about speed, scalability, and robustness  
 5. Go back to step 2 to adjust the code if necessary  
 6. Run a generalist agent with AL2 to test performance. If performance is not as expected, debug using, e.g., AL2 and go back to step 2\.
-
-# Core API
-
-See [main specs](main_specs.md)
-
-# Blocks
-
-### Docker Container
-
-See [Hack-md link](https://hackmd.io/@LfpqBVwbQmSWV7ubVlFKHA/By2S-K8vZx/edit) (concise AI-generated and reviewed).
-
-### VM Container
-
-[Hack-md link](https://hackmd.io/nUZ092_rQLKwI2Jq2BpIxQ)
-

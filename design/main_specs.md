@@ -480,104 +480,6 @@ class TaskLogic(ABC):
         """
 ```
 
-### ToolConfig
-
-Configuration for tool instantiation.
-
-```python
-class ToolConfig(ABC):
-    """
-    Serializable tool configuration.
-    
-    Allows different tool implementations (BrowserGym, Playwright MCP, etc).
-    """
-    
-    @abstractmethod
-    def make(self) -> Tool:
-        """
-        Create tool instance.
-        
-        Called during task_config.make().
-        
-        Returns: Instantiated tool
-        
-        Implementation examples:
-        - BrowserGymToolConfig -> BrowserGymTool
-        - PlaywrightMCPToolConfig -> PlaywrightMCPTool
-        - TerminalToolConfig -> TerminalTool
-        """
-
-
-class BrowserToolConfig(ToolConfig):
-    """
-    Configuration for browser tools.
-    
-    Different implementations share Chrome DevTools Protocol connection.
-    """
-    
-    implementation: Literal["browsergym", "playwright-mcp", "custom"]
-    headless: bool = True
-    viewport_size: Tuple[int, int] = (1280, 720)
-    
-    # Chrome DevTools Protocol connection (for shared state)
-    cdp_url: str | None = None
-    
-    def make(self) -> Tool:
-        """Create browser tool based on implementation."""
-        if self.implementation == "browsergym":
-            return BrowserGymTool(self.headless, self.viewport_size)
-        elif self.implementation == "playwright-mcp":
-            return PlaywrightMCPTool(self.cdp_url or self._create_cdp())
-        # ...
-```
-
-### Tool
-
-Tool interface (browser, terminal, etc).
-
-```python
-class Tool(ABC):
-    """
-    Tool for agent interaction (browser, terminal, etc).
-    
-    Not serializable (has live connections).
-    """
-    
-    @abstractmethod
-    def execute_action(self, action: Action) -> Observation:
-        """Execute action, return observation."""
-    
-    @abstractmethod
-    def get_observation(self) -> Observation:
-        """Get current state observation."""
-    
-    @abstractmethod
-    def close(self):
-        """Cleanup tool resources."""
-
-
-class BrowserTool(Tool):
-    """
-    Browser tool (can be BrowserGym, Playwright, Puppeteer, etc).
-    
-    All implementations expose same API but may use different backends.
-    For interop, they can share Chrome DevTools Protocol connection.
-    """
-    
-    @abstractmethod
-    def get_page(self) -> Any:
-        """
-        Get underlying page object for task_logic.setup().
-        
-        Returns:
-        - Playwright: playwright.Page
-        - Puppeteer: puppeteer.Page
-        - BrowserGym: browsergym abstraction
-        
-        Allows task_logic.setup(page=tool.get_page()) regardless of tool impl.
-        """
-```
-
 ## Type Definitions (continued)
 
 ## Best Practices
@@ -593,11 +495,6 @@ class BrowserTool(Tool):
 - Store as list of dicts (can load into pandas DataFrame)
 - Include filterable fields (category, difficulty, etc)
 - Keep task-specific data (intent, eval criteria) separate from infrastructure refs
-
-**Tool Configuration:**
-- ToolConfig allows different implementations (BrowserGym vs Playwright MCP)
-- Browser tools can share Chrome DevTools Protocol for interop
-- task_logic.setup() can receive pre-initialized tool objects (e.g., page)
 
 **Reference Updates:**
 - Design configs to be updateable without re-reading task metadata
@@ -653,34 +550,6 @@ classDiagram
         +evaluate(observation) bool
     }
 
-    class ToolConfig {
-        <<abstract>>
-        +make() Tool
-    }
-
-    class Tool {
-        <<abstract>>
-        +execute_action(action) Observation
-        +get_observation() Observation
-        +close() void
-    }
-
-    class BrowserToolConfig {
-        +str implementation
-        +bool headless
-        +Tuple viewport_size
-        +str cdp_url
-        +make() Tool
-    }
-
-    class BrowserTool {
-        <<abstract>>
-        +get_page() Any
-        +execute_action(action) Observation
-        +get_observation() Observation
-        +close() void
-    }
-
     class WebArenaBenchmark {
         +VMConfig vm_config
         +VM vm
@@ -695,13 +564,11 @@ classDiagram
     class WebArenaTaskConfig {
         +str task_id
         +str base_url
-        +BrowserToolConfig tool_config
         +make() Task
     }
 
     class WebArenaTask {
         +WebArenaTaskLogic task_logic
-        +BrowserTool tools
         +int step_count
         +reset(seed) Observation
         +step(action) Tuple
@@ -738,23 +605,14 @@ classDiagram
     TaskConfig <|-- WebArenaTaskConfig : implements
     Task <|-- WebArenaTask : implements
     TaskLogic <|-- WebArenaTaskLogic : implements
-    ToolConfig <|-- BrowserToolConfig : implements
-    Tool <|-- BrowserTool : implements
-    
     Benchmark --> TaskConfig : creates
     TaskConfig --> Task : instantiates
-    TaskConfig --> ToolConfig : contains
     Task --> TaskLogic : contains
-    Task --> Tool : contains
     Task --> TaskResult : returns
-    
+
     WebArenaBenchmark --> WebArenaTaskConfig : creates
     WebArenaTaskConfig --> WebArenaTask : instantiates
-    WebArenaTaskConfig --> BrowserToolConfig : contains
     WebArenaTask --> WebArenaTaskLogic : contains
-    WebArenaTask --> BrowserTool : uses
     WebArenaBenchmark --> VM : manages
     WebArenaTaskConfig ..> VM : references (URL)
-    
-    TaskLogic --> Tool : setup may use
 ```
