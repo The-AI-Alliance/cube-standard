@@ -11,6 +11,7 @@ Ray-based parallel evaluation where workers need to spin up containers, run benc
 ```python
 @ray.remote
 def evaluate_task(task_id, container_config):
+    # minimalistic code usage, container_config.make() will usually happen inside task_config.make()
     container = container_config.make()  # Blocks until ready (minutes OK)
     result = container.exec("run_benchmark.sh")
     container.stop()
