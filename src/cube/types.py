@@ -11,8 +11,10 @@ import importlib
 from enum import Enum
 from typing import Any, Self
 
+from mcp.types import (
+    CallToolRequestParams as MCPCallToolRequestParams,
+)
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
-
 
 # =============================================================================
 # Base Classes
@@ -50,6 +52,7 @@ class TypedBaseModel(BaseModel):
 
 class JSONRPCRequest(TypedBaseModel):
     """JSON-RPC 2.0 request format."""
+
     jsonrpc: str = "2.0"
     method: str
     params: dict[str, Any] | None = None
@@ -58,10 +61,12 @@ class JSONRPCRequest(TypedBaseModel):
 
 class JSONRPCResponse(TypedBaseModel):
     """JSON-RPC 2.0 response format."""
+
     jsonrpc: str = "2.0"
     result: Any | None = None
     error: dict[str, Any] | None = None
     id: str | int | None = None
+
 
 # =============================================================================
 # Core Domain Models
@@ -159,6 +164,7 @@ class EnvironmentOutput(TypedBaseModel):
 # Benchmark-Level API Schemas
 # =============================================================================
 
+
 # =============================================================================
 # cube/info endpoint
 # =============================================================================
@@ -188,8 +194,7 @@ class BenchmarkMetadata(TypedBaseModel):
     authors: list[str] = Field(default_factory=list, description="List of benchmark author names")
     license: str = Field(default="", description="Benchmark license")
     requirements: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Hardware requirements to install and run the benchmark"
+        default_factory=dict, description="Hardware requirements to install and run the benchmark"
     )
     num_tasks: int = Field(default=0, description="Total number of tasks")
     tags: list[str] = Field(default_factory=list, description="Benchmark tags")
@@ -215,16 +220,10 @@ class TaskRequest(TypedBaseModel):
         filter (dict[str, Any]): Filter criteria for tasks (default: empty dict)
     """
 
-    task_id: str | None = Field(
-        default=None, description="Unique task identifier. If None, fetches all task"
-    )
+    task_id: str | None = Field(default=None, description="Unique task identifier. If None, fetches all task")
     offset: int = Field(default=0, description="Offset for pagination")
-    limit: int = Field(
-        default=-1, description="Limit for number od tasks to return. -1 means no limit"
-    )
-    filter: dict[str, Any] = Field(
-        default_factory=dict, description="Filter criteria for tasks"
-    )
+    limit: int = Field(default=-1, description="Limit for number od tasks to return. -1 means no limit")
+    filter: dict[str, Any] = Field(default_factory=dict, description="Filter criteria for tasks")
 
 
 class TaskMetadata(TypedBaseModel):
@@ -255,6 +254,7 @@ class TaskMetadata(TypedBaseModel):
     domain: str | None = Field(default=None, description="Task domain (e.g., 'web', 'coding')")
     other: dict[str, Any] = Field(default_factory=dict, description="Additional task metadata")
     # TODO: discuss adding fields such as created_at, updated_at, etc.
+
 
 class TaskListResponse(TypedBaseModel):
     """
@@ -292,9 +292,7 @@ class SpawnRequest(TypedBaseModel):
     """
 
     task_id: str = Field(..., description="Task ID to spawn")
-    seed: int | None = Field(
-        default=None, description="Random seed for reproducibility"
-    )
+    seed: int | None = Field(default=None, description="Random seed for reproducibility")
 
 
 class SpawnResponse(TypedBaseModel):
@@ -304,16 +302,14 @@ class SpawnResponse(TypedBaseModel):
     Used by: cube/spawn
 
     Attributes:
-        url (str | None): URL endpoint for the spawned task session
+        url (str): URL endpoint for the spawned task session
         session_id (str): Unique session identifier
         other (dict[str, Any]): Additional session information (default: empty dict)
     """
 
-    url: str | None = Field(default=None, description="URL endpoint for the spawned task session")
+    url: str = Field(..., description="URL endpoint for the spawned task session")
     session_id: str = Field(..., description="Unique session identifier")
-    other: dict[str, Any] = Field(
-        default_factory=dict, description="Additional session information"
-    )
+    other: dict[str, Any] = Field(default_factory=dict, description="Additional session information")
     # TODO: discuss adding fields such as spawned_time, expiration_time, etc. or keep them in other
 
 
@@ -352,12 +348,8 @@ class StatusRequest(TypedBaseModel):
         description="Unique task session identifier. If None, fetches all running tasks",
     )
     offset: int = Field(default=0, description="Offset for pagination")
-    limit: int = Field(
-        default=-1, description="Limit for number od tasks to return. -1 means no limit"
-    )
-    filter: dict[str, Any] = Field(
-        default_factory=dict, description="Filter criteria for tasks"
-    )
+    limit: int = Field(default=-1, description="Limit for number od tasks to return. -1 means no limit")
+    filter: dict[str, Any] = Field(default_factory=dict, description="Filter criteria for tasks")
 
 
 class TaskStatus(TypedBaseModel):
@@ -416,9 +408,7 @@ class ShutdownRequest(TypedBaseModel):
         session_id (str | None): Specific session to shutdown (omit for all) (default: None)
     """
 
-    session_id: str | None = Field(
-        default=None, description="Specific session to shutdown (omit for all)"
-    )
+    session_id: str | None = Field(default=None, description="Specific session to shutdown (omit for all)")
 
 
 class ShutdownResponse(TypedBaseModel):
@@ -433,9 +423,7 @@ class ShutdownResponse(TypedBaseModel):
     """
 
     success: bool = Field(..., description="Whether shutdown was successful")
-    cleaned: list[str] = Field(
-        ..., description="List of session IDs that were cleaned up"
-    )
+    cleaned: list[str] = Field(..., description="List of session IDs that were cleaned up")
 
 
 # =============================================================================
@@ -446,44 +434,25 @@ class ShutdownResponse(TypedBaseModel):
 # tools/list endpoint -- use MCP types
 # =============================================================================
 
-from mcp.types import (
-    ListToolsRequest as MCPListToolsRequest,
-    ListToolsResult as MCPListToolsResult,
-)
 
 # =============================================================================
 # tools/call endpoint -- use MCP types
 # =============================================================================
 
-from mcp.types import (
-    CallToolRequest as MCPCallToolRequest,
-    CallToolRequestParams as MCPCallToolRequestParams,
-    CallToolResult as MCPCallToolResult,
-)
-
 # =============================================================================
 # resources/list endpoint -- use MCP types
 # =============================================================================
 
-from mcp.types import (
-    ListResourcesRequest as MCPListResourcesRequest,
-    ListResourcesResult as MCPListResourcesResult,
-    Resource as MCPResource,
-)
 
 # =============================================================================
 # resources/read endpoint -- use MCP types
 # =============================================================================
 
-from mcp.types import (
-    ReadResourceRequest as MCPReadResourceRequest,
-    ReadResourceRequestParams as MCPReadResourceRequestParams,
-    ReadResourceResult as MCPReadResourceResult,
-)
 
 # =============================================================================
 # cube/evaluation endpoint
 # =============================================================================
+
 
 class EvaluationResponse(TypedBaseModel):
     """
@@ -496,6 +465,7 @@ class EvaluationResponse(TypedBaseModel):
     """
 
     response: EnvironmentOutput = Field(..., description="Environment output after evaluation")
+
 
 # =============================================================================
 # cube/reset endpoint
@@ -545,9 +515,7 @@ class CloseResponse(TypedBaseModel):
     """
 
     success: bool = Field(..., description="Whether close was successful")
-    profiling: dict[str, Any] | None = Field(
-        default_factory=dict, description="Optional profiling data"
-    )
+    profiling: dict[str, Any] | None = Field(default_factory=dict, description="Optional profiling data")
 
 
 # =============================================================================
@@ -570,6 +538,7 @@ class StepRequest(TypedBaseModel):
     # TODO: when calling this endpoint, we should create a MCP CallToolRequest and submit it
     # we should then call cube/evaluation internally to get the evaluation response
     # finally we return the reponse as a EnvironmentOutput wrapped in StepResponse
+
 
 class StepResponse(TypedBaseModel):
     """
