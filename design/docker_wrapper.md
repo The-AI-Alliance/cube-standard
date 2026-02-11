@@ -1,5 +1,8 @@
 # CUBE Container API Specification
 
+> **CUBE Layer:** Task-level infrastructure (containers)
+> **Related:** [main_specs.md](main_specs.md) | [vm_wrapper.md](vm_wrapper.md) | [user_experience.md](user_experience.md)
+
 ## Overview
 
 The Container API provides a unified abstraction for launching and communicating with Docker containers across different backends (local Docker, Modal, HPC via EAI Toolkit).
@@ -11,7 +14,7 @@ Ray-based parallel evaluation where workers need to spin up containers, run benc
 ```python
 @ray.remote
 def evaluate_task(task_id, container_config):
-    # minimalistic code usage, container_config.make() will usually happen inside task_config.make()
+    # minimalistic code usage, container_config.make(). In practice it is called by task_config.make()
     container = container_config.make()  # Blocks until ready (minutes OK)
     result = container.exec("run_benchmark.sh")
     container.stop()
@@ -157,6 +160,8 @@ class Container(ABC):
         """Backend type: 'local', 'modal', 'toolkit'."""
 
 
+# Note: ExecResult is shared with the VM API (vm_wrapper.md).
+# In implementation, define once in a shared module (e.g., cube.types).
 @dataclass
 class ExecResult:
     stdout: str
@@ -257,6 +262,17 @@ response = requests.get(f"http://localhost:{local_port}/api")
    - Pass to backend and trust it?
    - Or monitor and kill containers that exceed limits?
 
+## Integration with CUBE Hierarchy
+
+`ContainerConfig` is referenced by `TaskConfig.container_config` in [main_specs.md](main_specs.md). In practice, `container_config.make()` is called inside `task_config.make()` on Ray workers — the harness never calls it directly.
+
+**Typical flow:**
+1. Benchmark provides `ContainerConfig` to each `TaskConfig`
+2. Ray worker calls `task_config.make(runtime_info=...)` which internally calls `container_config.make()`
+3. Container lives for the duration of the task, then `container.stop()` is called in `task.close()`
+
+For benchmarks using VMs instead of containers (e.g., WebArena), see [vm_wrapper.md](vm_wrapper.md).
+
 ## Success Criteria
 
 The design succeeds if:
@@ -266,4 +282,79 @@ The design succeeds if:
 4. Error messages clearly indicate failure point
 5. No resource leaks on failures
 6. Toolkit/HPC works despite complexity (SSH tunnels, SLURM, etc)
+
+## Class Diagram
+
+```mermaid
+classDiagram
+    class ContainerConfig {
+        +str image
+        +str backend
+        +float ram_gb
+        +float cpu_cores
+        +bool gpu
+        +float disk_gb
+        +int timeout_seconds
+        +Callable health_check
+        +List~int~ ports
+        +Dict backend_config
+        +make() Container
+    }
+
+    class Container {
+        <<abstract>>
+        +str id
+        +str backend
+        +exec(command, timeout, workdir, env) ExecResult
+        +forward_port(container_port) int
+        +get_url(container_port) str
+        +stop(timeout) void
+        +get_status() ContainerStatus
+    }
+
+    class LocalContainer {
+        +exec(command, timeout, workdir, env) ExecResult
+        +forward_port(container_port) int
+        +get_url(container_port) str
+        +stop(timeout) void
+        +get_status() ContainerStatus
+    }
+
+    class ModalContainer {
+        +exec(command, timeout, workdir, env) ExecResult
+        +forward_port(container_port) int
+        +get_url(container_port) str
+        +stop(timeout) void
+        +get_status() ContainerStatus
+    }
+
+    class ToolkitContainer {
+        +exec(command, timeout, workdir, env) ExecResult
+        +forward_port(container_port) int
+        +get_url(container_port) str
+        +stop(timeout) void
+        +get_status() ContainerStatus
+    }
+
+    class ExecResult {
+        +str stdout
+        +str stderr
+        +int exit_code
+        +float duration_seconds
+    }
+
+    class ContainerStatus {
+        +bool running
+        +bool healthy
+        +Dict~str,float~ resource_usage
+        +Dict~str,Any~ backend_info
+    }
+
+    ContainerConfig --> Container : creates
+    Container <|-- LocalContainer : implements
+    Container <|-- ModalContainer : implements
+    Container <|-- ToolkitContainer : implements
+    Container --> ExecResult : returns
+    Container --> ContainerStatus : returns
+```
 

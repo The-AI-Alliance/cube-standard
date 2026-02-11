@@ -1,5 +1,8 @@
 # CUBE VM API Specification
 
+> **CUBE Layer:** Benchmark-level infrastructure (VMs)
+> **Related:** [main_specs.md](main_specs.md) | [docker_wrapper.md](docker_wrapper.md) | [user_experience.md](user_experience.md)
+
 ## Overview
 
 The VM API provides persistent virtual machine infrastructure for benchmarks that require full OS environments (WebArena, OSWorld, etc). Unlike containers, VMs are created once per benchmark instance and live for hours, with fast state resets between tasks.
@@ -11,21 +14,29 @@ Benchmark-level VM that persists across many tasks, with application-level reset
 ```python
 # Benchmark initialization (once)
 benchmark = WebArenaBenchmark(vm_config)
-await benchmark.start()  # Blocks 5 min - creates VM
+benchmark.start()  # Blocks 5 min - creates VM
 
-# Each task resets state (fast)
+# Get task configs
+task_configs = benchmark.get_task_list()
+
+# Each task runs on Ray worker
 @ray.remote
-def evaluate_task(task_id):
-    benchmark.reset_task(task_id)  # 5-10 sec, not minutes
-    result = agent.run(benchmark.vm.get_url())
+def evaluate_task(task_config, agent_config, runtime_info):
+    task = task_config.make(runtime_info=runtime_info)  # Fast: uses existing VM
+    agent = agent_config.make()
+    obs = task.reset()  # App-level reset (5-10 sec, not minutes)
+    # ... agent loop ...
+    result = task.get_result()
+    task.close()
     return result
 
 # Parallel evaluation
-futures = [evaluate_task.remote(i) for i in range(1000)]
+runtime_info = benchmark.runtime_info
+futures = [evaluate_task.remote(tc, agent_config, runtime_info) for tc in task_configs]
 results = ray.get(futures)
 
 # Cleanup
-benchmark.cleanup()  # Destroys VM
+benchmark.stop()  # Destroys VM
 ```
 
 ## Key Design Decisions
@@ -180,6 +191,8 @@ class VM(ABC):
         """Provider: 'aws', 'azure', 'gcp'."""
 
 
+# Note: ExecResult is shared with the Container API (docker_wrapper.md).
+# In implementation, define once in a shared module (e.g., cube.types).
 @dataclass
 class ExecResult:
     stdout: str
@@ -221,17 +234,18 @@ Benchmarks choose reset strategy based on speed/isolation tradeoff.
 Application-level state reset via commands:
 
 ```python
-class WebArenaBenchmark:
-    async def reset_task(self, task_id):
+class WebArenaTaskLogic:
+    def setup(self, vm: VM):
+        """Application-level state reset via VM commands."""
         # Reset database
-        self.vm.exec("psql -c 'TRUNCATE users, orders, products CASCADE'")
-        self.vm.exec("psql -f /fixtures/base_data.sql")
-        
+        vm.exec("psql -c 'TRUNCATE users, orders, products CASCADE'")
+        vm.exec("psql -f /fixtures/base_data.sql")
+
         # Clear cache
-        self.vm.exec("redis-cli FLUSHALL")
-        
+        vm.exec("redis-cli FLUSHALL")
+
         # Reset uploads directory
-        self.vm.exec("rm -rf /var/uploads && cp -r /fixtures/uploads /var/")
+        vm.exec("rm -rf /var/uploads && cp -r /fixtures/uploads /var/")
 ```
 
 ### Medium Reset (10-30 seconds) - When Services Corrupted
@@ -239,13 +253,13 @@ class WebArenaBenchmark:
 Restart services without VM recreation:
 
 ```python
-async def reset_task(self, task_id):
+def setup(self, vm: VM):
     # If using Docker Compose on VM
-    self.vm.exec("docker-compose restart")
-    
+    vm.exec("docker-compose restart")
+
     # Or systemd services
-    self.vm.restart_service("postgresql")
-    self.vm.restart_service("nginx")
+    vm.restart_service("postgresql")
+    vm.restart_service("nginx")
 ```
 
 ### Slow Reset (Never for Per-Task)
@@ -291,39 +305,46 @@ config = VMConfig(
 )
 ```
 
-## Integration with Benchmark Pattern
+## Integration with CUBE Hierarchy
 
-VMs fit into the SharedInfrastructure pattern from the original blocks spec:
+VMs fit into the benchmark-level infrastructure pattern. The canonical `Benchmark` ABC is defined in [main_specs.md](main_specs.md). For container-based task-level infrastructure, see [docker_wrapper.md](docker_wrapper.md).
+
+> **Note:** The `SharedInfrastructure` and `SharedInfraBenchmark` classes below are proposed helper classes for the composable "blocks" approach described in [user_experience.md](user_experience.md). The canonical Benchmark ABC is defined in [main_specs.md](main_specs.md).
 
 ```python
 class SharedInfrastructure:
     """Persistent infrastructure shared across tasks."""
-    
+
     def __init__(self, vms: List[VMConfig]):
         self.vm_configs = vms
         self.vms: List[VM] = []
-    
-    async def start(self):
+
+    def start(self):
         """Launch all VMs, wait for ready."""
         self.vms = [config.make() for config in self.vm_configs]
-    
-    async def stop(self):
+
+    def stop(self):
         """Cleanup all VMs."""
         for vm in self.vms:
             vm.stop()
 
 
-class WebArenaBenchmark(SharedInfraBenchmark):
+class WebArenaBenchmark(Benchmark):
     def __init__(self):
         vm_config = VMConfig(snapshot_id="webarena-shopping", provider="aws")
-        infrastructure = SharedInfrastructure([vm_config])
-        
-        super().__init__(
-            infrastructure=infrastructure,
-            tools=BrowserTool(),
-            task_lifecycle=WebArenaTaskLifecycle(),
-            evaluation=WebArenaEvaluation(),
-        )
+        self.infrastructure = SharedInfrastructure([vm_config])
+
+    def start(self):
+        self.infrastructure.start()
+
+    @property
+    def runtime_info(self) -> Dict[str, Any] | None:
+        if not self.infrastructure.vms:
+            return None
+        return {"base_url": self.infrastructure.vms[0].get_url(80)}
+
+    def stop(self):
+        self.infrastructure.stop()
 ```
 
 ## Error Handling
@@ -464,8 +485,8 @@ classDiagram
         +SharedInfrastructure infrastructure
         +VM vm
         +start() void
-        +reset_task(task_id) void
-        +cleanup() void
+        +runtime_info Dict~str,Any~
+        +stop() void
     }
 
     VMConfig --> VM : creates
