@@ -11,7 +11,7 @@ The Benchmark and Task API defines how benchmarks expose tasks and how tasks are
 
 ```python
 # On coordinator (main process)
-benchmark = WebArenaBenchmark()
+benchmark = WebArenaBenchmark(vm_config, tool_config)
 benchmark.start()  # Initialize infrastructure (VMs, containers, etc)
 
 # Get serializable task configs
