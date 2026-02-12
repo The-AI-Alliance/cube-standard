@@ -13,7 +13,7 @@ Benchmark-level VM that persists across many tasks, with application-level reset
 
 ```python
 # Benchmark initialization (once)
-benchmark = WebArenaBenchmark(vm_config)
+benchmark = WebArenaBenchmark(vm_config, tool_config)
 benchmark.start()  # Blocks 5 min - creates VM
 
 # Get task configs
