@@ -30,9 +30,7 @@ def evaluate_task(task_config, agent_config, runtime_info):
         if terminated or truncated:
             break
 
-    result = task.get_result()
     task.close()
-    return result
 
 # Execute in parallel
 runtime_info = benchmark.runtime_info
@@ -297,15 +295,7 @@ class Task(ABC):
         Follows Gymnasium API conventions.
         """
     
-    @abstractmethod
-    def get_result(self) -> TaskResult:
-        """
-        Get final evaluation result.
-        
-        Called after episode ends.
-        
-        Returns: TaskResult with success, score, metadata
-        """
+
     
     @abstractmethod
     def close(self):
@@ -614,7 +604,6 @@ classDiagram
         +get_privilege_info() str
         +reset(seed) Observation
         +step(action) Tuple
-        +get_result() TaskResult
         +close() void
     }
 
@@ -647,7 +636,6 @@ classDiagram
         +int step_count
         +reset(seed) Observation
         +step(action) Tuple
-        +get_result() TaskResult
         +close() void
     }
 
@@ -661,13 +649,6 @@ classDiagram
         +evaluate(observation) bool
     }
 
-    class TaskResult {
-        +str task_id
-        +bool success
-        +float score
-        +int steps
-        +Dict metadata
-    }
 
     class VM {
         +get_url(port) str
@@ -683,7 +664,6 @@ classDiagram
     Benchmark --> TaskConfig : creates
     TaskConfig --> Task : instantiates
     Task --> TaskLogic : contains
-    Task --> TaskResult : returns
 
     WebArenaBenchmark --> WebArenaTaskConfig : creates
     WebArenaTaskConfig --> WebArenaTask : instantiates

@@ -154,10 +154,7 @@ class Container(ABC):
     def id(self) -> str:
         """Unique container identifier (backend-specific format)."""
     
-    @property
-    @abstractmethod  
-    def backend(self) -> str:
-        """Backend type: 'local', 'modal', 'toolkit'."""
+
 
 
 # Note: ExecResult is shared with the VM API (vm_wrapper.md).
