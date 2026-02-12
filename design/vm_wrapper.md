@@ -184,11 +184,6 @@ class VM(ABC):
     @abstractmethod
     def id(self) -> str:
         """Unique VM identifier (instance ID)."""
-    
-    @property
-    @abstractmethod
-    def provider(self) -> str:
-        """Provider: 'aws', 'azure', 'gcp'."""
 
 
 # Note: ExecResult is shared with the Container API (docker_wrapper.md).
