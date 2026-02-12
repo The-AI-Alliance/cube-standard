@@ -7,47 +7,21 @@ circular import dependencies.
 """
 
 import datetime
-import importlib
 from enum import Enum
-from typing import Any, Self
+from typing import Any
 
 from mcp.types import (
     CallToolRequestParams as MCPCallToolRequestParams,
 )
-from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+from pydantic import Field
+
+from cube import TypedBaseModel
+from cube.task import TaskMetadata
+from cube.tool import EnvironmentOutput
 
 # =============================================================================
 # Base Classes
 # =============================================================================
-
-
-class TypedBaseModel(BaseModel):
-    """
-    Base class for Pydantic models that can save and load their type information.
-
-    When serialized, includes `_type` field with the fully qualified class name.
-    When deserialized, uses `_type` to instantiate the correct subclass.
-
-    This allows saving/loading configs where the field type is an abstract base class
-    but the actual value is a concrete subclass (e.g., AgentConfig -> ReactAgentConfig).
-    """
-
-    @model_serializer(mode="wrap")
-    def _serialize_with_type(self, handler):
-        data = handler(self)
-        data["_type"] = f"{self.__class__.__module__}.{self.__class__.__name__}"
-        return data
-
-    @model_validator(mode="wrap")
-    @classmethod
-    def _deserialize_with_type(cls, value, handler):
-        if isinstance(value, dict) and "_type" in value:
-            type_path = value.pop("_type")
-            module_name, class_name = type_path.rsplit(".", 1)
-            module = importlib.import_module(module_name)
-            actual_cls = getattr(module, class_name)
-            return actual_cls.model_validate(value)
-        return handler(value)
 
 
 class JSONRPCRequest(TypedBaseModel):
@@ -68,145 +42,6 @@ class JSONRPCResponse(TypedBaseModel):
     id: str | int | None = None
 
 
-# =============================================================================
-# Core Domain Models
-# =============================================================================
-
-
-class Action(TypedBaseModel):
-    """
-    A class representing a function call.
-
-    Attributes:
-        id (str): The identifier for the tool call.
-        name (str): The name of the function being called.
-        arguments (Any): The arguments to be passed to the function.
-    """
-
-    id: str | None = None
-    name: str
-    arguments: dict[str, Any] = Field(default_factory=dict)
-
-
-class Content(TypedBaseModel):
-    """
-    Represents a piece of content in an observation.
-
-    This is CUBE's domain model for observation content. While MCP has TextContent,
-    ImageContent, etc., CUBE uses a simpler unified Content model since observations
-    may contain arbitrary data types beyond MCP's content types.
-
-    For MCP protocol responses (tool results, resources), use MCP's content types directly.
-
-    Attributes:
-        type (str): Content type (text, image, etc.) (default: "text")
-        tool_call_id (str | None): Content could be result of a tool call (default: None)
-        name (str | None): Optional name of the content (default: None)
-        data (str | bytes): The actual content data
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    type: str = Field(default="text", description="Content type (text, image, etc.)")
-    tool_call_id: str | None = None  # content could be result of a tool call
-    name: str | None = None  # optional name of the content
-    data: str | bytes
-
-
-class Observation(TypedBaseModel):
-    """
-    Represents an observation from the environment.
-
-    An observation encapsulates the information returned from the environment
-    after an action is taken. It can contain multiple pieces of content with
-    different types (text, images, etc.).
-
-    Attributes:
-        contents (list[Content]): List of content pieces that make up this observation.
-    """
-
-    contents: list[Content] = Field(default_factory=list)
-
-    @classmethod
-    def from_text(cls, text: str) -> Self:
-        return cls(contents=[Content(data=text)])
-
-    def __add__(self, other: Self) -> Self:
-        self.contents += other.contents
-        return self
-
-
-class EnvironmentOutput(TypedBaseModel):
-    """
-    Represents the result of an environment step.
-
-    This follows the Gymnasium API standard for environment responses,
-    containing the observation, reward, termination flags, and additional info.
-
-    Attributes:
-        obs (Observation): The observation from the environment after the step.
-        reward (float): The reward received for the step (default: 0.0).
-        terminated (bool): Whether the episode has terminated (default: False).
-        truncated (bool): Whether the episode was truncated due to step limit (default: False).
-        step (int): The current step number in the episode (default: 0).
-        info (dict): Additional information about the step (default: empty dict).
-    """
-
-    obs: Observation
-    reward: float = 0.0
-    terminated: bool = False
-    truncated: bool = False
-    step: int = 0
-    info: dict = Field(default_factory=dict)
-
-
-# =============================================================================
-# Benchmark-Level API Schemas
-# =============================================================================
-
-
-# =============================================================================
-# cube/info endpoint
-# =============================================================================
-class BenchmarkMetadata(TypedBaseModel):
-    """
-    Metadata describing a benchmark.
-
-    Used by:
-    - Benchmark: metadata attribute
-    - API endpoint: cube/info
-
-    Attributes:
-        name (str): Benchmark name
-        version (str): Benchmark version
-        description (str): Benchmark description
-        authors (list[str]): List of benchmark author names (default: empty list)
-        license (str): Benchmark license (default: empty string)
-        requirements (dict[str, Any]): Hardware requirements to install and run the benchmark (default: empty dict)
-        num_tasks (int): Total number of tasks (default: 0)
-        tags (list[str]): Benchmark tags (default: empty list)
-        other (dict[str, Any]): Additional metadata (default: empty dict)
-    """
-
-    name: str = Field(..., description="Benchmark name")
-    version: str = Field(..., description="Benchmark version")
-    description: str = Field(..., description="Benchmark description")
-    authors: list[str] = Field(default_factory=list, description="List of benchmark author names")
-    license: str = Field(default="", description="Benchmark license")
-    requirements: dict[str, Any] = Field(
-        default_factory=dict, description="Hardware requirements to install and run the benchmark"
-    )
-    num_tasks: int = Field(default=0, description="Total number of tasks")
-    tags: list[str] = Field(default_factory=list, description="Benchmark tags")
-    other: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
-    # TODO: discuss adding fields such as homepage, repository, citation, etc.
-
-
-# =============================================================================
-# cube/tasks endpoint
-# =============================================================================
-
-
 class TaskRequest(TypedBaseModel):
     """
     Request schema for cube/tasks endpoint.
@@ -224,36 +59,6 @@ class TaskRequest(TypedBaseModel):
     offset: int = Field(default=0, description="Offset for pagination")
     limit: int = Field(default=-1, description="Limit for number od tasks to return. -1 means no limit")
     filter: dict[str, Any] = Field(default_factory=dict, description="Filter criteria for tasks")
-
-
-class TaskMetadata(TypedBaseModel):
-    """
-    Metadata describing a task.
-
-    Used by:
-    - Task: metadata attribute
-    - API endpoint: cube/tasks (list of TaskMetadata in response)
-
-    Attributes:
-        id (str): Unique task identifier
-        seed (int | None): Random seed for the task, if applicable (default: None)
-        description (str): Task description (default: empty string)
-        tags (list[str]): List of task tags (default: empty list)
-        max_steps (int | None): Maximum number of steps allowed (default: None)
-        difficulty (str | None): Task difficulty level (default: None)
-        domain (str | None): Task domain (e.g., 'web', 'coding') (default: None)
-        other (dict[str, Any]): Additional task metadata (default: empty dict)
-    """
-
-    id: str = Field(..., description="Unique task identifier")
-    seed: int | None = Field(default=None, description="Random seed for the task, if applicable")
-    description: str = Field(default="", description="Task description")
-    tags: list[str] = Field(default_factory=list, description="List of task tags")
-    max_steps: int | None = Field(default=None, description="Maximum number of steps allowed")
-    difficulty: str | None = Field(default=None, description="Task difficulty level")
-    domain: str | None = Field(default=None, description="Task domain (e.g., 'web', 'coding')")
-    other: dict[str, Any] = Field(default_factory=dict, description="Additional task metadata")
-    # TODO: discuss adding fields such as created_at, updated_at, etc.
 
 
 class TaskListResponse(TypedBaseModel):

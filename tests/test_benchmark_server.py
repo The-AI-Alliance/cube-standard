@@ -2,17 +2,14 @@
 
 from fastapi import FastAPI
 
-from cube.benchmark import Benchmark
+from cube.benchmark import Benchmark, BenchmarkMetadata
 from cube.server import create_benchmark_server_app
-from cube.task import Task
-from cube.tool import ToolConfig
-from cube.types import (
-    BenchmarkMetadata,
-    Observation,
+from cube.server.types import (
     ShutdownRequest,
     ShutdownResponse,
-    TaskMetadata,
 )
+from cube.task import Task, TaskMetadata
+from cube.tool import Observation, ToolConfig
 
 
 def test_create_server_app():

@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 if TYPE_CHECKING:
     from cube.benchmark import Benchmark
-from cube.types import JSONRPCRequest, JSONRPCResponse, ShutdownRequest, SpawnRequest, StatusRequest, TaskRequest
+from cube.server.types import JSONRPCRequest, JSONRPCResponse, ShutdownRequest, SpawnRequest, StatusRequest, TaskRequest
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ def create_benchmark_server_app(benchmark: Benchmark) -> FastAPI:
     app = FastAPI(
         title=f"CUBE Benchmark Server - {benchmark.metadata.name}",
         description=benchmark.metadata.description,
-        version=benchmark.metadata.version
+        version=benchmark.metadata.version,
     )
 
     # CORS middleware
@@ -48,16 +48,10 @@ def create_benchmark_server_app(benchmark: Benchmark) -> FastAPI:
         try:
             metadata = benchmark.info()
             logger.debug(f"[EXIT] cube/info - request_id={request.id}, status=success")
-            return JSONRPCResponse(
-                result=metadata.model_dump(),
-                id=request.id
-            )
+            return JSONRPCResponse(result=metadata.model_dump(), id=request.id)
         except Exception as e:
             logger.debug(f"[EXIT] cube/info - request_id={request.id}, status=error, error={str(e)}")
-            return JSONRPCResponse(
-                error={"code": "INTERNAL_ERROR during cube/info", "message": str(e)},
-                id=request.id
-            )
+            return JSONRPCResponse(error={"code": "INTERNAL_ERROR during cube/info", "message": str(e)}, id=request.id)
 
     @app.post("/cube/tasks")
     async def cube_tasks(request: JSONRPCRequest) -> JSONRPCResponse:
@@ -68,17 +62,13 @@ def create_benchmark_server_app(benchmark: Benchmark) -> FastAPI:
             task_request = TaskRequest(**params)
             response = benchmark.list_tasks(task_request)
 
-            logger.debug(f"[EXIT] cube/tasks - request_id={request.id}, status=success, task_count={len(response.tasks)}")
-            return JSONRPCResponse(
-                result=response.model_dump(),
-                id=request.id
+            logger.debug(
+                f"[EXIT] cube/tasks - request_id={request.id}, status=success, task_count={len(response.tasks)}"
             )
+            return JSONRPCResponse(result=response.model_dump(), id=request.id)
         except Exception as e:
             logger.debug(f"[EXIT] cube/tasks - request_id={request.id}, status=error, error={str(e)}")
-            return JSONRPCResponse(
-                error={"code": "INTERNAL_ERROR during cube/tasks", "message": str(e)},
-                id=request.id
-            )
+            return JSONRPCResponse(error={"code": "INTERNAL_ERROR during cube/tasks", "message": str(e)}, id=request.id)
 
     @app.post("/cube/spawn")
     async def cube_spawn(request: JSONRPCRequest) -> JSONRPCResponse:
@@ -91,29 +81,27 @@ def create_benchmark_server_app(benchmark: Benchmark) -> FastAPI:
             spawn_request = SpawnRequest(**request.params)
             response = benchmark.spawn(spawn_request)
 
-            logger.debug(f"[EXIT] cube/spawn - request_id={request.id}, status=success, session_id={response.session_id}")
-            return JSONRPCResponse(
-                result=response.model_dump(),
-                id=request.id
+            logger.debug(
+                f"[EXIT] cube/spawn - request_id={request.id}, status=success, session_id={response.session_id}"
             )
+            return JSONRPCResponse(result=response.model_dump(), id=request.id)
         except ValueError as e:
-            logger.debug(f"[EXIT] cube/spawn - request_id={request.id}, status=error, error_type=INVALID_TASK, error={str(e)}")
-            return JSONRPCResponse(
-                error={"code": "INVALID_TASK during cube/spawn", "message": str(e)},
-                id=request.id
+            logger.debug(
+                f"[EXIT] cube/spawn - request_id={request.id}, status=error, error_type=INVALID_TASK, error={str(e)}"
             )
+            return JSONRPCResponse(error={"code": "INVALID_TASK during cube/spawn", "message": str(e)}, id=request.id)
         except RuntimeError as e:
-            logger.debug(f"[EXIT] cube/spawn - request_id={request.id}, status=error, error_type=RESOURCE_UNAVAILABLE, error={str(e)}")
+            logger.debug(
+                f"[EXIT] cube/spawn - request_id={request.id}, status=error, error_type=RESOURCE_UNAVAILABLE, error={str(e)}"
+            )
             return JSONRPCResponse(
-                error={"code": "RESOURCE_UNAVAILABLE during cube/spawn", "message": str(e)},
-                id=request.id
+                error={"code": "RESOURCE_UNAVAILABLE during cube/spawn", "message": str(e)}, id=request.id
             )
         except Exception as e:
-            logger.debug(f"[EXIT] cube/spawn - request_id={request.id}, status=error, error_type=INTERNAL_ERROR, error={str(e)}")
-            return JSONRPCResponse(
-                error={"code": "INTERNAL_ERROR during cube/spawn", "message": str(e)},
-                id=request.id
+            logger.debug(
+                f"[EXIT] cube/spawn - request_id={request.id}, status=error, error_type=INTERNAL_ERROR, error={str(e)}"
             )
+            return JSONRPCResponse(error={"code": "INTERNAL_ERROR during cube/spawn", "message": str(e)}, id=request.id)
 
     @app.post("/cube/status")
     async def cube_status(request: JSONRPCRequest) -> JSONRPCResponse:
@@ -125,15 +113,11 @@ def create_benchmark_server_app(benchmark: Benchmark) -> FastAPI:
             response = benchmark.get_task_status(status_request)
 
             logger.debug(f"[EXIT] cube/status - request_id={request.id}, status=success")
-            return JSONRPCResponse(
-                result=response.model_dump(),
-                id=request.id
-            )
+            return JSONRPCResponse(result=response.model_dump(), id=request.id)
         except Exception as e:
             logger.debug(f"[EXIT] cube/status - request_id={request.id}, status=error, error={str(e)}")
             return JSONRPCResponse(
-                error={"code": "INTERNAL_ERROR during cube/status", "message": str(e)},
-                id=request.id
+                error={"code": "INTERNAL_ERROR during cube/status", "message": str(e)}, id=request.id
             )
 
     @app.post("/cube/shutdown")
@@ -146,16 +130,10 @@ def create_benchmark_server_app(benchmark: Benchmark) -> FastAPI:
             response = benchmark.shutdown(shutdown_request)
 
             logger.debug(f"[EXIT] cube/shutdown - request_id={request.id}, status=success")
-            return JSONRPCResponse(
-                result=response.model_dump(),
-                id=request.id
-            )
+            return JSONRPCResponse(result=response.model_dump(), id=request.id)
         except Exception as e:
             logger.debug(f"[EXIT] cube/shutdown - request_id={request.id}, status=error, error={str(e)}")
-            return JSONRPCResponse(
-                error={"code": "SHUTDOWN_FAILED", "message": str(e)},
-                id=request.id
-            )
+            return JSONRPCResponse(error={"code": "SHUTDOWN_FAILED", "message": str(e)}, id=request.id)
 
     logger.info(f"Benchmark server for '{benchmark.metadata.name}' created.")
     return app

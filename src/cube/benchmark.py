@@ -2,15 +2,11 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
-from pydantic import PrivateAttr
+from pydantic import Field, PrivateAttr
 
-from cube.task import Task
-from cube.types import (
-    BenchmarkMetadata,
-    SpawnResponse,
-    TypedBaseModel,
-)
-from design.core import TaskConfig
+from cube import TypedBaseModel
+from cube.server.types import SpawnResponse
+from cube.task import Task, TaskConfig
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +24,40 @@ class RuntimeContext(TypedBaseModel):
     vm_address: str | None = None
     ssh_session: Any | None = None
     # ... whatever shared resources the benchmark provisions
+
+
+class BenchmarkMetadata(TypedBaseModel):
+    """
+    Metadata describing a benchmark.
+
+    Used by:
+    - Benchmark: metadata attribute
+    - API endpoint: cube/info
+
+    Attributes:
+        name (str): Benchmark name
+        version (str): Benchmark version
+        description (str): Benchmark description
+        authors (list[str]): List of benchmark author names (default: empty list)
+        license (str): Benchmark license (default: empty string)
+        requirements (dict[str, Any]): Hardware requirements to install and run the benchmark (default: empty dict)
+        num_tasks (int): Total number of tasks (default: 0)
+        tags (list[str]): Benchmark tags (default: empty list)
+        other (dict[str, Any]): Additional metadata (default: empty dict)
+    """
+
+    name: str = Field(..., description="Benchmark name")
+    version: str = Field(..., description="Benchmark version")
+    description: str = Field(..., description="Benchmark description")
+    authors: list[str] = Field(default_factory=list, description="List of benchmark author names")
+    license: str = Field(default="", description="Benchmark license")
+    requirements: dict[str, Any] = Field(
+        default_factory=dict, description="Hardware requirements to install and run the benchmark"
+    )
+    num_tasks: int = Field(default=0, description="Total number of tasks")
+    tags: list[str] = Field(default_factory=list, description="Benchmark tags")
+    other: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    # TODO: discuss adding fields such as homepage, repository, citation, etc.
 
 
 class Benchmark(TypedBaseModel, ABC):

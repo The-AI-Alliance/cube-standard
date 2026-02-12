@@ -11,8 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from cube.environment import EnvConfig
-from cube.task import TaskSession
-from cube.types import (
+from cube.server.types import (
     MCPCallToolRequest,
     MCPReadResourceRequest,
     ResetRequest,
@@ -26,6 +25,7 @@ from cube.types import (
     TaskStatus,
     TaskStatusEnum,
 )
+from cube.task import TaskSession
 
 if TYPE_CHECKING:
     from cube.benchmark import Benchmark

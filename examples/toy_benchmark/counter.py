@@ -5,16 +5,13 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.types import Tool as MCPTool
 
-from cube.benchmark import Benchmark
-from cube.task import Task
-from cube.tool import ToolConfig
-from cube.types import (
-    BenchmarkMetadata,
-    Observation,
+from cube.benchmark import Benchmark, BenchmarkMetadata
+from cube.server.types import (
     ShutdownRequest,
     ShutdownResponse,
-    TaskMetadata,
 )
+from cube.task import Task, TaskMetadata
+from cube.tool import Observation, ToolConfig
 
 
 # ToolConfig Implementation

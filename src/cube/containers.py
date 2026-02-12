@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import List
 
-from cube.types import TypedBaseModel
+from cube import TypedBaseModel
 
 
 class Container(ABC, TypedBaseModel):
