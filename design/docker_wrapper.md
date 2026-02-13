@@ -3,64 +3,90 @@
 > **CUBE Layer:** Task-level infrastructure (containers)
 > **Related:** [main_specs.md](main_specs.md) | [vm_wrapper.md](vm_wrapper.md) | [user_experience.md](user_experience.md)
 
-> **Key Insight:** Separate "what to run" (ContainerSpec) from "how to run it" (ContainerBackend)
+> **Key Insight:** Separate "what to run" (ContainerConfig) from "how to run it" (ContainerBackend)
+
+> **Implementation Status:** Core abstractions defined, detailed implementations pending
 
 ## Overview
 
 The Container API provides a unified abstraction for launching and communicating with Docker containers across different backends (local Docker, Modal, HPC via EAI Toolkit).
 
 **The fundamental separation:**
-- **ContainerSpec** - What to run (owned by benchmark, part of task metadata)
+- **ContainerConfig** - What to run (owned by benchmark, part of task metadata)
 - **ContainerBackend** - How to run it (owned by harness user, defined once and shared)
 
 ## The Separation
 
-### ContainerSpec - What to Run
+### ContainerConfig - What to Run
 
 **Owned by:** Benchmark (part of task metadata)
-**Serializable:** Yes (plain dict/dataclass in JSON)
+**Serializable:** Yes (Pydantic model)
+**Status:** ✓ Defined in code
 
 ```python
-@dataclass
-class ContainerSpec:
-    """Part of task metadata - retrieved via task_id."""
+class ContainerConfig(ABC, TypedBaseModel):
+    """
+    What to run. Owned by CUBE benchmark/task.
+    Part of task metadata - retrieved via task_id.
+    """
     image: str
-    ram_gb: float = 4.0
-    cpu_cores: float = 2.0
+    ram_gb: float
+    cpu_cores: float
     gpu: bool = False
     ports: List[int] | None = None
+
+    @abstractmethod
+    @staticmethod
+    def from_task_id(task_id: str) -> "ContainerConfig":
+        """Load container config from task metadata."""
+        pass
 ```
 
 ### ContainerBackend - How to Run It
 
 **Owned by:** Harness user (config object)
 **Serializable:** Yes (Pydantic with type information, can pass to Ray workers)
+**Status:** ✓ Abstract class defined, implementations pending
 
 ```python
-class ContainerBackend(TypedBaseModel, ABC):
-    """User's choice of how to run containers."""
-
-    timeout_seconds: int = 1800
-    health_check: Callable[[Container], bool] | None = None
-    backend_config: Dict[str, Any] = {}
+class ContainerBackend(ABC, TypedBaseModel):
+    """
+    How to run. Owned by harness users.
+    Serializable (can pass to Ray workers).
+    User chooses which backend to use.
+    """
 
     @abstractmethod
-    def launch(self, spec: ContainerSpec) -> Container:
-        """Launch container from spec. Blocks until ready."""
+    def launch(self, conf: ContainerConfig) -> Container:
+        """Launch container from config. Blocks until ready."""
         pass
 
-# Concrete implementations
-class LocalContainerBackend(ContainerBackend): ...
-class ModalContainerBackend(ContainerBackend): ...
-class ToolkitContainerBackend(ContainerBackend): ...
+# Concrete implementations (stubs in current code)
+class LocalContainerBackend(ContainerBackend):
+    """Uses docker CLI/docker-py. Direct port mapping."""
+    # TODO: Implement
+
+class ModalContainerBackend(ContainerBackend):
+    """Uses Modal API. HTTP RPC communication. Public URLs."""
+    # TODO: Implement
 ```
 
 **Note:** Backend is a **config object** (Pydantic). Serializes with `_type` field (e.g., `cube.backends.ToolkitContainerBackend`) to preserve concrete subclass when saved/loaded.
 
 ### Container - Runtime Object
 
+**Status:** ⚠️ Abstract class defined but empty - full implementation pending
+
 ```python
-class Container(ABC):
+class Container(ABC, TypedBaseModel):
+    """Running container with exec and port forwarding capabilities."""
+    pass  # Current implementation
+```
+
+**Planned methods (to be implemented):**
+
+```python
+class Container(ABC, TypedBaseModel):
     """Running container with exec and port forwarding capabilities."""
 
     @abstractmethod
@@ -97,9 +123,9 @@ class Container(ABC):
 - Same backend instance used for WebArena, SWE-Bench, OSWorld, etc.
 - User decides: "I want to run everything on Toolkit with these SLURM settings"
 
-**ContainerSpec** - Unique to each task, owned by the benchmark
+**ContainerConfig** - Unique to each task, owned by the benchmark
 - Different for every task (different images, resources)
-- Part of task metadata, never changes
+- Part of task metadata, retrieved via `task_id`
 - Benchmark developer defines what each task needs
 
 ## Primary Use Case
@@ -114,26 +140,27 @@ backend = ToolkitContainerBackend(
 
 # 1. Benchmark provides lightweight task configs
 benchmark = SWEBenchBenchmark()
-task_configs = benchmark.get_task_list()  # Just task_ids
+task_configs = benchmark.load_tasks()  # Just task_ids and tool_config
 
 # 2. Ray worker evaluates task
 @ray.remote
-def evaluate_task(task_config, backend):
-    # Retrieve container spec from task metadata
-    task_logic = load_task_logic(task_config.task_id)
-    container_spec = task_logic.container_spec  # Unique per task
+def evaluate_task(task_config, backend, runtime_context):
+    # Retrieve container config from task metadata
+    container_config = ContainerConfig.from_task_id(task_config.task_id)
 
     # User's backend launches it
-    container = backend.launch(container_spec)  # Same backend, different spec
+    container = backend.launch(container_config)  # Same backend, different config
 
     # Create task with running container
-    task = task_config.make(container=container)
-    result = run_eval(task)
-    container.stop()
+    task = task_config.make(runtime_context=runtime_context, container_backend=backend)
+    obs, info = task.setup()
+    result = run_eval(task, obs)
+    task.close()
     return result
 
-# 3. Execute in parallel - same backend, 1000 different specs
-futures = [evaluate_task.remote(cfg, backend) for cfg in task_configs]
+# 3. Execute in parallel - same backend, 1000 different configs
+runtime_context = benchmark.get_runtime_info()
+futures = [evaluate_task.remote(cfg, backend, runtime_context) for cfg in task_configs]
 results = ray.get(futures)
 ```
 
@@ -147,42 +174,55 @@ results = ray.get(futures)
 
 ## Key Design Decisions
 
-**1. Separation of Spec and Backend**
-- **ContainerSpec:** Task metadata (plain dataclass/dict)
+**1. Separation of Config and Backend**
+- **ContainerConfig:** Task metadata (Pydantic model, retrieved via task_id)
 - **ContainerBackend:** User config (Pydantic with type information)
 - Rationale: Eliminate duplication - backend shouldn't be repeated 1000x
+- Status: ✓ Implemented
 
 **2. Separation of Backend and Container**
 - **ContainerBackend:** Serializable config (can pass to Ray workers)
 - **Container:** Live object with connections (not serializable)
 - Rationale: Ray workers serialize backend config, not live connections
+- Status: ✓ Classes defined, implementations pending
 
 **3. Blocking `launch()` Method**
 - Blocks until container ready (or timeout: Local 30s, Modal 2min, Toolkit 30min)
 - Rationale: Ray workers can block on I/O. Simpler than callbacks/polling.
+- Status: ✓ API defined, implementations pending
 
 **4. Backend as Abstract Classes**
 - Each backend subclasses `ContainerBackend` with different implementations
 - Local uses docker exec, Modal uses HTTP RPC, Toolkit uses SSH
 - Rationale: Backends are too different to share implementation
+- Status: ✓ Abstract class defined, concrete backends pending
 
 ## Backend Implementations
+
+**Status:** ⚠️ Stubs defined, full implementations pending
 
 ```python
 class LocalContainerBackend(ContainerBackend):
     """Uses docker CLI/docker-py. Direct port mapping."""
-    def launch(self, spec: ContainerSpec) -> LocalContainer: ...
+    def launch(self, conf: ContainerConfig) -> LocalContainer:
+        # TODO: Implement
+        pass
 
 class ModalContainerBackend(ContainerBackend):
     """Uses Modal API. HTTP RPC communication. Public URLs."""
-    def launch(self, spec: ContainerSpec) -> ModalContainer: ...
+    def launch(self, conf: ContainerConfig) -> ModalContainer:
+        # TODO: Implement
+        pass
 
+# Not yet in code, but planned:
 class ToolkitContainerBackend(ContainerBackend):
     """Uses EAI Toolkit + SLURM. SSH tunnels for port forwarding."""
-    def launch(self, spec: ContainerSpec) -> ToolkitContainer: ...
+    def launch(self, conf: ContainerConfig) -> ToolkitContainer:
+        # TODO: Implement
+        pass
 ```
 
-Each backend returns its own `Container` subclass with different exec/port-forwarding implementations.
+Each backend will return its own `Container` subclass with different exec/port-forwarding implementations.
 
 ## Port Forwarding Strategy
 
@@ -210,33 +250,48 @@ response = requests.get(f"http://localhost:{local_port}/api")
 
 ## Updated TaskConfig API
 
-```python
-@dataclass
-class TaskConfig(ABC):
-    task_id: str  # Used to retrieve everything
-    tool_config: ToolConfig | None = None
-    # NO MORE: container_config field ❌
+**Status:** ✓ Implemented as documented
 
+```python
+class TaskConfig(ABC, TypedBaseModel):
+    """Serializable task configuration."""
+
+    task_id: str  # Used to retrieve task metadata
+    tool_config: ToolConfig  # Tool configuration
+    # NO container_config field ❌ - retrieved separately via task_id
+
+    @abstractmethod
     def make(
         self,
-        runtime_info: Dict[str, Any] | None = None,
-        container: Container | None = None,  # NEW: passed from harness
+        runtime_context: RuntimeContext | None = None,
+        container_backend: ContainerBackend | None = None,
     ) -> Task:
-        """Container is pre-launched and passed in."""
+        """
+        Instantiate task from config.
+
+        Container is launched inside make() using container_backend if provided:
+        1. Load container config: ContainerConfig.from_task_id(self.task_id)
+        2. Launch container: container = container_backend.launch(container_config)
+        3. Assign to task: task.container = container
+        """
         pass
 ```
 
 
 ## Integration with CUBE Hierarchy
 
-`ContainerSpec` is part of task metadata retrieved by `task_id` in [main_specs.md](main_specs.md). In practice, `backend.launch(spec)` is called inside the harness before calling `task_config.make()` on Ray workers.
+`ContainerConfig` is part of task metadata retrieved by `task_id` via `ContainerConfig.from_task_id()` as defined in [main_specs.md](main_specs.md). In practice, `backend.launch(config)` is typically called inside `task_config.make()` on Ray workers.
 
 **Typical flow:**
 1. User defines `ContainerBackend` in harness config (once for all benchmarks)
-2. Benchmark provides task_id which includes `ContainerSpec` in metadata
-3. Ray worker retrieves spec and calls `backend.launch(spec)`
-4. Container is passed to `task_config.make(container=container)`
-5. Container lives for the duration of the task, then `container.stop()` is called in `task.close()`
+2. Benchmark provides task_id in TaskConfig
+3. Ray worker calls `task_config.make(container_backend=backend)`
+4. Inside `make()`:
+   - Retrieve config: `container_config = ContainerConfig.from_task_id(task_id)`
+   - Launch container: `container = backend.launch(container_config)`
+   - Assign to task: `task.container = container`
+5. Container lives for the duration of the task
+6. Container is stopped in `task.close()` via `container.stop()`
 
 For benchmarks using VMs instead of containers (e.g., WebArena), see [vm_wrapper.md](vm_wrapper.md).
 
@@ -256,70 +311,42 @@ The design succeeds if:
 
 ```mermaid
 classDiagram
-    class ContainerSpec {
+    class ContainerConfig {
+        <<abstract>>
         +str image
         +float ram_gb
         +float cpu_cores
         +bool gpu
-        +float disk_gb
         +List~int~ ports
+        +from_task_id(task_id)$ ContainerConfig
     }
 
     class ContainerBackend {
         <<abstract>>
-        +int timeout_seconds
-        +Callable health_check
-        +Dict backend_config
-        +launch(spec) Container
+        +launch(conf) Container
     }
 
     class LocalContainerBackend {
-        +launch(spec) LocalContainer
+        +launch(conf) Container
     }
 
     class ModalContainerBackend {
-        +launch(spec) ModalContainer
-    }
-
-    class ToolkitContainerBackend {
-        +launch(spec) ToolkitContainer
+        +launch(conf) Container
     }
 
     class Container {
         <<abstract>>
-        +str id
-        +exec(command, timeout, workdir, env) ExecResult
-        +forward_port(container_port) int
-        +get_url(container_port) str
-        +stop(timeout) void
-        +get_status() ContainerStatus
-    }
-
-    class LocalContainer {
-        +exec(command, timeout, workdir, env) ExecResult
-        +forward_port(container_port) int
-        +get_url(container_port) str
-        +stop(timeout) void
-        +get_status() ContainerStatus
-    }
-
-    class ModalContainer {
-        +exec(command, timeout, workdir, env) ExecResult
-        +forward_port(container_port) int
-        +get_url(container_port) str
-        +stop(timeout) void
-        +get_status() ContainerStatus
-    }
-
-    class ToolkitContainer {
-        +exec(command, timeout, workdir, env) ExecResult
-        +forward_port(container_port) int
-        +get_url(container_port) str
-        +stop(timeout) void
-        +get_status() ContainerStatus
+        note "Planned methods (not yet implemented):
+        - exec(command, timeout, workdir, env) ExecResult
+        - forward_port(container_port) int
+        - get_url(container_port) str
+        - stop(timeout) void
+        - get_status() ContainerStatus
+        - id: str"
     }
 
     class ExecResult {
+        <<future>>
         +str stdout
         +str stderr
         +int exit_code
@@ -327,23 +354,24 @@ classDiagram
     }
 
     class ContainerStatus {
+        <<future>>
         +bool running
         +bool healthy
         +Dict~str,float~ resource_usage
         +Dict~str,Any~ backend_info
     }
 
-    ContainerBackend --> ContainerSpec : uses
+    ContainerBackend --> ContainerConfig : uses
     ContainerBackend --> Container : creates
-    ContainerBackend <|-- LocalContainerBackend : implements
-    ContainerBackend <|-- ModalContainerBackend : implements
-    ContainerBackend <|-- ToolkitContainerBackend : implements
-    Container <|-- LocalContainer : implements
-    Container <|-- ModalContainer : implements
-    Container <|-- ToolkitContainer : implements
-    Container --> ExecResult : returns
-    Container --> ContainerStatus : returns
-    LocalContainerBackend --> LocalContainer : creates
-    ModalContainerBackend --> ModalContainer : creates
-    ToolkitContainerBackend --> ToolkitContainer : creates
+    ContainerBackend <|-- LocalContainerBackend : implements (stub)
+    ContainerBackend <|-- ModalContainerBackend : implements (stub)
+    Container ..> ExecResult : will return
+    Container ..> ContainerStatus : will return
+
+    note for ContainerConfig "✓ Defined in code
+    Part of task metadata"
+    note for ContainerBackend "✓ Abstract class defined
+    Concrete implementations pending"
+    note for Container "⚠️ Empty class (pass)
+    Full implementation pending"
 ```
