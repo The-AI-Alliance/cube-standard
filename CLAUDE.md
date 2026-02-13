@@ -23,7 +23,7 @@ Two independent subsystems:
 - `TypedBaseModel` (in `base.py`) adds `_type` field for polymorphic serialization — all config classes inherit from it.
 - `ContainerBackend` is serializable (for Ray), `Container` is not (holds live connections).
 - `health_check: Callable` uses `Field(exclude=True)` + `ConfigDict(arbitrary_types_allowed=True)`.
-- Container exec uses `sh` (not `bash`) for POSIX compatibility with Alpine images.
+- Local backend exec uses `sh` for POSIX compatibility (Alpine); Daytona and Modal use `bash`.
 - Retry decorators from `tenacity` on all I/O and container operations.
 
 ## Testing

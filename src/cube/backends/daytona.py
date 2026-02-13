@@ -17,7 +17,13 @@ from daytona import (
     Resources,
     SessionExecuteRequest,
 )
-from tenacity import before_sleep_log, retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from cube.container import (
     Container,
@@ -37,6 +43,7 @@ _retry_sandbox = retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=30),
     reraise=True,
+    retry=retry_if_not_exception_type(HealthCheckError),
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
@@ -172,7 +179,7 @@ class DaytonaContainer(Container):
         except DaytonaError:
             pass  # already gone — idempotent
         except Exception as exc:
-            logger.warning(f"Error deleting sandbox {self.id}: {exc}")
+            logger.warning("Error deleting sandbox %s: %s", self.id, exc)
 
     def get_status(self) -> ContainerStatus:
         try:
@@ -193,9 +200,7 @@ class DaytonaContainer(Container):
 
     # -- internal helpers ---------------------------------------------------
 
-    def _poll_command(
-        self, session_id: str, command_id: str, timeout: int
-    ) -> tuple:
+    def _poll_command(self, session_id: str, command_id: str, timeout: int) -> tuple:
         deadline = time.monotonic() + timeout
         cmd = self._get_session_command(session_id, command_id)
         while cmd.exit_code is None:
@@ -211,9 +216,7 @@ class DaytonaContainer(Container):
 
     @_retry_poll
     def _get_session_logs(self, session_id: str, command_id: str):
-        return self._sandbox.process.get_session_command_logs(
-            session_id, command_id
-        )
+        return self._sandbox.process.get_session_command_logs(session_id, command_id)
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +244,9 @@ class DaytonaContainerBackend(ContainerBackend):
         if self.target:
             config_kwargs["target"] = self.target
 
-        daytona_config = DaytonaConfig(**config_kwargs) if config_kwargs else DaytonaConfig()
+        daytona_config = (
+            DaytonaConfig(**config_kwargs) if config_kwargs else DaytonaConfig()
+        )
         client = Daytona(daytona_config)
 
         logger.info("Creating Daytona sandbox with image %s …", spec.image)
@@ -269,19 +274,5 @@ class DaytonaContainerBackend(ContainerBackend):
         container = DaytonaContainer(sandbox, client)
         logger.info("Daytona sandbox created: %s", container.id)
 
-        # -- health check -------------------------------------------------
-        if self.health_check is not None:
-            try:
-                ok = self.health_check(container)
-                if not ok:
-                    container.stop()
-                    raise HealthCheckError("Health check returned False")
-            except HealthCheckError:
-                raise
-            except Exception as exc:
-                container.stop()
-                raise HealthCheckError(
-                    f"Health check raised an exception: {exc}"
-                ) from exc
-
+        self._run_health_check(container)
         return container

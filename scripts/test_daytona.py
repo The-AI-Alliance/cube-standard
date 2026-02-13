@@ -9,22 +9,19 @@ Usage:
 import os
 import sys
 
-from cube.backends.daytona import DaytonaContainerBackend  # noqa: E402
-from cube.container import ContainerSpec  # noqa: E402
 from dotenv import load_dotenv
 
-from test_harness import make_health_check_tests, make_tests, run_all  # noqa: E402
+from cube.backends.daytona import DaytonaContainerBackend
+from cube.container import ContainerSpec
 
-# Load .env from AgentLab2 if DAYTONA_API_KEY not already set
+from test_harness import make_health_check_tests, make_tests, run_all
+
+# Load .env if DAYTONA_API_KEY not already set
 if not os.environ.get("DAYTONA_API_KEY"):
-    for env_path in [
-        os.path.expanduser("~/Downloads/projects/servicenow/AgentLab2/.env"),
-        os.path.join(os.path.dirname(__file__), "..", ".env"),
-    ]:
-        if os.path.exists(env_path):
-            load_dotenv(env_path)
-            print(f"Loaded env from {env_path}")
-            break
+    env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+        print(f"Loaded env from {env_path}")
 
 API_KEY = os.environ.get("DAYTONA_API_KEY")
 if not API_KEY:

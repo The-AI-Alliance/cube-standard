@@ -39,7 +39,7 @@ def _run_one(name: str, fn) -> bool:
 def make_tests(backend: ContainerBackend, spec: ContainerSpec):
     """Return list of (name, callable) test pairs for the given backend."""
 
-    tests: list[tuple[str, object]] = []
+    tests: list[tuple[str, callable]] = []
 
     def test_launch_and_echo():
         container = backend.launch(spec)
@@ -119,6 +119,15 @@ def make_tests(backend: ContainerBackend, spec: ContainerSpec):
 
     tests.append(("stop idempotent", test_stop_idempotent))
 
+    def test_status_after_stop():
+        container = backend.launch(spec)
+        container.stop()
+        status = container.get_status()
+        assert status.running is False, f"expected running=False, got {status.running}"
+        log(f"after stop: running={status.running} healthy={status.healthy}")
+
+    tests.append(("status after stop", test_status_after_stop))
+
     def test_serialization_roundtrip():
         from cube.container import ContainerBackend as CB
 
@@ -144,7 +153,7 @@ def make_health_check_tests(
 ):
     """Return health-check tests (need to create backend with custom health_check)."""
 
-    tests: list[tuple[str, object]] = []
+    tests: list[tuple[str, callable]] = []
 
     def test_health_check_pass():
         b = backend_cls(**backend_kwargs, health_check=lambda c: True)
@@ -191,7 +200,7 @@ def make_health_check_tests(
 
 def run_all(
     label: str,
-    tests: list[tuple[str, object]],
+    tests: list[tuple[str, callable]],
 ) -> None:
     print("=" * 60)
     print(label)

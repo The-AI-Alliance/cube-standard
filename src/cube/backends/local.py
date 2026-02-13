@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import logging
+import shlex
 import time
 from typing import Any, Dict
 
 import docker
 import docker.errors
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from cube.container import (
     Container,
@@ -25,19 +32,22 @@ from cube.container import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Retry decorators (inspired by AgentLab2)
+# Retry decorators
 # ---------------------------------------------------------------------------
 
-_retry_container = retry(
+_retry_launch = retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=2, max=30),
     reraise=True,
+    retry=retry_if_not_exception_type(HealthCheckError),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
 _retry_io = retry(
     stop=stop_after_attempt(2),
     wait=wait_exponential(multiplier=1, min=1, max=10),
     reraise=True,
+    before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
 
@@ -74,14 +84,14 @@ class LocalContainer(Container):
         env: Dict[str, str] | None = None,
     ) -> ExecResult:
         if timeout is not None:
-            wrapped = f"timeout {timeout}s sh -lc {_shell_quote(command)}"
+            wrapped = f"timeout {timeout}s sh -lc {shlex.quote(command)}"
         else:
-            wrapped = f"sh -lc {_shell_quote(command)}"
+            wrapped = f"sh -lc {shlex.quote(command)}"
 
         start = time.monotonic()
         try:
             exit_code, output = self._container.exec_run(
-                ["sh", "-c", wrapped],
+                wrapped,
                 demux=True,
                 workdir=workdir,
                 environment=env,
@@ -183,7 +193,7 @@ class LocalContainerBackend(ContainerBackend):
     network_mode: str = "bridge"
     remove_on_close: bool = True
 
-    @_retry_container
+    @_retry_launch
     def launch(self, spec: ContainerSpec) -> LocalContainer:
         client = docker.from_env()
 
@@ -245,23 +255,7 @@ class LocalContainerBackend(ContainerBackend):
                 f"{self.timeout_seconds}s (status: {docker_container.status})"
             )
 
-        # -- health check -------------------------------------------------
-        if self.health_check is not None:
-            try:
-                ok = self.health_check(container)
-                if not ok:
-                    container.stop()
-                    raise HealthCheckError(
-                        "Health check returned False"
-                    )
-            except HealthCheckError:
-                raise
-            except Exception as exc:
-                container.stop()
-                raise HealthCheckError(
-                    f"Health check raised an exception: {exc}"
-                ) from exc
-
+        self._run_health_check(container)
         return container
 
 
@@ -276,8 +270,3 @@ def _image_exists(client: docker.DockerClient, image: str) -> bool:
         return True
     except docker.errors.ImageNotFound:
         return False
-
-
-def _shell_quote(s: str) -> str:
-    """Single-quote a string for safe shell embedding."""
-    return "'" + s.replace("'", "'\"'\"'") + "'"

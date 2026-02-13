@@ -14,7 +14,7 @@ cube-standard/
 │   ├── benchmark.py            # Benchmark interface for task collections
 │   ├── container.py            # Container API: ContainerSpec, Container, ContainerBackend
 │   └── backends/               # Container backend implementations
-│       ├── __init__.py          # Re-exports all backends
+│       ├── __init__.py          # Re-exports Local, Daytona, Modal backends
 │       ├── local.py             # LocalContainerBackend (docker-py)
 │       ├── daytona.py           # DaytonaContainerBackend (Daytona SDK)
 │       ├── modal.py             # ModalContainerBackend (Modal Sandbox)
@@ -134,7 +134,7 @@ PYTHONPATH=scripts uv run python scripts/test_modal.py     # Requires Modal toke
 ## Development Notes
 
 - All imports at the top of the module, never inside functions or classes
-- Use `sh` not `bash` for container exec (POSIX compatibility, e.g. Alpine)
+- Local backend uses `sh` for exec (POSIX compatibility, e.g. Alpine); Daytona and Modal use `bash`
 - Container backends use `tenacity` retry decorators for transient failures
 - `ContainerBackend` is serializable (Pydantic + TypedBaseModel), `Container` is not
 - `health_check: Callable` is excluded from serialization via `Field(exclude=True)`

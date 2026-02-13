@@ -137,3 +137,20 @@ class ContainerBackend(TypedBaseModel, ABC):
     @abstractmethod
     def launch(self, spec: ContainerSpec) -> Container:
         """Launch a container described by *spec*. Blocks until ready."""
+
+    def _run_health_check(self, container: Container) -> None:
+        """Run the health check callback, cleaning up on failure."""
+        if self.health_check is None:
+            return
+        try:
+            ok = self.health_check(container)
+            if not ok:
+                container.stop()
+                raise HealthCheckError("Health check returned False")
+        except HealthCheckError:
+            raise
+        except Exception as exc:
+            container.stop()
+            raise HealthCheckError(
+                f"Health check raised an exception: {exc}"
+            ) from exc

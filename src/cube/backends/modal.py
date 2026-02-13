@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import logging
+import shlex
 import time
 from typing import Any, Dict
 
 import modal
-from tenacity import before_sleep_log, retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from cube.container import (
     Container,
@@ -27,6 +34,7 @@ _retry_sandbox = retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=30),
     reraise=True,
+    retry=retry_if_not_exception_type(HealthCheckError),
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
@@ -64,7 +72,7 @@ class ModalContainer(Container):
         effective_timeout = timeout if timeout is not None else 120
 
         # Wrap with timeout for enforcement
-        wrapped = f"timeout {effective_timeout}s bash -lc {_shell_quote(command)}"
+        wrapped = f"timeout {effective_timeout}s bash -lc {shlex.quote(command)}"
 
         kwargs: dict[str, Any] = {}
         if workdir:
@@ -123,8 +131,8 @@ class ModalContainer(Container):
     def stop(self, timeout: int = 10) -> None:
         try:
             self._sandbox.terminate()
-        except Exception:
-            pass  # idempotent
+        except Exception as exc:
+            logger.warning("Error terminating Modal sandbox %s: %s", self.id, exc)
 
     def get_status(self) -> ContainerStatus:
         try:
@@ -192,29 +200,5 @@ class ModalContainerBackend(ContainerBackend):
         container = ModalContainer(sandbox)
         logger.info("Modal sandbox created: %s", container.id)
 
-        # -- health check -------------------------------------------------
-        if self.health_check is not None:
-            try:
-                ok = self.health_check(container)
-                if not ok:
-                    container.stop()
-                    raise HealthCheckError("Health check returned False")
-            except HealthCheckError:
-                raise
-            except Exception as exc:
-                container.stop()
-                raise HealthCheckError(
-                    f"Health check raised an exception: {exc}"
-                ) from exc
-
+        self._run_health_check(container)
         return container
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _shell_quote(s: str) -> str:
-    """Single-quote a string for safe shell embedding."""
-    return "'" + s.replace("'", "'\"'\"'") + "'"
