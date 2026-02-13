@@ -14,7 +14,10 @@ def main() -> int:
     msg = msg_file.read_text(encoding="utf-8", errors="replace")
     if not SIGNED_OFF_RE.search(msg):
         print("ERROR: DCO sign-off required.", file=sys.stderr)
-        print("Add a line like: Signed-off-by: Your Name <you@example.com>", file=sys.stderr)
+        print(
+            "Add a line like: Signed-off-by: Your Name <you@example.com>",
+            file=sys.stderr,
+        )
         print('Tip: use `git commit -s -m "..."`', file=sys.stderr)
         return 1
 
