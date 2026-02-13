@@ -185,8 +185,8 @@ class Tool(AbstractTool):
 
         # Introspect the class to find all methods marked as actions
         for attr_name in dir(self):
-            # Skip private/protected methods
-            if attr_name.startswith("_"):
+            # Skip private/protected methods and properties
+            if attr_name.startswith("_") or attr_name == "action_set":
                 continue
 
             attr = getattr(self, attr_name)
