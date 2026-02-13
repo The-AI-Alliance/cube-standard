@@ -6,51 +6,60 @@
 graph TD
     %% Main Components
     Benchmark[Benchmark<br/>Container for multiple tasks]
-    Task[Task<br/>Defines task logic & validation]
-    Environment[Environment<br/>Lifecycle manager]
-    TaskSession[TaskSession<br/>MCP + CUBE API]
-    EnvConfig[EnvConfig<br/>Factory for Environment]
-    ToolConfig[ToolConfig<br/>Defines MCP server with tools]
-    MCPServer[MCP Server<br/>In-memory FastMCP]
+    Task[Task<br/>Task logic, validation & env dynamics]
+    TaskConfig[TaskConfig<br/>Serializable task configuration]
+    ToolConfig[ToolConfig<br/>Defines tool implementation]
+    Tool[Tool<br/>Action executor with @tool_action decorator]
+    Server[FastAPI Server<br/>REST API for task/benchmark]
+    RuntimeContext[RuntimeContext<br/>Shared infrastructure resources]
+    Container[Container<br/>Optional containerized environment]
 
-    %% Benchmark contains Tasks and ToolConfig
-    Benchmark -->|"load_tasks()"| TaskList[List of Tasks]
-    TaskList -->|contains| Task
-    Benchmark -->|"tool_config field"| ToolConfig
+    %% Benchmark lifecycle
+    Benchmark -->|"setup()"| RuntimeContext
+    Benchmark -->|"load_tasks()"| TaskConfigList[List of TaskConfig]
+    TaskConfigList -->|contains| TaskConfig
+    Benchmark -->|"spawn(task_id)"| Server
 
-    %% Benchmark spawns sessions
-    Benchmark -->|"spawn()"| EnvConfig
-    EnvConfig -->|"make()"| Environment
-    Environment -->|wraps| Task
-    Environment -->|"reset()"| TaskSession
+    %% TaskConfig creates Task
+    TaskConfig -->|"make(runtime_context)"| Task
+    TaskConfig -->|"has"| ToolConfig
 
-    %% ToolConfig creates MCP server
-    ToolConfig -->|"create_mcp_server(task)"| MCPServer
-    MCPServer -->|"closure access"| Task
+    %% ToolConfig creates Tool
+    ToolConfig -->|"make()"| Tool
 
-    %% TaskSession lifecycle
-    TaskSession -->|delegates to| Environment
-    TaskSession -->|"call_tool() via"| MCPServer
-    TaskSession -->|"mcp_server field"| MCPServer
+    %% Task uses Tool
+    Task -->|"tool field"| Tool
+    Task -->|"step(action)"| Tool
+    Tool -->|"execute_action()"| Task
+    Task -->|"action_set"| Tool
+    Tool -->|"list actions"| Task
 
-    %% Environment delegates to Task
-    Environment -.->|"reset() → task.setup()"| Task
-    Environment -.->|"close() → task.teardown()"| Task
+    %% Task uses RuntimeContext and Container
+    Task -->|"runtime_context field"| RuntimeContext
+    Task -->|"container field"| Container
 
-    %% Task validation
-    TaskSession -->|"validate_task()"| Task
-    TaskSession -->|"filter_actions()"| Task
+    %% Task lifecycle
+    Task -->|"setup()"| Task
+    Task -->|"evaluate(obs)"| Task
+    Task -->|"filter_actions()"| Task
+    Task -->|"close()"| Task
+
+    %% Server wraps Task
+    Server -->|"wraps"| Task
+    Server -->|"exposes REST API"| Task
 
     %% Styling
-    classDef container fill:#e1f5ff,stroke:#0288d1
+    classDef benchmark fill:#e1f5ff,stroke:#0288d1
     classDef core fill:#fff3e0,stroke:#f57c00
-    classDef session fill:#f3e5f5,stroke:#7b1fa2
+    classDef config fill:#f3e5f5,stroke:#7b1fa2
     classDef factory fill:#e8f5e9,stroke:#388e3c
+    classDef infra fill:#fce4ec,stroke:#c2185b
 
-    class Benchmark container
-    class Task,Environment core
-    class TaskSession session
-    class EnvConfig,ToolConfig,MCPServer factory
+    class Benchmark benchmark
+    class Task,Tool core
+    class TaskConfig,ToolConfig config
+    class Server factory
+    class RuntimeContext,Container infra
 ```
 
 ## Flow Diagram: From Benchmark to Task Execution
@@ -59,87 +68,99 @@ graph TD
 sequenceDiagram
     participant User
     participant Benchmark
-    participant Task
+    participant TaskConfig
     participant ToolConfig
-    participant EnvConfig
-    participant Environment
-    participant TaskSession
-    participant MCPServer
+    participant Tool
+    participant Task
+    participant Server
     participant Agent
 
     %% Setup Phase
-    User->>Benchmark: setup(tool_config)
-    Benchmark->>Benchmark: setup_benchmark_resources()
-    Note over Benchmark: Sets tool_config field
+    User->>Benchmark: setup()
+    Benchmark->>Benchmark: Create shared infrastructure
+    Benchmark-->>Benchmark: Store in RuntimeContext
+    Note over Benchmark: RuntimeContext holds container_id, vm_address, etc.
 
     %% Task Loading
     User->>Benchmark: load_tasks()
-    Benchmark-->>User: List[Task]
+    Benchmark->>TaskConfig: Create task configs
+    Note over TaskConfig: Each TaskConfig has task_id + ToolConfig
+    Benchmark-->>User: List[TaskConfig]
 
-    %% Spawning a Session
-    User->>Benchmark: spawn(task_id, seed)
-    Benchmark->>Benchmark: Find task by ID
+    %% Spawning a Task Server
+    User->>Benchmark: spawn(task_id)
+    Benchmark->>Benchmark: Find TaskConfig by ID
+    Benchmark->>TaskConfig: make(runtime_context)
 
-    %% Create MCP Server first
-    Benchmark->>ToolConfig: create_mcp_server(task)
-    ToolConfig->>MCPServer: FastMCP instance with tools
-    Note over MCPServer: Tools have closure access to task state
+    %% Create Tool
+    TaskConfig->>ToolConfig: make()
+    ToolConfig->>Tool: Create tool instance
+    Tool-->>TaskConfig: Tool with @tool_action methods
 
-    %% Create Environment
-    Benchmark->>EnvConfig: new EnvConfig(task, tool_config)
-    EnvConfig->>Environment: make()
-    Environment->>Task: setup()
-    Task-->>Environment: (observation, info)
+    %% Create Task
+    TaskConfig->>Task: Create task instance
+    Note over Task: Set task.tool = tool<br/>Set task.runtime_context
+    TaskConfig->>Task: setup()
+    Task->>Tool: reset()
+    Task-->>TaskConfig: (observation, info)
+    TaskConfig-->>Benchmark: Task instance
 
-    %% Create TaskSession with MCP server
-    Benchmark->>TaskSession: new TaskSession(env, mcp_server)
-    TaskSession-->>Benchmark: session_id
-    Benchmark-->>User: SpawnResponse
+    %% Create Server
+    Benchmark->>Server: make_task_rpc_server(task)
+    Server->>Server: Create FastAPI app with endpoints
+    Server-->>Benchmark: (app, process, url)
+    Benchmark-->>User: Server URL
 
     %% Task Execution Loop
-    Agent->>TaskSession: list_tools()
-    TaskSession->>MCPServer: await list_tools()
-    MCPServer-->>TaskSession: List[MCPTool]
-    TaskSession->>Task: filter_actions()
-    Task-->>Agent: Filtered tools
+    Agent->>Server: GET /tools/list
+    Server->>Task: action_set property
+    Task->>Task: filter_actions(tool.action_set)
+    Task-->>Server: List[ActionSchema]
+    Server-->>Agent: Filtered tools
 
-    Agent->>TaskSession: call_tool(name, args)
-    TaskSession->>MCPServer: await call_tool()
-    MCPServer->>Task: Tool modifies task state (via closure)
-    MCPServer-->>TaskSession: MCPCallToolResult
-    TaskSession->>Task: validate_task()
-    Task-->>TaskSession: (reward, info)
-    TaskSession->>Task: finished()?
-    Task-->>TaskSession: Boolean
-    TaskSession-->>Agent: Tool result + evaluation
+    Agent->>Server: POST /cube/step
+    Note over Agent: Sends Action(name, arguments)
+    Server->>Task: step(action)
+    Task->>Tool: execute_action(action)
+    Tool->>Tool: Execute @tool_action method
+    Tool-->>Task: Observation
+    Task->>Task: finished(obs)?
+    Task->>Task: evaluate(obs)
+    Note over Task: Returns (reward, info)
+    Task->>Task: obs_postprocess(obs)
+    Task-->>Server: EnvironmentOutput
+    Server-->>Agent: obs, reward, done, info
 
     %% Cleanup
-    Agent->>TaskSession: close()
-    TaskSession->>Environment: close()
-    Environment->>Task: teardown()
-    TaskSession-->>Agent: CloseResponse
+    Agent->>Server: POST /cube/close
+    Server->>Task: close()
+    Task->>Tool: Optional cleanup
+    Task-->>Server: None
+    Server-->>Agent: Response
 ```
 
 ## Data Flow: Task Execution Step
 
 ```mermaid
 flowchart LR
-    A[Agent calls tool] -->|MCPCallToolRequest| B[TaskSession.call_tool]
-    B -->|await| C[MCP Server]
-    C -->|Closure modifies| D[Task State]
-    C -->|MCPCallToolResult| B
-    B -->|validate_task| E[Task.validate_task]
-    E -->|reward, info| B
-    B -->|finished?| F[Task.finished]
-    F -->|Boolean| B
-    B -->|obs_postprocess| G[Task.obs_postprocess]
-    G -->|Processed obs| B
-    B -->|Result| H[Agent receives result]
+    A[Agent POST /cube/step] -->|Action| B[Server endpoint]
+    B -->|action| C[Task.step]
+    C -->|action| D[Tool.execute_action]
+    D -->|Find @tool_action method| E[Execute method]
+    E -->|Observation| C
+    C -->|obs| F[Task.finished]
+    F -->|done?| C
+    C -->|obs| G[Task.evaluate]
+    G -->|reward, info| C
+    C -->|obs| H[Task.obs_postprocess]
+    H -->|Observation| C
+    C -->|EnvironmentOutput| B
+    B -->|JSON| I[Agent receives result]
 
     style A fill:#e3f2fd
-    style H fill:#e3f2fd
-    style D fill:#fff3e0
-    style C fill:#f3e5f5
+    style I fill:#e3f2fd
+    style E fill:#fff3e0
+    style D fill:#f3e5f5
 ```
 
 ## Class Relationship Diagram
@@ -147,172 +168,250 @@ flowchart LR
 ```mermaid
 classDiagram
     class Benchmark {
+        <<abstract>>
         +BenchmarkMetadata metadata
+        -List~TaskConfig~ _task_list
+        -RuntimeContext _runtime_info
+        +setup() RuntimeContext
+        +load_tasks() List~TaskConfig~
+        +get_task_configs() List~TaskConfig~
+        +get_runtime_info() RuntimeContext
+        +spawn(task_id) str
+        +close() None
+    }
+
+    class RuntimeContext {
+        +str container_id
+        +str vm_address
+        +Any ssh_session
+    }
+
+    class TaskConfig {
+        <<abstract>>
+        +str task_id
         +ToolConfig tool_config
-        -List~Task~ _task_list
-        -SessionManager _session_manager
-        +setup_benchmark_resources()
-        +load_tasks() List~Task~
-        +spawn(request) SpawnResponse
-        +list_tasks() TaskListResponse
-        +get_task_status() StatusResponse
-        +shutdown() ShutdownResponse
+        +make(runtime_context, container_backend) Task
     }
 
     class Task {
+        <<abstract>>
         +TaskMetadata metadata
+        +AbstractTool tool
+        +RuntimeContext runtime_context
+        +Container container
         +bool validate_per_step
-        +setup(tool) tuple
-        +teardown() None
-        +validate_task(obs) tuple
-        +filter_actions(actions) List
-        +finished() bool
+        +bool accept_agent_stop
+        +setup() Tuple~Observation, dict~
+        +step(action) EnvironmentOutput
+        +evaluate(obs) Tuple~float, dict~
+        +filter_actions(actions) List~ActionSchema~
+        +finished(obs) bool
         +obs_postprocess(obs) Observation
+        +close() None
+        +get_status() str
+        +get_priviledged_info() Any
+        +action_set List~ActionSchema~
     }
 
     class ToolConfig {
         <<abstract>>
-        +create_mcp_server(task) FastMCP
+        +make() AbstractTool
     }
 
-    class Environment {
-        +Task task
-        +reset() EnvironmentOutput
-        +step(action) EnvironmentOutput
-        +get_actions() List~MCPTool~
-        +close() None
+    class AbstractTool {
+        <<abstract>>
+        +reset() None
+        +execute_action(action) Any
+        +action_set List~ActionSchema~
     }
 
-    class TaskSession {
-        +str session_id
-        +str task_id
-        +Environment env
-        +FastMCP mcp_server
-        +int step_count
-        +float total_reward
-        +async list_tools() MCPListToolsResult
-        +async call_tool(request) MCPCallToolResult
-        +evaluate() EnvironmentOutput
-        +reset(request) ResetResponse
-        +close() CloseResponse
+    class Tool {
+        +execute_action(action) Observation | StepError
+        +action_set List~ActionSchema~
     }
 
-    class EnvConfig {
-        +Task task
-        +ToolConfig tool_config
-        +make() Environment
+    class ContainerBackend {
+        <<abstract>>
+        +launch(config) Container
     }
 
-    Benchmark "1" --> "*" Task : loads
-    Benchmark "1" --> "1" ToolConfig : has
-    Benchmark --> EnvConfig : creates
-    EnvConfig --> Environment : makes
-    Environment "1" --> "1" Task : wraps
-    TaskSession "1" --> "1" Environment : manages
-    TaskSession "1" --> "1" FastMCP : uses
-    ToolConfig --> FastMCP : creates
+    class Container {
+        <<abstract>>
+    }
+
+    Benchmark "1" --> "*" TaskConfig : loads
+    Benchmark "1" --> "1" RuntimeContext : creates
+    TaskConfig "1" --> "1" ToolConfig : has
+    TaskConfig --> Task : makes
+    ToolConfig --> AbstractTool : creates
+    Task "1" --> "1" AbstractTool : uses
+    Task "1" --> "0..1" RuntimeContext : references
+    Task "1" --> "0..1" Container : references
+    ContainerBackend --> Container : launches
+    Tool --|> AbstractTool : implements
 ```
 
 ## Key Relationships Summary
 
 | From | To | Relationship | Method |
 |------|-----|--------------|--------|
-| **Benchmark** | Task | Contains multiple | `load_tasks()` returns `List[Task]` |
-| **Benchmark** | ToolConfig | Has one | `tool_config` field (optional) |
-| **ToolConfig** | FastMCP | Creates | `create_mcp_server(task)` returns `FastMCP` |
-| **Benchmark** | EnvConfig | Creates | `spawn()` creates `EnvConfig(task, tool_config)` |
-| **EnvConfig** | Environment | Factory | `make()` returns `Environment(task)` |
-| **Environment** | Task | Wraps | Constructor takes `Task` |
-| **Environment** | Task | Delegates lifecycle | `reset()` → `task.setup()` |
-| **Environment** | Task | Delegates cleanup | `close()` → `task.teardown()` |
-| **TaskSession** | Environment | Manages | Constructor takes `Environment` |
-| **TaskSession** | FastMCP | Uses for tools | Constructor takes `mcp_server` parameter |
-| **TaskSession** | Task | Validates | `call_tool()` calls `task.validate_task()` |
-| **TaskSession** | Task | Filters | `list_tools()` calls `task.filter_actions()` |
-| **FastMCP** | Task | Accesses state | Tools defined with closure over task instance |
+| **Benchmark** | RuntimeContext | Creates shared resources | `setup()` returns `RuntimeContext` |
+| **Benchmark** | TaskConfig | Contains multiple | `load_tasks()` returns `List[TaskConfig]` |
+| **Benchmark** | Task | Spawns via server | `spawn(task_id)` creates task and server |
+| **TaskConfig** | Task | Factory | `make(runtime_context)` returns `Task` |
+| **TaskConfig** | ToolConfig | Has one | `tool_config` field |
+| **ToolConfig** | Tool | Factory | `make()` returns `AbstractTool` |
+| **Task** | Tool | Uses | `tool` field, `step()` calls `tool.execute_action()` |
+| **Task** | RuntimeContext | References | `runtime_context` field |
+| **Task** | Container | Optional reference | `container` field |
+| **Tool** | ActionSchema | Exposes actions | `action_set` property returns `List[ActionSchema]` |
+| **Tool** | Action | Executes | `execute_action(action)` returns `Observation` |
+| **Task** | Tool | Filters actions | `action_set` calls `filter_actions(tool.action_set)` |
+| **Server** | Task | Wraps | FastAPI endpoints delegate to task methods |
+| **ContainerBackend** | Container | Launches | `launch(config)` returns `Container` |
 
 ## Lifecycle Flow
 
 1. **Benchmark Setup**:
-   - User calls `benchmark.setup()` or `benchmark.setup_benchmark_resources()` to initialize
-   - Sets `benchmark.tool_config` field with a ToolConfig instance
+   - User creates Benchmark instance
+   - User calls `benchmark.setup()`
+   - Benchmark creates shared infrastructure (containers, VMs, etc.)
+   - Returns `RuntimeContext` with references to shared resources
+   - Stored in `benchmark._runtime_info`
 
 2. **Task Loading**:
-   - Benchmark loads tasks via `load_tasks()`, caches in `_task_list`
+   - User calls `benchmark.load_tasks()`
+   - Benchmark creates list of `TaskConfig` objects
+   - Each TaskConfig has:
+     - `task_id`: unique identifier
+     - `tool_config`: ToolConfig instance for creating tools
+   - Caches in `benchmark._task_list`
 
-3. **Session Spawn**:
-   - User calls `benchmark.spawn(task_id, seed)`
-   - Benchmark finds task from loaded list
-   - **ToolConfig creates MCP server**: `tool_config.create_mcp_server(task)` returns FastMCP instance
-     - Tools are defined with closures that access task state directly
-   - Creates `EnvConfig(task, tool_config)` → `Environment(task)`
-   - Calls `env.reset()` which calls `task.setup()`
-   - Creates `TaskSession(env, mcp_server)` with MCP server reference
+3. **Task Spawning**:
+   - User calls `benchmark.spawn(task_id, container_backend=None)`
+   - Benchmark finds TaskConfig by task_id
+   - **Creates Task**:
+     - Calls `task_config.make(runtime_context, container_backend)`
+     - Inside make():
+       - Creates tool: `tool = tool_config.make()`
+       - Creates task instance with metadata
+       - Sets `task.tool = tool`
+       - Sets `task.runtime_context = runtime_context`
+       - Optionally launches container: `container = container_backend.launch(config)`
+       - Sets `task.container = container`
+     - Calls `task.setup()` which resets tool and returns initial observation
+   - **Creates Server**:
+     - Calls `make_task_rpc_server(task)`
+     - Creates FastAPI app with REST endpoints
+     - Spawns server in separate process
+     - Returns URL
 
 4. **Task Execution**:
-   - Agent lists tools via `await session.list_tools()`
-     - TaskSession calls `await mcp_server.list_tools()`
-     - Filters through `task.filter_actions()`
-   - Agent calls tools via `await session.call_tool()`
-     - TaskSession calls `await mcp_server.call_tool()`
-     - MCP tool function executes, modifying task state via closure
-     - Task validates via `task.validate_task()` (returns reward)
-     - Task checks completion via `task.finished()`
+   - Agent queries available tools via `GET /tools/list`
+     - Server returns `task.action_set`
+     - Task internally calls `task.filter_actions(task.tool.action_set)`
+     - Tool's action_set discovered via @tool_action decorators
+   - Agent executes step via `POST /cube/step`
+     - Sends `Action(name, arguments)`
+     - Server calls `task.step(action)`
+     - Task calls `tool.execute_action(action)`
+     - Tool finds method decorated with @tool_action matching action name
+     - Tool executes method, returns Observation
+     - Task checks if done: `task.finished(obs)`
+     - Task evaluates: `task.evaluate(obs)` returns (reward, info)
+     - Task post-processes: `task.obs_postprocess(obs)`
+     - Returns `EnvironmentOutput(obs, reward, done, info, error)`
 
 5. **Cleanup**:
-   - Agent calls `session.close()`
-   - Calls `env.close()` → `task.teardown()`
-   - Returns profiling data
+   - Agent calls `POST /cube/close`
+   - Server calls `task.close()`
+   - Task cleans up resources (browser, container, temp files)
+   - User calls `benchmark.close()` to cleanup shared resources
 
 ## Key Architecture Decisions
 
-### ToolConfig as Single Source of Truth
+### ToolConfig as Factory Pattern
 
-The architecture uses **ToolConfig** as the single source of truth for defining task action spaces:
+The architecture uses **ToolConfig** as a factory for creating Tool instances:
 
-- **Before**: Tasks had `register_mcp_tools()` method that was called during session creation
-- **After**: ToolConfig's `create_mcp_server(task)` creates the MCP server with all tools defined
-- **Benefit**: Enables research flexibility - different ToolConfigs can expose different tools for the same task
+- **ToolConfig**: Serializable Pydantic model containing configuration
+- **ToolConfig.make()**: Factory method that creates Tool instances
+- **Benefit**: Enables research flexibility - different ToolConfigs can create different tool implementations for the same task
+- **Example**: `CounterToolConfig` vs `ConfigurableCounterToolConfig` vs `DoubleIncrementToolConfig`
 
-### In-Memory MCP Server
+### Tool as Action Executor
 
-MCP servers are **in-memory FastMCP instances**, not subprocesses:
+Tools are standalone objects that execute actions:
 
-- TaskSession holds a reference to the MCP server instance
-- `call_tool()` and `list_tools()` are async methods that await the MCP server
-- Tools defined in ToolConfig use closures to access task state directly
-- No subprocess overhead, simpler architecture
+- **Tool base class**: Provides automatic action discovery via decorators
+- **@tool_action decorator**: Marks methods as executable actions
+- **action_set property**: Automatically discovers all @tool_action methods
+- **execute_action(action)**: Routes actions to decorated methods by name
+- **Benefits**:
+  - Zero boilerplate - just add decorator
+  - Single source of truth - method signature defines the action
+  - Clear intent - obvious which methods are actions
 
-### Async Task Session Methods
+### Task has Tool, not Environment
 
-TaskSession methods are async for MCP server interaction:
+Task directly holds a reference to its Tool:
 
-- `async list_tools()` - awaits MCP server's async list_tools()
-- `async call_tool()` - awaits MCP server's async tool execution
-- FastAPI endpoints are already async, so no changes needed for HTTP clients
-- Python mode callers must use `await` when calling these methods
+- **task.tool**: AbstractTool instance set during TaskConfig.make()
+- **task.step()**: Directly calls `self.tool.execute_action(action)`
+- **task.action_set**: Returns `self.filter_actions(self.tool.action_set)`
+- **No Environment wrapper**: Task implements environment dynamics directly
+- **Benefit**: Simpler architecture, fewer abstractions
 
-### Tool State Access via Closure
+### Decorator-Based Action Discovery
 
-Tools access task state through closure, not through parameters:
+Actions are discovered automatically via Python decorators:
 
 ```python
-def create_mcp_server(self, task: Task) -> FastMCP:
-    mcp = FastMCP(f"Counter Task: {task.metadata.id}")
+class CounterTool(Tool):
+    @tool_action
+    def increment(self) -> str:
+        """Increment the counter by 1"""
+        self.counter += 1
+        return f"Counter is now {self.counter}"
 
-    @mcp.tool()
-    def increment() -> str:
-        # Direct access to task state via closure
-        task.counter += 1
-        return f"Counter is now {task.counter}"
-
-    return mcp
+    @tool_action
+    def get_value(self) -> str:
+        """Get the current counter value"""
+        return f"Counter value is: {self.counter}"
 ```
 
-### No register_mcp_tools()
+- Tool introspects itself to find all @tool_action methods
+- Creates ActionSchema from function signature and docstring
+- No manual registration needed
 
-The `Task.register_mcp_tools()` method was **removed**:
+### REST API via FastAPI
 
-- Tasks no longer define their own tools
-- ToolConfig is responsible for creating the MCP server with tools
-- Cleaner separation: Task defines logic, ToolConfig defines interface
+Server exposes REST endpoints, not MCP protocol:
+
+- **Benchmark endpoints**: `/cube/info`, `/cube/tasks`, `/cube/spawn`, `/cube/shutdown`
+- **Task endpoints**: `/tools/list`, `/tools/call`, `/cube/step`, `/cube/reset`, `/cube/close`, `/cube/status`, `/cube/priviledged_info`
+- **Resources**: `/resources/list`, `/resources/read` (not yet implemented)
+- **Benefits**: Standard HTTP, easy to test, compatible with any HTTP client
+
+### TaskConfig as Serializable Factory
+
+TaskConfig is a Pydantic model that can be serialized:
+
+- **JSON-serializable**: Can be passed over network, saved to disk
+- **make() method**: Creates Task instance from config
+- **Benefits**:
+  - Can distribute task configs to workers
+  - Can spawn tasks remotely
+  - Configuration separate from implementation
+
+### RuntimeContext for Shared Infrastructure
+
+Benchmark creates shared resources once, tasks reference them:
+
+- **RuntimeContext**: Holds references to shared infrastructure (containers, VMs, SSH sessions)
+- **Created in benchmark.setup()**: One-time initialization
+- **Passed to task_config.make()**: Tasks can access shared resources
+- **Benefits**:
+  - Efficient resource usage
+  - Consistent environment across tasks
+  - Easy cleanup in benchmark.close()
