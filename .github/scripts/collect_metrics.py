@@ -1,7 +1,7 @@
 import os  
 import sys  
 import pandas as pd  
-from github import Github, GithubException, UnknownObjectException # Added UnknownObjectException  
+from github import Github, GithubException # Added UnknownObjectException  
 from datetime import datetime, timedelta, timezone # Added timezone  
 import time  
 import requests
@@ -143,7 +143,7 @@ except GithubException as e:
   
 # --- Calculated Metrics: "New" Contributors (Approximation using stats) ---  
 # Stays the same as the previously corrected version - using weekly stats approximation  
-print(f"\nCalculating recent contributor additions (weekly stats)...")  
+print("\nCalculating recent contributor additions (weekly stats)...")  
 recent_contributor_adds = 0  
 retries = 0  
 stats_contributors = None  

@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Integration tests for LocalContainerBackend against a real Docker daemon.
+
+Usage:  uv run scripts/test_local.py
+"""
+
+import time
+import urllib.request
+
+from cube.backends.local import LocalContainerBackend
+from cube.container import ContainerError, ContainerSpec
+
+from test_harness import log, make_health_check_tests, make_tests, run_all
+
+BACKEND_KWARGS = {"timeout_seconds": 60}
+backend = LocalContainerBackend(**BACKEND_KWARGS)
+spec = ContainerSpec(image="alpine:latest")
+
+tests = make_tests(backend, spec)
+tests += make_health_check_tests(LocalContainerBackend, spec, BACKEND_KWARGS)
+
+
+# -- Local-only tests (port forwarding with real Docker ports) ---------------
+
+def test_port_forwarding():
+    port_spec = ContainerSpec(image="python:3.12-slim", ports=[8080])
+    container = backend.launch(port_spec)
+    try:
+        container.exec("python -m http.server 8080 &")
+        time.sleep(2)
+
+        host_port = container.forward_port(8080)
+        assert isinstance(host_port, int) and host_port > 0
+        log(f"host_port={host_port}")
+
+        url = container.get_url(8080)
+        assert url == f"http://localhost:{host_port}"
+        log(f"url={url}")
+
+        resp = urllib.request.urlopen(url, timeout=5)
+        assert resp.status == 200
+        log(f"HTTP GET {url} -> {resp.status}")
+    finally:
+        container.stop()
+
+
+tests.append(("port forwarding", test_port_forwarding))
+
+
+def test_forward_unexposed_port():
+    container = backend.launch(spec)
+    try:
+        try:
+            container.forward_port(9999)
+            assert False, "should have raised ContainerError"
+        except ContainerError:
+            log("correctly raised ContainerError for unexposed port")
+    finally:
+        container.stop()
+
+
+tests.append(("forward unexposed port", test_forward_unexposed_port))
+
+if __name__ == "__main__":
+    run_all("LocalContainerBackend integration tests", tests)
