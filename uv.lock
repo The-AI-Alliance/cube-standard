@@ -315,6 +315,9 @@ modal = [
     { name = "modal" },
     { name = "tenacity" },
 ]
+toolkit = [
+    { name = "tenacity" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -333,8 +336,9 @@ requires-dist = [
     { name = "tenacity", marker = "extra == 'daytona'", specifier = ">=9.1.4" },
     { name = "tenacity", marker = "extra == 'docker'", specifier = ">=9.1.4" },
     { name = "tenacity", marker = "extra == 'modal'", specifier = ">=9.1.4" },
+    { name = "tenacity", marker = "extra == 'toolkit'", specifier = ">=9.1.4" },
 ]
-provides-extras = ["docker", "daytona", "modal"]
+provides-extras = ["docker", "daytona", "modal", "toolkit"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ruff", specifier = ">=0.15.1" }]
