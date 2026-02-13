@@ -6,7 +6,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import Tool as MCPTool
 
 from cube.benchmark import Benchmark, BenchmarkMetadata
-from cube.server.types import (
+from cube.server_OLD.types import (
     ShutdownRequest,
     ShutdownResponse,
 )

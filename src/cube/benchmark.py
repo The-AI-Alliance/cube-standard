@@ -4,17 +4,12 @@ from typing import Any
 
 from pydantic import Field, PrivateAttr
 
-from cube import TypedBaseModel
-from cube.server.types import SpawnResponse
-from cube.task import Task, TaskConfig
+from cube.containers import ContainerBackend
+from cube.core import TypedBaseModel
+from cube.server import make_task_rpc_server
+from cube.task import TaskConfig
 
 logger = logging.getLogger(__name__)
-
-
-# TODO: implement actual server spawning and return real endpoint
-def make_task_rpc_server(task: Task) -> SpawnResponse:
-    """Utility to create a JSON-RPC server for a given task."""
-    return SpawnResponse(url="", session_id="")
 
 
 class RuntimeContext(TypedBaseModel):
@@ -118,16 +113,15 @@ class Benchmark(TypedBaseModel, ABC):
             raise RuntimeError("Benchmark not set up yet. Call setup() before accessing runtime info.")
         return self._runtime_info
 
-    def spawn(self, task_id: str, seed: int | None) -> SpawnResponse:
+    def spawn(self, task_id: str, container_backend: ContainerBackend | None = None) -> str:
         """
-        Spawn a new session for a given task.
-        cube/spawn calls this method.
-
-        Server mode: Creates subprocess running task server (returns URL)
-        Python mode: Creates TaskSession in-process (returns session object)
+        Spawn a new RPC server for the specified task on the specified container backend and return its endpoint URL.
         """
         task_config = self.get_task_configs(task_id)[0]
-        task = task_config.make(self.get_runtime_info())  # type: ignore
+        task = task_config.make(
+            runtime_context=self.get_runtime_info(),
+            container_backend=container_backend,
+        )  # type: ignore
         return make_task_rpc_server(task)
 
     @abstractmethod

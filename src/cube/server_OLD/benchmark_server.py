@@ -10,7 +10,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 if TYPE_CHECKING:
     from cube.benchmark import Benchmark
-from cube.server.types import JSONRPCRequest, JSONRPCResponse, ShutdownRequest, SpawnRequest, StatusRequest, TaskRequest
+from cube.server_OLD.types import (
+    JSONRPCRequest,
+    JSONRPCResponse,
+    ShutdownRequest,
+    SpawnRequest,
+    StatusRequest,
+    TaskRequest,
+)
 
 logger = logging.getLogger(__name__)
 

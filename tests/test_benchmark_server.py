@@ -3,8 +3,8 @@
 from fastapi import FastAPI
 
 from cube.benchmark import Benchmark, BenchmarkMetadata
-from cube.server import create_benchmark_server_app
-from cube.server.types import (
+from cube.server_OLD import create_benchmark_server_app
+from cube.server_OLD.types import (
     ShutdownRequest,
     ShutdownResponse,
 )

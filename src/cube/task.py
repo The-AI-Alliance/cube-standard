@@ -12,10 +12,10 @@ from typing import Any, Dict, List, Tuple
 
 from pydantic import Field
 
-from cube import TypedBaseModel
 from cube.benchmark import RuntimeContext
 from cube.containers import Container, ContainerBackend
-from cube.tool import AbstractTool, Action, ActionSchema, EnvironmentOutput, Observation, StepError, ToolConfig
+from cube.core import Action, ActionSchema, EnvironmentOutput, Observation, StepError, TypedBaseModel
+from cube.tool import AbstractTool, ToolConfig
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +139,7 @@ class Task(ABC):
         Returns:
             Tuple of (Observation, dict with additional task info)
         """
+        # TODO: consider separating reset from setup if setup does heavy initialization
         pass
 
     def step(self, action: Action | List[Action]) -> EnvironmentOutput:
@@ -198,7 +199,7 @@ class Task(ABC):
         return obs
 
     @abstractmethod
-    def evaluate(self, obs: Observation) -> tuple[float, dict]:
+    def evaluate(self, obs: Observation) -> Tuple[float, dict]:
         """Validate the current state of the task and return (reward, info)."""
         pass
 
@@ -210,6 +211,14 @@ class Task(ABC):
         - environment internal state summaries
         """
         return None
+
+    def get_status(self) -> str:
+        """
+        (Optional) Return current task status.
+        Consider looking into self.runtime_context and/or self.container.
+        """
+        # TODO: figure out if we want to provide some standard for this?
+        return ""
 
     def finished(self, obs: Observation) -> bool:
         """(Optional) Check if the task is finished."""

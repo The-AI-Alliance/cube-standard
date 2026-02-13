@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from cube.environment import EnvConfig
-from cube.server.types import (
+from cube.server_OLD.types import (
     MCPCallToolRequest,
     MCPReadResourceRequest,
     ResetRequest,

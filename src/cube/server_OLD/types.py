@@ -15,9 +15,8 @@ from mcp.types import (
 )
 from pydantic import Field
 
-from cube import TypedBaseModel
+from cube.core import EnvironmentOutput, TypedBaseModel
 from cube.task import TaskMetadata
-from cube.tool import EnvironmentOutput
 
 # =============================================================================
 # Base Classes
