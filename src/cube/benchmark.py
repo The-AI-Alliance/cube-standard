@@ -6,7 +6,6 @@ from pydantic import Field, PrivateAttr
 
 from cube.containers import ContainerBackend
 from cube.core import TypedBaseModel
-from cube.server import make_task_rpc_server
 from cube.task import TaskConfig
 
 logger = logging.getLogger(__name__)
@@ -117,12 +116,15 @@ class Benchmark(TypedBaseModel, ABC):
         """
         Spawn a new RPC server for the specified task on the specified container backend and return its endpoint URL.
         """
+        from cube.server import make_task_rpc_server
+
         task_config = self.get_task_configs(task_id)[0]
         task = task_config.make(
             runtime_context=self.get_runtime_info(),
             container_backend=container_backend,
         )  # type: ignore
-        return make_task_rpc_server(task)
+        _app, _process, url = make_task_rpc_server(task)
+        return url
 
     @abstractmethod
     def close(self) -> None:

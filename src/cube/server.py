@@ -10,14 +10,17 @@ from cube.containers import ContainerBackend
 from cube.core import Action, ActionSchema, EnvironmentOutput, Observation, StepError
 from cube.task import Task, TaskConfig
 
+# Type alias for server return value: (app, process, url)
+ServerInfo = Tuple[FastAPI, multiprocessing.Process, str]
+
 # TODO: figure out how to pass the relevant runtime info (host, port, credentials, etc.)
 
 logger = logging.getLogger(__name__)
 
 
-def create_benchmark_rpc_server(benchmark: Benchmark, host: str = "127.0.0.1", port: int = 8000) -> str:
+def make_benchmark_fastapi_app(benchmark: Benchmark) -> FastAPI:
     """
-    Create a JSON-RPC server for a given benchmark.
+    Make a FastAPI app for a given benchmark (without spawning a server process).
 
     Exposes benchmark-level endpoints:
     - cube/info - Get benchmark metadata
@@ -25,7 +28,8 @@ def create_benchmark_rpc_server(benchmark: Benchmark, host: str = "127.0.0.1", p
     - cube/spawn - Spawn new task server
     - cube/shutdown - Shutdown the benchmark
 
-    Returns the URL endpoint where the server is accessible.
+    Returns:
+        FastAPI app
     """
     app = FastAPI(title=f"CUBE Benchmark Server - {benchmark.name}")
 
@@ -45,6 +49,18 @@ def create_benchmark_rpc_server(benchmark: Benchmark, host: str = "127.0.0.1", p
     def cube_shutdown() -> None:
         return benchmark.close()
 
+    return app
+
+
+def make_benchmark_rpc_server(benchmark: Benchmark, host: str = "127.0.0.1", port: int = 8000) -> ServerInfo:
+    """
+    Make a JSON-RPC server for a given benchmark and spawn it in a separate process.
+
+    Returns:
+        ServerInfo: Tuple of (FastAPI app, server process, URL)
+    """
+    app = make_benchmark_fastapi_app(benchmark)
+
     def run_server() -> None:
         uvicorn.run(app, host=host, port=port)
         logger.info(f"Benchmark RPC server for benchmark {benchmark.name} started at http://{host}:{port}")
@@ -52,12 +68,13 @@ def create_benchmark_rpc_server(benchmark: Benchmark, host: str = "127.0.0.1", p
     server_process = multiprocessing.Process(target=run_server)
     server_process.start()
 
-    return f"http://{host}:{port}"
+    url = f"http://{host}:{port}"
+    return app, server_process, url
 
 
-def make_task_rpc_server(task: Task, host: str = "127.0.0.1", port: int = 8000) -> str:
+def make_task_fastapi_app(task: Task) -> FastAPI:
     """
-    Create a JSON-RPC server for a given task.
+    Make a FastAPI app for a given task (without spawning a server process).
 
     Exposes task-level endpoints:
     - /tools/list - List available tools
@@ -71,7 +88,8 @@ def make_task_rpc_server(task: Task, host: str = "127.0.0.1", port: int = 8000) 
     - /cube/status - Get task status
     - /cube/priviledged_info - Get task priviledged info
 
-    Returns the URL endpoint where the server is accessible.
+    Returns:
+        FastAPI app
     """
     app = FastAPI(title=f"CUBE Task Server - {task.id}/{task.seed}")
 
@@ -122,6 +140,18 @@ def make_task_rpc_server(task: Task, host: str = "127.0.0.1", port: int = 8000) 
         """Get task priviledged info."""
         return task.get_priviledged_info()
 
+    return app
+
+
+def make_task_rpc_server(task: Task, host: str = "127.0.0.1", port: int = 8000) -> ServerInfo:
+    """
+    Create a JSON-RPC server for a given task and spawn it in a separate process.
+
+    Returns:
+        ServerInfo: Tuple of (FastAPI app, server process, URL)
+    """
+    app = make_task_fastapi_app(task)
+
     def run_server() -> None:
         uvicorn.run(app, host=host, port=port)
         logger.info(f"Task RPC server for task {task.id}/{task.seed} started at http://{host}:{port}")
@@ -129,4 +159,5 @@ def make_task_rpc_server(task: Task, host: str = "127.0.0.1", port: int = 8000) 
     task_process = multiprocessing.Process(target=run_server)
     task_process.start()
 
-    return f"http://{host}:{port}"
+    url = f"http://{host}:{port}"
+    return app, task_process, url

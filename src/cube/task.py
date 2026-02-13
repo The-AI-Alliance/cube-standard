@@ -6,16 +6,20 @@ the task-level API for managing individual task instances. It handles both MCP
 protocol methods (tools/*, resources/*) and CUBE extensions (cube/*).
 """
 
+from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
 from pydantic import Field
 
-from cube.benchmark import RuntimeContext
 from cube.containers import Container, ContainerBackend
 from cube.core import Action, ActionSchema, EnvironmentOutput, Observation, StepError, TypedBaseModel
 from cube.tool import AbstractTool, ToolConfig
+
+if TYPE_CHECKING:
+    from cube.benchmark import RuntimeContext
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +79,7 @@ class Task(ABC):
     """
 
     metadata: TaskMetadata
-    tool: AbstractTool  # access to the environment tool, initialized in setup()
+    tool: AbstractTool  # access to the environment tool, initialized in TaskConfig.make()
     runtime_context: RuntimeContext | None = None
     container: Container | None = None  # access to the environment container, initialized in setup()
     validate_per_step: bool = False

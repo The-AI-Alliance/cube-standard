@@ -23,8 +23,8 @@ class ContainerConfig(ABC, TypedBaseModel):
     gpu: bool = False
     ports: List[int] | None = None
 
-    @abstractmethod
     @staticmethod
+    @abstractmethod
     def from_task_id(task_id: str) -> "ContainerConfig":
         pass
 
