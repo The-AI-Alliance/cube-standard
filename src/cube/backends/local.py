@@ -1,5 +1,3 @@
-"""Local Docker backend — uses docker-py to run containers on the host."""
-
 from __future__ import annotations
 
 import logging
@@ -31,10 +29,6 @@ from cube.container import (
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Retry decorators
-# ---------------------------------------------------------------------------
-
 _retry_launch = retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=2, max=30),
@@ -50,12 +44,6 @@ _retry_io = retry(
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
-
-# ---------------------------------------------------------------------------
-# LocalContainer
-# ---------------------------------------------------------------------------
-
-
 class LocalContainer(Container):
     """Runtime handle backed by a local Docker container."""
 
@@ -69,8 +57,6 @@ class LocalContainer(Container):
         self._client = client
         self._remove_on_close = remove_on_close
         self._port_map: dict[int, int] = {}
-
-    # -- Container interface ------------------------------------------------
 
     @property
     def id(self) -> str:
@@ -137,9 +123,9 @@ class LocalContainer(Container):
         try:
             self._container.stop(timeout=timeout)
         except docker.errors.NotFound:
-            pass  # already gone — idempotent
+            pass
         except docker.errors.APIError:
-            pass  # container may already be stopped
+            pass
 
         if self._remove_on_close:
             try:
@@ -150,7 +136,7 @@ class LocalContainer(Container):
     def get_status(self) -> ContainerStatus:
         try:
             self._container.reload()
-            state = self._container.status  # "running", "exited", …
+            state = self._container.status
             running = state == "running"
 
             resource_usage: dict[str, float] = {}
@@ -180,12 +166,6 @@ class LocalContainer(Container):
                 backend_info={"docker_status": "removed", "id": self.id},
             )
 
-
-# ---------------------------------------------------------------------------
-# LocalContainerBackend
-# ---------------------------------------------------------------------------
-
-
 class LocalContainerBackend(ContainerBackend):
     """Launch containers on the local Docker daemon."""
 
@@ -193,11 +173,22 @@ class LocalContainerBackend(ContainerBackend):
     network_mode: str = "bridge"
     remove_on_close: bool = True
 
-    @_retry_launch
+    @staticmethod
+    def _validate_spec(spec: ContainerSpec) -> None:
+        if spec.disk_gb != 10.0:
+            raise ContainerLaunchError(
+                "LocalContainerBackend does not support `disk_gb` overrides. "
+                "Use the default value (10.0) or configure disk limits at the Docker daemon level."
+            )
+
     def launch(self, spec: ContainerSpec) -> LocalContainer:
+        self._validate_spec(spec)
+        return self._launch_with_retry(spec)
+
+    @_retry_launch
+    def _launch_with_retry(self, spec: ContainerSpec) -> LocalContainer:
         client = docker.from_env()
 
-        # -- pull image ---------------------------------------------------
         if self.pull_policy == "always" or (
             self.pull_policy == "missing"
             and not _image_exists(client, spec.image)
@@ -210,7 +201,6 @@ class LocalContainerBackend(ContainerBackend):
                     f"Failed to pull image '{spec.image}': {exc}"
                 ) from exc
 
-        # -- resource limits ----------------------------------------------
         kwargs: dict[str, Any] = {}
         kwargs["mem_limit"] = f"{int(spec.ram_gb * 1024)}m"
         kwargs["nano_cpus"] = int(spec.cpu_cores * 1e9)
@@ -220,11 +210,9 @@ class LocalContainerBackend(ContainerBackend):
                 docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
             ]
 
-        # -- port bindings ------------------------------------------------
         if spec.ports:
             kwargs["ports"] = {f"{p}/tcp": None for p in spec.ports}
 
-        # -- create & start -----------------------------------------------
         try:
             docker_container = client.containers.run(
                 spec.image,
@@ -238,7 +226,6 @@ class LocalContainerBackend(ContainerBackend):
                 f"Failed to create container from '{spec.image}': {exc}"
             ) from exc
 
-        # -- wait until running -------------------------------------------
         container = LocalContainer(
             docker_container, client, remove_on_close=self.remove_on_close
         )
@@ -257,12 +244,6 @@ class LocalContainerBackend(ContainerBackend):
 
         self._run_health_check(container)
         return container
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _image_exists(client: docker.DockerClient, image: str) -> bool:
     try:

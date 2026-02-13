@@ -12,8 +12,8 @@ import sys
 from dotenv import load_dotenv
 
 from cube.backends.daytona import DaytonaContainerBackend
-from cube.container import ContainerSpec
-from test_harness import make_health_check_tests, make_tests, run_all
+from cube.container import ContainerError, ContainerSpec
+from test_harness import log, make_health_check_tests, make_tests, run_all
 
 load_dotenv()
 
@@ -35,6 +35,22 @@ spec = ContainerSpec(image="python:3.12-slim")
 
 tests = make_tests(backend, spec)
 tests += make_health_check_tests(DaytonaContainerBackend, spec, BACKEND_KWARGS)
+
+
+def test_declared_ports_enforced():
+    port_spec = ContainerSpec(image="python:3.12-slim", ports=[8080])
+    container = backend.launch(port_spec)
+    try:
+        try:
+            container.get_url(9090)
+            assert False, "should have raised ContainerError"
+        except ContainerError:
+            log("correctly rejected undeclared port access")
+    finally:
+        container.stop()
+
+
+tests.append(("declared ports enforced", test_declared_ports_enforced))
 
 if __name__ == "__main__":
     run_all("DaytonaContainerBackend integration tests", tests)

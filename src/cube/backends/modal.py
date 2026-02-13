@@ -1,12 +1,9 @@
-"""Modal backend — run containers as Modal Sandboxes."""
-
 from __future__ import annotations
 
 import logging
 import shlex
 import time
 from typing import Any, Dict
-
 import modal
 from tenacity import (
     before_sleep_log,
@@ -26,6 +23,7 @@ from cube.container import (
     ContainerStatus,
     ExecResult,
     HealthCheckError,
+    port_from_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,12 +42,6 @@ _retry_io = retry(
     reraise=True,
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
-
-
-# ---------------------------------------------------------------------------
-# ModalContainer
-# ---------------------------------------------------------------------------
-
 
 class ModalContainer(Container):
     """Runtime handle backed by a Modal Sandbox."""
@@ -71,7 +63,6 @@ class ModalContainer(Container):
     ) -> ExecResult:
         effective_timeout = timeout if timeout is not None else 120
 
-        # Wrap with timeout for enforcement
         wrapped = f"timeout {effective_timeout}s bash -lc {shlex.quote(command)}"
 
         kwargs: dict[str, Any] = {}
@@ -100,9 +91,7 @@ class ModalContainer(Container):
         )
 
     def forward_port(self, container_port: int) -> int:
-        # Modal uses tunnel URLs, not host port mapping.
-        # Return the container port — get_url() provides the real URL.
-        return container_port
+        return port_from_url(self.get_url(container_port))
 
     def get_url(self, container_port: int) -> str:
         if container_port in self._url_cache:
@@ -151,19 +140,25 @@ class ModalContainer(Container):
                 backend_info={"id": self.id},
             )
 
-
-# ---------------------------------------------------------------------------
-# ModalContainerBackend
-# ---------------------------------------------------------------------------
-
-
 class ModalContainerBackend(ContainerBackend):
     """Launch containers as Modal Sandboxes."""
 
     app_name: str = "cube-container"
 
-    @_retry_sandbox
+    @staticmethod
+    def _validate_spec(spec: ContainerSpec) -> None:
+        if spec.disk_gb != 10.0:
+            raise ContainerLaunchError(
+                "ModalContainerBackend does not support `disk_gb` overrides. "
+                "Use the default value (10.0)."
+            )
+
     def launch(self, spec: ContainerSpec) -> ModalContainer:
+        self._validate_spec(spec)
+        return self._launch_with_retry(spec)
+
+    @_retry_sandbox
+    def _launch_with_retry(self, spec: ContainerSpec) -> ModalContainer:
         try:
             app = modal.App.lookup(self.app_name, create_if_missing=True)
         except Exception as exc:
@@ -182,7 +177,9 @@ class ModalContainerBackend(ContainerBackend):
         if spec.cpu_cores:
             kwargs["cpu"] = spec.cpu_cores
         if spec.ram_gb:
-            kwargs["memory"] = int(spec.ram_gb * 1024)  # Modal takes MB
+            kwargs["memory"] = int(spec.ram_gb * 1024)
+        if spec.gpu:
+            kwargs["gpu"] = "any"
 
         if spec.ports:
             kwargs["encrypted_ports"] = spec.ports
@@ -200,3 +197,5 @@ class ModalContainerBackend(ContainerBackend):
 
         self._run_health_check(container)
         return container
+
+

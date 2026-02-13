@@ -1,5 +1,3 @@
-"""CUBE Container API — core abstractions."""
-
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -9,11 +7,6 @@ from typing import Any, Callable, Dict
 from pydantic import ConfigDict, Field
 
 from cube.base import TypedBaseModel
-
-
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -62,11 +55,6 @@ class ContainerStatus:
     backend_info: dict[str, Any] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
-
-
 class ContainerError(Exception):
     """Base exception for all container-related errors."""
 
@@ -81,11 +69,6 @@ class HealthCheckError(ContainerError):
 
 class ContainerExecError(ContainerError):
     """Raised when command execution inside a container fails."""
-
-
-# ---------------------------------------------------------------------------
-# Abstract base classes
-# ---------------------------------------------------------------------------
 
 
 class Container(ABC):
@@ -103,7 +86,7 @@ class Container(ABC):
 
     @abstractmethod
     def forward_port(self, container_port: int) -> int:
-        """Make *container_port* accessible on the host. Returns host port."""
+        """Return the reachable port for *container_port* on this backend."""
 
     @abstractmethod
     def get_url(self, container_port: int) -> str:
@@ -154,3 +137,17 @@ class ContainerBackend(TypedBaseModel, ABC):
             raise HealthCheckError(
                 f"Health check raised an exception: {exc}"
             ) from exc
+
+
+def port_from_url(url: str) -> int:
+    """Extract the effective port from a URL (443 for https, 80 for http)."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.port is not None:
+        return parsed.port
+    if parsed.scheme == "https":
+        return 443
+    if parsed.scheme == "http":
+        return 80
+    raise ContainerError(f"Could not determine port from URL: {url}")

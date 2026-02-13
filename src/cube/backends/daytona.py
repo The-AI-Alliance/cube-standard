@@ -1,5 +1,3 @@
-"""Daytona backend — run containers as Daytona sandboxes."""
-
 from __future__ import annotations
 
 import logging
@@ -35,6 +33,7 @@ from cube.container import (
     ContainerStatus,
     ExecResult,
     HealthCheckError,
+    port_from_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,12 +60,6 @@ _retry_poll = retry(
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
-
-# ---------------------------------------------------------------------------
-# DaytonaContainer
-# ---------------------------------------------------------------------------
-
-
 class DaytonaContainer(Container):
     """Runtime handle backed by a Daytona sandbox."""
 
@@ -74,10 +67,12 @@ class DaytonaContainer(Container):
         self,
         sandbox,
         client: Daytona,
+        allowed_ports: set[int] | None = None,
     ) -> None:
         self._sandbox = sandbox
         self._client = client
         self._url_cache: dict[int, str] = {}
+        self._allowed_ports = allowed_ports
 
     @property
     def id(self) -> str:
@@ -93,7 +88,6 @@ class DaytonaContainer(Container):
         effective_timeout = timeout if timeout is not None else 120
         session_id = str(uuid4())
 
-        # Prepend env vars and cd to workdir if specified
         parts = []
         if env:
             for k, v in env.items():
@@ -150,11 +144,10 @@ class DaytonaContainer(Container):
                 pass
 
     def forward_port(self, container_port: int) -> int:
-        # Daytona uses signed preview URLs, not host port mapping.
-        # We return the container port itself — get_url() provides the real URL.
-        return container_port
+        return port_from_url(self.get_url(container_port))
 
     def get_url(self, container_port: int) -> str:
+        self._assert_allowed_port(container_port)
         if container_port in self._url_cache:
             return self._url_cache[container_port]
 
@@ -175,7 +168,7 @@ class DaytonaContainer(Container):
         try:
             self._client.delete(self._sandbox)
         except DaytonaError:
-            pass  # already gone — idempotent
+            pass
         except Exception as exc:
             logger.warning("Error deleting sandbox %s: %s", self.id, exc)
 
@@ -196,7 +189,15 @@ class DaytonaContainer(Container):
                 backend_info={"daytona_state": "unknown", "id": self.id},
             )
 
-    # -- internal helpers ---------------------------------------------------
+    def _assert_allowed_port(self, container_port: int) -> None:
+        if self._allowed_ports is None:
+            return
+        if container_port in self._allowed_ports:
+            return
+        raise ContainerError(
+            f"Port {container_port} is not in declared spec ports: "
+            f"{sorted(self._allowed_ports)}"
+        )
 
     def _poll_command(self, session_id: str, command_id: str, timeout: int) -> tuple:
         deadline = time.monotonic() + timeout
@@ -217,11 +218,6 @@ class DaytonaContainer(Container):
         return self._sandbox.process.get_session_command_logs(session_id, command_id)
 
 
-# ---------------------------------------------------------------------------
-# DaytonaContainerBackend
-# ---------------------------------------------------------------------------
-
-
 class DaytonaContainerBackend(ContainerBackend):
     """Launch containers as Daytona sandboxes."""
 
@@ -232,8 +228,11 @@ class DaytonaContainerBackend(ContainerBackend):
     auto_stop_minutes: int = 10
     auto_delete_minutes: int = 5
 
-    @_retry_sandbox
     def launch(self, spec: ContainerSpec) -> DaytonaContainer:
+        return self._launch_with_retry(spec)
+
+    @_retry_sandbox
+    def _launch_with_retry(self, spec: ContainerSpec) -> DaytonaContainer:
         config_kwargs: dict[str, Any] = {}
         if self.api_key:
             config_kwargs["api_key"] = self.api_key
@@ -248,18 +247,32 @@ class DaytonaContainerBackend(ContainerBackend):
         client = Daytona(daytona_config)
 
         logger.info("Creating Daytona sandbox with image %s …", spec.image)
+
+        cpu = int(spec.cpu_cores)
+        memory = int(spec.ram_gb)
+        disk = int(spec.disk_gb)
+        if cpu != spec.cpu_cores or memory != spec.ram_gb or disk != spec.disk_gb:
+            logger.warning(
+                "Daytona requires integer resources — truncating "
+                "cpu_cores=%.1f→%d, ram_gb=%.1f→%d, disk_gb=%.1f→%d",
+                spec.cpu_cores, cpu, spec.ram_gb, memory, spec.disk_gb, disk,
+            )
+
+        resources_kwargs: dict[str, Any] = {
+            "cpu": cpu,
+            "memory": memory,
+            "disk": disk,
+        }
+        if spec.gpu:
+            resources_kwargs["gpu"] = 1
+
         try:
             create_kwargs: dict[str, Any] = {
                 "image": Image.base(spec.image),
-                "resources": Resources(
-                    cpu=int(spec.cpu_cores),
-                    memory=int(spec.ram_gb),
-                    disk=int(spec.disk_gb),
-                ),
+                "resources": Resources(**resources_kwargs),
                 "auto_stop_interval": self.auto_stop_minutes,
                 "ephemeral": self.ephemeral,
             }
-            # ephemeral=True forces auto_delete_interval=0
             if not self.ephemeral:
                 create_kwargs["auto_delete_interval"] = self.auto_delete_minutes
             params = CreateSandboxFromImageParams(**create_kwargs)
@@ -269,8 +282,11 @@ class DaytonaContainerBackend(ContainerBackend):
                 f"Failed to create Daytona sandbox from '{spec.image}': {exc}"
             ) from exc
 
-        container = DaytonaContainer(sandbox, client)
+        allowed_ports = set(spec.ports) if spec.ports else None
+        container = DaytonaContainer(sandbox, client, allowed_ports=allowed_ports)
         logger.info("Daytona sandbox created: %s", container.id)
 
         self._run_health_check(container)
         return container
+
+
