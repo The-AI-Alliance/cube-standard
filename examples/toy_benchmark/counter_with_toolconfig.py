@@ -5,198 +5,245 @@ This example shows how researchers can create custom ToolConfig implementations
 to swap tool behavior without modifying benchmark code.
 """
 
-import asyncio
+from counter import CounterBenchmark, CounterTaskConfig
 
-from counter import CounterBenchmark, ReachTargetTask
-from mcp.server.fastmcp import FastMCP
-
-from cube.task import Task
-from cube.tool import ToolConfig
+from cube.core import Action, ActionSchema
+from cube.tool import Tool, ToolConfig, tool_action
 
 
 # Example 1: Basic ToolConfig with configurable features
-class CounterToolConfig(ToolConfig):
-    """Custom tool configuration for counter benchmark."""
+class ConfigurableCounterTool(Tool):
+    """Counter tool with optional decrement and reset."""
 
-    enable_decrement: bool = False  # example config parameter: allow decrementing?
-    enable_reset: bool = False  # example config parameter: allow reset?
+    def __init__(self, target: int, enable_decrement: bool = False, enable_reset: bool = False):
+        """Initialize counter tool with optional features."""
+        self.counter = 0
+        self.target = target
+        self.history: list[str] = []
+        self.enable_decrement = enable_decrement
+        self.enable_reset = enable_reset
 
-    def create_mcp_server(self, task: Task) -> FastMCP:
-        """Create MCP server with configurable tools."""
-        mcp = FastMCP(f"Counter Task: {task.metadata.id}")
+    def reset(self) -> None:
+        """Reset tool to initial state."""
+        self.counter = 0
+        self.history = []
 
-        # Cast to ReachTargetTask for type safety
-        assert isinstance(task, ReachTargetTask)
-        reach_task = task
+    @tool_action
+    def increment(self) -> str:
+        """Increment the counter by 1"""
+        self.counter += 1
+        self.history.append("increment")
+        return f"Counter is now {self.counter}"
 
-        # Core tools (always available)
-        @mcp.tool()
-        def increment() -> str:
-            """Increment the counter by 1"""
-            reach_task.counter += 1
-            reach_task.history.append("increment")
-            return f"Counter is now {reach_task.counter}"
+    @tool_action
+    def get_value(self) -> str:
+        """Get the current counter value"""
+        return f"Counter value is: {self.counter}"
 
-        @mcp.tool()
-        def get_value() -> str:
-            """Get the current counter value"""
-            return f"Counter value is: {reach_task.counter}"
+    @tool_action
+    def decrement(self) -> str:
+        """Decrement the counter by 1"""
+        self.counter -= 1
+        self.history.append("decrement")
+        return f"Counter is now {self.counter}"
 
-        # Optional tools based on configuration
-        if self.enable_decrement:
+    @tool_action
+    def reset_counter(self) -> str:
+        """Reset counter to 0"""
+        self.counter = 0
+        self.history.append("reset")
+        return "Counter reset to 0"
 
-            @mcp.tool()
-            def decrement() -> str:
-                """Decrement the counter by 1"""
-                reach_task.counter -= 1
-                reach_task.history.append("decrement")
-                return f"Counter is now {reach_task.counter}"
+    @property
+    def action_set(self) -> list[ActionSchema]:
+        """Return only enabled actions based on configuration."""
+        all_actions = super().action_set
 
-        if self.enable_reset:
+        # Filter based on configuration
+        enabled_actions = []
+        for action in all_actions:
+            if action.name == "decrement" and not self.enable_decrement:
+                continue
+            if action.name == "reset_counter" and not self.enable_reset:
+                continue
+            enabled_actions.append(action)
 
-            @mcp.tool()
-            def reset() -> str:
-                """Reset counter to 0"""
-                reach_task.counter = 0
-                reach_task.history.append("reset")
-                return "Counter reset to 0"
+        return enabled_actions
 
-        return mcp
+
+class ConfigurableCounterToolConfig(ToolConfig):
+    """Custom tool configuration with configurable features."""
+
+    target: int = 0
+    enable_decrement: bool = False
+    enable_reset: bool = False
+
+    def make(self) -> Tool:
+        """Create tool instance with configured features."""
+        return ConfigurableCounterTool(
+            target=self.target,
+            enable_decrement=self.enable_decrement,
+            enable_reset=self.enable_reset,
+        )
 
 
 # Example 2: Advanced ToolConfig with different increment behavior
+class DoubleIncrementTool(Tool):
+    """Counter tool that increments by 2."""
+
+    def __init__(self, target: int):
+        """Initialize counter tool."""
+        self.counter = 0
+        self.target = target
+        self.history: list[str] = []
+
+    def reset(self) -> None:
+        """Reset tool to initial state."""
+        self.counter = 0
+        self.history = []
+
+    @tool_action
+    def increment(self) -> str:
+        """Increment the counter by 2 (research variant)"""
+        self.counter += 2
+        self.history.append("increment")
+        return f"Counter is now {self.counter} (incremented by 2)"
+
+    @tool_action
+    def get_value(self) -> str:
+        """Get the current counter value"""
+        return f"Counter value is: {self.counter}"
+
+
 class DoubleIncrementToolConfig(ToolConfig):
     """Alternative tool implementation that increments by 2."""
 
-    def create_mcp_server(self, task: Task) -> FastMCP:
-        """Create MCP server with double increment."""
-        mcp = FastMCP(f"Double Counter: {task.metadata.id}")
+    target: int = 0
 
-        # Cast to ReachTargetTask for type safety
-        assert isinstance(task, ReachTargetTask)
-        reach_task = task
-
-        @mcp.tool()
-        def increment() -> str:
-            """Increment the counter by 2 (research variant)"""
-            reach_task.counter += 2
-            reach_task.history.append("increment")
-            return f"Counter is now {reach_task.counter} (incremented by 2)"
-
-        @mcp.tool()
-        def get_value() -> str:
-            """Get the current counter value"""
-            return f"Counter value is: {reach_task.counter}"
-
-        return mcp
+    def make(self) -> Tool:
+        """Create double increment tool."""
+        return DoubleIncrementTool(target=self.target)
 
 
-async def test_basic_toolconfig():
-    """Test basic ToolConfig with decrement enabled."""
-    print("\n=== Test 1: Basic ToolConfig with decrement ===")
+def test_configurable_toolconfig():
+    """Test configurable ToolConfig with decrement enabled."""
+    print("\n" + "=" * 60)
+    print("Test 1: Configurable ToolConfig with decrement")
+    print("=" * 60)
 
     # Create benchmark with custom ToolConfig
     benchmark = CounterBenchmark()
-    tool_config = CounterToolConfig(enable_decrement=True, enable_reset=False)
-    benchmark.setup(tool_config=tool_config)
+    benchmark.setup()
 
-    # Load task
-    task: ReachTargetTask = benchmark.load_tasks()[0]  # type: ignore
+    # Create task config with decrement enabled, reset disabled
+    task_config = CounterTaskConfig(
+        task_id="count-to-3",
+        target=3,
+        tool_config=ConfigurableCounterToolConfig(target=3, enable_decrement=True, enable_reset=False),
+    )
 
-    # Create MCP server using ToolConfig
-    mcp_server = tool_config.create_mcp_server(task)
+    # Create task
+    task = task_config.make()  # type: ignore[assignment]
+    task.setup()
 
-    # List tools
-    tools = await mcp_server.list_tools()
-    tool_names = [tool.name for tool in tools]
-    print(f"Available tools: {tool_names}")
-    assert "decrement" in tool_names, "Expected 'decrement' tool"
-    assert "reset" not in tool_names, "Should not have 'reset' tool"
+    # Check available actions
+    actions = task.action_set
+    action_names = [action.name for action in actions]
+    print(f"Available actions: {action_names}")
+    assert "decrement" in action_names, "Expected 'decrement' action"
+    assert "reset_counter" not in action_names, "Should not have 'reset_counter' action (disabled)"
 
     # Test increment
-    result = await mcp_server.call_tool("increment", {})
-    print(f"Increment: {result}")
+    env_output = task.step(Action(name="increment", arguments={}))
+    print(f"Increment: {env_output.obs.contents[0].data}")
+    assert task.tool.counter == 1  # type: ignore[attr-defined]
 
     # Test decrement (only available with ToolConfig)
-    result = await mcp_server.call_tool("decrement", {})
-    print(f"Decrement: {result}")
-    assert task.counter == 0, f"Expected counter to be 0, got {task.counter}"
+    env_output = task.step(Action(name="decrement", arguments={}))
+    print(f"Decrement: {env_output.obs.contents[0].data}")
+    assert task.tool.counter == 0, f"Expected counter to be 0, got {task.tool.counter}"  # type: ignore[attr-defined]
 
-    print("✓ Basic ToolConfig test passed!")
+    print("✓ Configurable ToolConfig test passed!")
 
 
-async def test_double_increment_toolconfig():
+def test_double_increment_toolconfig():
     """Test alternative tool implementation."""
-    print("\n=== Test 2: Double Increment ToolConfig ===")
+    print("\n" + "=" * 60)
+    print("Test 2: Double Increment ToolConfig")
+    print("=" * 60)
 
     # Create benchmark with different ToolConfig
     benchmark = CounterBenchmark()
-    tool_config = DoubleIncrementToolConfig()
-    benchmark.setup(tool_config=tool_config)
+    benchmark.setup()
 
-    # Load task
-    task: ReachTargetTask = benchmark.load_tasks()[0]  # type: ignore
+    # Create task config with double increment
+    task_config = CounterTaskConfig(
+        task_id="count-to-4",
+        target=4,
+        tool_config=DoubleIncrementToolConfig(target=4),
+    )
 
-    # Create MCP server using ToolConfig
-    mcp_server = tool_config.create_mcp_server(task)
+    # Create task
+    task = task_config.make()  # type: ignore[assignment]
+    task.setup()
 
     # Test double increment
-    result = await mcp_server.call_tool("increment", {})
-    print(f"Increment: {result}")
-    assert task.counter == 2, f"Expected counter to be 2, got {task.counter}"
+    env_output = task.step(Action(name="increment", arguments={}))
+    print(f"Increment: {env_output.obs.contents[0].data}")
+    assert task.tool.counter == 2, f"Expected counter to be 2, got {task.tool.counter}"  # type: ignore[attr-defined]
 
     # Increment again
-    result = await mcp_server.call_tool("increment", {})
-    print(f"Increment: {result}")
-    assert task.counter == 4, f"Expected counter to be 4, got {task.counter}"
+    env_output = task.step(Action(name="increment", arguments={}))
+    print(f"Increment: {env_output.obs.contents[0].data}")
+    assert task.tool.counter == 4, f"Expected counter to be 4, got {task.tool.counter}"  # type: ignore[attr-defined]
+    assert env_output.done, "Task should be done"
+    assert env_output.reward == 1.0, f"Expected reward 1.0, got {env_output.reward}"
 
     print("✓ Double increment ToolConfig test passed!")
 
 
-async def test_default_toolconfig():
-    """Test default ToolConfig from benchmark."""
-    print("\n=== Test 3: Default ToolConfig (from counter.py) ===")
+def test_default_toolconfig():
+    """Test default ToolConfig from counter.py."""
+    print("\n" + "=" * 60)
+    print("Test 3: Default ToolConfig (from counter.py)")
+    print("=" * 60)
 
-    # Create benchmark - uses default CounterToolConfig from setup_benchmark_resources
+    # Create benchmark - uses task configs with default CounterToolConfig
     benchmark = CounterBenchmark()
-    benchmark.setup()  # Sets up default CounterToolConfig
+    benchmark.setup()
 
-    # Load task
-    task: ReachTargetTask = benchmark.load_tasks()[0]  # type: ignore
-
-    # Import the default CounterToolConfig from counter.py
-    from counter import CounterToolConfig as DefaultCounterToolConfig
-
-    tool_config = DefaultCounterToolConfig()
-
-    # Create MCP server using default ToolConfig
-    mcp_server = tool_config.create_mcp_server(task)
+    # Load tasks (they use the default CounterToolConfig)
+    task_configs = benchmark.load_tasks()
+    task = task_configs[0].make()
+    task.setup()
 
     # List tools
-    tools = await mcp_server.list_tools()
-    tool_names = [tool.name for tool in tools]
-    print(f"Available tools: {tool_names}")
-    assert "increment" in tool_names, "Expected 'increment' tool"
-    assert "get_value" in tool_names, "Expected 'get_value' tool"
-    assert "decrement" not in tool_names, "Should not have 'decrement' tool (default config)"
+    actions = task.action_set
+    action_names = [action.name for action in actions]
+    print(f"Available actions: {action_names}")
+    assert "increment" in action_names, "Expected 'increment' action"
+    assert "get_value" in action_names, "Expected 'get_value' action"
+    # Decrement and reset should not be available with default config
+    assert "decrement" not in action_names, "Should not have 'decrement' action (default config)"
+    assert "reset_counter" not in action_names, "Should not have 'reset_counter' action (default config)"
 
     # Test standard increment
-    result = await mcp_server.call_tool("increment", {})
-    print(f"Increment: {result}")
-    assert task.counter == 1, f"Expected counter to be 1, got {task.counter}"
+    env_output = task.step(Action(name="increment", arguments={}))
+    print(f"Increment: {env_output.obs.contents[0].data}")
+    assert task.tool.counter == 1, f"Expected counter to be 1, got {task.tool.counter}"  # type: ignore[attr-defined]
 
     print("✓ Default ToolConfig test passed!")
 
 
-async def main():
+def main():
     """Run all ToolConfig examples."""
     print("=" * 60)
     print("ToolConfig Examples - Research Flexibility Demo")
     print("=" * 60)
 
-    await test_basic_toolconfig()
-    await test_double_increment_toolconfig()
-    await test_default_toolconfig()
+    test_configurable_toolconfig()
+    test_double_increment_toolconfig()
+    test_default_toolconfig()
 
     print("\n" + "=" * 60)
     print("All ToolConfig examples passed!")
@@ -206,7 +253,8 @@ async def main():
     print("- Researchers can add/remove tools via configuration")
     print("- Researchers can change tool behavior (e.g., increment by 2)")
     print("- Every benchmark must provide a ToolConfig implementation")
+    print("- Tools can filter their action_set based on configuration")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

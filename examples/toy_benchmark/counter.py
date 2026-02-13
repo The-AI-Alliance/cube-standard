@@ -1,49 +1,58 @@
 """Minimal counter benchmark - toy bench"""
 
-from typing import Any
+from typing import Any, Dict, Tuple
 
-from mcp.server.fastmcp import FastMCP
-from mcp.types import Tool as MCPTool
+from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
+from cube.containers import ContainerBackend
+from cube.core import Action, Observation
+from cube.task import Task, TaskConfig, TaskMetadata
+from cube.tool import Tool, ToolConfig, tool_action
 
-from cube.benchmark import Benchmark, BenchmarkMetadata
-from cube.server_OLD.types import (
-    ShutdownRequest,
-    ShutdownResponse,
-)
-from cube.task import Task, TaskMetadata
-from cube.tool import Observation, ToolConfig
+
+# Tool Implementation
+class CounterTool(Tool):
+    """Counter tool with basic counter operations."""
+
+    def __init__(self, target: int):
+        """Initialize counter tool."""
+        self.counter = 0
+        self.target = target
+        self.history: list[str] = []
+
+    def reset(self) -> None:
+        """Reset tool to initial state."""
+        self.counter = 0
+        self.history = []
+
+    @tool_action
+    def increment(self) -> str:
+        """Increment the counter by 1"""
+        self.counter += 1
+        self.history.append("increment")
+        return f"Counter is now {self.counter}"
+
+    @tool_action
+    def get_value(self) -> str:
+        """Get the current counter value"""
+        return f"Counter value is: {self.counter}"
 
 
 # ToolConfig Implementation
 class CounterToolConfig(ToolConfig):
     """Tool configuration for counter benchmark."""
 
-    def create_mcp_server(self, task: Task) -> FastMCP:
-        """Create MCP server with counter tools."""
-        mcp = FastMCP(f"Counter Task: {task.metadata.id}")
+    target: int = 0  # Target value for the counter
 
-        # Cast to ReachTargetTask for type safety
-        assert isinstance(task, ReachTargetTask)
-        reach_task = task
-
-        @mcp.tool()
-        def increment() -> str:
-            """Increment the counter by 1"""
-            reach_task.counter += 1
-            reach_task.history.append("increment")
-            return f"Counter is now {reach_task.counter}"
-
-        @mcp.tool()
-        def get_value() -> str:
-            """Get the current counter value"""
-            return f"Counter value is: {reach_task.counter}"
-
-        return mcp
+    def make(self) -> Tool:
+        """Create tool instance."""
+        return CounterTool(target=self.target)
 
 
-# 1. Task Implementation
+# Task Implementation
 class ReachTargetTask(Task):
     """Task: Increment counter to reach target value."""
+
+    tool: CounterTool  # type: ignore[assignment]  # Narrowing the type from AbstractTool
 
     def __init__(self, task_id: str, target: int):
         """Initialize reach target task."""
@@ -55,46 +64,66 @@ class ReachTargetTask(Task):
             domain="counter",
             max_steps=target + 2,
         )
-        # State as Task attributes
-        self.counter = 0
         self.target = target
-        self.history: list[str] = []
 
-    def setup(self, tool: Any) -> tuple[Observation, dict[str, Any]]:
+    def setup(self) -> Tuple[Observation, Dict[str, Any]]:
         """Set up the task."""
-        self.counter = 0
-        self.history = []
+        # Reset tool to initial state
+        self.tool.reset()
         obs = Observation.from_text(f"Counter starts at 0. Use 'increment' action to reach {self.target}.")
         return obs, {"task_type": "reach_target", "target": self.target}
 
-    def validate_task(self, obs: Observation) -> tuple[float, dict[str, Any]]:
+    def evaluate(self, obs: Observation) -> Tuple[float, Dict[str, Any]]:
         """Validate if counter reached target."""
-        if self.counter == self.target:
+        # Access tool state
+        counter_value = self.tool.counter
+        steps_taken = len(self.tool.history)
+
+        if counter_value == self.target:
             return 1.0, {
                 "solved": True,
-                "value": self.counter,
-                "steps": len(self.history),
+                "value": counter_value,
+                "steps": steps_taken,
             }
 
         # Partial reward based on progress
-        progress = min(1.0, self.counter / self.target) if self.target > 0 else 0.0
+        progress = min(1.0, counter_value / self.target) if self.target > 0 else 0.0
         return progress * 0.5, {
             "solved": False,
-            "value": self.counter,
+            "value": counter_value,
             "target": self.target,
-            "steps": len(self.history),
+            "steps": steps_taken,
         }
 
-    def filter_actions(self, actions: list[MCPTool]) -> list[MCPTool]:
-        """Allow all actions."""
-        return actions
-
-    def finished(self) -> bool:
+    def finished(self, obs: Observation) -> bool:
         """Check if task is complete."""
-        return self.counter == self.target
+        return self.tool.counter == self.target
 
 
-# 2. Benchmark Implementation
+# TaskConfig Implementation
+class CounterTaskConfig(TaskConfig):
+    """Configuration for counter tasks."""
+
+    task_id: str
+    target: int
+    tool_config: ToolConfig
+
+    def make(
+        self, runtime_context: RuntimeContext | None = None, container_backend: ContainerBackend | None = None
+    ) -> ReachTargetTask:
+        """Create task instance from config."""
+        # Create tool
+        tool = self.tool_config.make()
+
+        # Create task
+        task = ReachTargetTask(task_id=self.task_id, target=self.target)
+        task.tool = tool  # type: ignore[assignment]  # We know this is a CounterTool
+        task.runtime_context = runtime_context
+
+        return task
+
+
+# Benchmark Implementation
 class CounterBenchmark(Benchmark):
     """Minimal benchmark with counter tasks."""
 
@@ -109,120 +138,179 @@ class CounterBenchmark(Benchmark):
         )
         super().__init__(metadata=metadata)
 
-    def setup_benchmark_resources(
-        self,
-        tool_config: Any = None,
-        **kwargs,
-    ):
+    def setup(self) -> RuntimeContext:
         """Set up the benchmark."""
-        # Use provided tool_config or default to CounterToolConfig
-        if tool_config is None:
-            tool_config = CounterToolConfig()
-        return super().setup(tool_config=tool_config, **kwargs)
+        # No shared resources needed for this simple benchmark
+        runtime_context = RuntimeContext()
+        self._runtime_info = runtime_context
+        return runtime_context
 
-    def load_tasks(self, cache: bool = True):
+    def load_tasks(self, cache: bool = True) -> list[TaskConfig]:
         """Load counter tasks."""
         if len(self._task_list) > 0 and cache:
             return self._task_list
+
+        # Create task configs
         self._task_list = [
-            ReachTargetTask("count-to-3", target=3),
-            ReachTargetTask("count-to-5", target=5),
+            CounterTaskConfig(
+                task_id="count-to-3",
+                target=3,
+                tool_config=CounterToolConfig(target=3),
+            ),
+            CounterTaskConfig(
+                task_id="count-to-5",
+                target=5,
+                tool_config=CounterToolConfig(target=5),
+            ),
         ]
         return self._task_list
 
-    def shutdown(self, request: ShutdownRequest) -> ShutdownResponse:
-        """Shutdown task sessions."""
-        if self._session_manager is not None:
-            return self._session_manager.shutdown(request)
-        else:
-            cleaned = []
-            if request.session_id:
-                if request.session_id in self._local_sessions:
-                    session = self._local_sessions[request.session_id]
-                    session.close()
-                    del self._local_sessions[request.session_id]
-                    cleaned.append(request.session_id)
-            else:
-                for session_id, session in list(self._local_sessions.items()):
-                    session.close()
-                    cleaned.append(session_id)
-                self._local_sessions = {}
-            return ShutdownResponse(success=True, cleaned=cleaned)
-
-    def close(self):
+    def close(self) -> None:
         """Clean up benchmark resources."""
-        if hasattr(self, "_local_sessions"):
-            for session in self._local_sessions.values():
-                try:
-                    session.close()
-                except Exception:
-                    pass
-            self._local_sessions = {}
+        # No resources to clean up for this simple benchmark
+        pass
 
 
-# 3. Test Function
+# Test Function
 def test_simple_counting():
-    """Test the counter benchmark with MCP integration."""
-    print("Starting counter benchmark test with MCP integration...")
+    """Test the counter benchmark with new API - demonstrating agent-task interaction."""
+    print("Starting counter benchmark test with new API...")
+    print("=" * 60)
 
-    # Create benchmark
+    # Create and setup benchmark
     benchmark = CounterBenchmark()
+    benchmark.setup()
 
     # Load tasks
-    tasks = benchmark.load_tasks()
-    assert len(tasks) == 2, "Expected 2 tasks"
+    task_configs: list[CounterTaskConfig] = benchmark.load_tasks()  # type: ignore (CouterTaskConfig is a subclass of TaskConfig)
+    assert len(task_configs) == 2, "Expected 2 tasks"
+    print(f"✓ Loaded {len(task_configs)} tasks")
 
-    task: ReachTargetTask = tasks[0]  # type: ignore
-    assert task.metadata.id == "count-to-3"
-    assert task.target == 3
+    # === Test 1: Single action steps (typical agent loop) ===
+    print("\n" + "=" * 60)
+    print("Test 1: Single action steps (count-to-3)")
+    print("=" * 60)
 
-    # Test MCP tool registration
-    import asyncio
+    task_config = task_configs[0]
+    task = task_config.make()
 
-    async def test_mcp_tools():
-        # Create MCP server for the task using ToolConfig
-        tool_config = CounterToolConfig()
-        mcp_server = tool_config.create_mcp_server(task)
+    # Get initial observation
+    obs, info = task.setup()
+    print(f"Initial observation: {obs.contents[0].data}")
+    print(f"Task info: {info}")
+    print(f"Available actions: {[a.name for a in task.action_set]}")
 
-        # List tools
-        tools = await mcp_server.list_tools()
-        tool_names = [tool.name for tool in tools]
-        assert "increment" in tool_names, "Expected 'increment' tool"
-        assert "get_value" in tool_names, "Expected 'get_value' tool"
-        print(f"✓ Found tools: {tool_names}")
+    # Agent loop: obs -> action -> step -> obs
+    step_num = 0
+    while not obs or not task.finished(obs):
+        step_num += 1
 
-        # Test increment tool
-        result = await mcp_server.call_tool("increment", {})
-        assert "Counter is now 1" in str(result), f"Unexpected result: {result}"
-        print(f"✓ Increment result: {result}")
+        # Agent decides action based on observation
+        action = Action(name="increment", arguments={})
+        print(f"\nStep {step_num}: Agent chose action '{action.name}'")
 
-        # Test get_value tool
-        result = await mcp_server.call_tool("get_value", {})
-        assert "Counter value is: 1" in str(result), f"Unexpected result: {result}"
-        print(f"✓ Get value result: {result}")
+        # Execute step
+        env_output = task.step(action)
+        obs = env_output.obs
 
-        # Increment twice more to reach target
-        await mcp_server.call_tool("increment", {})
-        await mcp_server.call_tool("increment", {})
+        print(f"  Observation: {obs.contents[0].data}")
+        print(f"  Reward: {env_output.reward}")
+        print(f"  Done: {env_output.done}")
+        print(f"  Info: {env_output.info}")
 
-        # Verify counter reached target
-        assert task.counter == 3, f"Expected counter to be 3, got {task.counter}"
-        assert task.finished(), "Task should be finished"
-        print(f"✓ Counter reached target: {task.counter}")
+        if env_output.done:
+            break
 
-        # Test validation
-        obs = Observation.from_text("Task complete")
-        reward, info = task.validate_task(obs)
-        assert reward == 1.0, f"Expected reward 1.0, got {reward}"
-        assert info["solved"] is True
-        print(f"✓ Task validation: reward={reward}, solved={info['solved']}")
+        if step_num >= 5:  # Safety limit
+            break
 
-    # Run async test
-    asyncio.run(test_mcp_tools())
+    assert task.tool.counter == 3, f"Expected counter to be 3, got {task.tool.counter}"
+    print(f"\n✓ Task completed successfully in {step_num} steps!")
 
-    print("✓ All tests passed! MCP integration working correctly.")
+    # === Test 2: Multiple actions in one step ===
+    print("\n" + "=" * 60)
+    print("Test 2: Multiple actions in one step (count-to-5)")
+    print("=" * 60)
+
+    task_config2 = task_configs[1]
+    task2 = task_config2.make()
+
+    # Get initial observation
+    obs, info = task2.setup()
+    print(f"Initial observation: {obs.contents[0].data}")
+
+    # Agent predicts multiple actions at once
+    actions = [
+        Action(name="increment", arguments={}),
+        Action(name="get_value", arguments={}),
+        Action(name="increment", arguments={}),
+    ]
+    print(f"\nAgent chose {len(actions)} actions: {[a.name for a in actions]}")
+
+    # Execute multiple actions in one step
+    env_output = task2.step(actions)
+    obs = env_output.obs
+
+    print("Observations from all actions:")
+    for i, content in enumerate(obs.contents):
+        print(f"  {i + 1}. {content.data}")
+    print(f"Reward: {env_output.reward}, Done: {env_output.done}")
+
+    # Continue with single actions
+    while not env_output.done:
+        action = Action(name="increment", arguments={})
+        env_output = task2.step(action)
+        print(f"Action '{action.name}' -> {env_output.obs.contents[0].data}")
+
+        if task2.tool.counter >= 5:
+            break
+
+    assert task2.tool.counter == 5, f"Expected counter to be 5, got {task2.tool.counter}"
+    assert env_output.reward == 1.0, f"Expected reward 1.0, got {env_output.reward}"
+    print(f"\n✓ Task completed with reward {env_output.reward}!")
+
+    # === Test 3: Tool action execution (lower level) ===
+    print("\n" + "=" * 60)
+    print("Test 3: Direct tool action execution (lower level API)")
+    print("=" * 60)
+
+    task3 = task_configs[0].make()
+    task3.setup()
+
+    # Lower level: directly call tool.execute_action()
+    print("Using task.tool.execute_action() directly:")
+    action = Action(name="increment", arguments={})
+    result = task3.tool.execute_action(action)
+    assert isinstance(result, Observation), "Expected an Observation result from tool action"
+    print(f"  Result: {result.contents[0].data}")
+    print("Note: This bypasses task.step() and doesn't trigger evaluation")
+
+    # === Test 4: Task isolation ===
+    print("\n" + "=" * 60)
+    print("Test 4: Task isolation")
+    print("=" * 60)
+
+    task4 = task_configs[0].make()
+    task4.setup()
+
+    assert task4.tool.counter == 0, "New task should have fresh tool with counter=0"
+    assert task.tool.counter == 3, "Original task should still have counter=3"
+    print("✓ Task isolation verified:")
+    print(f"  - New task counter: {task4.tool.counter}")
+    print(f"  - Original task counter: {task.tool.counter}")
+
+    # Cleanup
+    task.close()
+    task2.close()
+    task3.close()
+    task4.close()
+    benchmark.close()
+
+    print("\n" + "=" * 60)
+    print("✓ All tests passed! New API working correctly.")
+    print("=" * 60)
 
 
-# 7. Main
+# Main
 if __name__ == "__main__":
     test_simple_counting()
