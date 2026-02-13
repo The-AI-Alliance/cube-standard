@@ -29,7 +29,6 @@ The agent-environment interaction layer. Combines MCP for actions and CUBE for e
 - `tools/call` - Execute an action
 - `resources/read` - Read observations and task descriptions
 - `cube/evaluation` - Get reward, termination, and info
-- `cube/step` - Execute action and evaluate in one call (convenience method)
 - `cube/reset` - Reset task to initial state
 - `cube/close` - Cleanup task resources
 
@@ -181,7 +180,7 @@ All APIs use standard JSON types with optional JSON Schema validation:
 Python implementations should use type hints:
 
 ```python
-from typing import Optional
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 
 @dataclass
@@ -189,7 +188,7 @@ class TaskInfo:
     id: str
     description: str
     difficulty: Optional[float] = None
-    tags: list[str] = None
+    tags: List[str] = None
 ```
 
 ## Next Steps
