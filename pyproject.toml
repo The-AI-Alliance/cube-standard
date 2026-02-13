@@ -8,6 +8,7 @@ dependencies = [
     "fastapi>=0.115.0",
     "litellm>=1.80.15",
     "mcp>=1.0.0",
+    "numpydoc>=1.8.0",
     "pillow>=12.1.0",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.8.0",
