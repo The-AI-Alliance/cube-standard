@@ -141,8 +141,6 @@ class DaytonaContainer(Container):
                 duration_seconds=round(duration, 3),
             )
 
-        except ContainerExecError:
-            raise
         except Exception as exc:
             raise ContainerExecError(f"Daytona exec failed: {exc}") from exc
         finally:

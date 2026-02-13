@@ -129,14 +129,12 @@ def make_tests(backend: ContainerBackend, spec: ContainerSpec):
     tests.append(("status after stop", test_status_after_stop))
 
     def test_serialization_roundtrip():
-        from cube.container import ContainerBackend as CB
-
         data = backend.model_dump()
         assert "_type" in data
         assert "health_check" not in data
         log(f"serialized keys: {sorted(data.keys())}")
 
-        restored = CB.model_validate(data)
+        restored = ContainerBackend.model_validate(data)
         assert type(restored).__name__ == type(backend).__name__
         assert restored.timeout_seconds == backend.timeout_seconds
         log(f"deserialized: {type(restored).__name__}")

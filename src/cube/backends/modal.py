@@ -85,10 +85,8 @@ class ModalContainer(Container):
             process = self._sandbox.exec(
                 "bash", "-c", wrapped, **kwargs
             )
-            raw_stdout = process.stdout.read()
-            raw_stderr = process.stderr.read()
-            stdout = raw_stdout.decode("utf-8", errors="replace") if isinstance(raw_stdout, bytes) else raw_stdout
-            stderr = raw_stderr.decode("utf-8", errors="replace") if isinstance(raw_stderr, bytes) else raw_stderr
+            stdout = process.stdout.read()
+            stderr = process.stderr.read()
             exit_code = process.wait()
         except Exception as exc:
             raise ContainerExecError(f"Modal exec failed: {exc}") from exc
