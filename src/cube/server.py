@@ -13,7 +13,7 @@ from cube.task import Task, TaskConfig
 # Type alias for server return value: (app, process, url)
 ServerInfo = Tuple[FastAPI, multiprocessing.Process, str]
 
-# TODO: figure out how to pass the relevant runtime info (host, port, credentials, etc.)
+# TODO: figure out how to pass the relevant task-level runtime context (host, port, credentials, etc.)
 
 logger = logging.getLogger(__name__)
 

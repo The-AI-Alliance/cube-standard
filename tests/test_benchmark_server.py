@@ -78,9 +78,8 @@ class MinimalBenchmark(Benchmark):
 
     def setup(self) -> RuntimeContext:
         """Minimal setup."""
-        runtime_context = RuntimeContext()
-        self._runtime_info = runtime_context
-        return runtime_context
+        self._runtime_context = {}
+        return self._runtime_context
 
     def load_tasks(self, cache: bool = True):
         """Return a list of minimal tasks."""

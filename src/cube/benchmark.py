@@ -11,13 +11,13 @@ from cube.task import TaskConfig
 logger = logging.getLogger(__name__)
 
 
-class RuntimeContext(TypedBaseModel):
-    """Shared infrastructure references created during benchmark.setup()."""
+RuntimeContext = dict[str, Any]
+"""
+Type alias for shared infrastructure references created during benchmark.setup().
 
-    container_id: str | None = None
-    vm_address: str | None = None
-    ssh_session: Any | None = None
-    # ... whatever shared resources the benchmark provisions
+example:
+    {"container_id": "abc123", "vm_address": "http://12.34.56.78", "ssh_session": session}
+"""
 
 
 class BenchmarkMetadata(TypedBaseModel):
@@ -59,7 +59,7 @@ class Benchmark(TypedBaseModel, ABC):
 
     metadata: BenchmarkMetadata
     _task_list: list[TaskConfig] = PrivateAttr(default_factory=list)  # cache loaded task configs
-    _runtime_info: RuntimeContext | None = PrivateAttr(
+    _runtime_context: RuntimeContext | None = PrivateAttr(
         default=None
     )  # track shared runtime resources created in setup()
 
@@ -71,7 +71,7 @@ class Benchmark(TypedBaseModel, ABC):
     def setup(self) -> RuntimeContext:
         """
         Setup the benchmark and prepare it for spawning tasks.
-        It should create all the necessary shared runtime resources and store them in self._runtime_info.
+        It should create all the necessary shared runtime resources and store them in self._runtime_context.
         This is supposed to be implemented by Benchmark *creators*.
         """
         pass
@@ -103,14 +103,14 @@ class Benchmark(TypedBaseModel, ABC):
 
         return limited_tasks
 
-    def get_runtime_info(self) -> RuntimeContext:
+    def get_runtime_context(self) -> RuntimeContext:
         """
         Get the runtime context created during setup().
         This is needed by TaskConfig.make() to create Task instances.
         """
-        if self._runtime_info is None:
-            raise RuntimeError("Benchmark not set up yet. Call setup() before accessing runtime info.")
-        return self._runtime_info
+        if self._runtime_context is None:
+            raise RuntimeError("Benchmark not set up yet. Call setup() before accessing runtime context.")
+        return self._runtime_context
 
     def spawn(self, task_id: str, container_backend: ContainerBackend | None = None) -> str:
         """
@@ -120,7 +120,7 @@ class Benchmark(TypedBaseModel, ABC):
 
         task_config = self.get_task_configs(task_id)[0]
         task = task_config.make(
-            runtime_context=self.get_runtime_info(),
+            runtime_context=self.get_runtime_context(),
             container_backend=container_backend,
         )  # type: ignore
         _app, _process, url = make_task_rpc_server(task)

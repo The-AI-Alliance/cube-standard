@@ -203,9 +203,8 @@ class CounterBenchmark(Benchmark):
     def setup(self) -> RuntimeContext:
         """Set up the benchmark."""
         # No shared resources needed for this simple benchmark
-        runtime_context = RuntimeContext()
-        self._runtime_info = runtime_context
-        return runtime_context
+        self._runtime_context = {}
+        return self._runtime_context
 
     def load_tasks(self, cache: bool = True) -> list[TaskConfig]:
         """Load counter tasks."""
