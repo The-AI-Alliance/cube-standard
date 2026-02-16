@@ -34,7 +34,7 @@ class MinimalTask(Task):
     tool: MinimalTool  # type: ignore[assignment]
 
     def __init__(self, task_id: str):
-        self.metadata = TaskMetadata(id=task_id, description="Test task")
+        self.metadata = TaskMetadata(id=task_id)
 
     def setup(self):
         """Minimal setup."""

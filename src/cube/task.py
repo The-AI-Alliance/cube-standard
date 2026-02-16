@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, List, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Tuple
 
 from pydantic import Field
 
@@ -37,24 +37,26 @@ class TaskMetadata(TypedBaseModel):
 
     Attributes:
         id (str): Unique task identifier
-        seed (int | None): Random seed for the task, if applicable (default: None)
-        description (str): Task description (default: empty string)
+        split (Literal["train", "val", "test"]): Split for the task (default: "test")
+        abstract_description (str): Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.setup(). (default: "")
         tags (list[str]): List of task tags (default: empty list)
-        max_steps (int | None): Maximum number of steps allowed (default: None)
-        difficulty (str | None): Task difficulty level (default: None)
-        domain (str | None): Task domain (e.g., 'web', 'coding') (default: None)
-        other (dict[str, Any]): Additional task metadata (default: empty dict)
+        recommended_max_steps (int | None): Recommended maximum number of steps to help harness prevent infinite running agents. Not a hard limit, the task can still run longer if needed. (default: None)
+        extra_info (dict[str, Any]): Additional task metadata, eg: difficulty level, domain, etc. (default: empty dict)
     """
 
     id: str = Field(..., description="Unique task identifier")
-    seed: int | None = Field(default=None, description="Random seed for the task, if applicable")
-    description: str = Field(default="", description="Task description")
-    tags: list[str] = Field(default_factory=list, description="List of task tags")
-    max_steps: int | None = Field(default=None, description="Maximum number of steps allowed")
-    difficulty: str | None = Field(default=None, description="Task difficulty level")
-    domain: str | None = Field(default=None, description="Task domain (e.g., 'web', 'coding')")
-    other: dict[str, Any] = Field(default_factory=dict, description="Additional task metadata")
-    # TODO: discuss adding fields such as created_at, updated_at, etc.
+    split: Literal["train", "val", "test"] = Field(default="test", description="Split for the task")
+    abstract_description: str = Field(
+        default="",
+        description="Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.setup().",
+    )
+    recommended_max_steps: int | None = Field(
+        default=None,
+        description="Recommended maximum number of steps to help harness prevent infinite running agents. Not a hard limit, the task can still run longer if needed.",
+    )
+    extra_info: dict[str, Any] = Field(
+        default_factory=dict, description="Additional task metadata, eg: difficulty level, domain, etc."
+    )
 
 
 class Task(ABC):
@@ -88,10 +90,6 @@ class Task(ABC):
     @property
     def id(self) -> str:
         return self.metadata.id
-
-    @property
-    def seed(self) -> int | None:
-        return self.metadata.seed
 
     @property
     def action_set(self) -> List[ActionSchema]:

@@ -110,22 +110,16 @@ class TaskMetadata(TypedBaseModel):
 
     Attributes:
         id (str): Unique task identifier
-        seed (int | None): Random seed for the task
-        description (str): Task description
-        tags (list[str]): Task tags
-        max_steps (int | None): Maximum number of steps allowed
-        difficulty (str | None): Task difficulty level
-        domain (str | None): Task domain (e.g., 'web', 'coding')
-        other (dict[str, Any]): Additional task metadata
+        split (Literal["train", "val", "test"]): Split for the task (default: "test")
+        abstract_description (str): Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.setup(). (default: "")
+        recommended_max_steps (int | None): Recommended maximum number of steps to help harness prevent infinite running agents. Not a hard limit, the task can still run longer if needed. (default: None)
+        extra_info (dict[str, Any]): Additional task metadata, eg: difficulty level, domain, etc. (default: empty dict)
     """
     id: str
-    seed: int | None = None
-    description: str = ""
-    tags: list[str] = []
-    max_steps: int | None = None
-    difficulty: str | None = None
-    domain: str | None = None
-    other: dict[str, Any] = {}
+    split: Literal["train", "val", "test"] = "test"
+    abstract_description: str = ""
+    recommended_max_steps: int | None = None
+    extra_info: dict[str, Any] = {}
 ```
 
 ### Benchmark (Abstract Base Class)
@@ -301,7 +295,7 @@ class TaskConfig(ABC, TypedBaseModel):
                 container = container_backend.launch(container_spec)
 
             # Create task metadata
-            metadata = TaskMetadata(id=self.task_id, description="...")
+            metadata = TaskMetadata(id=self.task_id)
 
             # Instantiate concrete Task subclass
             task = MyTask(metadata=metadata)
@@ -345,11 +339,6 @@ class Task(ABC):
     def id(self) -> str:
         """Task identifier."""
         return self.metadata.id
-
-    @property
-    def seed(self) -> int | None:
-        """Task random seed."""
-        return self.metadata.seed
 
     @property
     def action_set(self) -> List[ActionSchema]:
@@ -559,10 +548,12 @@ class WebArenaTaskConfig(TaskConfig):
         metadata_dict = load_task_metadata(self.task_id)  # From JSON
         metadata = TaskMetadata(
             id=self.task_id,
-            description=metadata_dict["intent"],
-            domain="web",
-            tags=[metadata_dict["category"]],
-            difficulty=metadata_dict["difficulty"]
+            abstract_description=metadata_dict["intent"],
+            extra_info={
+                "domain": "web",
+                "category": metadata_dict["category"],
+                "difficulty": metadata_dict["difficulty"]
+            }
         )
 
         # 2. Create tool

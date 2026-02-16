@@ -120,11 +120,9 @@ class ReachTargetTask(Task):
         """Initialize reach target task."""
         self.metadata = TaskMetadata(
             id=task_id,
-            description=f"Increment counter to reach value {target}",
-            tags=["counter", "simple"],
-            difficulty="easy",
-            domain="counter",
-            max_steps=target + 2,
+            abstract_description=f"Increment counter to reach value {target}",
+            recommended_max_steps=target + 2,
+            extra_info={"difficulty": "easy"},
         )
         self.target = target
 

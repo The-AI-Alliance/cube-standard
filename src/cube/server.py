@@ -91,7 +91,7 @@ def make_task_fastapi_app(task: Task) -> FastAPI:
     Returns:
         FastAPI app
     """
-    app = FastAPI(title=f"CUBE Task Server - {task.id}/{task.seed}")
+    app = FastAPI(title=f"CUBE Task Server - {task.id}")
 
     @app.get("/tools/list")
     def list_tools() -> List[ActionSchema]:
@@ -154,7 +154,7 @@ def make_task_rpc_server(task: Task, host: str = "127.0.0.1", port: int = 8000) 
 
     def run_server() -> None:
         uvicorn.run(app, host=host, port=port)
-        logger.info(f"Task RPC server for task {task.id}/{task.seed} started at http://{host}:{port}")
+        logger.info(f"Task RPC server for task {task.id} started at http://{host}:{port}")
 
     task_process = multiprocessing.Process(target=run_server)
     task_process.start()
