@@ -171,20 +171,20 @@ classDiagram
         <<abstract>>
         +BenchmarkMetadata metadata
         -List~TaskConfig~ _task_list
-        -RuntimeContext _runtime_info
+        -RuntimeContext _runtime_context
         +setup() RuntimeContext
         +load_tasks() List~TaskConfig~
         +get_task_configs() List~TaskConfig~
-        +get_runtime_info() RuntimeContext
+        +get_runtime_context() RuntimeContext
         +spawn(task_id) str
         +close() None
     }
 
     class RuntimeContext {
-        +str container_id
-        +str vm_address
-        +Any ssh_session
+        <<type alias>>
+        dict[str, Any]
     }
+    note for RuntimeContext "Type alias for shared infrastructure\nExample: {'vm_address': '...', 'container_id': '...'}"
 
     class TaskConfig {
         <<abstract>>
@@ -277,7 +277,7 @@ classDiagram
    - User calls `benchmark.setup()`
    - Benchmark creates shared infrastructure (containers, VMs, etc.)
    - Returns `RuntimeContext` with references to shared resources
-   - Stored in `benchmark._runtime_info`
+   - Stored in `benchmark._runtime_context`
 
 2. **Task Loading**:
    - User calls `benchmark.load_tasks()`

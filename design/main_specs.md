@@ -35,7 +35,7 @@ def evaluate_task(task_config, agent_config, runtime_context):
     return result
 
 # Execute in parallel
-runtime_context = benchmark.get_runtime_info()
+runtime_context = benchmark.get_runtime_context()
 futures = [evaluate_task.remote(config, agent_config, runtime_context) for config in task_configs]
 results = ray.get(futures)
 
@@ -54,10 +54,10 @@ benchmark.close()
 - Can be retried independently if worker crashes
 - May reference external services (VMs, containers)
 
-**3. Runtime Info**
-- Benchmark exposes a `runtime_info` property with current infrastructure references (e.g., VM IPs, URLs)
-- `runtime_info` defaults to `None` for benchmarks with no shared infrastructure
-- Harness passes `runtime_info` to `task_config.make()` so tasks can connect to live infrastructure
+**3. Runtime Context**
+- Benchmark exposes a `get_runtime_context()` method that returns current infrastructure references (e.g., VM IPs, URLs)
+- `runtime_context` defaults to `{}` for benchmarks with no shared infrastructure
+- Harness passes `runtime_context` to `task_config.make()` so tasks can connect to live infrastructure
 - TaskConfig itself remains infrastructure-agnostic and serializable
 
 ## Core API
@@ -91,23 +91,17 @@ class BenchmarkMetadata(TypedBaseModel):
     other: dict[str, Any] = {}
 
 
-class RuntimeContext(TypedBaseModel):
-    """
-    Shared infrastructure references created during benchmark.setup().
+RuntimeContext = dict[str, Any]
+"""
+Type alias for shared infrastructure references created during benchmark.setup().
 
-    Contains mutable references to infrastructure like VMs, containers, or
-    other services that are shared across tasks. This is passed to
-    task_config.make() so tasks can connect to the live infrastructure.
+Contains mutable references to infrastructure like VMs, containers, or
+other services that are shared across tasks. This is passed to
+task_config.make() so tasks can connect to the live infrastructure.
 
-    Attributes:
-        container_id (str | None): Shared container identifier
-        vm_address (str | None): VM address/URL
-        ssh_session (Any | None): SSH session for remote execution
-        # ... whatever shared resources the benchmark provisions
-    """
-    container_id: str | None = None
-    vm_address: str | None = None
-    ssh_session: Any | None = None
+Example:
+    {"container_id": "abc123", "vm_address": "http://12.34.56.78", "ssh_session": session}
+"""
 
 
 class TaskMetadata(TypedBaseModel):
@@ -217,7 +211,7 @@ class Benchmark(ABC, TypedBaseModel):
         else:
             return tasks[offset : offset + limit]
 
-    def get_runtime_info(self) -> RuntimeContext:
+    def get_runtime_context(self) -> RuntimeContext:
         """
         Get current infrastructure references (e.g., VM IPs, service URLs).
 
@@ -226,8 +220,8 @@ class Benchmark(ABC, TypedBaseModel):
         can connect to live infrastructure without storing mutable refs in config.
 
         Examples:
-        - WebArena: RuntimeContext(vm_address="http://12.34.56.78")
-        - SWE-Bench: RuntimeContext() (containers are per-task)
+        - WebArena: {"vm_address": "http://12.34.56.78"}
+        - SWE-Bench: {} (containers are per-task)
 
         Raises: RuntimeError if benchmark not set up yet
         """
@@ -283,7 +277,7 @@ class TaskConfig(ABC, TypedBaseModel):
         Called on Ray worker after deserialization.
 
         Args:
-            runtime_context: Current infrastructure references from benchmark.get_runtime_info()
+            runtime_context: Current infrastructure references from benchmark.get_runtime_context()
                            (e.g., VM addresses, service URLs). None for self-contained tasks.
             container_backend: Optional container backend for launching task-specific containers.
                              If provided, use it to launch containers defined in task metadata.
@@ -636,13 +630,13 @@ class WebArenaBenchmark(Benchmark):
         # Load task metadata from JSON
         self.task_metadata = pd.read_json("webarena_tasks.json")
 
-        return RuntimeContext(vm_address=self.vm.get_url(80))
+        return {"vm_address": self.vm.get_url(80)}
 
-    def get_runtime_info(self) -> RuntimeContext:
+    def get_runtime_context(self) -> RuntimeContext:
         """Current VM URLs for task instantiation."""
         if self.vm is None:
             raise RuntimeError("Benchmark not set up yet")
-        return RuntimeContext(vm_address=self.vm.get_url(80))
+        return {"vm_address": self.vm.get_url(80)}
 
     def load_tasks(self, cache: bool = True) -> List[TaskConfig]:
         """Generate configs for all tasks."""
@@ -667,7 +661,7 @@ class WebArenaBenchmark(Benchmark):
 ## Runtime Context Pattern
 
 When shared infrastructure is recreated (e.g., VM gets a new IP), the harness
-simply re-reads `benchmark.get_runtime_info()` and passes it to `task_config.make()`.
+simply re-reads `benchmark.get_runtime_context()` and passes it to `task_config.make()`.
 TaskConfigs remain immutable and infrastructure-agnostic.
 
 ```python
@@ -677,7 +671,7 @@ benchmark.vm = benchmark.vm_config.make()  # New IP
 
 # Retry failed tasks — runtime_context automatically has new IP
 failed_configs = get_failed_tasks()
-runtime_context = benchmark.get_runtime_info()
+runtime_context = benchmark.get_runtime_context()
 futures = [
     evaluate_task.remote(config, runtime_context)
     for config in failed_configs
@@ -822,7 +816,7 @@ classDiagram
         +setup() RuntimeContext
         +load_tasks(cache) List~TaskConfig~
         +get_task_configs(task_id, offset, limit) List~TaskConfig~
-        +get_runtime_info() RuntimeContext
+        +get_runtime_context() RuntimeContext
         +spawn(task_id, backend) str
         +close() void
     }
@@ -839,10 +833,10 @@ classDiagram
     }
 
     class RuntimeContext {
-        +str container_id
-        +str vm_address
-        +Any ssh_session
+        <<type alias>>
+        dict[str, Any]
     }
+    note for RuntimeContext "Type alias: dict[str, Any]\nExample: {'vm_address': 'http://...', 'container_id': '...'}"
 
     class TaskConfig {
         <<abstract>>
@@ -889,7 +883,7 @@ classDiagram
         +DataFrame task_metadata
         +setup() RuntimeContext
         +load_tasks(cache) List~TaskConfig~
-        +get_runtime_info() RuntimeContext
+        +get_runtime_context() RuntimeContext
         +close() void
     }
 

@@ -159,7 +159,7 @@ def evaluate_task(task_config, backend, runtime_context):
     return result
 
 # 3. Execute in parallel - same backend, 1000 different configs
-runtime_context = benchmark.get_runtime_info()
+runtime_context = benchmark.get_runtime_context()
 futures = [evaluate_task.remote(cfg, backend, runtime_context) for cfg in task_configs]
 results = ray.get(futures)
 ```

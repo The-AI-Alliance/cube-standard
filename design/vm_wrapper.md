@@ -31,7 +31,7 @@ def evaluate_task(task_config, agent_config, runtime_context):
     return result
 
 # Parallel evaluation
-runtime_context = benchmark.get_runtime_info()
+runtime_context = benchmark.get_runtime_context()
 futures = [evaluate_task.remote(tc, agent_config, runtime_context) for tc in task_configs]
 results = ray.get(futures)
 
@@ -337,12 +337,12 @@ class WebArenaBenchmark(Benchmark):
     def setup(self) -> RuntimeContext:
         self.infrastructure.start()
         base_url = self.infrastructure.vms[0].get_url(80)
-        return RuntimeContext(vm_address=base_url)
+        return {"vm_address": base_url}
 
-    def get_runtime_info(self) -> RuntimeContext:
+    def get_runtime_context(self) -> RuntimeContext:
         if not self.infrastructure.vms:
             raise RuntimeError("Benchmark not set up yet")
-        return RuntimeContext(vm_address=self.infrastructure.vms[0].get_url(80))
+        return {"vm_address": self.infrastructure.vms[0].get_url(80)}
 
     def load_tasks(self, cache: bool = True) -> List[TaskConfig]:
         # Implementation to load tasks
