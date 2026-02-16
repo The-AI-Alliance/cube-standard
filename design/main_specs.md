@@ -12,15 +12,19 @@ The Benchmark and Task API defines how benchmarks expose tasks and how tasks are
 ```python
 # On coordinator (main process)
 benchmark = WebArenaBenchmark(vm_config, tool_config)
-benchmark.setup()  # Initialize infrastructure (VMs, containers, etc)
+benchmark.setup()  # Initialize infrastructure, load task metadata
 
-# Get serializable task configs
-task_configs = benchmark.load_tasks()
+# Get task metadata
+task_metadata_list = benchmark.get_task_metadata()
 
 # Distribute to Ray workers
 @ray.remote
-def evaluate_task(task_config, agent_config, runtime_context):
-    task = task_config.make(runtime_context=runtime_context)
+def evaluate_task(task_metadata, task_config, agent_config, runtime_context):
+    # TaskConfig.make() receives metadata from benchmark
+    task = task_config.make(
+        metadata=task_metadata,
+        runtime_context=runtime_context
+    )
     agent = agent_config.make()
 
     obs, info = task.setup()
@@ -35,8 +39,11 @@ def evaluate_task(task_config, agent_config, runtime_context):
     return result
 
 # Execute in parallel
-runtime_context = benchmark.get_runtime_context()
-futures = [evaluate_task.remote(config, agent_config, runtime_context) for config in task_configs]
+runtime_context = benchmark.runtime_context
+futures = []
+for tm in task_metadata_list:
+    task_config = benchmark.create_task_config(tm.id)
+    futures.append(evaluate_task.remote(tm, task_config, agent_config, runtime_context))
 results = ray.get(futures)
 
 # Cleanup
@@ -45,20 +52,27 @@ benchmark.close()
 
 ## Key Design Decisions
 
-**1. Config/Instance Separation**
-- `TaskConfig`: Serializable (can pass to Ray workers)
-- `Task`: Live instance with tools, state (not serializable)
+**1. Metadata/Config/Instance Separation**
+- `TaskMetadata`: Static task description (loaded from disk, can be arbitrarily large)
+- `TaskConfig`: Lightweight runtime config with task_id, seed, and tool_config (serializable, sent over network)
+- `Task`: Live instance with tools and state (not serializable)
 
 **2. Self-Contained Configs**
-- TaskConfig contains everything needed to recreate task
+- TaskConfig contains everything needed to recreate task (task_id references metadata, seed for reproducibility, tool_config)
+- TaskMetadata is passed separately to `make()` by the coordinator, not embedded in TaskConfig
 - Can be retried independently if worker crashes
-- May reference external services (VMs, containers)
+- May reference external services (VMs, containers) via runtime_context
 
 **3. Runtime Context**
-- Benchmark exposes a `get_runtime_context()` method that returns current infrastructure references (e.g., VM IPs, URLs)
+- Benchmark stores infrastructure references in `benchmark.runtime_context` (public attribute)
 - `runtime_context` defaults to `{}` for benchmarks with no shared infrastructure
 - Harness passes `runtime_context` to `task_config.make()` so tasks can connect to live infrastructure
 - TaskConfig itself remains infrastructure-agnostic and serializable
+
+**4. Seed Generation**
+- Seeds are runtime-specific, not stored in TaskMetadata
+- Benchmark can provide a `_seed_generator: Callable[[], int]` during setup()
+- Seeds can be specified explicitly or generated on-demand when creating TaskConfig
 
 ## Core API
 
@@ -106,7 +120,10 @@ Example:
 
 class TaskMetadata(TypedBaseModel):
     """
-    Metadata describing a task.
+    Static metadata describing a task.
+
+    Saved to/loaded from disk. Can be arbitrarily large.
+    Does NOT contain runtime-specific info like seeds or tool configs.
 
     Attributes:
         id (str): Unique task identifier
@@ -132,92 +149,102 @@ class Benchmark(ABC, TypedBaseModel):
 
     metadata: BenchmarkMetadata  # Benchmark metadata (name, version, description, etc.)
 
+    # Public fields set during setup()
+    task_list: list[TaskMetadata] = Field(default_factory=list)  # Loaded task metadata
+    runtime_context: RuntimeContext = Field(default_factory=dict)  # Shared infrastructure references
+
+    # Private attributes set during setup()
+    _default_tool_config: ToolConfig | None = PrivateAttr(default=None)
+    _seed_generator: Callable[[], int] | None = PrivateAttr(default=None)
+
     @abstractmethod
-    def setup(self) -> RuntimeContext:
+    def setup(self) -> None:
         """
-        Initialize benchmark infrastructure.
+        Initialize benchmark infrastructure and populate task metadata.
+
+        Must (required):
+        - Populate self.task_list with TaskMetadata objects (loaded from file or created programmatically)
+
+        Should (optional):
+        - Create shared infrastructure and store references in self.runtime_context
+        - Define default tool config (self._default_tool_config)
+        - Define seed generator if needed (self._seed_generator)
 
         Examples:
         - Start VMs for WebArena (shared across tasks)
-        - Load task metadata from JSON
+        - Load task metadata from JSON/CSV, or create TaskMetadata instances directly
         - Initialize shared services
 
         Note: For SWE-Bench style benchmarks, containers are started
         per-task (in task_config.make()), not here.
 
         Called once before task distribution.
-
-        Returns: RuntimeContext with shared infrastructure references
         """
 
-    @abstractmethod
-    def load_tasks(self, cache: bool = True) -> List[TaskConfig]:
-        """
-        Load and return the list of tasks for this benchmark.
-
-        Returns: List of serializable TaskConfig objects
-
-        Task metadata is loaded from JSON (list of dicts) that can be
-        converted to pandas DataFrame for analysis.
-
-        Each config contains:
-        - Task ID (used to retrieve task metadata and logic)
-        - Tool configs (if needed)
-
-        Configs can be distributed to Ray workers.
-
-        Args:
-            cache: If True, return cached task list if available
-        """
-
-    def get_task_configs(
+    def get_task_metadata(
         self,
-        task_id: str | None = None,
+        task_id: list[str] | str | None = None,
         offset: int = 0,
         limit: int = -1
-    ) -> List[TaskConfig]:
+    ) -> list[TaskMetadata]:
         """
-        Get specific tasks with optional filtering, offset, and limit.
-
-        Utility method (not abstract) — provides default filtering logic.
-        Subclasses can override for custom filtering behavior.
+        Get task metadata with optional filtering, offset, and limit.
 
         Args:
-            task_id: Optional task ID to filter by
+            task_id: Optional task ID or list of IDs to filter by
             offset: Number of tasks to skip
             limit: Maximum number of tasks to return (-1 for all)
 
-        Returns: Filtered list of TaskConfig objects
-
-        Example:
-            configs = benchmark.get_task_configs(task_id="task_001")
-            configs = benchmark.get_task_configs(offset=10, limit=5)
-        """
-        tasks = self.load_tasks()
-
-        # Apply filtering
-        if task_id:
-            tasks = [task for task in tasks if task.task_id == task_id]
-
-        # Apply offset and limit
-        if limit == -1:
-            return tasks[offset:]
-        else:
-            return tasks[offset : offset + limit]
-
-    def get_runtime_context(self) -> RuntimeContext:
-        """
-        Get current infrastructure references (e.g., VM IPs, service URLs).
-
-        Returns RuntimeContext with current infrastructure state.
-        Harness passes this to task_config.make(runtime_context=...) so tasks
-        can connect to live infrastructure without storing mutable refs in config.
-
-        Examples:
-        - WebArena: {"vm_address": "http://12.34.56.78"}
-        - SWE-Bench: {} (containers are per-task)
+        Returns: Filtered list of TaskMetadata objects
 
         Raises: RuntimeError if benchmark not set up yet
+
+        Example:
+            metadata = benchmark.get_task_metadata(task_id="task_001")
+            metadata = benchmark.get_task_metadata(task_id=["task_001", "task_002"])
+            metadata = benchmark.get_task_metadata(offset=10, limit=5)
+        """
+
+    @abstractmethod
+    def _make_task_config(
+        self,
+        task_id: str,
+        seed: int | None = None,
+        tool_config: ToolConfig | None = None
+    ) -> TaskConfig:
+        """
+        Concrete subclass creates its specific TaskConfig type.
+
+        Args:
+            task_id: Task identifier
+            seed: Random seed for task (if applicable)
+            tool_config: Tool configuration
+
+        Returns: Concrete TaskConfig subclass instance
+        """
+
+    def create_task_config(
+        self,
+        task_id: str,
+        seed: int | None = None,
+        tool_config: ToolConfig | None = None
+    ) -> TaskConfig:
+        """
+        Create TaskConfig for the specified task_id.
+
+        Uses provided seed and tool_config if given, otherwise falls back
+        to defaults defined in the benchmark.
+
+        Args:
+            task_id: Task identifier
+            seed: Optional random seed (uses _seed_generator if not provided)
+            tool_config: Optional tool config (uses _default_tool_config if not provided)
+
+        Returns: TaskConfig ready to be passed to workers
+
+        Example:
+            config = benchmark.create_task_config("task_001")
+            config = benchmark.create_task_config("task_001", seed=42)
         """
 
     def spawn(
@@ -249,19 +276,21 @@ class Benchmark(ABC, TypedBaseModel):
 
 class TaskConfig(ABC, TypedBaseModel):
     """
-    Serializable task configuration (Pydantic BaseModel).
+    Lightweight, serializable task configuration (Pydantic BaseModel).
 
     Must be JSON-serializable to pass to Ray workers.
-    Contains references and configs, but NOT task logic/metadata.
-    Task logic (intent, eval functions) is retrieved via task_id.
+    Contains only runtime configuration, NOT task metadata/logic.
+    TaskMetadata is passed separately to make().
     """
 
-    task_id: str  # Unique identifier (used to load task metadata and logic)
+    task_id: str  # Unique identifier (references TaskMetadata)
+    seed: int | None = None  # Random seed for reproducibility
     tool_config: ToolConfig  # Tool configuration (e.g., BrowserToolConfig)
 
     @abstractmethod
     def make(
         self,
+        metadata: TaskMetadata,
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None
     ) -> Task:
@@ -271,16 +300,16 @@ class TaskConfig(ABC, TypedBaseModel):
         Called on Ray worker after deserialization.
 
         Args:
-            runtime_context: Current infrastructure references from benchmark.get_runtime_context()
+            metadata: TaskMetadata for this task (passed by coordinator, not embedded in config)
+            runtime_context: Current infrastructure references from benchmark.runtime_context
                            (e.g., VM addresses, service URLs). None for self-contained tasks.
             container_backend: Optional container backend for launching task-specific containers.
                              If provided, use it to launch containers defined in task metadata.
 
         Steps:
-        1. Load task metadata from task_id
-        2. Create tools (tool_config.make())
-        3. Optionally launch container (container_backend.launch(container_spec))
-        4. Create Task instance with metadata, tools, and container
+        1. Create tool from tool_config
+        2. Optionally launch container (container_backend.launch(container_spec))
+        3. Create Task instance with metadata, tool, and container
 
         Returns: Ready-to-use Task instance
 
@@ -294,11 +323,9 @@ class TaskConfig(ABC, TypedBaseModel):
                 container_spec = ContainerSpec.from_task_id(self.task_id)
                 container = container_backend.launch(container_spec)
 
-            # Create task metadata
-            metadata = TaskMetadata(id=self.task_id)
-
             # Instantiate concrete Task subclass
-            task = MyTask(metadata=metadata)
+            task = MyTask()
+            task.metadata = metadata
             task.tool = tool
             task.container = container
             task.runtime_context = runtime_context
@@ -510,28 +537,42 @@ class Task(ABC):
 
 ### Task Metadata (JSON)
 
+Task metadata can be stored in JSON format and loaded during benchmark setup:
+
 ```json
 [
   {
     "task_id": "webarena_shopping_001",
-    "category": "shopping",
-    "difficulty": "easy",
-    "intent": "Find and add cheapest laptop to cart",
-    "start_path": "/shop",
-    "eval_type": "url_match",
-    "eval_target": "/cart.*laptop"
+    "split": "test",
+    "abstract_description": "Find and add cheapest laptop to cart",
+    "recommended_max_steps": 20,
+    "extra_info": {
+      "domain": "web",
+      "category": "shopping",
+      "difficulty": "easy",
+      "start_path": "/shop",
+      "eval_type": "url_match",
+      "eval_target": "/cart.*laptop"
+    }
   },
   {
     "task_id": "webarena_shopping_002",
-    "category": "shopping",
-    "difficulty": "medium",
-    "intent": "Compare prices of two products",
-    "start_path": "/shop/compare",
-    "eval_type": "element_check",
-    "eval_target": "#comparison-table"
+    "split": "test",
+    "abstract_description": "Compare prices of two products",
+    "recommended_max_steps": 15,
+    "extra_info": {
+      "domain": "web",
+      "category": "shopping",
+      "difficulty": "medium",
+      "start_path": "/shop/compare",
+      "eval_type": "element_check",
+      "eval_target": "#comparison-table"
+    }
   }
 ]
 ```
+
+Note: Seeds are NOT in metadata - they are generated at runtime when creating TaskConfig.
 
 ### WebArenaTaskConfig
 
@@ -540,31 +581,31 @@ class WebArenaTaskConfig(TaskConfig):
     """Serializable WebArena task configuration."""
 
     task_id: str
+    seed: int | None = None
     tool_config: BrowserToolConfig  # How to create browser
 
-    def make(self, runtime_context: RuntimeContext | None = None, container_backend: ContainerBackend | None = None) -> Task:
+    def make(
+        self,
+        metadata: TaskMetadata,
+        runtime_context: RuntimeContext | None = None,
+        container_backend: ContainerBackend | None = None
+    ) -> Task:
         """Create WebArenaTask instance."""
-        # 1. Load task metadata from task_id
-        metadata_dict = load_task_metadata(self.task_id)  # From JSON
-        metadata = TaskMetadata(
-            id=self.task_id,
-            abstract_description=metadata_dict["intent"],
-            extra_info={
-                "domain": "web",
-                "category": metadata_dict["category"],
-                "difficulty": metadata_dict["difficulty"]
-            }
-        )
-
-        # 2. Create tool
+        # 1. Create tool
         tool = self.tool_config.make()
 
+        # 2. Extract task-specific data from metadata.extra_info
+        start_path = metadata.extra_info["start_path"]
+        eval_type = metadata.extra_info["eval_type"]
+        eval_target = metadata.extra_info["eval_target"]
+
         # 3. Create task instance
+        vm_address = runtime_context["vm_address"] if runtime_context else "http://localhost"
         task = WebArenaTask(
-            metadata=metadata,
-            start_url=f"{runtime_context.vm_address}{metadata_dict['start_path']}",
-            eval_function=create_eval_fn(metadata_dict["eval_type"], metadata_dict["eval_target"])
+            start_url=f"{vm_address}{start_path}",
+            eval_function=create_eval_fn(eval_type, eval_target)
         )
+        task.metadata = metadata
         task.tool = tool
         task.runtime_context = runtime_context
 
@@ -602,45 +643,63 @@ class WebArenaTask(Task):
 class WebArenaBenchmark(Benchmark):
     """WebArena benchmark with VM infrastructure."""
 
-    def __init__(self, vm_config: VMConfig, tool_config: BrowserToolConfig):
-        self.metadata = BenchmarkMetadata(
-            name="WebArena",
-            version="1.0",
-            description="Web navigation benchmark",
-            tags=["web", "navigation"]
+    def __init__(self, vm_config: VMConfig, browser_tool_config: BrowserToolConfig):
+        super().__init__(
+            metadata=BenchmarkMetadata(
+                name="WebArena",
+                version="1.0",
+                description="Web navigation benchmark",
+                tags=["web", "navigation"]
+            )
         )
         self.vm_config = vm_config
-        self.tool_config = tool_config
+        self.browser_tool_config = browser_tool_config
         self.vm: VM | None = None
-        self.task_metadata = None  # Loaded in setup()
 
-    def setup(self) -> RuntimeContext:
-        """Start VM infrastructure (shared across all tasks)."""
+    def setup(self) -> None:
+        """Start VM infrastructure and load task metadata."""
+        # 1. Start VM infrastructure (shared across all tasks)
         self.vm = self.vm_config.make()  # Blocks until ready
+        self.runtime_context = {"vm_address": self.vm.get_url(80)}
 
-        # Load task metadata from JSON
-        self.task_metadata = pd.read_json("webarena_tasks.json")
-
-        return {"vm_address": self.vm.get_url(80)}
-
-    def get_runtime_context(self) -> RuntimeContext:
-        """Current VM URLs for task instantiation."""
-        if self.vm is None:
-            raise RuntimeError("Benchmark not set up yet")
-        return {"vm_address": self.vm.get_url(80)}
-
-    def load_tasks(self, cache: bool = True) -> List[TaskConfig]:
-        """Generate configs for all tasks."""
-        if self.task_metadata is None:
-            raise RuntimeError("Benchmark not set up yet")
-
-        return [
-            WebArenaTaskConfig(
-                task_id=row["task_id"],
-                tool_config=self.tool_config,
+        # 2. Load task metadata from JSON
+        tasks_data = pd.read_json("webarena_tasks.json")
+        self.task_list = [
+            TaskMetadata(
+                id=row["task_id"],
+                abstract_description=row["intent"],
+                extra_info={
+                    "domain": "web",
+                    "category": row["category"],
+                    "difficulty": row["difficulty"],
+                    "start_path": row["start_path"],
+                    "eval_type": row["eval_type"],
+                    "eval_target": row["eval_target"]
+                }
             )
-            for _, row in self.task_metadata.iterrows()
+            for _, row in tasks_data.iterrows()
         ]
+
+        # 3. Set default tool config
+        self._default_tool_config = self.browser_tool_config
+
+        # 4. Optional: set seed generator (sequential seeds in this example)
+        import itertools
+        counter = itertools.count(0)
+        self._seed_generator = lambda: next(counter)
+
+    def _make_task_config(
+        self,
+        task_id: str,
+        seed: int | None = None,
+        tool_config: ToolConfig | None = None
+    ) -> TaskConfig:
+        """Create WebArenaTaskConfig."""
+        return WebArenaTaskConfig(
+            task_id=task_id,
+            seed=seed,
+            tool_config=tool_config or self._default_tool_config
+        )
 
     def close(self):
         """Stop VM."""
@@ -652,17 +711,18 @@ class WebArenaBenchmark(Benchmark):
 ## Runtime Context Pattern
 
 When shared infrastructure is recreated (e.g., VM gets a new IP), the harness
-simply re-reads `benchmark.get_runtime_context()` and passes it to `task_config.make()`.
+simply re-reads `benchmark.runtime_context` and passes it to `task_config.make()`.
 TaskConfigs remain immutable and infrastructure-agnostic.
 
 ```python
 # VM crashed, need to recreate
 benchmark.vm.stop()
 benchmark.vm = benchmark.vm_config.make()  # New IP
+benchmark.runtime_context = {"vm_address": benchmark.vm.get_url(80)}  # Update context
 
 # Retry failed tasks — runtime_context automatically has new IP
 failed_configs = get_failed_tasks()
-runtime_context = benchmark.get_runtime_context()
+runtime_context = benchmark.runtime_context
 futures = [
     evaluate_task.remote(config, runtime_context)
     for config in failed_configs
@@ -723,22 +783,24 @@ class TaskLogic(ABC):
 ## Best Practices
 
 **TaskConfig Design:**
-- Keep configs small (serialize/deserialize frequently)
-- Store only static references, not mutable infrastructure state
-- Task logic loaded via task_id from metadata JSON
+- Keep configs small and lightweight (serialize/deserialize frequently)
+- Contains task_id (reference to metadata), seed (runtime), and tool_config (runtime)
+- TaskMetadata is passed separately to `make()`, not embedded in config
 - Use Pydantic for validation and serialization
-- Include tool_config and container_config (provided by benchmark)
-- Mutable infrastructure refs (VM IPs, URLs) come via `runtime_info`, not stored in config
+- Mutable infrastructure refs (VM IPs, URLs) come via `runtime_context`, not stored in config
 
-**Task Metadata JSON:**
+**TaskMetadata Design:**
+- Static, immutable task description (can be saved to/loaded from disk)
+- Can be arbitrarily large (not frequently serialized over network)
+- Does NOT contain runtime-specific data like seeds or tool configs
 - Store as list of dicts (can load into pandas DataFrame)
-- Include filterable fields (category, difficulty, etc)
+- Include filterable fields in `extra_info` (category, difficulty, etc)
 - Keep task-specific data (intent, eval criteria) separate from infrastructure refs
 
-**RPC Support (Future):**
-- RPC spawn = task_config.make() + make_task_rpc_server()
-- Don't implement until needed
-- Current API doesn't prevent adding RPC later
+**RPC Support:**
+- RPC spawn implemented via `benchmark.spawn()`: `task_config.make()` + `make_task_rpc_server()`
+- Returns URL endpoint where task RPC server is accessible
+- Current API supports both local (direct) and remote (RPC) task execution
 
 ## Error Handling
 
@@ -747,7 +809,7 @@ class TaskLogic(ABC):
 **Error Recovery:**
 - TaskConfig is idempotent (can retry `make()`)
 - Task cleanup is safe (can call `close()` multiple times)
-- Benchmark exposes `runtime_info` with current infrastructure state for retries
+- Benchmark exposes `runtime_context` with current infrastructure state for retries
 
 **Cleanup on failure:** If `make()` fails partway, must clean up: stop containers, close connections, release ports.
 
@@ -804,10 +866,14 @@ classDiagram
     class Benchmark {
         <<abstract>>
         +BenchmarkMetadata metadata
-        +setup() RuntimeContext
-        +load_tasks(cache) List~TaskConfig~
-        +get_task_configs(task_id, offset, limit) List~TaskConfig~
-        +get_runtime_context() RuntimeContext
+        +list~TaskMetadata~ task_list
+        +RuntimeContext runtime_context
+        -ToolConfig _default_tool_config
+        -Callable _seed_generator
+        +setup() void
+        +get_task_metadata(task_id, offset, limit) list~TaskMetadata~
+        +create_task_config(task_id, seed, tool_config) TaskConfig
+        +_make_task_config(task_id, seed, tool_config) TaskConfig
         +spawn(task_id, backend) str
         +close() void
     }
@@ -832,8 +898,9 @@ classDiagram
     class TaskConfig {
         <<abstract>>
         +str task_id
+        +int seed
         +ToolConfig tool_config
-        +make(runtime_context, container_backend) Task
+        +make(metadata, runtime_context, container_backend) Task
     }
 
     class Task {
@@ -858,36 +925,31 @@ classDiagram
 
     class TaskMetadata {
         +str id
-        +int seed
-        +str description
-        +list~str~ tags
-        +int max_steps
-        +str difficulty
-        +str domain
-        +dict other
+        +str split
+        +str abstract_description
+        +int recommended_max_steps
+        +dict extra_info
     }
 
     class WebArenaBenchmark {
         +VMConfig vm_config
-        +BrowserToolConfig tool_config
+        +BrowserToolConfig browser_tool_config
         +VM vm
-        +DataFrame task_metadata
-        +setup() RuntimeContext
-        +load_tasks(cache) List~TaskConfig~
-        +get_runtime_context() RuntimeContext
+        +setup() void
+        +_make_task_config(task_id, seed, tool_config) TaskConfig
         +close() void
     }
 
     class WebArenaTaskConfig {
         +str task_id
+        +int seed
         +BrowserToolConfig tool_config
-        +make(runtime_context, backend) Task
+        +make(metadata, runtime_context, backend) Task
     }
 
     class WebArenaTask {
         +str start_url
         +Callable eval_function
-        +int step_count
         +setup() Tuple~Observation,Dict~
         +evaluate(obs) Tuple~float,dict~
         +close() void
@@ -904,9 +966,10 @@ classDiagram
     TaskConfig <|-- WebArenaTaskConfig : implements
     Task <|-- WebArenaTask : implements
     Benchmark --> BenchmarkMetadata : has
-    Benchmark --> RuntimeContext : creates
-    Benchmark --> TaskConfig : creates
-    TaskConfig --> Task : instantiates
+    Benchmark --> TaskMetadata : stores list
+    Benchmark --> RuntimeContext : has
+    Benchmark --> TaskConfig : creates via create_task_config()
+    TaskConfig --> Task : instantiates via make()
     Task --> TaskMetadata : has
     Task --> RuntimeContext : uses
 

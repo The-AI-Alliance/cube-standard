@@ -60,10 +60,8 @@ class Benchmark(TypedBaseModel, ABC):
 
     metadata: BenchmarkMetadata
     # these should be set during setup()
-    task_list: list[TaskMetadata] = PrivateAttr(default_factory=list)  # cache loaded task configs
-    runtime_context: RuntimeContext = PrivateAttr(
-        default_factory=dict
-    )  # track shared runtime resources created in setup()
+    task_list: list[TaskMetadata] = Field(default_factory=list)  # cache loaded task configs
+    runtime_context: RuntimeContext = Field(default_factory=dict)  # track shared runtime resources created in setup()
     _default_tool_config: ToolConfig | None = PrivateAttr(
         default=None
     )  # default tool config to be used for tasks that don't specify their own
