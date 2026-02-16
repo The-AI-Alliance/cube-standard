@@ -247,11 +247,15 @@ class TaskConfig(ABC, TypedBaseModel):
     """
 
     task_id: str
+    seed: int | None = None
     tool_config: ToolConfig
 
     @abstractmethod
     def make(
-        self, runtime_context: RuntimeContext | None = None, container_backend: ContainerBackend | None = None
+        self,
+        metadata: TaskMetadata,
+        runtime_context: RuntimeContext | None = None,
+        container_backend: ContainerBackend | None = None,
     ) -> Task:
         """
         Instantiate task from config.
@@ -260,7 +264,7 @@ class TaskConfig(ABC, TypedBaseModel):
 
         Steps:
         1. Create tools (if tool_config provided)
-        2. Start container (if container_config provided)
+        2. Start container (if container_backend provided)
         3. Create Task with logic and tools
 
         Returns: Ready-to-use Task instance
@@ -279,18 +283,8 @@ class TaskConfig(ABC, TypedBaseModel):
         >>> else:
         >>>     container = None
         >>>
-        >>> # Create task metadata (example for a concrete Task subclass)
-        >>> metadata = TaskMetadata(
-        >>>     id=self.task_id,
-        >>>     description="Example task description"
-        >>> )
-        >>>
         >>> # Instantiate concrete Task subclass (not abstract Task class)
-        >>> task = MyTask(metadata=metadata)  # Replace with actual Task subclass
-        >>> task.metadata = metadata
-        >>> task.tool = tool
-        >>> task.container = container
-        >>> task.runtime_context = runtime_context
+        >>> task = MyTask(metadata, tool, runtime_context, container)  # Replace with actual Task subclass
         >>> return task
         """
         pass

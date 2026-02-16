@@ -1,12 +1,13 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import Field, PrivateAttr
 
 from cube.containers import ContainerBackend
 from cube.core import TypedBaseModel
-from cube.task import TaskConfig
+from cube.task import TaskConfig, TaskMetadata
+from cube.tool import ToolConfig
 
 logger = logging.getLogger(__name__)
 
@@ -58,59 +59,95 @@ class Benchmark(TypedBaseModel, ABC):
     """Represents a benchmark consisting of multiple tasks."""
 
     metadata: BenchmarkMetadata
-    _task_list: list[TaskConfig] = PrivateAttr(default_factory=list)  # cache loaded task configs
-    _runtime_context: RuntimeContext | None = PrivateAttr(
-        default=None
+    # these should be set during setup()
+    task_list: list[TaskMetadata] = PrivateAttr(default_factory=list)  # cache loaded task configs
+    runtime_context: RuntimeContext = PrivateAttr(
+        default_factory=dict
     )  # track shared runtime resources created in setup()
+    _default_tool_config: ToolConfig | None = PrivateAttr(
+        default=None
+    )  # default tool config to be used for tasks that don't specify their own
+    _seed_generator: Callable[[], int] | None = PrivateAttr(
+        default=None
+    )  # optional seed generator for tasks that require random seeds
 
     @property
     def name(self) -> str:
         return self.metadata.name
 
     @abstractmethod
-    def setup(self) -> RuntimeContext:
+    def setup(self) -> None:
         """
         Setup the benchmark and prepare it for spawning tasks.
-        It should create all the necessary shared runtime resources and store them in self._runtime_context.
         This is supposed to be implemented by Benchmark *creators*.
+        It **must** (required):
+        - define the list of task metadata (self.task_list)
+        It should (optional):
+        - create any shared infrastructure needed for the tasks and store references in self.runtime_context
+        - decide on a default tool config (self._default_tool_config)
+        - define a seed generator if needed (self._seed_generator)
         """
         pass
 
     @abstractmethod
-    def load_tasks(self, cache=True) -> list[TaskConfig]:
-        """
-        Load and return the list of tasks for this benchmark.
-        """
-        if len(self._task_list) > 0 and cache:
-            return self._task_list
-        raise NotImplementedError("load_tasks() must be implemented in subclass.")
+    def _make_task_config(self, task_id, seed: int | None = None, tool_config: ToolConfig | None = None) -> TaskConfig:
+        """Concrete subclass creates its specific TaskConfig type"""
+        pass
 
-    def get_task_configs(self, task_id: str | None = None, offset: int = 0, limit: int = -1) -> list[TaskConfig]:
+    def create_task_config(
+        self, task_id: str, seed: int | None = None, tool_config: ToolConfig | None = None
+    ) -> TaskConfig:
         """
-        Util function to get specific tasks with optional filtering, offset, and limit.
+        Create a TaskConfig for the specified task_id, using the provided seed and tool_config if given,
+        otherwise falling back to defaults defined in the benchmark.
+
+        This is a helper method that calls the abstract _make_task_config() implemented by the concrete subclass.
         """
-        tasks = self.load_tasks()
+        # Verify that only task with this ID exists
+        metadata = self.get_task_metadata(task_id=task_id)
+        assert len(metadata) == 1, f"Expected exactly one task with id {task_id}, but found {len(metadata)}"
+
+        # Use provided params or defaults from setup()
+        actual_seed = (
+            seed if seed is not None else (self._seed_generator() if self._seed_generator is not None else None)
+        )
+        actual_tool_config = tool_config or self._default_tool_config
+
+        # Create TaskConfig (calls concrete subclass implementation)
+        return self._make_task_config(task_id=task_id, seed=actual_seed, tool_config=actual_tool_config)
+
+    def get_task_metadata(
+        self, task_id: list[str] | str | None = None, offset: int = 0, limit: int = -1
+    ) -> list[TaskMetadata]:
+        """
+        Util function to get specific task metadata with optional filtering, offset, and limit.
+        """
+        if len(self.task_list) == 0:
+            raise RuntimeError("Benchmark not set up yet. Call setup() to initialize task metadata.")
 
         # Apply filtering
         if task_id:
-            tasks = [task for task in tasks if task.task_id == task_id]
+            if isinstance(task_id, str):
+                task_id = [task_id]
+            tms = [tm for tm in self.task_list if tm.id in task_id]
+        else:
+            tms = self.task_list
 
         # Apply offset and limit
         if limit == -1:
-            limited_tasks = tasks[offset:]
+            tms = tms[offset:]
         else:
-            limited_tasks = tasks[offset : offset + limit]
+            tms = tms[offset : offset + limit]
 
-        return limited_tasks
+        return tms
 
-    def get_runtime_context(self) -> RuntimeContext:
+    def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "Benchmark":
         """
-        Get the runtime context created during setup().
-        This is needed by TaskConfig.make() to create Task instances.
+        Create a new Benchmark instance containing only the tasks whose glob_key matches the glob_pattern.
+        This is useful for creating smaller benchmarks from a larger one, for example for testing or ablations.
         """
-        if self._runtime_context is None:
-            raise RuntimeError("Benchmark not set up yet. Call setup() before accessing runtime context.")
-        return self._runtime_context
+        # TODO
+        return self
 
     def spawn(self, task_id: str, container_backend: ContainerBackend | None = None) -> str:
         """
@@ -118,9 +155,11 @@ class Benchmark(TypedBaseModel, ABC):
         """
         from cube.server import make_task_rpc_server
 
-        task_config = self.get_task_configs(task_id)[0]
-        task = task_config.make(
-            runtime_context=self.get_runtime_context(),
+        tm = self.get_task_metadata(task_id=task_id)[0]
+        tc = self.create_task_config(task_id)
+        task = tc.make(
+            metadata=tm,
+            runtime_context=self.runtime_context,
             container_backend=container_backend,
         )  # type: ignore
         _app, _process, url = make_task_rpc_server(task)
