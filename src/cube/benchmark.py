@@ -1,7 +1,7 @@
 import fnmatch
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
 
 from pydantic import Field, PrivateAttr
 
@@ -60,8 +60,12 @@ class Benchmark(TypedBaseModel, ABC):
     """Represents a benchmark consisting of multiple tasks."""
 
     metadata: BenchmarkMetadata
-    # these should be set during setup()
-    task_list: list[TaskMetadata] = Field(default_factory=list)  # cache loaded task configs
+
+    # Class-level attributes that must be defined by subclasses
+    task_metadata_dict: ClassVar[dict[str, TaskMetadata]]
+    task_config_class: ClassVar[type[TaskConfig]]
+
+    # these optional fields should be set during setup()
     runtime_context: RuntimeContext = Field(default_factory=dict)  # track shared runtime resources created in setup()
     _default_tool_config: ToolConfig | None = PrivateAttr(
         default=None
@@ -69,22 +73,43 @@ class Benchmark(TypedBaseModel, ABC):
     _seed_generator: Callable[[], int] | None = PrivateAttr(
         default=None
     )  # optional seed generator for tasks that require random seeds
-    _task_config_class: type[TaskConfig] | None = PrivateAttr(
-        default=None
-    )  # TaskConfig class to instantiate for this benchmark's tasks
 
     @property
     def name(self) -> str:
         return self.metadata.name
+
+    def __init_subclass__(cls, **kwargs):
+        """Ensure concrete subclasses define required class attributes."""
+        super().__init_subclass__(**kwargs)
+        # Only enforce for concrete classes (not abstract intermediate classes)
+        if not getattr(cls, "__abstractmethods__", None):
+            # Check task_metadata_dict is defined as a static class variable (not a property or descriptor)
+            if "task_metadata_dict" not in cls.__dict__:
+                raise TypeError(
+                    f"Concrete benchmark class {cls.__name__} must define 'task_metadata_dict' as a class attribute"
+                )
+            task_meta = cls.__dict__["task_metadata_dict"]
+            if not isinstance(task_meta, dict):
+                raise TypeError(
+                    f"'task_metadata_dict' in {cls.__name__} must be a dict, not {type(task_meta).__name__}"
+                )
+
+            # Check task_config_class is defined as a static class variable (not a property or descriptor)
+            if "task_config_class" not in cls.__dict__:
+                raise TypeError(
+                    f"Concrete benchmark class {cls.__name__} must define 'task_config_class' as a class attribute"
+                )
+            task_cfg = cls.__dict__["task_config_class"]
+            if not isinstance(task_cfg, type) or not issubclass(task_cfg, TaskConfig):
+                raise TypeError(
+                    f"'task_config_class' in {cls.__name__} must be a subclass of TaskConfig, not {task_cfg}"
+                )
 
     @abstractmethod
     def _setup(self) -> None:
         """
         Setup the benchmark and prepare it for spawning tasks.
         This is supposed to be implemented by Benchmark *creators*.
-        It **must** (required):
-        - define the list of task metadata (self.task_list)
-        - define the TaskConfig class to use (self._task_config_class)
         It should (optional):
         - create any shared infrastructure needed for the tasks and store references in self.runtime_context
         - decide on a default tool config (self._default_tool_config)
@@ -97,13 +122,17 @@ class Benchmark(TypedBaseModel, ABC):
         Public method to setup the benchmark. Calls the internal _setup() implemented by the concrete subclass.
         """
         self._setup()
-        if not self.task_list:
-            raise RuntimeError(
-                "Benchmark setup did not define any tasks. Please ensure that self.task_list is populated."
+        if not self.runtime_context:
+            logger.warning(
+                "Benchmark setup did not define any runtime context. If your tasks require shared infrastructure, please ensure that self.runtime_context is populated."
             )
-        if self._task_config_class is None:
-            raise RuntimeError(
-                "Benchmark setup did not define a task config class. Please ensure that self._task_config_class is set."
+        if self._default_tool_config is None:
+            logger.warning(
+                "Benchmark setup did not define a default tool config. You will need to provide a tool config for all calls to create_task_config()."
+            )
+        if self._seed_generator is None:
+            logger.warning(
+                "Benchmark setup did not define a seed generator. If your tasks require a random seed, you will need to provide a seed for all calls to create_task_config()."
             )
 
     def create_task_config(
@@ -121,10 +150,9 @@ class Benchmark(TypedBaseModel, ABC):
         assert actual_tool_config is not None, (
             "No tool config provided and no default tool config defined in benchmark setup."
         )
-        assert self._task_config_class is not None, "No task config class defined in benchmark setup."
 
         # Directly instantiate the TaskConfig class
-        return self._task_config_class(
+        return self.task_config_class(
             task_id=task_id,
             tool_config=actual_tool_config,
             seed=actual_seed,
@@ -137,7 +165,7 @@ class Benchmark(TypedBaseModel, ABC):
         """
         task_subset = [
             tm
-            for tm in self.task_list
+            for tm in self.task_metadata_dict.values()
             if hasattr(tm, glob_key) and fnmatch.fnmatch(getattr(tm, glob_key), glob_pattern)
         ]
         if not task_subset:
@@ -159,10 +187,10 @@ class Benchmark(TypedBaseModel, ABC):
         Raises:
             ValueError: If the resulting task list is empty or if any specified task doesn't exist.
         """
-        existing_task_ids = {tm.id for tm in self.task_list}
+        existing_task_ids = {tm.id for tm in self.task_metadata_dict.values()}
         if isinstance(tasks, list) and len(tasks) > 0 and isinstance(tasks[0], str):
             task_ids = set(tasks)
-            task_subset = [tm for tm in self.task_list if tm.id in task_ids]
+            task_subset = [tm for tm in self.task_metadata_dict.values() if tm.id in task_ids]
             invalid_tasks = task_ids - existing_task_ids
         elif isinstance(tasks, list) and len(tasks) > 0 and isinstance(tasks[0], TaskMetadata):
             task_subset: list[TaskMetadata] = tasks  # type: ignore
@@ -174,32 +202,32 @@ class Benchmark(TypedBaseModel, ABC):
         if not task_subset:
             raise ValueError("The resulting task list cannot be empty.")
 
+        # TODO: figure put how to copy / update class level static variables!
         new_metadata = BenchmarkMetadata(**self.metadata.model_dump())
         new_metadata.name = f"{self.metadata.name}_{benchmark_name_suffix}"
         new_metadata.num_tasks = len(task_subset)
         new_instance = type(self)(
             metadata=new_metadata,
-            task_list=task_subset,
             runtime_context=self.runtime_context,
         )
         # Copy private attributes
         new_instance._default_tool_config = self._default_tool_config
         new_instance._seed_generator = self._seed_generator
-        new_instance._task_config_class = self._task_config_class
+        # Note: task_config_class is defined as a property in the concrete benchmark subclass, so we don't need to copy it here
         return new_instance
 
-    def spawn(self, task_id: str, container_backend: ContainerBackend | None = None) -> str:
+    def spawn(self, task_id: str, seed: int | None = None, container_backend: ContainerBackend | None = None) -> str:
         """
         Spawn a new RPC server for the specified task on the specified container backend and return its endpoint URL.
         """
         from cube.server import make_task_rpc_server
 
         # Find the task metadata
-        tm = next((tm for tm in self.task_list if tm.id == task_id), None)
+        tm = self.task_metadata_dict.get(task_id)
         if tm is None:
             raise ValueError(f"Task '{task_id}' not found in benchmark")
 
-        tc = self.create_task_config(task_id)
+        tc = self.create_task_config(task_id, seed=seed)
         task = tc.make(
             metadata=tm,
             runtime_context=self.runtime_context,
