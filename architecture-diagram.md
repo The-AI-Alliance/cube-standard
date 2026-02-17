@@ -16,8 +16,8 @@ graph TD
 
     %% Benchmark lifecycle
     Benchmark -->|"setup()"| RuntimeContext
-    Benchmark -->|"load_tasks()"| TaskConfigList[List of TaskConfig]
-    TaskConfigList -->|contains| TaskConfig
+    Benchmark -->|"task_list"| TaskMetadataList[List of TaskMetadata]
+    Benchmark -->|"create_task_config(task_id)"| TaskConfig
     Benchmark -->|"spawn(task_id)"| Server
 
     %% TaskConfig creates Task
@@ -81,16 +81,16 @@ sequenceDiagram
     Benchmark-->>Benchmark: Store in RuntimeContext
     Note over Benchmark: RuntimeContext holds container_id, vm_address, etc.
 
-    %% Task Loading
-    User->>Benchmark: load_tasks()
-    Benchmark->>TaskConfig: Create task configs
-    Note over TaskConfig: Each TaskConfig has task_id + ToolConfig
-    Benchmark-->>User: List[TaskConfig]
+    %% Get Task Metadata
+    User->>Benchmark: Get task_list
+    Note over Benchmark: task_list contains TaskMetadata
+    Benchmark-->>User: List[TaskMetadata]
 
     %% Spawning a Task Server
     User->>Benchmark: spawn(task_id)
-    Benchmark->>Benchmark: Find TaskConfig by ID
-    Benchmark->>TaskConfig: make(runtime_context)
+    Benchmark->>Benchmark: Find TaskMetadata by ID
+    Benchmark->>Benchmark: create_task_config(task_id)
+    Benchmark->>TaskConfig: make(metadata, runtime_context)
 
     %% Create Tool
     TaskConfig->>ToolConfig: make()
@@ -170,14 +170,14 @@ classDiagram
     class Benchmark {
         <<abstract>>
         +BenchmarkMetadata metadata
-        -List~TaskConfig~ _task_list
-        -RuntimeContext _runtime_context
-        +setup() RuntimeContext
-        +load_tasks() List~TaskConfig~
-        +get_task_configs() List~TaskConfig~
-        +get_runtime_context() RuntimeContext
-        +spawn(task_id) str
-        +close() None
+        +List~TaskMetadata~ task_list
+        +RuntimeContext runtime_context
+        -ToolConfig _default_tool_config
+        -type~TaskConfig~ _task_config_class
+        +setup() void
+        +create_task_config(task_id, tool_config, seed) TaskConfig
+        +spawn(task_id, backend) str
+        +close() void
     }
 
     class RuntimeContext {
@@ -255,10 +255,11 @@ classDiagram
 
 | From | To | Relationship | Method |
 |------|-----|--------------|--------|
-| **Benchmark** | RuntimeContext | Creates shared resources | `setup()` returns `RuntimeContext` |
-| **Benchmark** | TaskConfig | Contains multiple | `load_tasks()` returns `List[TaskConfig]` |
+| **Benchmark** | RuntimeContext | Creates shared resources | `setup()` populates `runtime_context` |
+| **Benchmark** | TaskMetadata | Contains multiple | `task_list` field holds `List[TaskMetadata]` |
+| **Benchmark** | TaskConfig | Creates on demand | `create_task_config(task_id)` returns `TaskConfig` |
 | **Benchmark** | Task | Spawns via server | `spawn(task_id)` creates task and server |
-| **TaskConfig** | Task | Factory | `make(runtime_context)` returns `Task` |
+| **TaskConfig** | Task | Factory | `make(metadata, runtime_context)` returns `Task` |
 | **TaskConfig** | ToolConfig | Has one | `tool_config` field |
 | **ToolConfig** | Tool | Factory | `make()` returns `AbstractTool` |
 | **Task** | Tool | Uses | `tool` field, `step()` calls `tool.execute_action()` |
@@ -275,17 +276,19 @@ classDiagram
 1. **Benchmark Setup**:
    - User creates Benchmark instance
    - User calls `benchmark.setup()`
-   - Benchmark creates shared infrastructure (containers, VMs, etc.)
-   - Returns `RuntimeContext` with references to shared resources
-   - Stored in `benchmark._runtime_context`
+   - Benchmark implementation (`_setup()`) defines:
+     - `task_list`: List of TaskMetadata
+     - `_task_config_class`: TaskConfig class to instantiate
+     - `runtime_context`: Shared infrastructure references (containers, VMs, etc.)
+     - Optional: `_default_tool_config`, `_seed_generator`
 
-2. **Task Loading**:
-   - User calls `benchmark.load_tasks()`
-   - Benchmark creates list of `TaskConfig` objects
-   - Each TaskConfig has:
+2. **Task Config Creation**:
+   - User accesses `benchmark.task_list` to see available tasks
+   - User calls `benchmark.create_task_config(task_id)` to create a TaskConfig
+   - Benchmark instantiates `_task_config_class` with:
      - `task_id`: unique identifier
-     - `tool_config`: ToolConfig instance for creating tools
-   - Caches in `benchmark._task_list`
+     - `tool_config`: from `_default_tool_config` or provided
+     - `seed`: from `_seed_generator` or provided
 
 3. **Task Spawning**:
    - User calls `benchmark.spawn(task_id, container_backend=None)`

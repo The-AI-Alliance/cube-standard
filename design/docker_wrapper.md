@@ -138,29 +138,32 @@ backend = ToolkitContainerBackend(
     backend_config={"partition": "gpu", "account": "my-project", "time": "24:00:00"}
 )
 
-# 1. Benchmark provides lightweight task configs
+# 1. Benchmark provides task metadata and creates configs on demand
 benchmark = SWEBenchBenchmark()
-task_configs = benchmark.load_tasks()  # Just task_ids and tool_config
+benchmark.setup()
+task_metadata_list = benchmark.task_list
 
 # 2. Ray worker evaluates task
 @ray.remote
-def evaluate_task(task_config, backend, runtime_context):
-    # Retrieve container config from task metadata
-    container_config = ContainerConfig.from_task_id(task_config.task_id)
-
-    # User's backend launches it
-    container = backend.launch(container_config)  # Same backend, different config
-
+def evaluate_task(task_metadata, task_config, backend, runtime_context):
     # Create task with running container
-    task = task_config.make(runtime_context=runtime_context, container_backend=backend)
+    # container_backend.launch() is called inside task_config.make()
+    task = task_config.make(
+        metadata=task_metadata,
+        runtime_context=runtime_context,
+        container_backend=backend
+    )
     obs, info = task.setup()
     result = run_eval(task, obs)
     task.close()
     return result
 
 # 3. Execute in parallel - same backend, 1000 different configs
-runtime_context = benchmark.get_runtime_context()
-futures = [evaluate_task.remote(cfg, backend, runtime_context) for cfg in task_configs]
+runtime_context = benchmark.runtime_context
+futures = []
+for tm in task_metadata_list:
+    tc = benchmark.create_task_config(task_id=tm.id)
+    futures.append(evaluate_task.remote(tm, tc, backend, runtime_context))
 results = ray.get(futures)
 ```
 

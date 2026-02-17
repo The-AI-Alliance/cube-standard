@@ -11,11 +11,11 @@ The Benchmark and Task API defines how benchmarks expose tasks and how tasks are
 
 ```python
 # On coordinator (main process)
-benchmark = WebArenaBenchmark(vm_config, tool_config)
+benchmark = WebArenaBenchmark()
 benchmark.setup()  # Initialize infrastructure, load task metadata
 
 # Get task metadata
-task_metadata_list = benchmark.get_task_metadata()
+task_metadata_list = benchmark.task_list
 
 # Distribute to Ray workers
 @ray.remote
@@ -32,7 +32,7 @@ def evaluate_task(task_metadata, task_config, agent_config, runtime_context):
         action = agent.get_action(obs)
         result = task.step(action)
         obs = result.obs
-        if result.done or result.truncated:
+        if result.done:
             break
 
     task.close()
@@ -42,7 +42,7 @@ def evaluate_task(task_metadata, task_config, agent_config, runtime_context):
 runtime_context = benchmark.runtime_context
 futures = []
 for tm in task_metadata_list:
-    task_config = benchmark.create_task_config(tm.id)
+    task_config = benchmark.create_task_config(task_id=tm.id)
     futures.append(evaluate_task.remote(tm, task_config, agent_config, runtime_context))
 results = ray.get(futures)
 
@@ -107,7 +107,7 @@ class BenchmarkMetadata(TypedBaseModel):
 
 RuntimeContext = dict[str, Any]
 """
-Type alias for shared infrastructure references created during benchmark.setup().
+Type alias for shared infrastructure references created during benchmark._setup().
 
 Contains mutable references to infrastructure like VMs, containers, or
 other services that are shared across tasks. This is passed to
@@ -144,7 +144,7 @@ class TaskMetadata(TypedBaseModel):
 Manages benchmark-level infrastructure and task enumeration.
 
 ```python
-class Benchmark(ABC, TypedBaseModel):
+class Benchmark(TypedBaseModel, ABC):
     """Base class for all CUBE benchmarks."""
 
     metadata: BenchmarkMetadata  # Benchmark metadata (name, version, description, etc.)
@@ -156,14 +156,16 @@ class Benchmark(ABC, TypedBaseModel):
     # Private attributes set during setup()
     _default_tool_config: ToolConfig | None = PrivateAttr(default=None)
     _seed_generator: Callable[[], int] | None = PrivateAttr(default=None)
+    _task_config_class: type[TaskConfig] | None = PrivateAttr(default=None)
 
     @abstractmethod
-    def setup(self) -> None:
+    def _setup(self) -> None:
         """
         Initialize benchmark infrastructure and populate task metadata.
 
         Must (required):
         - Populate self.task_list with TaskMetadata objects (loaded from file or created programmatically)
+        - Set self._task_config_class to the TaskConfig class for this benchmark
 
         Should (optional):
         - Create shared infrastructure and store references in self.runtime_context
@@ -178,67 +180,30 @@ class Benchmark(ABC, TypedBaseModel):
         Note: For SWE-Bench style benchmarks, containers are started
         per-task (in task_config.make()), not here.
 
-        Called once before task distribution.
+        Called by setup() wrapper before task distribution.
         """
 
-    def get_task_metadata(
-        self,
-        task_id: list[str] | str | None = None,
-        offset: int = 0,
-        limit: int = -1
-    ) -> list[TaskMetadata]:
+    def setup(self) -> None:
         """
-        Get task metadata with optional filtering, offset, and limit.
-
-        Args:
-            task_id: Optional task ID or list of IDs to filter by
-            offset: Number of tasks to skip
-            limit: Maximum number of tasks to return (-1 for all)
-
-        Returns: Filtered list of TaskMetadata objects
-
-        Raises: RuntimeError if benchmark not set up yet
-
-        Example:
-            metadata = benchmark.get_task_metadata(task_id="task_001")
-            metadata = benchmark.get_task_metadata(task_id=["task_001", "task_002"])
-            metadata = benchmark.get_task_metadata(offset=10, limit=5)
-        """
-
-    @abstractmethod
-    def _make_task_config(
-        self,
-        task_id: str,
-        seed: int | None = None,
-        tool_config: ToolConfig | None = None
-    ) -> TaskConfig:
-        """
-        Concrete subclass creates its specific TaskConfig type.
-
-        Args:
-            task_id: Task identifier
-            seed: Random seed for task (if applicable)
-            tool_config: Tool configuration
-
-        Returns: Concrete TaskConfig subclass instance
+        Public method to setup the benchmark. Calls _setup() and validates configuration.
         """
 
     def create_task_config(
         self,
         task_id: str,
-        seed: int | None = None,
-        tool_config: ToolConfig | None = None
+        tool_config: ToolConfig | None = None,
+        seed: int | None = None
     ) -> TaskConfig:
         """
         Create TaskConfig for the specified task_id.
 
-        Uses provided seed and tool_config if given, otherwise falls back
+        Uses provided tool_config and seed if given, otherwise falls back
         to defaults defined in the benchmark.
 
         Args:
             task_id: Task identifier
-            seed: Optional random seed (uses _seed_generator if not provided)
             tool_config: Optional tool config (uses _default_tool_config if not provided)
+            seed: Optional random seed (uses _seed_generator if not provided)
 
         Returns: TaskConfig ready to be passed to workers
 
@@ -320,13 +285,12 @@ class TaskConfig(ABC, TypedBaseModel):
             # Launch container if backend provided
             container = None
             if container_backend:
-                container_spec = ContainerSpec.from_task_id(self.task_id)
-                container = container_backend.launch(container_spec)
+                container_config = ContainerConfig.from_task_id(self.task_id)
+                container = container_backend.launch(container_config)
 
             # Instantiate concrete Task subclass
-            task = MyTask()
-            task.metadata = metadata
-            task.tool = tool
+            task = MyTask(task_id=self.task_id, target=metadata.extra_info.get("target", 0))
+            task.tool = tool  # type: ignore[assignment]
             task.container = container
             task.runtime_context = runtime_context
             return task
@@ -356,7 +320,7 @@ class Task(ABC):
     """
 
     metadata: TaskMetadata  # Task metadata
-    tool: AbstractTool  # Instantiated tool, initialized in setup()
+    tool: AbstractTool  # Instantiated tool, initialized in TaskConfig.make()
     runtime_context: RuntimeContext | None = None  # Shared infrastructure references
     container: Container | None = None  # Task-specific container
     validate_per_step: bool = False  # Whether to evaluate after each step
@@ -374,13 +338,13 @@ class Task(ABC):
 
         Returns tool.action_set filtered by self.filter_actions().
 
-        Returns a JSON-serializable list of tool descriptors, each with:
+        Returns a list of ActionSchema objects with:
         - type: "function"
         - name: Function name
         - description: Function description
         - parameters: JSON Schema for parameters
 
-        This format is compatible with litellm/OpenAI function calling.
+        ActionSchema objects can be converted to litellm/OpenAI format via .as_dict().
         Agents use this to discover available actions without knowing
         tool implementations in advance.
 
@@ -399,6 +363,16 @@ class Task(ABC):
                 }
             )
         ]
+
+        Note: ActionSchema.as_dict() produces litellm-compatible format:
+        {
+            "type": "function",
+            "function": {
+                "name": "click",
+                "description": "Click on a web element",
+                "parameters": {...}
+            }
+        }
         """
         return self.filter_actions(self.tool.action_set)
 
@@ -602,11 +576,11 @@ class WebArenaTaskConfig(TaskConfig):
         # 3. Create task instance
         vm_address = runtime_context["vm_address"] if runtime_context else "http://localhost"
         task = WebArenaTask(
+            task_id=self.task_id,
             start_url=f"{vm_address}{start_path}",
             eval_function=create_eval_fn(eval_type, eval_target)
         )
-        task.metadata = metadata
-        task.tool = tool
+        task.tool = tool  # type: ignore[assignment]
         task.runtime_context = runtime_context
 
         return task
@@ -615,11 +589,12 @@ class WebArenaTaskConfig(TaskConfig):
 class WebArenaTask(Task):
     """WebArena task instance."""
 
-    def __init__(self, metadata: TaskMetadata, start_url: str, eval_function: Callable):
-        self.metadata = metadata
+    tool: BrowserTool  # type: ignore[assignment]
+
+    def __init__(self, task_id: str, start_url: str, eval_function: Callable):
+        self.metadata = TaskMetadata(id=task_id)
         self.start_url = start_url
         self.eval_function = eval_function
-        self.step_count = 0
 
     def setup(self) -> Tuple[Observation, Dict]:
         """Navigate to starting URL and return initial observation."""
@@ -656,7 +631,7 @@ class WebArenaBenchmark(Benchmark):
         self.browser_tool_config = browser_tool_config
         self.vm: VM | None = None
 
-    def setup(self) -> None:
+    def _setup(self) -> None:
         """Start VM infrastructure and load task metadata."""
         # 1. Start VM infrastructure (shared across all tasks)
         self.vm = self.vm_config.make()  # Blocks until ready
@@ -680,26 +655,16 @@ class WebArenaBenchmark(Benchmark):
             for _, row in tasks_data.iterrows()
         ]
 
-        # 3. Set default tool config
+        # 3. Set TaskConfig class (required)
+        self._task_config_class = WebArenaTaskConfig
+
+        # 4. Set default tool config
         self._default_tool_config = self.browser_tool_config
 
-        # 4. Optional: set seed generator (sequential seeds in this example)
+        # 5. Optional: set seed generator (sequential seeds in this example)
         import itertools
         counter = itertools.count(0)
         self._seed_generator = lambda: next(counter)
-
-    def _make_task_config(
-        self,
-        task_id: str,
-        seed: int | None = None,
-        tool_config: ToolConfig | None = None
-    ) -> TaskConfig:
-        """Create WebArenaTaskConfig."""
-        return WebArenaTaskConfig(
-            task_id=task_id,
-            seed=seed,
-            tool_config=tool_config or self._default_tool_config
-        )
 
     def close(self):
         """Stop VM."""
@@ -721,11 +686,16 @@ benchmark.vm = benchmark.vm_config.make()  # New IP
 benchmark.runtime_context = {"vm_address": benchmark.vm.get_url(80)}  # Update context
 
 # Retry failed tasks — runtime_context automatically has new IP
-failed_configs = get_failed_tasks()
+failed_task_ids = get_failed_task_ids()
 runtime_context = benchmark.runtime_context
 futures = [
-    evaluate_task.remote(config, runtime_context)
-    for config in failed_configs
+    evaluate_task.remote(
+        benchmark.task_list[i],
+        benchmark.create_task_config(task_id=task_id),
+        agent_config,
+        runtime_context
+    )
+    for i, task_id in enumerate(failed_task_ids)
 ]
 ```
 
@@ -870,10 +840,9 @@ classDiagram
         +RuntimeContext runtime_context
         -ToolConfig _default_tool_config
         -Callable _seed_generator
+        -type~TaskConfig~ _task_config_class
         +setup() void
-        +get_task_metadata(task_id, offset, limit) list~TaskMetadata~
         +create_task_config(task_id, seed, tool_config) TaskConfig
-        +_make_task_config(task_id, seed, tool_config) TaskConfig
         +spawn(task_id, backend) str
         +close() void
     }
@@ -935,8 +904,7 @@ classDiagram
         +VMConfig vm_config
         +BrowserToolConfig browser_tool_config
         +VM vm
-        +setup() void
-        +_make_task_config(task_id, seed, tool_config) TaskConfig
+        +_setup() void
         +close() void
     }
 

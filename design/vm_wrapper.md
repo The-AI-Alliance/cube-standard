@@ -16,13 +16,13 @@ Benchmark-level VM that persists across many tasks, with application-level reset
 benchmark = WebArenaBenchmark(vm_config, tool_config)
 benchmark.setup()  # Blocks 5 min - creates VM
 
-# Get task configs
-task_configs = benchmark.load_tasks()
+# Get task metadata and create configs
+task_metadata_list = benchmark.task_list
 
 # Each task runs on Ray worker
 @ray.remote
-def evaluate_task(task_config, agent_config, runtime_context):
-    task = task_config.make(runtime_context=runtime_context)  # Fast: uses existing VM
+def evaluate_task(task_metadata, task_config, agent_config, runtime_context):
+    task = task_config.make(metadata=task_metadata, runtime_context=runtime_context)  # Fast: uses existing VM
     agent = agent_config.make()
     obs, info = task.setup()  # App-level reset (5-10 sec, not minutes)
     # ... agent loop ...
@@ -31,8 +31,11 @@ def evaluate_task(task_config, agent_config, runtime_context):
     return result
 
 # Parallel evaluation
-runtime_context = benchmark.get_runtime_context()
-futures = [evaluate_task.remote(tc, agent_config, runtime_context) for tc in task_configs]
+runtime_context = benchmark.runtime_context
+futures = []
+for tm in task_metadata_list:
+    tc = benchmark.create_task_config(task_id=tm.id)
+    futures.append(evaluate_task.remote(tm, tc, agent_config, runtime_context))
 results = ray.get(futures)
 
 # Cleanup
@@ -229,18 +232,27 @@ Benchmarks choose reset strategy based on speed/isolation tradeoff.
 Application-level state reset via commands:
 
 ```python
-class WebArenaTaskLogic:
-    def setup(self, vm: VM):
+class WebArenaTask(Task):
+    def setup(self) -> Tuple[Observation, Dict]:
         """Application-level state reset via VM commands."""
-        # Reset database
-        vm.exec("psql -c 'TRUNCATE users, orders, products CASCADE'")
-        vm.exec("psql -f /fixtures/base_data.sql")
+        # Get VM from runtime_context
+        vm_address = self.runtime_context["vm_address"]
+
+        # Reset database (assuming VM has exec capability)
+        # Note: Actual VM exec not in current API, this is illustrative
+        # vm.exec("psql -c 'TRUNCATE users, orders, products CASCADE'")
+        # vm.exec("psql -f /fixtures/base_data.sql")
 
         # Clear cache
-        vm.exec("redis-cli FLUSHALL")
+        # vm.exec("redis-cli FLUSHALL")
 
         # Reset uploads directory
-        vm.exec("rm -rf /var/uploads && cp -r /fixtures/uploads /var/")
+        # vm.exec("rm -rf /var/uploads && cp -r /fixtures/uploads /var/")
+
+        # Navigate to start URL
+        self.tool.reset()
+        obs = self.tool.get_observation()
+        return obs, {"vm_address": vm_address}
 ```
 
 ### Medium Reset (10-30 seconds) - When Services Corrupted
@@ -248,13 +260,21 @@ class WebArenaTaskLogic:
 Restart services without VM recreation:
 
 ```python
-def setup(self, vm: VM):
+def setup(self) -> Tuple[Observation, Dict]:
+    """Medium reset via service restart."""
+    # Get VM from runtime_context (if VM object is stored there)
+    # vm = self.runtime_context.get("vm")
+
     # If using Docker Compose on VM
-    vm.exec("docker-compose restart")
+    # vm.exec("docker-compose restart")
 
     # Or systemd services
-    vm.restart_service("postgresql")
-    vm.restart_service("nginx")
+    # vm.restart_service("postgresql")
+    # vm.restart_service("nginx")
+
+    self.tool.reset()
+    obs = self.tool.get_observation()
+    return obs, {}
 ```
 
 ### Slow Reset (Never for Per-Task)
@@ -326,27 +346,21 @@ class SharedInfrastructure:
 
 class WebArenaBenchmark(Benchmark):
     def __init__(self):
-        self.metadata = BenchmarkMetadata(
-            name="WebArena",
-            version="1.0",
-            description="Web navigation benchmark"
+        super().__init__(
+            metadata=BenchmarkMetadata(
+                name="WebArena",
+                version="1.0",
+                description="Web navigation benchmark"
+            )
         )
         vm_config = VMConfig(snapshot_id="webarena-shopping", provider="aws")
         self.infrastructure = SharedInfrastructure([vm_config])
 
-    def setup(self) -> RuntimeContext:
+    def _setup(self) -> None:
         self.infrastructure.start()
         base_url = self.infrastructure.vms[0].get_url(80)
-        return {"vm_address": base_url}
-
-    def get_runtime_context(self) -> RuntimeContext:
-        if not self.infrastructure.vms:
-            raise RuntimeError("Benchmark not set up yet")
-        return {"vm_address": self.infrastructure.vms[0].get_url(80)}
-
-    def load_tasks(self, cache: bool = True) -> List[TaskConfig]:
-        # Implementation to load tasks
-        pass
+        self.runtime_context = {"vm_address": base_url}
+        # Must also set task_list and _task_config_class here (not shown)
 
     def close(self):
         self.infrastructure.stop()
