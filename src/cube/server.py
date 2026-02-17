@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from cube.benchmark import Benchmark, BenchmarkMetadata
 from cube.containers import ContainerBackend
 from cube.core import Action, ActionSchema, EnvironmentOutput, Observation, StepError
-from cube.task import Task, TaskConfig
+from cube.task import Task, TaskMetadata
 
 # Type alias for server return value: (app, process, url)
 ServerInfo = Tuple[FastAPI, multiprocessing.Process, str]
@@ -38,8 +38,21 @@ def make_benchmark_fastapi_app(benchmark: Benchmark) -> FastAPI:
         return benchmark.metadata
 
     @app.get("/cube/tasks")
-    def cube_tasks(task_id: str | None = None, offset: int = 0, limit: int = -1) -> list[TaskConfig]:
-        return benchmark.get_task_configs(task_id=task_id, offset=offset, limit=limit)
+    def cube_tasks(task_id: str | None = None, offset: int = 0, limit: int = -1) -> list[TaskMetadata]:
+        """Get task metadata with optional filtering."""
+        tasks = benchmark.task_list
+
+        # Apply filtering by task_id
+        if task_id:
+            tasks = [tm for tm in tasks if tm.id == task_id]
+
+        # Apply offset and limit
+        if limit == -1:
+            tasks = tasks[offset:]
+        else:
+            tasks = tasks[offset : offset + limit]
+
+        return tasks
 
     @app.post("/cube/spawn")
     def cube_spawn(task_id: str, container_backend: ContainerBackend | None = None) -> str:

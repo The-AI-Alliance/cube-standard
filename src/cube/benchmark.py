@@ -1,3 +1,4 @@
+import fnmatch
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable
@@ -68,18 +69,22 @@ class Benchmark(TypedBaseModel, ABC):
     _seed_generator: Callable[[], int] | None = PrivateAttr(
         default=None
     )  # optional seed generator for tasks that require random seeds
+    _task_config_class: type[TaskConfig] | None = PrivateAttr(
+        default=None
+    )  # TaskConfig class to instantiate for this benchmark's tasks
 
     @property
     def name(self) -> str:
         return self.metadata.name
 
     @abstractmethod
-    def setup(self) -> None:
+    def _setup(self) -> None:
         """
         Setup the benchmark and prepare it for spawning tasks.
         This is supposed to be implemented by Benchmark *creators*.
         It **must** (required):
         - define the list of task metadata (self.task_list)
+        - define the TaskConfig class to use (self._task_config_class)
         It should (optional):
         - create any shared infrastructure needed for the tasks and store references in self.runtime_context
         - decide on a default tool config (self._default_tool_config)
@@ -87,65 +92,101 @@ class Benchmark(TypedBaseModel, ABC):
         """
         pass
 
-    @abstractmethod
-    def _make_task_config(self, task_id, seed: int | None = None, tool_config: ToolConfig | None = None) -> TaskConfig:
-        """Concrete subclass creates its specific TaskConfig type"""
-        pass
+    def setup(self) -> None:
+        """
+        Public method to setup the benchmark. Calls the internal _setup() implemented by the concrete subclass.
+        """
+        self._setup()
+        if not self.task_list:
+            raise RuntimeError(
+                "Benchmark setup did not define any tasks. Please ensure that self.task_list is populated."
+            )
+        if self._task_config_class is None:
+            raise RuntimeError(
+                "Benchmark setup did not define a task config class. Please ensure that self._task_config_class is set."
+            )
 
     def create_task_config(
-        self, task_id: str, seed: int | None = None, tool_config: ToolConfig | None = None
+        self, task_id: str, tool_config: ToolConfig | None = None, seed: int | None = None
     ) -> TaskConfig:
         """
         Create a TaskConfig for the specified task_id, using the provided seed and tool_config if given,
         otherwise falling back to defaults defined in the benchmark.
-
-        This is a helper method that calls the abstract _make_task_config() implemented by the concrete subclass.
         """
-        # Verify that only task with this ID exists
-        metadata = self.get_task_metadata(task_id=task_id)
-        assert len(metadata) == 1, f"Expected exactly one task with id {task_id}, but found {len(metadata)}"
-
         # Use provided params or defaults from setup()
         actual_seed = (
             seed if seed is not None else (self._seed_generator() if self._seed_generator is not None else None)
         )
         actual_tool_config = tool_config or self._default_tool_config
+        assert actual_tool_config is not None, (
+            "No tool config provided and no default tool config defined in benchmark setup."
+        )
+        assert self._task_config_class is not None, "No task config class defined in benchmark setup."
 
-        # Create TaskConfig (calls concrete subclass implementation)
-        return self._make_task_config(task_id=task_id, seed=actual_seed, tool_config=actual_tool_config)
-
-    def get_task_metadata(
-        self, task_id: list[str] | str | None = None, offset: int = 0, limit: int = -1
-    ) -> list[TaskMetadata]:
-        """
-        Util function to get specific task metadata with optional filtering, offset, and limit.
-        """
-        if len(self.task_list) == 0:
-            raise RuntimeError("Benchmark not set up yet. Call setup() to initialize task metadata.")
-
-        # Apply filtering
-        if task_id:
-            if isinstance(task_id, str):
-                task_id = [task_id]
-            tms = [tm for tm in self.task_list if tm.id in task_id]
-        else:
-            tms = self.task_list
-
-        # Apply offset and limit
-        if limit == -1:
-            tms = tms[offset:]
-        else:
-            tms = tms[offset : offset + limit]
-
-        return tms
+        # Directly instantiate the TaskConfig class
+        return self._task_config_class(
+            task_id=task_id,
+            tool_config=actual_tool_config,
+            seed=actual_seed,
+        )
 
     def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "Benchmark":
         """
         Create a new Benchmark instance containing only the tasks whose glob_key matches the glob_pattern.
         This is useful for creating smaller benchmarks from a larger one, for example for testing or ablations.
         """
-        # TODO
-        return self
+        task_subset = [
+            tm
+            for tm in self.task_list
+            if hasattr(tm, glob_key) and fnmatch.fnmatch(getattr(tm, glob_key), glob_pattern)
+        ]
+        if not task_subset:
+            raise ValueError(f"No tasks found matching glob pattern '{glob_pattern}' on key '{glob_key}'")
+        return self.subset_from_list(tasks=task_subset, benchmark_name_suffix=f"[{glob_key}={glob_pattern}]")
+
+    def subset_from_list(
+        self, tasks: list[str] | list[TaskMetadata], benchmark_name_suffix: str = "custom"
+    ) -> "Benchmark":
+        """Create a new Benchmark instance containing only the tasks whose IDs are in the provided list.
+
+        Args:
+            tasks: List of task IDs or TaskMetadata objects to include in the sub-benchmark.
+            benchmark_name_suffix: Optional suffix to append to the benchmark name. Defaults to "custom".
+
+        Returns:
+            Benchmark: A new benchmark instance containing only the specified tasks.
+
+        Raises:
+            ValueError: If the resulting task list is empty or if any specified task doesn't exist.
+        """
+        existing_task_ids = {tm.id for tm in self.task_list}
+        if isinstance(tasks, list) and len(tasks) > 0 and isinstance(tasks[0], str):
+            task_ids = set(tasks)
+            task_subset = [tm for tm in self.task_list if tm.id in task_ids]
+            invalid_tasks = task_ids - existing_task_ids
+        elif isinstance(tasks, list) and len(tasks) > 0 and isinstance(tasks[0], TaskMetadata):
+            task_subset: list[TaskMetadata] = tasks  # type: ignore
+            invalid_tasks = {tm.id for tm in tasks} - existing_task_ids  # type: ignore
+        else:
+            raise ValueError("Tasks must be a non-empty list of either task IDs (str) or TaskMetadata objects.")
+        if invalid_tasks:
+            raise ValueError(f"The following specified tasks do not exist in the benchmark: {invalid_tasks}")
+        if not task_subset:
+            raise ValueError("The resulting task list cannot be empty.")
+
+        new_metadata = BenchmarkMetadata(**self.metadata.model_dump())
+        new_metadata.name = f"{self.metadata.name}_{benchmark_name_suffix}"
+        new_metadata.num_tasks = len(task_subset)
+        new_instance = type(self)(
+            metadata=new_metadata,
+            task_list=task_subset,
+            runtime_context=self.runtime_context,
+        )
+        # Copy private attributes
+        new_instance._default_tool_config = self._default_tool_config
+        new_instance._seed_generator = self._seed_generator
+        new_instance._task_config_class = self._task_config_class
+        return new_instance
 
     def spawn(self, task_id: str, container_backend: ContainerBackend | None = None) -> str:
         """
@@ -153,7 +194,11 @@ class Benchmark(TypedBaseModel, ABC):
         """
         from cube.server import make_task_rpc_server
 
-        tm = self.get_task_metadata(task_id=task_id)[0]
+        # Find the task metadata
+        tm = next((tm for tm in self.task_list if tm.id == task_id), None)
+        if tm is None:
+            raise ValueError(f"Task '{task_id}' not found in benchmark")
+
         tc = self.create_task_config(task_id)
         task = tc.make(
             metadata=tm,

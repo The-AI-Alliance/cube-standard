@@ -51,9 +51,13 @@ class MinimalTaskConfig(TaskConfig):
 
     task_id: str
     tool_config: ToolConfig
+    seed: int | None = None
 
     def make(
-        self, runtime_context: RuntimeContext | None = None, container_backend: ContainerBackend | None = None
+        self,
+        metadata: TaskMetadata,
+        runtime_context: RuntimeContext | None = None,
+        container_backend: ContainerBackend | None = None,
     ) -> Task:
         """Create minimal task."""
         tool = self.tool_config.make()
@@ -76,21 +80,19 @@ class MinimalBenchmark(Benchmark):
             ),
         )
 
-    def setup(self) -> RuntimeContext:
+    def _setup(self) -> None:
         """Minimal setup."""
-        self._runtime_context = {}
-        return self._runtime_context
-
-    def load_tasks(self, cache: bool = True):
-        """Return a list of minimal tasks."""
-        if len(self._task_list) > 0 and cache:
-            return self._task_list
-
-        self._task_list = [
-            MinimalTaskConfig(task_id="task-1", tool_config=MinimalToolConfig()),
-            MinimalTaskConfig(task_id="task-2", tool_config=MinimalToolConfig()),
+        # Define task metadata
+        self.task_list = [
+            TaskMetadata(id="task-1", abstract_description="Test task 1"),
+            TaskMetadata(id="task-2", abstract_description="Test task 2"),
         ]
-        return self._task_list
+
+        # Set TaskConfig class
+        self._task_config_class = MinimalTaskConfig
+
+        # Set default tool config
+        self._default_tool_config = MinimalToolConfig()
 
     def close(self):
         """Minimal close."""
@@ -127,8 +129,8 @@ def test_create_server_app():
         assert response.status_code == 200
         tasks = response.json()
         assert len(tasks) == 2
-        assert tasks[0]["task_id"] == "task-1"
-        assert tasks[1]["task_id"] == "task-2"
+        assert tasks[0]["id"] == "task-1"
+        assert tasks[1]["id"] == "task-2"
         print(f"✓ /cube/tasks returned {len(tasks)} tasks")
 
         # Note: Testing /cube/spawn (which creates task RPC servers) is out of scope for this test
