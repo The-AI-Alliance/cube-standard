@@ -290,8 +290,74 @@ On benchmark submission:
 
 ---
 
-## Open Questions
 
-* **Performance thresholds:** MVP reports metrics without hard gates. Which should become blockers for registry acceptance before final?
-* **Self-hosted runner spec:** Need recommended spec for Docker-in-Docker and high-memory benchmarks.
-* **Versioning:** How to handle baseline migrations as CUBE evolves?
+## Appendix: Terminal Dashboard (MVP+)
+
+The stress test includes a live terminal dashboard using the `rich` library for real-time visualization during test execution.
+
+### Usage
+
+```python
+import my_cube
+from cube.testing import run_stress_test
+
+# With live dashboard
+report = run_stress_test(my_cube, live_dashboard=True)
+```
+
+```bash
+# CLI (final phase)
+cube stress-test my_cube --live
+```
+
+### Visual Layout
+
+```
+┌─ CUBE Stress Test ────────────────────────────────────────────┐
+│ Benchmark: swe-bench-lite                    Status: Running   │
+│ Workers: 4/4 active                         Progress: 67/100   │
+├───────────────────────────────────────────────────────────────┤
+│ COMPLIANCE                                                     │
+│ ✓ debug_tasks_exist        ✓ full_episode                     │
+│ ✓ debug_agent_exists       ✓ reset_reproducibility            │
+│ ✓ tools_list               ✓ close_idempotent                 │
+│ ✓ benchmark_metadata                                           │
+├───────────────────────────────────────────────────────────────┤
+│ LATENCY (seconds)                                              │
+│ p50 │████████░░░░░░░░░░░░░░░░░░░░░░│ 0.042s                  │
+│ p95 │████████████████░░░░░░░░░░░░░░│ 0.089s                  │
+│ p99 │████████████████████░░░░░░░░░░│ 0.134s                  │
+├───────────────────────────────────────────────────────────────┤
+│ THROUGHPUT (tasks/min)                                         │
+│ Workers │ Actual │ Linear │ Efficiency                         │
+│    1    │  12.4  │  12.4  │ █████████████████████████ 100%    │
+│    2    │  23.1  │  24.8  │ ███████████████████████░░  93%    │
+│    4    │  41.8  │  49.6  │ █████████████████████░░░░  84%    │
+├───────────────────────────────────────────────────────────────┤
+│ PROFILING BREAKDOWN                                            │
+│ container_exec  ██████████████████░░░░░░░░  0.0224s (59%)    │
+│ tool_render     ████░░░░░░░░░░░░░░░░░░░░░░  0.0038s (10%)    │
+│ other           ████████░░░░░░░░░░░░░░░░░░  0.0118s (31%)    │
+└───────────────────────────────────────────────────────────────┘
+```
+
+### Features
+
+- **Live updates:** Refreshes as tests complete (compliance → performance → scalability)
+- **Progress tracking:** Shows current test phase and completion percentage
+- **Color coding:**
+  - Green: Tests passed
+  - Red: Tests failed
+  - Yellow: In progress
+- **Bars scale dynamically** based on actual values
+- **Works in terminal recordings** (asciinema) for documentation
+
+### Implementation Notes
+
+Uses `rich.live.Live` for updating display and `rich.progress.Progress` for bars. Falls back to JSON output if terminal doesn't support rich rendering (CI environments).
+
+### Demo Value
+
+- **Live presentations:** Run side-by-side for fast vs heavy benchmarks
+- **GitHub README:** Embed asciinema recording showing test execution
+- **Documentation:** Screenshot for quick-start guides
