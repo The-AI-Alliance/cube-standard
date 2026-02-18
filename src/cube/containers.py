@@ -14,7 +14,7 @@ class Container(ABC, TypedBaseModel):
 class ContainerConfig(ABC, TypedBaseModel):
     """
     WHAT to run. Owned by CUBE benchmark/task. Serializable (json)
-    Part of TaskConfig - retrieved via task_id
+    Part of TaskConfig
     """
 
     image: str
@@ -22,11 +22,6 @@ class ContainerConfig(ABC, TypedBaseModel):
     cpu_cores: float
     gpu: bool = False
     ports: List[int] | None = None
-
-    @staticmethod
-    @abstractmethod
-    def from_task_id(task_id: str) -> "ContainerConfig":
-        pass
 
 
 class ContainerBackend(ABC, TypedBaseModel):

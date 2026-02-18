@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Tuple
 
 from pydantic import Field
 
-from cube.containers import Container, ContainerBackend
+from cube.containers import Container, ContainerBackend, ContainerConfig
 from cube.core import Action, ActionSchema, EnvironmentOutput, Observation, StepError, TypedBaseModel
 from cube.tool import AbstractTool, ToolConfig
 
@@ -53,6 +53,10 @@ class TaskMetadata(TypedBaseModel):
     recommended_max_steps: int | None = Field(
         default=None,
         description="Recommended maximum number of steps to help harness prevent infinite running agents. Not a hard limit, the task can still run longer if needed.",
+    )
+    container_config: ContainerConfig | None = Field(
+        default=None,
+        description="Optional container configuration for this task (defaults to None, meaning no container needed).",
     )
     extra_info: dict[str, Any] = Field(
         default_factory=dict, description="Additional task metadata, eg: difficulty level, domain, etc."
@@ -242,49 +246,32 @@ class TaskConfig(ABC, TypedBaseModel):
     Serializable task configuration (Pydantic BaseModel).
 
     Must be JSON-serializable to pass to workers.
-    Contains references and configs, but NOT task logic/metadata.
-    Task logic (intent, eval functions) is retrieved via task_id.
+    Holds the minimal data needed to instantiate a Task: task_id, seed, and tool_config.
+    TaskMetadata is retrieved via task_id.
     """
 
     task_id: str
     seed: int | None = None
-    tool_config: ToolConfig
+    tool_config: ToolConfig | None = None
 
     @abstractmethod
     def make(
         self,
-        metadata: TaskMetadata,
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> Task:
         """
-        Instantiate task from config.
+        Instantiate a Task from this config.
 
-        Called on worker after deserialization.
+        Called on a worker after deserialization.
 
-        Steps:
-        1. Create tools (if tool_config provided)
-        2. Start container (if container_backend provided)
-        3. Create Task with logic and tools
-
-        Returns: Ready-to-use Task instance
-
-        Note: For RPC, spawn = task_config.make() + make_task_rpc_server()
-        RPC support can be added later without changing this API.
+        Args:
+            runtime_context: Shared infrastructure references created by Benchmark._setup()
+                             (e.g. server URLs, database connections). Passed from Benchmark.spawn().
+            container_backend: HOW to run containers (local, Modal, ...) created by user and passed to benchmark constructor, then passed from Benchmark.spawn().
 
         Example:
-        >>> # Create the tool from config
-        >>> tool = self.tool_config.make()
-        >>>
-        >>> # Launch container if backend provided
-        >>> if container_backend:
-        >>>     container_config = ContainerConfig.from_task_id(self.task_id)
-        >>>     container = container_backend.launch(container_config)
-        >>> else:
-        >>>     container = None
-        >>>
-        >>> # Instantiate concrete Task subclass (not abstract Task class)
-        >>> task = MyTask(metadata, tool, runtime_context, container)  # Replace with actual Task subclass
-        >>> return task
+        >>> task_metadata = MyBenchmark.task_metadata_dict[self.task_id]
+        >>> return MyTask(task_metadata, self.tool_config, runtime_context, container_backend)
         """
         pass

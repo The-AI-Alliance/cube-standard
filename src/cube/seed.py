@@ -1,12 +1,12 @@
 import hashlib
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 
 import numpy as np
 
 from cube.task import TaskMetadata
 
 
-class AbstractSeedGenerator:
+class AbstractSeedGenerator(ABC):
     @abstractmethod
     def __call__(self, task_metadata: TaskMetadata) -> list[int]:
         """Given task metadata, return a list of seeds to use for that task."""

@@ -1,12 +1,13 @@
 import fnmatch
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable, ClassVar
+from typing import Any, ClassVar, Generator
 
-from pydantic import Field, PrivateAttr
+from pydantic import ConfigDict, Field, PrivateAttr
 
 from cube.containers import ContainerBackend
 from cube.core import TypedBaseModel
+from cube.seed import AbstractSeedGenerator
 from cube.task import TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
 
@@ -27,7 +28,7 @@ class BenchmarkMetadata(TypedBaseModel):
     Metadata describing a benchmark.
 
     Used by:
-    - Benchmark: metadata attribute
+    - Benchmark: benchmark_metadata attribute
     - API endpoint: cube/info
 
     Attributes:
@@ -59,30 +60,49 @@ class BenchmarkMetadata(TypedBaseModel):
 class Benchmark(TypedBaseModel, ABC):
     """Represents a benchmark consisting of multiple tasks."""
 
-    metadata: BenchmarkMetadata
-
-    # Class-level attributes that must be defined by subclasses
+    # Class-level attributes that must be defined by subclasses (not constructor params)
+    benchmark_metadata: ClassVar[BenchmarkMetadata]
     task_metadata_dict: ClassVar[dict[str, TaskMetadata]]
     task_config_class: ClassVar[type[TaskConfig]]
 
-    # these optional fields should be set during setup()
-    runtime_context: RuntimeContext = Field(default_factory=dict)  # track shared runtime resources created in setup()
-    _default_tool_config: ToolConfig | None = PrivateAttr(
+    # this optional fields should be set during _setup() by the Benchmark **creator** (not constructor params).
+    _runtime_context: RuntimeContext = PrivateAttr(
+        default_factory=dict
+    )  # track shared runtime resources created in setup()
+
+    # these optional fields should be set by benchmark *users* (constructor params).
+    container_backend: ContainerBackend | None = Field(
+        default=None
+    )  # optional container backend to be used for all tasks in this benchmark
+    default_tool_config: ToolConfig | None = Field(
         default=None
     )  # default tool config to be used for tasks that don't specify their own
-    _seed_generator: Callable[[], int] | None = PrivateAttr(
+    seed_generator: AbstractSeedGenerator | None = Field(
         default=None
     )  # optional seed generator for tasks that require random seeds
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)  # allow non-serializable fields like AbstractSeedGenerator
+
     @property
     def name(self) -> str:
-        return self.metadata.name
+        return self.benchmark_metadata.name
 
     def __init_subclass__(cls, **kwargs):
         """Ensure concrete subclasses define required class attributes."""
         super().__init_subclass__(**kwargs)
         # Only enforce for concrete classes (not abstract intermediate classes)
         if not getattr(cls, "__abstractmethods__", None):
+            # Check benchmark_metadata is defined as a class variable
+            if "benchmark_metadata" not in cls.__dict__:
+                raise TypeError(
+                    f"Concrete benchmark class {cls.__name__} must define 'benchmark_metadata' as a class attribute"
+                )
+            meta = cls.__dict__["benchmark_metadata"]
+            if not isinstance(meta, BenchmarkMetadata):
+                raise TypeError(
+                    f"'benchmark_metadata' in {cls.__name__} must be a BenchmarkMetadata instance, not {type(meta).__name__}"
+                )
+
             # Check task_metadata_dict is defined as a static class variable (not a property or descriptor)
             if "task_metadata_dict" not in cls.__dict__:
                 raise TypeError(
@@ -110,10 +130,7 @@ class Benchmark(TypedBaseModel, ABC):
         """
         Setup the benchmark and prepare it for spawning tasks.
         This is supposed to be implemented by Benchmark *creators*.
-        It should (optional):
-        - create any shared infrastructure needed for the tasks and store references in self.runtime_context
-        - decide on a default tool config (self._default_tool_config)
-        - define a seed generator if needed (self._seed_generator)
+        It should (optionaly) create any shared infrastructure needed for the tasks and store references in self._runtime_context (default to {})
         """
         pass
 
@@ -122,41 +139,25 @@ class Benchmark(TypedBaseModel, ABC):
         Public method to setup the benchmark. Calls the internal _setup() implemented by the concrete subclass.
         """
         self._setup()
-        if not self.runtime_context:
+        if not self._runtime_context:
             logger.warning(
-                "Benchmark setup did not define any runtime context. If your tasks require shared infrastructure, please ensure that self.runtime_context is populated."
+                "Benchmark setup did not define any runtime context. If your tasks require shared infrastructure, please ensure that self._runtime_context is populated."
             )
-        if self._default_tool_config is None:
-            logger.warning(
-                "Benchmark setup did not define a default tool config. You will need to provide a tool config for all calls to create_task_config()."
-            )
-        if self._seed_generator is None:
-            logger.warning(
-                "Benchmark setup did not define a seed generator. If your tasks require a random seed, you will need to provide a seed for all calls to create_task_config()."
-            )
+        if self.container_backend is None:
+            logger.warning("Benchmark initialization did not define a container backend.")
+        if self.default_tool_config is None:
+            logger.warning("Benchmark initialization did not define a default tool config.")
+        if self.seed_generator is None:
+            logger.warning("Benchmark initialization did not define a seed generator.")
 
-    def create_task_config(
-        self, task_id: str, tool_config: ToolConfig | None = None, seed: int | None = None
-    ) -> TaskConfig:
-        """
-        Create a TaskConfig for the specified task_id, using the provided seed and tool_config if given,
-        otherwise falling back to defaults defined in the benchmark.
-        """
-        # Use provided params or defaults from setup()
-        actual_seed = (
-            seed if seed is not None else (self._seed_generator() if self._seed_generator is not None else None)
-        )
-        actual_tool_config = tool_config or self._default_tool_config
-        assert actual_tool_config is not None, (
-            "No tool config provided and no default tool config defined in benchmark setup."
-        )
-
-        # Directly instantiate the TaskConfig class
-        return self.task_config_class(
-            task_id=task_id,
-            tool_config=actual_tool_config,
-            seed=actual_seed,
-        )
+    def get_task_configs(self) -> Generator[TaskConfig]:
+        """Returns the list of TaskConfig objects for this benchmark."""
+        for tm in self.task_metadata_dict.values():
+            if self.seed_generator is not None:
+                for seed in self.seed_generator(tm):
+                    yield self.task_config_class(task_id=tm.id, tool_config=self.default_tool_config, seed=seed)
+            else:
+                yield self.task_config_class(task_id=tm.id, tool_config=self.default_tool_config, seed=None)
 
     def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "Benchmark":
         """
@@ -202,37 +203,49 @@ class Benchmark(TypedBaseModel, ABC):
         if not task_subset:
             raise ValueError("The resulting task list cannot be empty.")
 
-        # TODO: figure put how to copy / update class level static variables!
-        new_metadata = BenchmarkMetadata(**self.metadata.model_dump())
-        new_metadata.name = f"{self.metadata.name}_{benchmark_name_suffix}"
+        # Create the new Metadata for the sub-benchmark, copying all fields from the original except for name and num_tasks
+        new_metadata = BenchmarkMetadata(**self.benchmark_metadata.model_dump())
+        new_metadata.name = f"{self.benchmark_metadata.name}_{benchmark_name_suffix}"
         new_metadata.num_tasks = len(task_subset)
-        new_instance = type(self)(
-            metadata=new_metadata,
-            runtime_context=self.runtime_context,
+
+        # Create a new Benchmark instance.
+        # Note: `benchmark_metadata`, `task_metadata_dict` and `task_config_class` are class variables so we cannot pass them in the constructor.
+        # Instead, we create a dynamic temporary subclass overriding all three.
+        tmp_class = type(
+            f"{self.__class__.__name__}_{benchmark_name_suffix}",
+            (self.__class__,),
+            {
+                "benchmark_metadata": new_metadata,
+                "task_metadata_dict": {tm.id: tm for tm in task_subset},
+                "task_config_class": self.task_config_class,
+            },
         )
-        # Copy private attributes
-        new_instance._default_tool_config = self._default_tool_config
-        new_instance._seed_generator = self._seed_generator
-        # Note: task_config_class is defined as a property in the concrete benchmark subclass, so we don't need to copy it here
+        # and then instantiate this new temporary subclass.
+        new_instance = tmp_class(
+            default_tool_config=self.default_tool_config,
+            container_backend=self.container_backend,
+            seed_generator=self.seed_generator,
+        )
+        # Copy over private attributes
+        new_instance._runtime_context = self._runtime_context
         return new_instance
 
-    def spawn(self, task_id: str, seed: int | None = None, container_backend: ContainerBackend | None = None) -> str:
+    def spawn(self, task_config: TaskConfig) -> str:
         """
-        Spawn a new RPC server for the specified task on the specified container backend and return its endpoint URL.
+        Spawn a new RPC server for the specified task and return its endpoint URL.
+
+        Args:
+            task_config: A TaskConfig produced by get_task_configs().
         """
         from cube.server import make_task_rpc_server
 
-        # Find the task metadata
-        tm = self.task_metadata_dict.get(task_id)
-        if tm is None:
-            raise ValueError(f"Task '{task_id}' not found in benchmark")
+        if task_config.task_id not in self.task_metadata_dict:
+            raise ValueError(f"Task '{task_config.task_id}' not found in benchmark")
 
-        tc = self.create_task_config(task_id, seed=seed)
-        task = tc.make(
-            metadata=tm,
-            runtime_context=self.runtime_context,
-            container_backend=container_backend,
-        )  # type: ignore
+        task = task_config.make(
+            runtime_context=self._runtime_context,
+            container_backend=self.container_backend,
+        )
         _app, _process, url = make_task_rpc_server(task)
         return url
 
