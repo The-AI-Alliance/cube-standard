@@ -27,19 +27,13 @@ The Container API provides a unified abstraction for launching and communicating
 class ContainerConfig(ABC, TypedBaseModel):
     """
     What to run. Owned by CUBE benchmark/task.
-    Part of task metadata - retrieved via task_id.
+    Part of TaskMetadata - stored in TaskMetadata.container_config.
     """
     image: str
     ram_gb: float
     cpu_cores: float
     gpu: bool = False
     ports: List[int] | None = None
-
-    @abstractmethod
-    @staticmethod
-    def from_task_id(task_id: str) -> "ContainerConfig":
-        """Load container config from task metadata."""
-        pass
 ```
 
 ### ContainerBackend - How to Run It
@@ -138,20 +132,17 @@ backend = ToolkitContainerBackend(
     backend_config={"partition": "gpu", "account": "my-project", "time": "24:00:00"}
 )
 
-# 1. Benchmark provides task metadata and creates configs on demand
-benchmark = SWEBenchBenchmark()
+# 1. Benchmark provides task configs on demand
+benchmark = SWEBenchBenchmark(container_backend=backend)
 benchmark.setup()
-task_metadata_list = benchmark.task_list
 
 # 2. Ray worker evaluates task
 @ray.remote
-def evaluate_task(task_metadata, task_config, backend, runtime_context):
-    # Create task with running container
-    # container_backend.launch() is called inside task_config.make()
+def evaluate_task(task_config, runtime_context, container_backend):
+    # container_backend.launch() is called inside Task.model_post_init()
     task = task_config.make(
-        metadata=task_metadata,
         runtime_context=runtime_context,
-        container_backend=backend
+        container_backend=container_backend,
     )
     obs, info = task.setup()
     result = run_eval(task, obs)
@@ -159,11 +150,9 @@ def evaluate_task(task_metadata, task_config, backend, runtime_context):
     return result
 
 # 3. Execute in parallel - same backend, 1000 different configs
-runtime_context = benchmark.runtime_context
 futures = []
-for tm in task_metadata_list:
-    tc = benchmark.create_task_config(task_id=tm.id)
-    futures.append(evaluate_task.remote(tm, tc, backend, runtime_context))
+for task_config in benchmark.get_task_configs():
+    futures.append(evaluate_task.remote(task_config, benchmark._runtime_context, backend))
 results = ray.get(futures)
 ```
 
@@ -260,8 +249,8 @@ class TaskConfig(ABC, TypedBaseModel):
     """Serializable task configuration."""
 
     task_id: str  # Used to retrieve task metadata
-    tool_config: ToolConfig  # Tool configuration
-    # NO container_config field ❌ - retrieved separately via task_id
+    tool_config: ToolConfig | None = None  # Tool configuration (optional)
+    # NO container_config field ❌ - stored in TaskMetadata.container_config
 
     @abstractmethod
     def make(
@@ -272,10 +261,16 @@ class TaskConfig(ABC, TypedBaseModel):
         """
         Instantiate task from config.
 
-        Container is launched inside make() using container_backend if provided:
-        1. Load container config: ContainerConfig.from_task_id(self.task_id)
-        2. Launch container: container = container_backend.launch(container_config)
-        3. Assign to task: task.container = container
+        Container launch is handled automatically by Task.model_post_init() when
+        both container_backend and metadata.container_config are provided.
+        Typical implementation:
+        >>> task_metadata = MyBenchmark.task_metadata_dict[self.task_id]
+        >>> return MyTask(
+        ...     metadata=task_metadata,
+        ...     tool_config=self.tool_config,
+        ...     runtime_context=runtime_context,
+        ...     container_backend=container_backend,
+        ... )
         """
         pass
 ```
@@ -287,14 +282,14 @@ class TaskConfig(ABC, TypedBaseModel):
 
 **Typical flow:**
 1. User defines `ContainerBackend` in harness config (once for all benchmarks)
-2. Benchmark provides task_id in TaskConfig
+2. Benchmark stores `ContainerConfig` in `TaskMetadata.container_config`
 3. Ray worker calls `task_config.make(container_backend=backend)`
-4. Inside `make()`:
-   - Retrieve config: `container_config = ContainerConfig.from_task_id(task_id)`
-   - Launch container: `container = backend.launch(container_config)`
-   - Assign to task: `task.container = container`
-5. Container lives for the duration of the task
-6. Container is stopped in `task.close()` via `container.stop()`
+4. Inside `make()`, a `Task` is constructed with `container_backend` passed through
+5. Inside `Task.model_post_init()`:
+   - Reads config: `self.metadata.container_config`
+   - Launches container: `self._container = container_backend.launch(container_config)`
+6. Container lives for the duration of the task
+7. Container is stopped in `task.close()` via `container.stop()`
 
 For benchmarks using VMs instead of containers (e.g., WebArena), see [vm_wrapper.md](vm_wrapper.md).
 

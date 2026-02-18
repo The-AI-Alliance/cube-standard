@@ -13,16 +13,13 @@ Benchmark-level VM that persists across many tasks, with application-level reset
 
 ```python
 # Benchmark initialization (once)
-benchmark = WebArenaBenchmark(vm_config, tool_config)
+benchmark = WebArenaBenchmark(default_tool_config=tool_config)
 benchmark.setup()  # Blocks 5 min - creates VM
-
-# Get task metadata and create configs
-task_metadata_list = benchmark.task_list
 
 # Each task runs on Ray worker
 @ray.remote
-def evaluate_task(task_metadata, task_config, agent_config, runtime_context):
-    task = task_config.make(metadata=task_metadata, runtime_context=runtime_context)  # Fast: uses existing VM
+def evaluate_task(task_config, runtime_context, agent_config):
+    task = task_config.make(runtime_context=runtime_context)  # Fast: uses existing VM
     agent = agent_config.make()
     obs, info = task.setup()  # App-level reset (5-10 sec, not minutes)
     # ... agent loop ...
@@ -31,11 +28,9 @@ def evaluate_task(task_metadata, task_config, agent_config, runtime_context):
     return result
 
 # Parallel evaluation
-runtime_context = benchmark.runtime_context
 futures = []
-for tm in task_metadata_list:
-    tc = benchmark.create_task_config(task_id=tm.id)
-    futures.append(evaluate_task.remote(tm, tc, agent_config, runtime_context))
+for task_config in benchmark.get_task_configs():
+    futures.append(evaluate_task.remote(task_config, benchmark._runtime_context, agent_config))
 results = ray.get(futures)
 
 # Cleanup
@@ -345,22 +340,23 @@ class SharedInfrastructure:
 
 
 class WebArenaBenchmark(Benchmark):
-    def __init__(self):
-        super().__init__(
-            metadata=BenchmarkMetadata(
-                name="WebArena",
-                version="1.0",
-                description="Web navigation benchmark"
-            )
-        )
-        vm_config = VMConfig(snapshot_id="webarena-shopping", provider="aws")
-        self.infrastructure = SharedInfrastructure([vm_config])
+    # Required class-level attributes
+    benchmark_metadata = BenchmarkMetadata(
+        name="WebArena",
+        version="1.0",
+        description="Web navigation benchmark"
+    )
+    task_config_class = WebArenaTaskConfig
+    task_metadata_dict: ClassVar[dict[str, TaskMetadata]] = _load_webarena_tasks()
+
+    # Additional constructor param specific to this benchmark
+    vm_config: VMConfig = VMConfig(snapshot_id="webarena-shopping", provider="aws")
 
     def _setup(self) -> None:
+        self.infrastructure = SharedInfrastructure([self.vm_config])
         self.infrastructure.start()
         base_url = self.infrastructure.vms[0].get_url(80)
-        self.runtime_context = {"vm_address": base_url}
-        # Must also set task_list and _task_config_class here (not shown)
+        self._runtime_context = {"vm_address": base_url}
 
     def close(self):
         self.infrastructure.stop()
