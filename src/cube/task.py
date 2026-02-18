@@ -12,7 +12,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Tuple
 
-from pydantic import Field
+from pydantic import ConfigDict, Field, PrivateAttr
 
 from cube.containers import Container, ContainerBackend, ContainerConfig
 from cube.core import Action, ActionSchema, EnvironmentOutput, Observation, StepError, TypedBaseModel
@@ -63,7 +63,7 @@ class TaskMetadata(TypedBaseModel):
     )
 
 
-class Task(ABC):
+class Task(TypedBaseModel, ABC):
     """
     Represents a task that an agent must complete in an environment.
 
@@ -84,12 +84,74 @@ class Task(ABC):
         - close() -- optional method to cleanup resources
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    # Serializable fields
     metadata: TaskMetadata
-    tool: AbstractTool  # access to the environment tool, initialized in TaskConfig.make()
-    runtime_context: RuntimeContext | None = None
-    container: Container | None = None  # access to the environment container, initialized in setup()
-    validate_per_step: bool = False
-    accept_agent_stop: bool = True  # Optional, wether the task accepts the agent emitting STOP_ACTION
+    tool_config: ToolConfig | None = Field(
+        default=None,
+        description="Optional tool config to create the tool from (Pattern 1). If None, the subclass must set self._tool in model_post_init (Pattern 2).",
+    )
+    container_backend: ContainerBackend | None = Field(
+        default=None, description="Optional backend used to launch a container during model_post_init."
+    )
+    runtime_context: RuntimeContext | None = Field(
+        default=None, description="Optional shared infrastructure references from Benchmark._setup()."
+    )
+    validate_per_step: bool = Field(
+        default=False,
+        description="If True, evaluate() is called after every step instead of only when the task is done.",
+    )
+    accept_agent_stop: bool = Field(
+        default=True, description="Whether the task accepts the agent emitting STOP_ACTION."
+    )
+
+    # Non-serializable runtime state, set during model_post_init
+    _tool: AbstractTool | None = PrivateAttr(default=None)
+    _container: Container | None = PrivateAttr(default=None)
+
+    def model_post_init(self, __context: Any) -> None:
+        """
+        Called after Pydantic __init__.
+        Creates tool and container, then validates tool is set.
+
+        Two patterns are supported:
+
+        Pattern 1 — tool sourced from tool_config (swappable by benchmark user):
+            No override needed. Pass tool_config at construction and the base class
+            creates self._tool automatically.
+
+        Pattern 2 — tool hardcoded by the task implementation:
+            Override model_post_init, set self._tool before calling super(), then
+            super() validates it is set.
+            >>> def model_post_init(self, __context):
+            ...     self._tool = MyTool()
+            ...     super().model_post_init(__context)
+        """
+        # Pattern 1: create tool from tool_config if not already set by a subclass
+        if self._tool is None and self.tool_config is not None:
+            self._tool = self.tool_config.make()
+
+        # Launch container if a backend and container config are both available
+        if self.container_backend is not None and self.metadata.container_config is not None:
+            self._container = self.container_backend.launch(self.metadata.container_config)
+
+        # Enforce that tool is set (catches Pattern 2 violations at construction time)
+        if self._tool is None:
+            raise ValueError(
+                f"{self.__class__.__name__}.tool is not set. "
+                "Either provide a tool_config, or override model_post_init to set self._tool "
+                "before calling super().model_post_init(__context)."
+            )
+
+    @property
+    def tool(self) -> AbstractTool:
+        assert self._tool is not None
+        return self._tool
+
+    @property
+    def container(self) -> Container | None:
+        return self._container
 
     @property
     def id(self) -> str:
@@ -272,6 +334,11 @@ class TaskConfig(ABC, TypedBaseModel):
 
         Example:
         >>> task_metadata = MyBenchmark.task_metadata_dict[self.task_id]
-        >>> return MyTask(task_metadata, self.tool_config, runtime_context, container_backend)
+        >>> return MyTask(
+        ...     metadata=task_metadata,
+        ...     tool_config=self.tool_config,
+        ...     runtime_context=runtime_context,
+        ...     container_backend=container_backend,
+        ... )
         """
         pass
