@@ -6,7 +6,7 @@ This example demonstrates:
 3. High-level and low-level task/tool interaction patterns
 """
 
-from typing import Any, Dict, Tuple
+from typing import Any, ClassVar, Dict, Tuple
 
 from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
 from cube.containers import ContainerBackend
@@ -27,14 +27,12 @@ class ConfigurableCounterTool(Tool):
 
     def __init__(
         self,
-        target: int,
         increment_by: int = 1,
         enable_decrement: bool = False,
         enable_reset: bool = False,
     ):
         """Initialize counter tool with configurable features."""
         self.counter = 0
-        self.target = target
         self.history: list[str] = []
         self.increment_by = increment_by
         self.enable_decrement = enable_decrement
@@ -95,15 +93,13 @@ class ConfigurableCounterTool(Tool):
 class CounterToolConfig(ToolConfig):
     """Tool configuration for counter benchmark."""
 
-    target: int = 0
     increment_by: int = 1
     enable_decrement: bool = False
     enable_reset: bool = False
 
-    def make(self) -> Tool:
+    def make(self) -> ConfigurableCounterTool:
         """Create tool instance with configured features."""
         return ConfigurableCounterTool(
-            target=self.target,
             increment_by=self.increment_by,
             enable_decrement=self.enable_decrement,
             enable_reset=self.enable_reset,
@@ -112,19 +108,13 @@ class CounterToolConfig(ToolConfig):
 
 # Task Implementation
 class ReachTargetTask(Task):
-    """Task: Increment counter to reach target value."""
+    """Task: Increment counter to reach target value.
+    Tool is created from tool_config by the base Tool class model_post_init().
+    """
 
-    tool: ConfigurableCounterTool  # type: ignore[assignment]  # Narrowing the type from AbstractTool
-
-    def __init__(self, task_id: str, target: int):
-        """Initialize reach target task."""
-        self.metadata = TaskMetadata(
-            id=task_id,
-            abstract_description=f"Increment counter to reach value {target}",
-            recommended_max_steps=target + 2,
-            extra_info={"difficulty": "easy"},
-        )
-        self.target = target
+    @property
+    def target(self) -> int:
+        return self.metadata.extra_info["target"]
 
     def setup(self) -> Tuple[Observation, Dict[str, Any]]:
         """Set up the task."""
@@ -135,7 +125,7 @@ class ReachTargetTask(Task):
 
     def evaluate(self, obs: Observation) -> Tuple[float, Dict[str, Any]]:
         """Validate if counter reached target."""
-        # Access tool state
+        assert isinstance(self.tool, ConfigurableCounterTool)
         counter_value = self.tool.counter
         steps_taken = len(self.tool.history)
 
@@ -157,6 +147,7 @@ class ReachTargetTask(Task):
 
     def finished(self, obs: Observation) -> bool:
         """Check if task is complete."""
+        assert isinstance(self.tool, ConfigurableCounterTool)
         return self.tool.counter == self.target
 
 
@@ -164,72 +155,66 @@ class ReachTargetTask(Task):
 class CounterTaskConfig(TaskConfig):
     """Configuration for counter tasks."""
 
-    task_id: str
-    tool_config: ToolConfig
-    seed: int | None = None
-
     def make(
         self,
-        metadata: TaskMetadata,
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> ReachTargetTask:
-        """Create task instance from config."""
-        # Get target from metadata
-        target = metadata.extra_info.get("target", 0)
+        """Create task instance from config.
 
-        # Create tool
-        tool = self.tool_config.make()
-
-        # Create task
-        task = ReachTargetTask(task_id=self.task_id, target=target)
-        task.tool = tool  # type: ignore[assignment]  # We know this is a ConfigurableCounterTool
-        task.runtime_context = runtime_context
-
-        return task
+        Looks up task metadata from CounterBenchmark.task_metadata_dict by task_id.
+        Builds CounterToolConfig from extra_info["tool_config"] if present, otherwise uses defaults.
+        An explicit tool_config on this TaskConfig always takes precedence.
+        """
+        task_metadata = CounterBenchmark.task_metadata_dict[self.task_id]
+        tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
+        return ReachTargetTask(
+            metadata=task_metadata,
+            tool_config=tool_cfg,
+            runtime_context=runtime_context,
+            container_backend=container_backend,
+        )
 
 
 # Benchmark Implementation
 class CounterBenchmark(Benchmark):
     """Minimal benchmark with counter tasks."""
 
-    def __init__(self):
-        """Initialize counter benchmark."""
-        metadata = BenchmarkMetadata(
-            name="toy-counter",
-            version="1.0.0",
-            description="Simplest possible benchmark - count to target value",
-            num_tasks=2,
-            tags=["toy", "counter", "minimal"],
-        )
-        super().__init__(metadata=metadata)
+    benchmark_metadata: ClassVar[BenchmarkMetadata] = BenchmarkMetadata(
+        name="toy-counter",
+        version="1.0.0",
+        description="Simplest possible benchmark - count to target value",
+        num_tasks=3,
+        tags=["toy", "counter", "minimal"],
+    )
+    task_metadata_dict: ClassVar[dict[str, TaskMetadata]] = {
+        "count-to-3": TaskMetadata(
+            id="count-to-3",
+            abstract_description="Increment counter to reach value 3",
+            recommended_max_steps=5,
+            extra_info={"target": 3, "difficulty": "easy"},
+        ),
+        "count-to-3-with-decrement": TaskMetadata(
+            id="count-to-3-with-decrement",
+            abstract_description="Increment counter to reach value 3, with decrement available",
+            recommended_max_steps=7,
+            extra_info={"target": 3, "difficulty": "easy", "tool_config": {"enable_decrement": True}},
+        ),
+        "count-by-2": TaskMetadata(
+            id="count-by-2",
+            abstract_description="Counter with custom increment amount",
+            recommended_max_steps=4,
+            extra_info={"target": 4, "difficulty": "easy", "tool_config": {"increment_by": 2}},
+        ),
+    }
+    task_config_class: ClassVar[type[TaskConfig]] = CounterTaskConfig
 
     def _setup(self) -> None:
-        """Set up the benchmark."""
-        # Define task metadata
-        self.task_list = [
-            TaskMetadata(
-                id="count-to-3",
-                abstract_description="Increment counter to reach value 3",
-                recommended_max_steps=5,
-                extra_info={"target": 3, "difficulty": "easy"},
-            ),
-            TaskMetadata(
-                id="count-to-5",
-                abstract_description="Increment counter to reach value 5",
-                recommended_max_steps=7,
-                extra_info={"target": 5, "difficulty": "easy"},
-            ),
-        ]
-
-        # Set TaskConfig class
-        self._task_config_class = CounterTaskConfig
-
-        # No default tool config - tasks will provide their own
+        """No shared infrastructure needed for this simple benchmark."""
+        pass
 
     def close(self) -> None:
-        """Clean up benchmark resources."""
-        # No resources to clean up for this simple benchmark
+        """No resources to clean up for this simple benchmark."""
         pass
 
 
@@ -242,21 +227,14 @@ def test_counter_benchmark():
     benchmark = CounterBenchmark()
     benchmark.setup()
 
+    task_configs = {c.task_id: c for c in benchmark.get_task_configs()}
+
     # === Test 1: Single action execution via .step (with default config) ===
     print("\n" + "=" * 60)
     print("Test 1: Single action execution via .step")
     print("=" * 60)
 
-    task_metadata = TaskMetadata(
-        id="count-to-3",
-        abstract_description="Increment counter to reach value 3",
-        extra_info={"target": 3},
-    )
-    task_config = CounterTaskConfig(
-        task_id="count-to-3",
-        tool_config=CounterToolConfig(target=3),  # Default config
-    )
-    task1 = task_config.make(metadata=task_metadata)
+    task1 = task_configs["count-to-3"].make()
     obs, _ = task1.setup()
 
     print(f"Initial observation: {obs.contents[0].data}")
@@ -274,6 +252,7 @@ def test_counter_benchmark():
         env_output = task1.step(action)
         print(f"Step {step_num}: {env_output.obs.contents[0].data} (reward={env_output.reward})")
 
+    assert isinstance(task1.tool, ConfigurableCounterTool)
     assert task1.tool.counter == 3, f"Expected counter to be 3, got {task1.tool.counter}"
     assert env_output is not None and env_output.done, "Task should be done"
     print("✓ Single action execution works!")
@@ -283,7 +262,7 @@ def test_counter_benchmark():
     print("Test 2: Multiple action execution via .step")
     print("=" * 60)
 
-    task2 = task_config.make(metadata=task_metadata)
+    task2 = task_configs["count-to-3"].make()
     task2.setup()
 
     # Execute multiple actions at once
@@ -299,6 +278,7 @@ def test_counter_benchmark():
     for i, content in enumerate(env_output.obs.contents):
         print(f"  {i + 1}. {content.data}")
 
+    assert isinstance(task2.tool, ConfigurableCounterTool)
     assert task2.tool.counter == 2, f"Expected counter to be 2, got {task2.tool.counter}"
     print("✓ Multiple action execution works!")
 
@@ -307,13 +287,15 @@ def test_counter_benchmark():
     print("Test 3: Lower level API (.tool.execute_action)")
     print("=" * 60)
 
-    task3 = task_config.make(metadata=task_metadata)
+    task3 = task_configs["count-to-3"].make()
     task3.setup()
 
     # Lower level: directly call tool.execute_action()
     action = Action(name="increment", arguments={})
     result = task3.tool.execute_action(action)
     assert isinstance(result, Observation), "Expected Observation from tool action"
+    assert isinstance(task3.tool, ConfigurableCounterTool)
+    assert task3.tool.counter == 1, f"Expected counter to be 1, got {task3.tool.counter}"
     print(f"Direct tool execution: {result.contents[0].data}")
     print("Note: Bypasses task.step() and doesn't trigger evaluation")
     print("✓ Lower level API works!")
@@ -323,16 +305,7 @@ def test_counter_benchmark():
     print("Test 4: ToolConfig flexibility - enable decrement")
     print("=" * 60)
 
-    task_metadata_decr = TaskMetadata(
-        id="count-with-decr",
-        abstract_description="Counter with decrement enabled",
-        extra_info={"target": 2},
-    )
-    task_config_decr = CounterTaskConfig(
-        task_id="count-with-decr",
-        tool_config=CounterToolConfig(target=2, enable_decrement=True),
-    )
-    task4 = task_config_decr.make(metadata=task_metadata_decr)
+    task4 = task_configs["count-to-3-with-decrement"].make()
     task4.setup()
 
     # Verify decrement is now available
@@ -343,6 +316,7 @@ def test_counter_benchmark():
     # Test increment and decrement
     env_output = task4.step(Action(name="increment", arguments={}))
     print(f"Increment: {env_output.obs.contents[0].data}")
+    assert isinstance(task4.tool, ConfigurableCounterTool)
     assert task4.tool.counter == 1
 
     env_output = task4.step(Action(name="decrement", arguments={}))
@@ -355,21 +329,13 @@ def test_counter_benchmark():
     print("Test 5: ToolConfig flexibility - custom increment amount")
     print("=" * 60)
 
-    task_metadata_double = TaskMetadata(
-        id="count-by-2",
-        abstract_description="Counter with custom increment amount",
-        extra_info={"target": 4},
-    )
-    task_config_double = CounterTaskConfig(
-        task_id="count-by-2",
-        tool_config=CounterToolConfig(target=4, increment_by=2),
-    )
-    task5 = task_config_double.make(metadata=task_metadata_double)
+    task5 = task_configs["count-by-2"].make()
     task5.setup()
 
     # Test increment by 2
     env_output = task5.step(Action(name="increment", arguments={}))
     print(f"Increment: {env_output.obs.contents[0].data}")
+    assert isinstance(task5.tool, ConfigurableCounterTool)
     assert task5.tool.counter == 2, f"Expected counter to be 2, got {task5.tool.counter}"
 
     env_output = task5.step(Action(name="increment", arguments={}))

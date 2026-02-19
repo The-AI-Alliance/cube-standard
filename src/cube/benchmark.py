@@ -150,7 +150,7 @@ class Benchmark(TypedBaseModel, ABC):
         if self.seed_generator is None:
             logger.warning("Benchmark initialization did not define a seed generator.")
 
-    def get_task_configs(self) -> Generator[TaskConfig]:
+    def get_task_configs(self) -> Generator[TaskConfig, None, None]:
         """Returns the list of TaskConfig objects for this benchmark."""
         for tm in self.task_metadata_dict.values():
             if self.seed_generator is not None:
