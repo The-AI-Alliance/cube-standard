@@ -3,7 +3,7 @@ import traceback
 from typing import Any, Callable, Literal, Self
 
 import litellm
-from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+from pydantic import BaseModel, Field, model_serializer, model_validator
 
 
 class TypedBaseModel(BaseModel):
@@ -102,7 +102,6 @@ class Content(TypedBaseModel):
         data (str | bytes): The actual content data
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
     type: str = Field(default="text", description="Content type (text, image, etc.)")
     tool_call_id: str | None = None  # content could be result of a tool call
     name: str | None = None  # optional name of the content

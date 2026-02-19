@@ -62,7 +62,9 @@ class Benchmark(TypedBaseModel, ABC):
 
     # Class-level attributes that must be defined by subclasses (not constructor params)
     benchmark_metadata: ClassVar[BenchmarkMetadata]
-    task_metadata_dict: ClassVar[dict[str, TaskMetadata]]
+    task_metadata_dict: ClassVar[
+        dict[str, TaskMetadata]
+    ]  # TODO: figure out a way to dynamically load from file when we import the module
     task_config_class: ClassVar[type[TaskConfig]]
 
     # this optional fields should be set during _setup() by the Benchmark **creator** (not constructor params).
@@ -211,6 +213,7 @@ class Benchmark(TypedBaseModel, ABC):
         # Create a new Benchmark instance.
         # Note: `benchmark_metadata`, `task_metadata_dict` and `task_config_class` are class variables so we cannot pass them in the constructor.
         # Instead, we create a dynamic temporary subclass overriding all three.
+        # TODO: we would like to have the subclass being the same as the class soubclassing Benchmark
         tmp_class = type(
             f"{self.__class__.__name__}_{benchmark_name_suffix}",
             (self.__class__,),
