@@ -31,11 +31,6 @@ class MinimalToolConfig(ToolConfig):
 class MinimalTask(Task):
     """Minimal task implementation for testing."""
 
-    tool: MinimalTool  # type: ignore[assignment]
-
-    def __init__(self, task_id: str):
-        self.metadata = TaskMetadata(id=task_id)
-
     def setup(self):
         """Minimal setup."""
         self.tool.reset()
@@ -49,50 +44,38 @@ class MinimalTask(Task):
 class MinimalTaskConfig(TaskConfig):
     """Minimal task config for testing."""
 
-    task_id: str
-    tool_config: ToolConfig
-    seed: int | None = None
-
     def make(
         self,
-        metadata: TaskMetadata,
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> Task:
         """Create minimal task."""
-        tool = self.tool_config.make()
-        task = MinimalTask(task_id=self.task_id)
-        task.tool = tool  # type: ignore[assignment]
-        task.runtime_context = runtime_context
-        return task
+        return MinimalTask(
+            metadata=TaskMetadata(id=self.task_id),
+            tool_config=self.tool_config,
+            runtime_context=runtime_context,
+            container_backend=container_backend,
+        )
 
 
 class MinimalBenchmark(Benchmark):
     """Minimal benchmark implementation for testing."""
 
-    def __init__(self):
-        super().__init__(
-            metadata=BenchmarkMetadata(
-                name="TestBenchmark",
-                version="1.0.0",
-                description="A minimal test benchmark",
-                num_tasks=2,
-            ),
-        )
+    benchmark_metadata = BenchmarkMetadata(
+        name="TestBenchmark",
+        version="1.0.0",
+        description="A minimal test benchmark",
+        num_tasks=2,
+    )
+    task_metadata_dict = {
+        "task-1": TaskMetadata(id="task-1"),
+        "task-2": TaskMetadata(id="task-2"),
+    }
+    task_config_class = MinimalTaskConfig
 
     def _setup(self) -> None:
-        """Minimal setup."""
-        # Define task metadata
-        self.task_list = [
-            TaskMetadata(id="task-1", abstract_description="Test task 1"),
-            TaskMetadata(id="task-2", abstract_description="Test task 2"),
-        ]
-
-        # Set TaskConfig class
-        self._task_config_class = MinimalTaskConfig
-
-        # Set default tool config
-        self._default_tool_config = MinimalToolConfig()
+        """Minimal setup - no shared infrastructure needed."""
+        pass
 
     def close(self):
         """Minimal close."""
