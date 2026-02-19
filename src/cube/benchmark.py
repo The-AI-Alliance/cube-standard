@@ -1,7 +1,10 @@
 import copy
+import csv
 import fnmatch
+import json
 import logging
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, ClassVar, Generator
 
 from pydantic import ConfigDict, Field, PrivateAttr
@@ -63,9 +66,7 @@ class Benchmark(TypedBaseModel, ABC):
 
     # Class-level attributes that must be defined by subclasses (not constructor params)
     benchmark_metadata: ClassVar[BenchmarkMetadata]
-    task_metadata_dict: ClassVar[
-        dict[str, TaskMetadata]
-    ]  # TODO: figure out a way to dynamically load from file when we import the module
+    task_metadata_dict: ClassVar[dict[str, TaskMetadata]]
     task_config_class: ClassVar[type[TaskConfig]]
 
     # this optional fields should be set during _setup() by the Benchmark **creator** (not constructor params).
@@ -85,6 +86,119 @@ class Benchmark(TypedBaseModel, ABC):
     )  # optional seed generator for tasks that require random seeds
 
     model_config = ConfigDict(arbitrary_types_allowed=True)  # allow non-serializable fields like AbstractSeedGenerator
+
+    # ------------------------------------------------------------------
+    # File-loading helpers — call these at class definition time:
+    #
+    #   class MyBenchmark(Benchmark):
+    #       benchmark_metadata = Benchmark.benchmark_metadata_from_json("benchmark.json")
+    #       task_metadata_dict = Benchmark.task_metadata_from_csv("tasks.csv")
+    #       task_config_class  = MyTaskConfig
+    #
+    # Paths are resolved relative to the current working directory.
+    # Use `Path(__file__).parent / "file"` for paths relative to the module.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def benchmark_metadata_from_json(path: str | Path) -> "BenchmarkMetadata":
+        """Load :class:`BenchmarkMetadata` from a JSON file.
+
+        The JSON object keys must match the ``BenchmarkMetadata`` field names.
+        """
+        with open(path) as f:
+            data = json.load(f)
+        return BenchmarkMetadata(**data)
+
+    @staticmethod
+    def benchmark_metadata_from_csv(path: str | Path) -> "BenchmarkMetadata":
+        """Load :class:`BenchmarkMetadata` from a CSV file.
+
+        The file must have a header row followed by exactly one data row.
+        Complex fields must be stored as JSON strings:
+
+        * ``authors``      — JSON array,  e.g. ``["Alice","Bob"]``
+        * ``tags``         — JSON array,  e.g. ``["toy","counter"]``
+        * ``requirements`` — JSON object, e.g. ``{"gpu": false}``
+        * ``other``        — JSON object, e.g. ``{}``
+
+        ``num_tasks`` is parsed as an integer (omit the column to use the
+        default of ``0``).
+
+        Example CSV::
+
+            name,version,description,num_tasks,tags
+            toy-counter,1.0.0,My benchmark,3,"[""toy""]"
+        """
+        _JSON_FIELDS = ("authors", "tags", "requirements", "other")
+        with open(path, newline="") as f:
+            reader = csv.DictReader(f)
+            row = next(reader, None)
+            extra = next(reader, None)
+        if row is None:
+            raise ValueError(f"benchmark_metadata CSV '{path}' has no data rows")
+        if extra is not None:
+            raise ValueError(f"benchmark_metadata CSV '{path}' must have exactly one data row, found more")
+        data: dict[str, Any] = {k: v for k, v in row.items() if v != ""}
+        for field in _JSON_FIELDS:
+            if field in data:
+                data[field] = json.loads(data[field])
+        if "num_tasks" in data:
+            data["num_tasks"] = int(data["num_tasks"])
+        return BenchmarkMetadata(**data)
+
+    @staticmethod
+    def task_metadata_from_json(path: str | Path) -> "dict[str, TaskMetadata]":
+        """Load ``task_metadata_dict`` from a JSON file.
+
+        The file may contain either:
+
+        * a **list** of task-metadata objects, or
+        * a **dict** mapping task IDs to task-metadata objects.
+
+        In both cases the returned dict is keyed by ``TaskMetadata.id``.
+        Complex fields (``extra_info``, ``tags``, ``container_config``) are
+        parsed natively from JSON.
+        """
+        with open(path) as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict):
+            items = list(data.values())
+        else:
+            raise ValueError(f"task_metadata JSON must be a list or dict, got {type(data).__name__}")
+        tasks = [TaskMetadata(**item) for item in items]
+        return {t.id: t for t in tasks}
+
+    @staticmethod
+    def task_metadata_from_csv(path: str | Path) -> "dict[str, TaskMetadata]":
+        """Load ``task_metadata_dict`` from a CSV file.
+
+        Each row represents one task. The ``id`` column is required; all other
+        columns are optional and fall back to their :class:`TaskMetadata`
+        defaults when absent or empty.
+
+        Complex fields must be stored as JSON strings in the CSV:
+
+        * ``extra_info``       — JSON object, e.g. ``{"target": 3}``
+        * ``tags``             — JSON array,  e.g. ``["easy","counter"]``
+        * ``container_config`` — JSON object or ``null``
+
+        ``recommended_max_steps`` is parsed as an integer (or ``None`` if
+        the cell is empty).
+        """
+        _JSON_FIELDS = ("extra_info", "tags", "container_config")
+        tasks = []
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                data: dict[str, Any] = {k: v for k, v in row.items() if v != ""}
+                for field in _JSON_FIELDS:
+                    if field in data:
+                        data[field] = json.loads(data[field])
+                if "recommended_max_steps" in data:
+                    data["recommended_max_steps"] = int(data["recommended_max_steps"])
+                tasks.append(TaskMetadata(**data))
+        return {t.id: t for t in tasks}
 
     @property
     def name(self) -> str:
