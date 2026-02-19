@@ -116,8 +116,8 @@ class ReachTargetTask(Task):
     def target(self) -> int:
         return self.metadata.extra_info["target"]
 
-    def setup(self) -> Tuple[Observation, Dict[str, Any]]:
-        """Set up the task."""
+    def reset(self) -> Tuple[Observation, Dict[str, Any]]:
+        """Reset the task to its initial state."""
         # Reset tool to initial state
         self.tool.reset()
         obs = Observation.from_text(f"Counter starts at 0. Use 'increment' action to reach {self.target}.")
@@ -235,7 +235,7 @@ def test_counter_benchmark():
     print("=" * 60)
 
     task1 = task_configs["count-to-3"].make()
-    obs, _ = task1.setup()
+    obs, _ = task1.reset()
 
     print(f"Initial observation: {obs.contents[0].data}")
     print(f"Available actions: {[a.name for a in task1.action_set]}")
@@ -263,7 +263,7 @@ def test_counter_benchmark():
     print("=" * 60)
 
     task2 = task_configs["count-to-3"].make()
-    task2.setup()
+    task2.reset()
 
     # Execute multiple actions at once
     actions = [
@@ -288,7 +288,7 @@ def test_counter_benchmark():
     print("=" * 60)
 
     task3 = task_configs["count-to-3"].make()
-    task3.setup()
+    task3.reset()
 
     # Lower level: directly call tool.execute_action()
     action = Action(name="increment", arguments={})
@@ -306,7 +306,7 @@ def test_counter_benchmark():
     print("=" * 60)
 
     task4 = task_configs["count-to-3-with-decrement"].make()
-    task4.setup()
+    task4.reset()
 
     # Verify decrement is now available
     action_names = [a.name for a in task4.action_set]
@@ -330,7 +330,7 @@ def test_counter_benchmark():
     print("=" * 60)
 
     task5 = task_configs["count-by-2"].make()
-    task5.setup()
+    task5.reset()
 
     # Test increment by 2
     env_output = task5.step(Action(name="increment", arguments={}))

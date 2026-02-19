@@ -38,7 +38,7 @@ class TaskMetadata(TypedBaseModel):
     Attributes:
         id (str): Unique task identifier
         split (Literal["train", "val", "test"]): Split for the task (default: "test")
-        abstract_description (str): Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.setup(). (default: "")
+        abstract_description (str): Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.reset(). (default: "")
         tags (list[str]): List of task tags (default: empty list)
         recommended_max_steps (int | None): Recommended maximum number of steps to help harness prevent infinite running agents. Not a hard limit, the task can still run longer if needed. (default: None)
         extra_info (dict[str, Any]): Additional task metadata, eg: difficulty level, domain, etc. (default: empty dict)
@@ -48,7 +48,7 @@ class TaskMetadata(TypedBaseModel):
     split: Literal["train", "val", "test"] = Field(default="test", description="Split for the task")
     abstract_description: str = Field(
         default="",
-        description="Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.setup().",
+        description="Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.reset().",
     )
     recommended_max_steps: int | None = Field(
         default=None,
@@ -199,15 +199,14 @@ class Task(TypedBaseModel, ABC):
         return actions
 
     @abstractmethod
-    def setup(self) -> Tuple[Observation, Dict]:
+    def reset(self) -> Tuple[Observation, Dict]:
         """
-        Set up the task to its initial state.
+        Reset the task to its initial state.
         Should call self.tool.reset() to reset the tool as well
 
         Returns:
             Tuple of (Observation, dict with additional task info)
         """
-        # TODO: consider separating reset from setup if setup does heavy initialization
         pass
 
     def step(self, action: Action | List[Action]) -> EnvironmentOutput:

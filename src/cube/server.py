@@ -135,7 +135,7 @@ def make_task_fastapi_app(task: Task) -> FastAPI:
     @app.post("/cube/reset")
     def reset_task() -> Tuple[Observation, Dict]:
         """Reset task to initial state."""
-        return task.setup()
+        return task.reset()
 
     @app.post("/cube/close")
     def close_task() -> None:

@@ -31,8 +31,8 @@ class MinimalToolConfig(ToolConfig):
 class MinimalTask(Task):
     """Minimal task implementation for testing."""
 
-    def setup(self):
-        """Minimal setup."""
+    def reset(self):
+        """Reset the task to its initial state."""
         self.tool.reset()
         return Observation.from_text("Test observation"), {}
 
