@@ -79,7 +79,7 @@ class Task(TypedBaseModel, ABC):
         - finished() -- optional method to check if the task is done
 
     3. the gym-like environment dynamics:
-        + setup() -> Observation, info -- abstract method to implement
+        + reset() -> Observation, info -- abstract method to implement
         - step(Action) -> Observation -- calls self.tool.execute_action
         - close() -- optional method to cleanup resources
     """
