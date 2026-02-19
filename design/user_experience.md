@@ -66,7 +66,7 @@ graph TB
 
     vLLM["<b>🤖 vLLM Server</b>"]
 
-    TaskI ==>|"task_logic.setup()"| TKJobI
+    TaskI ==>|"task.reset()"| TKJobI
     TaskI -->|"SSH"| TKJobI
 
     AgentI -.-> vLLM
@@ -123,7 +123,7 @@ graph TB
 
         TConfI -->|"make()"| TaskI
         AConfI -->|"make()"| AgentI
-        TaskI -->|"task_logic.setup()"| BrowserI
+        TaskI -->|"task.reset()"| BrowserI
         AgentI --> EvalI
         TaskI --> EvalI
         EvalI --> TraceI

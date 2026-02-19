@@ -26,7 +26,7 @@ def evaluate_task(task_config, runtime_context, container_backend, agent_config)
     )
     agent = agent_config.make()
 
-    obs, info = task.setup()
+    obs, info = task.reset()
     for step in range(max_steps):
         action = agent.get_action(obs)
         result = task.step(action)
@@ -130,7 +130,7 @@ class TaskMetadata(TypedBaseModel):
     Attributes:
         id (str): Unique task identifier
         split (Literal["train", "val", "test"]): Split for the task (default: "test")
-        abstract_description (str): Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.setup(). (default: "")
+        abstract_description (str): Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.reset(). (default: "")
         recommended_max_steps (int | None): Recommended maximum number of steps to help harness prevent infinite running agents. Not a hard limit, the task can still run longer if needed. (default: None)
         container_config (ContainerConfig | None): Optional container configuration for this task (default: None)
         extra_info (dict[str, Any]): Additional task metadata, eg: difficulty level, domain, etc. (default: empty dict)
@@ -380,7 +380,7 @@ class Task(TypedBaseModel, ABC):
         return actions
 
     @abstractmethod
-    def setup(self) -> Tuple[Observation, Dict]:
+    def reset(self) -> Tuple[Observation, Dict]:
         """
         Set up the task to its initial state.
 
@@ -579,7 +579,7 @@ class WebArenaTask(Task):
     start_url: str
     eval_function: Callable  # type: ignore[assignment]
 
-    def setup(self) -> Tuple[Observation, Dict]:
+    def reset(self) -> Tuple[Observation, Dict]:
         """Navigate to starting URL and return initial observation."""
         self.tool.reset()
         self.tool.navigate(self.start_url)
@@ -655,7 +655,7 @@ futures = [
 
 > **Status:** Not currently implemented. TaskLogic as a separate abstraction is deferred.
 >
-> **Current Approach:** Task metadata (loaded via task_id) and task logic (setup, evaluate)
+> **Current Approach:** Task metadata (loaded via task_id) and task logic (reset, evaluate)
 > are directly implemented in Task subclasses. The intent/description is stored in
 > TaskMetadata.
 >
@@ -681,7 +681,7 @@ class TaskLogic(ABC):
         """
         Prepare task environment.
 
-        Called during task.setup().
+        Called during task.reset().
 
         Args may include pre-initialized tools (e.g., browser page):
             setup(page=playwright_page)  # For browser tasks
@@ -763,7 +763,7 @@ Mapping between the CUBE position paper's RPC endpoints and the Python API/RPC i
 
 | Position Paper Endpoint | Python Method | RPC Endpoint | Description |
 |---|---|---|---|
-| `cube/reset` | `task.setup()` | `POST /cube/reset` | Reset task to initial state |
+| `cube/reset` | `task.reset()` | `POST /cube/reset` | Reset task to initial state |
 | `cube/step` | `task.step()` | `POST /cube/step` | Execute action + evaluation |
 | `cube/evaluation` | `task.evaluate()` | `POST /cube/evaluate` | Evaluate observation |
 | `cube/close` | `task.close()` | `POST /cube/close` | Cleanup task resources |
@@ -838,7 +838,7 @@ classDiagram
         +tool AbstractTool
         +container Container
         +action_set List~ActionSchema~
-        +setup() Tuple~Observation,Dict~
+        +reset() Tuple~Observation,Dict~
         +step(action) EnvironmentOutput
         +evaluate(obs) Tuple~float,dict~
         +filter_actions(actions) List~ActionSchema~
@@ -875,7 +875,7 @@ classDiagram
     class WebArenaTask {
         +str start_url
         +Callable eval_function
-        +setup() Tuple~Observation,Dict~
+        +reset() Tuple~Observation,Dict~
         +evaluate(obs) Tuple~float,dict~
         +close() void
     }
