@@ -1,3 +1,4 @@
+import copy
 import fnmatch
 import logging
 from abc import ABC, abstractmethod
@@ -205,32 +206,12 @@ class Benchmark(TypedBaseModel, ABC):
         if not task_subset:
             raise ValueError("The resulting task list cannot be empty.")
 
-        # Create the new Metadata for the sub-benchmark, copying all fields from the original except for name and num_tasks
-        new_metadata = BenchmarkMetadata(**self.benchmark_metadata.model_dump())
-        new_metadata.name = f"{self.benchmark_metadata.name}_{benchmark_name_suffix}"
-        new_metadata.num_tasks = len(task_subset)
-
-        # Create a new Benchmark instance.
-        # Note: `benchmark_metadata`, `task_metadata_dict` and `task_config_class` are class variables so we cannot pass them in the constructor.
-        # Instead, we create a dynamic temporary subclass overriding all three.
-        # TODO: we would like to have the subclass being the same as the class soubclassing Benchmark
-        tmp_class = type(
-            f"{self.__class__.__name__}_{benchmark_name_suffix}",
-            (self.__class__,),
-            {
-                "benchmark_metadata": new_metadata,
-                "task_metadata_dict": {tm.id: tm for tm in task_subset},
-                "task_config_class": self.task_config_class,
-            },
-        )
-        # and then instantiate this new temporary subclass.
-        new_instance = tmp_class(
-            default_tool_config=self.default_tool_config,
-            container_backend=self.container_backend,
-            seed_generator=self.seed_generator,
-        )
-        # Copy over private attributes
-        new_instance._runtime_context = self._runtime_context
+        # Deep-copy self to preserve the exact concrete class and all instance state (including
+        # subclass __init__ args, private attrs, etc.), then override the relevant attributes.
+        new_instance = copy.deepcopy(self)
+        new_instance.benchmark_metadata.name = f"{self.benchmark_metadata.name}_{benchmark_name_suffix}"  # type: ignore[misc]
+        new_instance.benchmark_metadata.num_tasks = len(task_subset)  # type: ignore[misc]
+        new_instance.task_metadata_dict = {tm.id: tm for tm in task_subset}  # type: ignore[misc]
         return new_instance
 
     def spawn(self, task_config: TaskConfig) -> str:
