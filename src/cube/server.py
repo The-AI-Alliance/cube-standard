@@ -6,9 +6,8 @@ import uvicorn
 from fastapi import FastAPI
 
 from cube.benchmark import Benchmark, BenchmarkMetadata
-from cube.containers import ContainerBackend
 from cube.core import Action, ActionSchema, EnvironmentOutput, Observation, StepError
-from cube.task import Task, TaskMetadata
+from cube.task import Task, TaskConfig, TaskMetadata
 
 # Type alias for server return value: (app, process, url)
 ServerInfo = Tuple[FastAPI, multiprocessing.Process, str]
@@ -35,12 +34,12 @@ def make_benchmark_fastapi_app(benchmark: Benchmark) -> FastAPI:
 
     @app.get("/cube/info")
     def cube_info() -> BenchmarkMetadata:
-        return benchmark.metadata
+        return benchmark.benchmark_metadata
 
     @app.get("/cube/tasks")
     def cube_tasks(task_id: str | None = None, offset: int = 0, limit: int = -1) -> list[TaskMetadata]:
         """Get task metadata with optional filtering."""
-        tasks = benchmark.task_list
+        tasks = list(benchmark.task_metadata_dict.values())
 
         # Apply filtering by task_id
         if task_id:
@@ -55,8 +54,8 @@ def make_benchmark_fastapi_app(benchmark: Benchmark) -> FastAPI:
         return tasks
 
     @app.post("/cube/spawn")
-    def cube_spawn(task_id: str, container_backend: ContainerBackend | None = None) -> str:
-        return benchmark.spawn(task_id=task_id, container_backend=container_backend)
+    def cube_spawn(task_config: TaskConfig) -> str:
+        return benchmark.spawn(task_config)
 
     @app.post("/cube/shutdown")
     def cube_shutdown() -> None:
