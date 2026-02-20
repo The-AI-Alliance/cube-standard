@@ -204,8 +204,12 @@ class Tool(AbstractTool):
         # Get the method
         method = getattr(self, action.name, None)
 
-        if not method or not getattr(method, "_is_action", False):
-            raise ValueError(f"Action {action.name} is not available in {self.__class__.__name__}")
+        if not method:
+            raise ValueError(f"Method '{action.name}' does not exist in {self.__class__.__name__}.")
+        if not getattr(method, "_is_action", False):
+            raise ValueError(
+                f"Method '{action.name}' exists in {self.__class__.__name__} but is not decorated with @tool_action. Add @tool_action to expose it as an action."
+            )
 
         try:
             action_result = method(**action.arguments) or "Success"
