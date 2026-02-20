@@ -160,11 +160,11 @@ class CounterTaskConfig(TaskConfig):
     ) -> ReachTargetTask:
         """Create task instance from config.
 
-        Looks up task metadata from CounterBenchmark.task_metadata_dict by task_id.
+        Looks up task metadata from CounterBenchmark.task_metadata by task_id.
         Builds CounterToolConfig from extra_info["tool_config"] if present, otherwise uses defaults.
         An explicit tool_config on this TaskConfig always takes precedence.
         """
-        task_metadata = CounterBenchmark.task_metadata_dict[self.task_id]
+        task_metadata = CounterBenchmark.task_metadata[self.task_id]
         tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
         return ReachTargetTask(
             metadata=task_metadata,
@@ -185,7 +185,7 @@ class CounterBenchmark(Benchmark):
         num_tasks=3,
         tags=["toy", "counter", "minimal"],
     )
-    task_metadata_dict: ClassVar[dict[str, TaskMetadata]] = {
+    task_metadata: ClassVar[dict[str, TaskMetadata]] = {
         "count-to-3": TaskMetadata(
             id="count-to-3",
             abstract_description="Increment counter to reach value 3",

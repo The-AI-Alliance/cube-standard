@@ -68,7 +68,7 @@ def make_benchmark_fastapi_app(benchmark: Benchmark) -> FastAPI:
     @app.get("/cube/tasks")
     def cube_tasks(task_id: str | None = None, offset: int = 0, limit: int = -1) -> list[TaskMetadata]:
         """Get task metadata with optional filtering."""
-        tasks = list(benchmark.task_metadata_dict.values())
+        tasks = list(benchmark.task_metadata.values())
 
         # Apply filtering by task_id
         if task_id:

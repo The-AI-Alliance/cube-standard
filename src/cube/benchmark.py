@@ -15,7 +15,7 @@ Abstract classes:
     corresponding metadata files (benchmark_metadata.json/.csv, task_metadata.json/.csv)
     are placed next to the benchmark module file — they will be loaded automatically:
         benchmark_metadata: BenchmarkMetadata
-        task_metadata_dict: dict[str, TaskMetadata]
+        task_metadata: dict[str, TaskMetadata]
 """
 
 import copy
@@ -88,7 +88,7 @@ class Benchmark(TypedBaseModel, ABC):
 
     # Class-level attributes that must be defined by subclasses (not constructor params)
     benchmark_metadata: ClassVar[BenchmarkMetadata]
-    task_metadata_dict: ClassVar[dict[str, TaskMetadata]]
+    task_metadata: ClassVar[dict[str, TaskMetadata]]
     task_config_class: ClassVar[type[TaskConfig]]
 
     # this optional fields should be set during _setup() by the Benchmark **creator** (not constructor params).
@@ -114,7 +114,7 @@ class Benchmark(TypedBaseModel, ABC):
     #
     #   class MyBenchmark(Benchmark):
     #       benchmark_metadata = Benchmark.benchmark_metadata_from_json("benchmark.json")
-    #       task_metadata_dict = Benchmark.task_metadata_from_csv("tasks.csv")
+    #       task_metadata = Benchmark.task_metadata_from_csv("tasks.csv")
     #       task_config_class  = MyTaskConfig
     #
     # Paths are resolved relative to the current working directory.
@@ -170,7 +170,7 @@ class Benchmark(TypedBaseModel, ABC):
 
     @staticmethod
     def task_metadata_from_json(path: str | Path) -> "dict[str, TaskMetadata]":
-        """Load ``task_metadata_dict`` from a JSON file.
+        """Load ``task_metadata`` from a JSON file.
 
         The file may contain either:
 
@@ -194,7 +194,7 @@ class Benchmark(TypedBaseModel, ABC):
 
     @staticmethod
     def task_metadata_from_csv(path: str | Path) -> "dict[str, TaskMetadata]":
-        """Load ``task_metadata_dict`` from a CSV file.
+        """Load ``task_metadata`` from a CSV file.
 
         Each row represents one task. The ``id`` column is required; all other
         columns are optional and fall back to their :class:`TaskMetadata`
@@ -263,8 +263,8 @@ class Benchmark(TypedBaseModel, ABC):
                     f"'benchmark_metadata' in {cls.__name__} must be a BenchmarkMetadata instance, not {type(bench_meta).__name__}"
                 )
 
-            # Auto-load task_metadata_dict from a file next to your benchmark file if not explicitly defined
-            if "task_metadata_dict" not in cls.__dict__:
+            # Auto-load task_metadata from a file next to your benchmark file if not explicitly defined
+            if "task_metadata" not in cls.__dict__:
                 loaded = None
                 if module_dir:
                     for fname, loader in [
@@ -277,16 +277,14 @@ class Benchmark(TypedBaseModel, ABC):
                             break
                 if loaded is None:
                     raise TypeError(
-                        f"Concrete benchmark class {cls.__name__} must define 'task_metadata_dict' as a class attribute, "
+                        f"Concrete benchmark class {cls.__name__} must define 'task_metadata' as a class attribute, "
                         f"or provide a 'task_metadata.json' / 'task_metadata.csv' file next to your benchmark file"
                     )
-                cls.task_metadata_dict = loaded
+                cls.task_metadata = loaded
 
-            task_meta = cls.__dict__["task_metadata_dict"]
+            task_meta = cls.__dict__["task_metadata"]
             if not isinstance(task_meta, dict):
-                raise TypeError(
-                    f"'task_metadata_dict' in {cls.__name__} must be a dict, not {type(task_meta).__name__}"
-                )
+                raise TypeError(f"'task_metadata' in {cls.__name__} must be a dict, not {type(task_meta).__name__}")
 
             # Check task_config_class is defined as a static class variable (not a property or descriptor)
             if "task_config_class" not in cls.__dict__:
@@ -326,7 +324,7 @@ class Benchmark(TypedBaseModel, ABC):
 
     def get_task_configs(self) -> Generator[TaskConfig, None, None]:
         """Returns the list of TaskConfig objects for this benchmark."""
-        for tm in self.task_metadata_dict.values():
+        for tm in self.task_metadata.values():
             if self.seed_generator is not None:
                 for seed in self.seed_generator(tm):
                     yield self.task_config_class(task_id=tm.id, tool_config=self.default_tool_config, seed=seed)
@@ -340,7 +338,7 @@ class Benchmark(TypedBaseModel, ABC):
         """
         task_subset = [
             tm
-            for tm in self.task_metadata_dict.values()
+            for tm in self.task_metadata.values()
             if hasattr(tm, glob_key) and fnmatch.fnmatch(getattr(tm, glob_key), glob_pattern)
         ]
         if not task_subset:
@@ -362,10 +360,10 @@ class Benchmark(TypedBaseModel, ABC):
         Raises:
             ValueError: If the resulting task list is empty or if any specified task doesn't exist.
         """
-        existing_task_ids = {tm.id for tm in self.task_metadata_dict.values()}
+        existing_task_ids = {tm.id for tm in self.task_metadata.values()}
         if isinstance(tasks, list) and len(tasks) > 0 and isinstance(tasks[0], str):
             task_ids = set(tasks)
-            task_subset = [tm for tm in self.task_metadata_dict.values() if tm.id in task_ids]
+            task_subset = [tm for tm in self.task_metadata.values() if tm.id in task_ids]
             invalid_tasks = task_ids - existing_task_ids
         elif isinstance(tasks, list) and len(tasks) > 0 and isinstance(tasks[0], TaskMetadata):
             task_subset: list[TaskMetadata] = tasks  # type: ignore
@@ -382,7 +380,7 @@ class Benchmark(TypedBaseModel, ABC):
         new_instance = copy.deepcopy(self)
         new_instance.benchmark_metadata.name = f"{self.benchmark_metadata.name}_{benchmark_name_suffix}"  # type: ignore[misc]
         new_instance.benchmark_metadata.num_tasks = len(task_subset)  # type: ignore[misc]
-        new_instance.task_metadata_dict = {tm.id: tm for tm in task_subset}  # type: ignore[misc]
+        new_instance.task_metadata = {tm.id: tm for tm in task_subset}  # type: ignore[misc]
         return new_instance
 
     def spawn(self, task_config: TaskConfig) -> str:
@@ -394,7 +392,7 @@ class Benchmark(TypedBaseModel, ABC):
         """
         from cube.server import make_task_rpc_server
 
-        if task_config.task_id not in self.task_metadata_dict:
+        if task_config.task_id not in self.task_metadata:
             raise ValueError(f"Task '{task_config.task_id}' not found in benchmark")
 
         task = task_config.make(

@@ -67,7 +67,7 @@ class MinimalBenchmark(Benchmark):
         description="A minimal test benchmark",
         num_tasks=2,
     )
-    task_metadata_dict = {
+    task_metadata = {
         "task-1": TaskMetadata(id="task-1"),
         "task-2": TaskMetadata(id="task-2"),
     }

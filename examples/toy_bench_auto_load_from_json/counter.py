@@ -1,7 +1,7 @@
 """Counter benchmark - demonstrates auto-loading metadata from JSON files.
 
 This example is structurally identical to toy_benchmark/counter.py, except that
-CounterBenchmark does not define benchmark_metadata or task_metadata_dict inline.
+CounterBenchmark does not define benchmark_metadata or task_metadata inline.
 They are automatically loaded from benchmark_metadata.json and task_metadata.json
 sitting next to this file.
 """
@@ -84,7 +84,7 @@ class CounterTaskConfig(TaskConfig):
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> ReachTargetTask:
-        task_metadata = CounterBenchmark.task_metadata_dict[self.task_id]
+        task_metadata = CounterBenchmark.task_metadata[self.task_id]
         tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
         return ReachTargetTask(
             metadata=task_metadata,
@@ -94,7 +94,7 @@ class CounterTaskConfig(TaskConfig):
         )
 
 
-# benchmark_metadata and task_metadata_dict are intentionally omitted:
+# benchmark_metadata and task_metadata are intentionally omitted:
 # they are auto-loaded from benchmark_metadata.json and task_metadata.json
 # in the same directory as this file.
 class CounterBenchmark(Benchmark):
@@ -112,7 +112,7 @@ if __name__ == "__main__":
 
     print(f"benchmark_metadata.name   = {bench.benchmark_metadata.name}")
     print(f"benchmark_metadata.tags   = {bench.benchmark_metadata.tags}")
-    print(f"tasks loaded              = {list(bench.task_metadata_dict.keys())}")
+    print(f"tasks loaded              = {list(bench.task_metadata.keys())}")
 
     task_configs = list(bench.get_task_configs())
     assert len(task_configs) == 3

@@ -323,7 +323,7 @@ class TaskConfig(ABC, TypedBaseModel):
             container_backend: HOW to run containers (local, Modal, ...) created by user and passed to benchmark constructor, then passed from Benchmark.spawn().
 
         Example:
-        >>> task_metadata = MyBenchmark.task_metadata_dict[self.task_id]
+        >>> task_metadata = MyBenchmark.task_metadata[self.task_id]
         >>> return MyTask(
         ...     metadata=task_metadata,
         ...     tool_config=self.tool_config,

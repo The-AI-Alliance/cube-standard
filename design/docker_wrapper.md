@@ -264,7 +264,7 @@ class TaskConfig(ABC, TypedBaseModel):
         Container launch is handled automatically by Task.model_post_init() when
         both container_backend and metadata.container_config are provided.
         Typical implementation:
-        >>> task_metadata = MyBenchmark.task_metadata_dict[self.task_id]
+        >>> task_metadata = MyBenchmark.task_metadata[self.task_id]
         >>> return MyTask(
         ...     metadata=task_metadata,
         ...     tool_config=self.tool_config,

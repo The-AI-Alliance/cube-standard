@@ -16,7 +16,7 @@ graph TD
 
     %% Benchmark lifecycle
     Benchmark -->|"setup()"| RuntimeContext
-    Benchmark -->|"task_metadata_dict"| TaskMetadataList[Dict of TaskMetadata]
+    Benchmark -->|"task_metadata"| TaskMetadataList[Dict of TaskMetadata]
     Benchmark -->|"get_task_configs()"| TaskConfig
     Benchmark -->|"spawn(task_config)"| Server
 
@@ -82,8 +82,8 @@ sequenceDiagram
     Note over Benchmark: RuntimeContext holds container_id, vm_address, etc.
 
     %% Get Task Metadata
-    User->>Benchmark: Get task_metadata_dict
-    Note over Benchmark: task_metadata_dict is a ClassVar dict
+    User->>Benchmark: Get task_metadata
+    Note over Benchmark: task_metadata is a ClassVar dict
     Benchmark-->>User: dict[str, TaskMetadata]
 
     %% Spawning a Task Server
@@ -162,7 +162,7 @@ classDiagram
     class Benchmark {
         <<abstract>>
         +ClassVar~BenchmarkMetadata~ benchmark_metadata
-        +ClassVar~dict~ task_metadata_dict
+        +ClassVar~dict~ task_metadata
         +ClassVar~type~ task_config_class
         -RuntimeContext _runtime_context
         +ContainerBackend container_backend
@@ -254,7 +254,7 @@ classDiagram
 | From | To | Relationship | Method |
 |------|-----|--------------|--------|
 | **Benchmark** | RuntimeContext | Creates shared resources | `setup()` populates `_runtime_context` (private) |
-| **Benchmark** | TaskMetadata | Contains multiple | `task_metadata_dict` ClassVar holds `dict[str, TaskMetadata]` |
+| **Benchmark** | TaskMetadata | Contains multiple | `task_metadata` ClassVar holds `dict[str, TaskMetadata]` |
 | **Benchmark** | TaskConfig | Yields on demand | `get_task_configs()` yields `TaskConfig` |
 | **Benchmark** | Task | Spawns via server | `spawn(task_config)` creates task and server |
 | **TaskConfig** | Task | Factory | `make(runtime_context, container_backend)` returns `Task` |
@@ -276,7 +276,7 @@ classDiagram
    - User calls `benchmark.setup()`
    - Benchmark implementation (`_setup()`) sets:
      - `_runtime_context`: Shared infrastructure references (containers, VMs, etc.)
-   - Note: `benchmark_metadata`, `task_metadata_dict`, `task_config_class` are **class-level attributes** defined on the subclass, not set in `_setup()`
+   - Note: `benchmark_metadata`, `task_metadata`, `task_config_class` are **class-level attributes** defined on the subclass, not set in `_setup()`
 
 2. **Task Config Creation**:
    - User calls `benchmark.get_task_configs()` to iterate over `TaskConfig` objects

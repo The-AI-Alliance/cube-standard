@@ -153,7 +153,7 @@ class Benchmark(TypedBaseModel, ABC):
 
     # Class-level attributes that must be defined by subclasses (not constructor params)
     benchmark_metadata: ClassVar[BenchmarkMetadata]
-    task_metadata_dict: ClassVar[dict[str, TaskMetadata]]
+    task_metadata: ClassVar[dict[str, TaskMetadata]]
     task_config_class: ClassVar[type[TaskConfig]]
 
     # Set during _setup() by the benchmark creator
@@ -172,7 +172,7 @@ class Benchmark(TypedBaseModel, ABC):
         Should (optional):
         - Create shared infrastructure and store references in self._runtime_context
 
-        Note: task_metadata_dict, task_config_class, and benchmark_metadata are
+        Note: task_metadata, task_config_class, and benchmark_metadata are
         defined as class-level attributes on the Benchmark subclass, not set here.
 
         Examples:
@@ -194,7 +194,7 @@ class Benchmark(TypedBaseModel, ABC):
         """
         Yield TaskConfig objects for all tasks in this benchmark.
 
-        For each task in task_metadata_dict, yields one config per seed
+        For each task in task_metadata, yields one config per seed
         (if seed_generator is set) or one config with seed=None.
 
         Returns: Generator of TaskConfig instances
@@ -228,7 +228,7 @@ class TaskConfig(ABC, TypedBaseModel):
 
     Must be JSON-serializable to pass to Ray workers.
     Contains only runtime configuration, NOT task metadata/logic.
-    TaskMetadata is retrieved inside make() via the benchmark's task_metadata_dict.
+    TaskMetadata is retrieved inside make() via the benchmark's task_metadata.
     """
 
     task_id: str  # Unique identifier (references TaskMetadata)
@@ -255,7 +255,7 @@ class TaskConfig(ABC, TypedBaseModel):
         Returns: Ready-to-use Task instance
 
         Example:
-            task_metadata = MyBenchmark.task_metadata_dict[self.task_id]
+            task_metadata = MyBenchmark.task_metadata[self.task_id]
             return MyTask(
                 metadata=task_metadata,
                 tool_config=self.tool_config,
@@ -545,7 +545,7 @@ class WebArenaTaskConfig(TaskConfig):
     ) -> Task:
         """Create WebArenaTask instance."""
         # 1. Retrieve task metadata from the benchmark class variable
-        metadata = WebArenaBenchmark.task_metadata_dict[self.task_id]
+        metadata = WebArenaBenchmark.task_metadata[self.task_id]
 
         # 2. Extract task-specific data from metadata.extra_info
         start_path = metadata.extra_info["start_path"]
@@ -599,7 +599,7 @@ class WebArenaBenchmark(Benchmark):
         tags=["web", "navigation"]
     )
     task_config_class = WebArenaTaskConfig
-    task_metadata_dict: ClassVar[dict[str, TaskMetadata]] = _load_webarena_tasks()  # or auto-loaded from task_metadata.json
+    task_metadata: ClassVar[dict[str, TaskMetadata]] = _load_webarena_tasks()  # or auto-loaded from task_metadata.json
 
     # Additional constructor param specific to this benchmark
     vm_config: VMConfig
@@ -746,7 +746,7 @@ Mapping between the CUBE position paper's RPC endpoints and the Python API/RPC i
 | Position Paper Endpoint | Python Method | RPC Endpoint | Description |
 |---|---|---|---|
 | `cube/info` | `benchmark.benchmark_metadata` | `GET /cube/info` | Get benchmark metadata |
-| `cube/tasks` | `benchmark.task_metadata_dict` | `GET /cube/tasks` | List available task metadata |
+| `cube/tasks` | `benchmark.task_metadata` | `GET /cube/tasks` | List available task metadata |
 | `cube/spawn` | `benchmark.spawn(task_config)` | `POST /cube/spawn` | Spawn new task RPC server |
 | `cube/shutdown` | `benchmark.close()` | `POST /cube/shutdown` | Cleanup benchmark infrastructure |
 
@@ -779,7 +779,7 @@ classDiagram
     class Benchmark {
         <<abstract>>
         +ClassVar~BenchmarkMetadata~ benchmark_metadata
-        +ClassVar~dict~ task_metadata_dict
+        +ClassVar~dict~ task_metadata
         +ClassVar~type~ task_config_class
         -RuntimeContext _runtime_context
         +ContainerBackend container_backend
@@ -850,7 +850,7 @@ classDiagram
 
     class WebArenaBenchmark {
         +ClassVar~BenchmarkMetadata~ benchmark_metadata
-        +ClassVar~dict~ task_metadata_dict
+        +ClassVar~dict~ task_metadata
         +VMConfig vm_config
         +_setup() void
         +close() void
