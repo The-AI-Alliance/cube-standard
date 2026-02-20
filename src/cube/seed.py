@@ -14,11 +14,12 @@ import hashlib
 from abc import ABC, abstractmethod
 
 import numpy as np
+from pydantic import BaseModel
 
 from cube.task import TaskMetadata
 
 
-class AbstractSeedGenerator(ABC):
+class AbstractSeedGenerator(ABC, BaseModel):
     @abstractmethod
     def __call__(self, task_metadata: TaskMetadata) -> list[int]:
         """Given task metadata, return a list of seeds to use for that task."""

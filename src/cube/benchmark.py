@@ -447,10 +447,15 @@ class Benchmark(TypedBaseModel, ABC):
 
         # Deep-copy self to preserve the exact concrete class and all instance state (including
         # subclass __init__ args, private attrs, etc.), then override the relevant attributes.
+        # ClassVars are not copied by deepcopy (they live on the class), so we deepcopy them
+        # explicitly and use object.__setattr__ to set instance-level shadows without triggering
+        # Pydantic's ClassVar protection.
         new_instance = copy.deepcopy(self)
-        new_instance.benchmark_metadata.name = f"{self.benchmark_metadata.name}_{benchmark_name_suffix}"  # type: ignore[misc]
-        new_instance.benchmark_metadata.num_tasks = len(task_subset)  # type: ignore[misc]
-        new_instance.task_metadata = {tm.id: tm for tm in task_subset}  # type: ignore[misc]
+        new_bm = copy.deepcopy(type(new_instance).benchmark_metadata)
+        new_bm.name = f"{self.benchmark_metadata.name}_{benchmark_name_suffix}"
+        new_bm.num_tasks = len(task_subset)
+        object.__setattr__(new_instance, "benchmark_metadata", new_bm)
+        object.__setattr__(new_instance, "task_metadata", {tm.id: tm for tm in task_subset})
         return new_instance
 
     def spawn(self, task_config: TaskConfig) -> str:
