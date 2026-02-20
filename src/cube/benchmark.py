@@ -3,6 +3,7 @@ import csv
 import fnmatch
 import json
 import logging
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, ClassVar, Generator
@@ -209,22 +210,57 @@ class Benchmark(TypedBaseModel, ABC):
         super().__init_subclass__(**kwargs)
         # Only enforce for concrete classes (not abstract intermediate classes)
         if not getattr(cls, "__abstractmethods__", None):
-            # Check benchmark_metadata is defined as a class variable
+            # `cls.__module__` is the dotted name of the module where the subclass is defined
+            # (e.g. "my_cube.my_benchmark"). We look it up in sys.modules to get the actual
+            # module object, then read its __file__ so we know which directory to search for
+            # metadata files when the designer hasn't provided them explicitly.
+            module_file = getattr(sys.modules.get(cls.__module__), "__file__", None)
+            module_dir = Path(module_file).resolve().parent if module_file else None
+
+            # Auto-load benchmark_metadata from a file next to your benchmark file if not explicitly defined
             if "benchmark_metadata" not in cls.__dict__:
+                loaded = None
+                if module_dir:
+                    for fname, loader in [
+                        ("benchmark_metadata.json", Benchmark.benchmark_metadata_from_json),
+                        ("benchmark_metadata.csv", Benchmark.benchmark_metadata_from_csv),
+                    ]:
+                        candidate = module_dir / fname
+                        if candidate.exists():
+                            loaded = loader(candidate)
+                            break
+                if loaded is None:
+                    raise TypeError(
+                        f"Concrete benchmark class {cls.__name__} must define 'benchmark_metadata' as a class attribute, "
+                        f"or provide a 'benchmark_metadata.json' / 'benchmark_metadata.csv' file next to your benchmark file"
+                    )
+                cls.benchmark_metadata = loaded
+
+            bench_meta = cls.__dict__["benchmark_metadata"]
+            if not isinstance(bench_meta, BenchmarkMetadata):
                 raise TypeError(
-                    f"Concrete benchmark class {cls.__name__} must define 'benchmark_metadata' as a class attribute"
-                )
-            meta = cls.__dict__["benchmark_metadata"]
-            if not isinstance(meta, BenchmarkMetadata):
-                raise TypeError(
-                    f"'benchmark_metadata' in {cls.__name__} must be a BenchmarkMetadata instance, not {type(meta).__name__}"
+                    f"'benchmark_metadata' in {cls.__name__} must be a BenchmarkMetadata instance, not {type(bench_meta).__name__}"
                 )
 
-            # Check task_metadata_dict is defined as a static class variable (not a property or descriptor)
+            # Auto-load task_metadata_dict from a file next to your benchmark file if not explicitly defined
             if "task_metadata_dict" not in cls.__dict__:
-                raise TypeError(
-                    f"Concrete benchmark class {cls.__name__} must define 'task_metadata_dict' as a class attribute"
-                )
+                loaded = None
+                if module_dir:
+                    for fname, loader in [
+                        ("task_metadata.json", Benchmark.task_metadata_from_json),
+                        ("task_metadata.csv", Benchmark.task_metadata_from_csv),
+                    ]:
+                        candidate = module_dir / fname
+                        if candidate.exists():
+                            loaded = loader(candidate)
+                            break
+                if loaded is None:
+                    raise TypeError(
+                        f"Concrete benchmark class {cls.__name__} must define 'task_metadata_dict' as a class attribute, "
+                        f"or provide a 'task_metadata.json' / 'task_metadata.csv' file next to your benchmark file"
+                    )
+                cls.task_metadata_dict = loaded
+
             task_meta = cls.__dict__["task_metadata_dict"]
             if not isinstance(task_meta, dict):
                 raise TypeError(
