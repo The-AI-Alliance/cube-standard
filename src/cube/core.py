@@ -1,9 +1,15 @@
+import base64
 import importlib
+import inspect
+import io
+import json
 import traceback
-from typing import Any, Callable, Literal, Self
+from abc import ABC, abstractmethod
+from typing import Any, Callable, ClassVar, Literal, Self
 
 import litellm
-from pydantic import BaseModel, Field, model_serializer, model_validator
+from PIL import Image as PILImage
+from pydantic import BaseModel, Field, field_serializer, field_validator, model_serializer, model_validator
 
 
 class TypedBaseModel(BaseModel):
@@ -32,6 +38,11 @@ class TypedBaseModel(BaseModel):
             module = importlib.import_module(module_name)
             actual_cls = getattr(module, class_name)
             return actual_cls.model_validate(value)
+        if isinstance(value, dict) and inspect.isabstract(cls):
+            raise ValueError(
+                f"Cannot deserialize abstract class '{cls.__name__}' directly. "
+                "Ensure the data was serialized from a concrete subclass (contains '_type' field)."
+            )
         return handler(value)
 
 
@@ -85,27 +96,203 @@ class Action(TypedBaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
-class Content(TypedBaseModel):
+class Content(TypedBaseModel, ABC):
     """
-    Represents a piece of content in an observation.
+    Abstract base class for all content types in an observation.
 
-    This is CUBE's domain model for observation content. While MCP has TextContent,
-    ImageContent, etc., CUBE uses a simpler unified Content model since observations
-    may contain arbitrary data types beyond MCP's content types.
-
-    For MCP protocol responses (tool results, resources), use MCP's content types directly.
+    Subclasses represent specific data types (text, image, audio, video, structured data)
+    and provide `to_markdown()` and `to_llm_message()` implementations.
 
     Attributes:
-        type (str): Content type (text, image, etc.) (default: "text")
-        tool_call_id (str | None): Content could be result of a tool call (default: None)
-        name (str | None): Optional name of the content (default: None)
-        data (str | bytes): The actual content data
+        tool_call_id (str | None): Set if this content is the result of a tool call.
+        name (str | None): Optional label for the content.
+        data (Any): The actual content data; narrowed to a specific type in each subclass.
     """
 
-    type: str = Field(default="text", description="Content type (text, image, etc.)")
-    tool_call_id: str | None = None  # content could be result of a tool call
-    name: str | None = None  # optional name of the content
-    data: str | bytes
+    tool_call_id: str | None = None
+    name: str | None = None
+    data: Any
+
+    @abstractmethod
+    def to_markdown(self) -> str:
+        """Render this content as a Markdown string."""
+        ...
+
+    @abstractmethod
+    def to_llm_message(self) -> dict:
+        """Return a well-formed LLM message dict (OpenAI/litellm format)."""
+        ...
+
+    def _build_message(self, msg_content: str | list[dict]) -> dict:
+        """Wrap content into an LLM message dict, applying role and tool_call_id."""
+        if self.tool_call_id:
+            return {"role": "tool", "content": msg_content, "tool_call_id": self.tool_call_id}
+        return {"role": "user", "content": msg_content}
+
+    @classmethod
+    def from_data(cls, data: Any, **kwargs) -> "Content":
+        """Instantiate the appropriate Content subclass based on the type of data.
+
+        Dispatches to TextContent, StructuredContent, or ImageContent based on
+        isinstance checks. Raw bytes are rejected — callers must explicitly construct
+        AudioContent or VideoContent since the media type cannot be inferred.
+
+        Args:
+            data: The content data. Supported types: str, int, float, dict, list, PILImage.Image.
+            **kwargs: Additional fields passed to the subclass (e.g. name, tool_call_id).
+
+        Raises:
+            TypeError: If data is bytes (ambiguous between audio and video) or an unsupported type.
+        """
+        if isinstance(data, PILImage.Image):
+            return ImageContent(data=data, **kwargs)
+        if isinstance(data, (dict, list)):
+            return StructuredContent(data=data, **kwargs)
+        if isinstance(data, (str, int, float)):
+            return TextContent(data=str(data), **kwargs)
+        if isinstance(data, bytes):
+            raise TypeError(
+                "Cannot infer content type from raw bytes. Explicitly construct AudioContent or VideoContent instead."
+            )
+        raise TypeError(
+            f"Unsupported data type for Content.from_data(): {type(data).__name__}. "
+            "Supported types: str, int, float, dict, list, PILImage.Image."
+        )
+
+
+class TextContent(Content):
+    """Text or numeric content, rendered as plain text."""
+
+    data: str
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def coerce_to_str(cls, v: Any) -> str:
+        if isinstance(v, (int, float)):
+            return str(v)
+        return v
+
+    def to_markdown(self) -> str:
+        return f"## {self.name}\n{self.data}" if self.name else self.data
+
+    def to_llm_message(self) -> dict:
+        text = f"## {self.name}\n{self.data}" if self.name else self.data
+        return self._build_message(text)
+
+
+class StructuredContent(Content):
+    """Structured data (dict or list), rendered as a JSON code block."""
+
+    data: dict | list
+
+    def to_markdown(self) -> str:
+        block = f"```json\n{json.dumps(self.data, indent=2)}\n```"
+        return f"## {self.name}\n{block}" if self.name else block
+
+    def to_llm_message(self) -> dict:
+        text = json.dumps(self.data)
+        if self.name:
+            text = f"## {self.name}\n{text}"
+        return self._build_message(text)
+
+
+class ImageContent(Content):
+    """PIL image content, serialized as base64 PNG."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    data: PILImage.Image
+
+    _image_prefix: ClassVar[str] = "data:image/png;base64,"
+
+    def as_base64_image_str(self, data: PILImage.Image) -> str:
+        byte_arr = io.BytesIO()
+        data.save(byte_arr, format="PNG")
+        encoded_image = base64.b64encode(byte_arr.getvalue()).decode("utf-8")
+        return f"{self._image_prefix}{encoded_image}"
+
+    @field_serializer("data")
+    def serialize_data(self, data: PILImage.Image) -> str:
+        """Serialize a PIL Image to a base64 data URL string for JSON compatibility.
+
+        PIL Images are not JSON-serializable by default; this converts them to a
+        prefixed base64 string that can be stored, transmitted, and later reconstructed.
+        """
+        return self.as_base64_image_str(data)
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def deserialize_data(cls, v: Any) -> Any:
+        """Deserialize a base64 data URL string back into a PIL Image.
+
+        Detects the image prefix to distinguish serialized images from plain strings.
+        Forces eager loading via img.load() to prevent the BytesIO buffer from being
+        garbage collected before the pixel data is read (PIL uses lazy loading by default).
+        """
+        if isinstance(v, str) and v.startswith(cls._image_prefix):
+            v = v[len(cls._image_prefix) :]
+            # Decode base64 string to bytes
+            decoded_image = base64.b64decode(v)
+            # Open bytes as PIL Image and load immediately to avoid lazy loading issues
+            img = PILImage.open(io.BytesIO(decoded_image))
+            img.load()  # Force load to prevent BytesIO buffer from being garbage collected
+            return img
+        return v  # Return original value if not a string (e.g., already an Image object)
+
+    def to_markdown(self) -> str:
+        b64_url = self.as_base64_image_str(self.data)
+        alt = self.name or "image"
+        img = f"![{alt}]({b64_url})"
+        return f"## {self.name}\n{img}" if self.name else img
+
+    def to_llm_message(self) -> dict:
+        b64_url = self.as_base64_image_str(self.data)
+        msg_content: list[dict] = [{"type": "image_url", "image_url": {"url": b64_url}}]
+        if self.name:
+            msg_content.insert(0, {"type": "text", "text": f"## {self.name}"})
+        return self._build_message(msg_content)
+
+
+class AudioContent(Content):
+    """Raw audio bytes.
+
+    Placeholder class for future work. Rendering to Markdown and LLM message formats
+    is not yet defined for audio — it is unclear what the best representation would be
+    (e.g. waveform image, transcript, base64 embed). Custom to_markdown() and
+    to_llm_message() implementations should be added once a rendering strategy is decided.
+
+    TODO: define custom rendering functions for audio content.
+    """
+
+    data: bytes
+    duration_seconds: float | None = None
+
+    def to_markdown(self) -> str:
+        raise NotImplementedError("Markdown rendering is not supported for audio content.")
+
+    def to_llm_message(self) -> dict:
+        raise NotImplementedError("Audio is not supported by LLM message format.")
+
+
+class VideoContent(Content):
+    """Raw video bytes.
+
+    Placeholder class for future work. Rendering to Markdown and LLM message formats
+    is not yet defined for video — it is unclear what the best representation would be
+    (e.g. thumbnail image, transcript, base64 embed). Custom to_markdown() and
+    to_llm_message() implementations should be added once a rendering strategy is decided.
+
+    TODO: define custom rendering functions for video content.
+    """
+
+    data: bytes
+    duration_seconds: float | None = None
+
+    def to_markdown(self) -> str:
+        raise NotImplementedError("Markdown rendering is not supported for video content.")
+
+    def to_llm_message(self) -> dict:
+        raise NotImplementedError("Video is not supported by LLM message format.")
 
 
 class Observation(TypedBaseModel):
@@ -124,7 +311,7 @@ class Observation(TypedBaseModel):
 
     @classmethod
     def from_text(cls, text: str) -> Self:
-        return cls(contents=[Content(data=text)])
+        return cls(contents=[TextContent(data=text)])
 
     def __add__(self, other: Self) -> Self:
         self.contents += other.contents

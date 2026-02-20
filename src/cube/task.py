@@ -15,7 +15,16 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Tuple
 from pydantic import ConfigDict, Field, PrivateAttr
 
 from cube.containers import Container, ContainerBackend, ContainerConfig
-from cube.core import Action, ActionSchema, EnvironmentOutput, Observation, StepError, TypedBaseModel
+from cube.core import (
+    Action,
+    ActionSchema,
+    Content,
+    EnvironmentOutput,
+    Observation,
+    StepError,
+    StructuredContent,
+    TypedBaseModel,
+)
 from cube.tool import AbstractTool, ToolConfig
 
 if TYPE_CHECKING:
@@ -270,14 +279,14 @@ class Task(TypedBaseModel, ABC):
         """Validate the current state of the task and return (reward, info)."""
         pass
 
-    def get_priviledged_info(self) -> Any:
+    def get_priviledged_info(self) -> Content:
         """
         (Optional) Return privileged information about the task such as:
         - solution: list[Action] = Solve the task using a pre-defined solution.
         - evaluation_function_soruce_code: str
         - environment internal state summaries
         """
-        return None
+        return StructuredContent(data={})  # empty content by default, override to provide something else
 
     def get_status(self) -> str:
         """

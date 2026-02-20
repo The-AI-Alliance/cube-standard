@@ -176,7 +176,7 @@ class Tool(AbstractTool):
             logger.exception(action_result)
             return StepError.from_exception(e)
 
-        return Observation(contents=[Content(data=action_result, tool_call_id=action.id)])
+        return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
     @property
     def action_set(self) -> List[ActionSchema]:
