@@ -601,14 +601,14 @@ class WebArenaBenchmark(Benchmark):
     """WebArena benchmark with VM infrastructure."""
 
     # Required class-level attributes
-    benchmark_metadata = BenchmarkMetadata(
+    benchmark_metadata = BenchmarkMetadata(  # or auto-loaded from benchmark_metadata.json
         name="WebArena",
         version="1.0",
         description="Web navigation benchmark",
         tags=["web", "navigation"]
     )
     task_config_class = WebArenaTaskConfig
-    task_metadata_dict: ClassVar[dict[str, TaskMetadata]] = _load_webarena_tasks()
+    task_metadata_dict: ClassVar[dict[str, TaskMetadata]] = _load_webarena_tasks()  # or auto-loaded from task_metadata.json
 
     # Additional constructor param specific to this benchmark
     vm_config: VMConfig
