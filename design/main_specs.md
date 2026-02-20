@@ -94,7 +94,7 @@ class BenchmarkMetadata(TypedBaseModel):
         requirements (dict[str, Any]): Hardware requirements
         num_tasks (int): Total number of tasks
         tags (list[str]): Benchmark tags
-        other (dict[str, Any]): Additional metadata
+        extra_info (dict[str, Any]): Additional metadata
     """
     name: str
     version: str
@@ -104,7 +104,7 @@ class BenchmarkMetadata(TypedBaseModel):
     requirements: dict[str, Any] = {}
     num_tasks: int = 0
     tags: list[str] = []
-    other: dict[str, Any] = {}
+    extra_info: dict[str, Any] = {}
 
 
 RuntimeContext = dict[str, Any]

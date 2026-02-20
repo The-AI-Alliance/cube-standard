@@ -65,7 +65,7 @@ class BenchmarkMetadata(TypedBaseModel):
         requirements (dict[str, Any]): Environment requirements (hardware, OS, VMs, containers, etc.) to install and run the benchmark (default: empty dict)
         num_tasks (int): Total number of tasks (default: 0)
         tags (list[str]): Benchmark tags (default: empty list)
-        other (dict[str, Any]): Additional metadata (default: empty dict)
+        extra_info (dict[str, Any]): Additional metadata (default: empty dict)
     """
 
     name: str = Field(..., description="Benchmark name")
@@ -79,7 +79,7 @@ class BenchmarkMetadata(TypedBaseModel):
     )
     num_tasks: int = Field(default=0, description="Total number of tasks")
     tags: list[str] = Field(default_factory=list, description="Benchmark tags")
-    other: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    extra_info: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     # TODO: discuss adding / removing fields such as homepage, repository, citation, etc.
 
 
@@ -142,7 +142,7 @@ class Benchmark(TypedBaseModel, ABC):
         * ``authors``      — JSON array,  e.g. ``["Alice","Bob"]``
         * ``tags``         — JSON array,  e.g. ``["toy","counter"]``
         * ``requirements`` — JSON object, e.g. ``{"gpu": false}``
-        * ``other``        — JSON object, e.g. ``{}``
+        * ``extra_info``   — JSON object, e.g. ``{}``
 
         ``num_tasks`` is parsed as an integer (omit the column to use the
         default of ``0``).
@@ -152,7 +152,7 @@ class Benchmark(TypedBaseModel, ABC):
             name,version,description,num_tasks,tags
             toy-counter,1.0.0,My benchmark,3,"[""toy""]"
         """
-        _JSON_FIELDS = ("authors", "tags", "requirements", "other")
+        _JSON_FIELDS = ("authors", "tags", "requirements", "extra_info")
         with open(path, newline="") as f:
             reader = csv.DictReader(f)
             row = next(reader, None)
