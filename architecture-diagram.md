@@ -207,7 +207,7 @@ classDiagram
         +obs_postprocess(obs) Observation
         +close() None
         +get_status() str
-        +get_priviledged_info() Any
+        +get_priviledged_info() Content
         +action_set List~ActionSchema~
     }
 

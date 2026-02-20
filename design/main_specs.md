@@ -445,7 +445,7 @@ class Task(TypedBaseModel, ABC):
             Tuple of (reward, info dict with evaluation details)
         """
 
-    def get_priviledged_info(self) -> Any:
+    def get_priviledged_info(self) -> Content:
         """
         Return privileged information for evaluation judges.
 
@@ -456,10 +456,9 @@ class Task(TypedBaseModel, ABC):
         - Ground-truth answers
         - Environment internal state summaries
 
-        Returns: Privileged context (format depends on task).
-                 None if no privileged info available.
+        Returns: Content with privileged context. Default: empty StructuredContent.
         """
-        return None
+        return StructuredContent(data={})
 
     def get_status(self) -> str:
         """
@@ -843,7 +842,7 @@ classDiagram
         +evaluate(obs) Tuple~float,dict~
         +filter_actions(actions) List~ActionSchema~
         +obs_postprocess(obs) Observation
-        +get_priviledged_info() Any
+        +get_priviledged_info() Content
         +get_status() str
         +finished(obs) bool
         +close() void
