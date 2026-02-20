@@ -62,7 +62,7 @@ class BenchmarkMetadata(TypedBaseModel):
         description (str): Benchmark description
         authors (list[str]): List of benchmark author names (default: empty list)
         license (str): Benchmark license (default: empty string)
-        requirements (dict[str, Any]): Hardware requirements to install and run the benchmark (default: empty dict)
+        requirements (dict[str, Any]): Environment requirements (hardware, OS, VMs, containers, etc.) to install and run the benchmark (default: empty dict)
         num_tasks (int): Total number of tasks (default: 0)
         tags (list[str]): Benchmark tags (default: empty list)
         other (dict[str, Any]): Additional metadata (default: empty dict)
@@ -74,7 +74,8 @@ class BenchmarkMetadata(TypedBaseModel):
     authors: list[str] = Field(default_factory=list, description="List of benchmark author names")
     license: str = Field(default="", description="Benchmark license")
     requirements: dict[str, Any] = Field(
-        default_factory=dict, description="Hardware requirements to install and run the benchmark"
+        default_factory=dict,
+        description="Environment requirements (hardware, OS, VMs, containers, etc.) to install and run the benchmark",
     )
     num_tasks: int = Field(default=0, description="Total number of tasks")
     tags: list[str] = Field(default_factory=list, description="Benchmark tags")
