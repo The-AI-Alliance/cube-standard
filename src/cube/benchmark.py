@@ -110,15 +110,16 @@ class Benchmark(TypedBaseModel, ABC):
     model_config = ConfigDict(arbitrary_types_allowed=True)  # allow non-serializable fields like AbstractSeedGenerator
 
     # ------------------------------------------------------------------
-    # File-loading helpers — call these at class definition time:
+    # File-loading helpers
+    #
+    # Automatically called in __init_subclass__ if the relevant class variables aren't already defined,
+    # looking for files next to the benchmark module file.
+    # You can also call these directly at class definition time in your subclass.
     #
     #   class MyBenchmark(Benchmark):
     #       benchmark_metadata = Benchmark.benchmark_metadata_from_json("benchmark.json")
     #       task_metadata = Benchmark.task_metadata_from_csv("tasks.csv")
     #       task_config_class  = MyTaskConfig
-    #
-    # Paths are resolved relative to the current working directory.
-    # Use `Path(__file__).parent / "file"` for paths relative to the module.
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -227,7 +228,52 @@ class Benchmark(TypedBaseModel, ABC):
         return self.benchmark_metadata.name
 
     def __init_subclass__(cls, **kwargs):
-        """Ensure concrete subclasses define required class attributes."""
+        """Hook called automatically by Python whenever a new subclass of Benchmark is defined.
+
+        It validates that every **concrete** subclass (i.e. one that has no remaining abstract
+        methods) provides the three required class-level attributes:
+
+        * ``benchmark_metadata`` — a :class:`BenchmarkMetadata` instance describing the benchmark.
+        * ``task_metadata`` — a ``dict[str, TaskMetadata]`` mapping task IDs to their metadata.
+        * ``task_config_class`` — a subclass of :class:`TaskConfig` used to instantiate tasks.
+
+        For ``benchmark_metadata`` and ``task_metadata``, if the attribute is **not** defined
+        directly on the subclass, this hook automatically tries to load it from a file placed
+        next to the benchmark module (``benchmark_metadata.json/.csv`` or
+        ``task_metadata.json/.csv``).  A ``TypeError`` is raised if neither the attribute nor
+        a matching file can be found.
+
+        Abstract intermediate classes (those that still declare ``@abstractmethod`` members) are
+        skipped — validation only fires once all abstract methods have been implemented.
+
+        Example::
+
+            # Option 1 — auto-load from files next to the benchmark module
+            # (benchmark_metadata.json and task_metadata.csv are found automatically)
+            class MyBenchmark(Benchmark):
+                task_config_class = MyTaskConfig
+
+                def _setup(self): ...
+                def close(self): ...
+
+            # Option 2 — supply metadata explicitly as instances
+            class MyBenchmark(Benchmark):
+                benchmark_metadata = BenchmarkMetadata(name="my-bench", version="1.0", description="...")
+                task_metadata      = {"task-1": TaskMetadata(id="task-1"), ...}
+                task_config_class  = MyTaskConfig
+
+                def _setup(self): ...
+                def close(self): ...
+
+            # Option 3 — load from custom paths using the provided loader helpers
+            class MyBenchmark(Benchmark):
+                benchmark_metadata = Benchmark.benchmark_metadata_from_json("/data/bench/meta.json")
+                task_metadata      = Benchmark.task_metadata_from_csv("/data/bench/tasks.csv")
+                task_config_class  = MyTaskConfig
+
+                def _setup(self): ...
+                def close(self): ...
+        """
         super().__init_subclass__(**kwargs)
         # Only enforce for concrete classes (not abstract intermediate classes)
         if not getattr(cls, "__abstractmethods__", None):
