@@ -1,3 +1,18 @@
+"""
+Core data models for CUBE.
+
+This module defines the fundamental types used across the framework: Action,
+ActionSchema, Content (and subclasses), Observation, StepError, EnvironmentOutput,
+and TypedBaseModel.
+
+Abstract classes:
+    Content — subclasses must implement:
+        to_markdown() -> str          render content as a Markdown string
+        to_llm_message() -> dict      render content as an LLM message dict
+    Built-in implementations are provided for the most common content types:
+    TextContent, StructuredContent, ImageContent, AudioContent, VideoContent.
+"""
+
 import base64
 import importlib
 import inspect
@@ -5,7 +20,7 @@ import io
 import json
 import traceback
 from abc import ABC, abstractmethod
-from typing import Any, Callable, ClassVar, Literal, Self
+from typing import Any, Callable, ClassVar, Self
 
 import litellm
 from PIL import Image as PILImage
@@ -52,13 +67,11 @@ class ActionSchema(TypedBaseModel):
     Compatible with OAI, Anthropic and VLLM definitions.
 
     Attributes:
-        type (Literal["function"]): The type of the tool, which is always "function".
         name (str): The name of the function.
         description (str): A brief description of the function.
         parameters (dict): A dictionary containing the parameters of the function.
     """
 
-    type: Literal["function"] = "function"
     name: str
     description: str
     parameters: dict = Field(default_factory=dict)

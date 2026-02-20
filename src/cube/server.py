@@ -1,3 +1,32 @@
+"""
+HTTP server utilities for CUBE.
+
+This module provides FastAPI app factories and server launchers for serving
+benchmarks and tasks over a REST API, exposing endpoints for task listing,
+spawning, stepping, and evaluation.
+
+Current limitation — local deployment only:
+    The `make_benchmark_rpc_server` and `make_task_rpc_server` helpers accept
+    only a (host, port) pair and launch a subprocess on the local machine via
+    `multiprocessing.Process`. This works well for single-machine evaluations
+    but is insufficient for distributed or cloud deployments.
+
+    To support remote hosting (AWS, GCP, Azure, Modal, fly.io, …) a future
+    abstraction should decouple app creation from app deployment. A natural
+    design would mirror the existing ContainerBackend pattern:
+
+        class ServerBackend(ABC):
+            @abstractmethod
+            def deploy(self, app: FastAPI) -> str:
+                '''Deploy app and return its public URL.'''
+
+    Concrete backends could then handle cloud-specific concerns (auth, TLS,
+    environment variables, cold-start behaviour, scaling) while callers stay
+    agnostic to the deployment target. The existing `make_*_fastapi_app`
+    helpers already return a plain FastAPI object and are a good foundation
+    for this split.
+"""
+
 import logging
 import multiprocessing
 from typing import Any, Dict, List, Tuple

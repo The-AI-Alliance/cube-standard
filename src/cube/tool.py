@@ -1,9 +1,46 @@
 """
 Tool configuration for CUBE benchmarks.
 
-ToolConfig allows researchers to swap MCP server implementations for experimentation,
-enabling research on different tool sets, implementations, and configurations without
-modifying benchmark code.
+This module defines AbstractTool, Tool, ToolConfig, and the @tool_action decorator
+for implementing and configuring agent action interfaces. ToolConfig allows researchers
+to swap tool implementations for experimentation, enabling research on different tool
+sets and configurations without modifying benchmark code.
+
+Abstract classes:
+    AbstractTool — subclasses must implement:
+        - execute_action(action: Action) -> Observation | StepError
+        - action_set (property) -> list[ActionSchema]
+    Tool is a concrete subclass of AbstractTool that implements both automatically
+    via the @tool_action decorator — subclass Tool instead of AbstractTool directly.
+
+    ToolConfig — subclasses must implement:
+        - make() -> AbstractTool    instantiate the tool from serialized config data
+
+Example — defining a custom tool and its config:
+
+    from cube.tool import Tool, ToolConfig, tool_action
+
+    class BrowserTool(Tool):
+        base_url: str
+
+        @tool_action
+        def navigate(self, url: str) -> str:
+            '''Navigate to a URL and return the page title.'''
+            ...
+
+        @tool_action
+        def click(self, selector: str) -> str:
+            '''Click on an element identified by a CSS selector.'''
+            ...
+
+    class BrowserToolConfig(ToolConfig):
+        base_url: str = "http://localhost:9222"
+
+        def make(self) -> BrowserTool:
+            return BrowserTool(base_url=self.base_url)
+
+The BrowserToolConfig can then be passed to a Task or Benchmark, letting
+harness users swap browser backends without touching benchmark logic.
 """
 
 import logging
@@ -74,7 +111,7 @@ class AbstractTool(ABC):
 
 class ToolConfig(TypedBaseModel, ABC):
     """
-    Configuration for creating MCP servers with task-specific tools.
+    Configuration for creating task-specific tools.
 
     ToolConfig enables research on tool variability by allowing researchers to:
     - Swap out different tool implementations (e.g., Playwright vs Selenium)

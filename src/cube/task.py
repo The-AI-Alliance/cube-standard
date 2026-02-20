@@ -1,9 +1,19 @@
 """
-Task Session Management for CUBE.
+Task management for CUBE.
 
-This module provides the Task base class and TaskSession class which implements
-the task-level API for managing individual task instances. It handles both MCP
-protocol methods (tools/*, resources/*) and CUBE extensions (cube/*).
+This module defines the Task base class, TaskMetadata, and TaskConfig for
+implementing and configuring individual benchmark tasks. By design, Task
+unifies gym-like environment dynamics (reset/step/close) and task-specific
+logic (evaluate/filter_actions/obs_postprocess) in a single class, so that
+benchmark authors have one coherent place to define both what the agent can
+do and how it is evaluated.
+
+Abstract classes:
+    Task — subclasses must implement:
+        reset() -> (Observation, dict)        set up initial state, return first obs
+        evaluate(obs: Observation) -> (float, dict)   score the current state
+    TaskConfig — subclasses must implement:
+        make(...) -> Task     instantiate the Task from serialized config data
 """
 
 from __future__ import annotations
@@ -48,8 +58,8 @@ class TaskMetadata(TypedBaseModel):
         id (str): Unique task identifier
         split (Literal["train", "val", "test"]): Split for the task (default: "test")
         abstract_description (str): Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.reset(). (default: "")
-        tags (list[str]): List of task tags (default: empty list)
         recommended_max_steps (int | None): Recommended maximum number of steps to help harness prevent infinite running agents. Not a hard limit, the task can still run longer if needed. (default: None)
+        container_config (ContainerConfig | None): Optional container configuration for this task (default: None, meaning no container needed).
         extra_info (dict[str, Any]): Additional task metadata, eg: difficulty level, domain, etc. (default: empty dict)
     """
 

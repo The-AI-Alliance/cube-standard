@@ -1,3 +1,23 @@
+"""
+Benchmark management for CUBE.
+
+This module defines the Benchmark base class and BenchmarkMetadata for managing
+collections of tasks, including task spawning, subsetting, and metadata loading
+from JSON or CSV files.
+
+Abstract classes:
+    Benchmark — subclasses must implement:
+        _setup() -> None    create shared infrastructure, populate _runtime_context
+        close() -> None     tear down resources created in _setup()
+    and define the following class variable:
+        task_config_class: type[TaskConfig]     used by get_task_configs()
+    The following class variables are also required but can be omitted if the
+    corresponding metadata files (benchmark_metadata.json/.csv, task_metadata.json/.csv)
+    are placed next to the benchmark module file — they will be loaded automatically:
+        benchmark_metadata: BenchmarkMetadata
+        task_metadata_dict: dict[str, TaskMetadata]
+"""
+
 import copy
 import csv
 import fnmatch
@@ -59,7 +79,7 @@ class BenchmarkMetadata(TypedBaseModel):
     num_tasks: int = Field(default=0, description="Total number of tasks")
     tags: list[str] = Field(default_factory=list, description="Benchmark tags")
     other: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
-    # TODO: discuss adding fields such as homepage, repository, citation, etc.
+    # TODO: discuss adding / removing fields such as homepage, repository, citation, etc.
 
 
 class Benchmark(TypedBaseModel, ABC):

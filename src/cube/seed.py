@@ -1,3 +1,15 @@
+"""
+Seed generation utilities for CUBE.
+
+This module provides deterministic seed generation for reproducible task randomization,
+used to assign consistent random seeds to tasks based on their metadata.
+
+Abstract classes:
+    AbstractSeedGenerator — subclasses must implement:
+        __call__(task_metadata: TaskMetadata) -> list[int]   return the list of
+                                                             seeds for a given task
+"""
+
 import hashlib
 from abc import ABC, abstractmethod
 

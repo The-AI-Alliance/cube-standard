@@ -108,9 +108,7 @@ class CounterToolConfig(ToolConfig):
 
 # Task Implementation
 class ReachTargetTask(Task):
-    """Task: Increment counter to reach target value.
-    Tool is created from tool_config by the base Tool class model_post_init().
-    """
+    """Task: Increment counter to reach target value."""
 
     @property
     def target(self) -> int:
