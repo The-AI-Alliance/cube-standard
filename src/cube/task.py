@@ -86,31 +86,29 @@ class Task(TypedBaseModel, ABC):
     """
     Represents a task that an agent must complete in an environment.
 
+    On construction, the base class launches the container (if configured) and then
+    calls tool_config.make(container) to create the tool, so the tool can connect
+    to the container from the start.
+
     This class contains:
-    1. an `AbstractTool` and an `action_set`:
-        the action set is by default the action set defined by the tool.
+    1. task logic:
+        + evaluate(obs) -> (float, dict)           abstract — score the current state
+        - filter_actions(actions) -> actions       optional whitelist of tool actions
+        - obs_postprocess(obs) -> obs              optional observation post-processing
+        - finished(obs) -> bool                    optional early-termination check
+        - get_priviledged_info() -> Content        optional privileged task info
 
-    2. the task logic:
-        - filter_actions() -- optional method to white-list a subset of the tool actions (default filters nothing).
-        - obs_postprocess(obs) -> obs -- optional method to modify the observation before returning it (default does nothing).
-        + evaluate(obs) -> reward, info -- abstract method to implement
-        - get_priviledged_info() -- optional method to return golden trajectory, eval function code, ... (default returns None).
-        - finished() -- optional method to check if the task is done
-
-    3. the gym-like environment dynamics:
-        + reset() -> Observation, info -- abstract method to implement
-        - step(Action) -> Observation -- calls self.tool.execute_action
-        - close() -- optional method to cleanup resources
+    2. gym-like environment dynamics:
+        + reset() -> (Observation, dict)           abstract — set up initial state, return first obs
+        - step(action) -> EnvironmentOutput        execute action via tool, evaluate if done
+        - close()                                  optional resource cleanup
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # Serializable fields
     metadata: TaskMetadata
-    tool_config: ToolConfig | None = Field(
-        default=None,
-        description="Optional tool config to create the tool from (Pattern 1). If None, the subclass must set self._tool in model_post_init (Pattern 2).",
-    )
+    tool_config: ToolConfig = Field(description="Tool configuration used to instantiate the tool.")
     container_backend: ContainerBackend | None = Field(
         default=None, description="Optional backend used to launch a container during model_post_init."
     )
@@ -130,43 +128,17 @@ class Task(TypedBaseModel, ABC):
     _container: Container | None = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
-        """
-        Called after Pydantic __init__.
-        Creates tool and container, then validates tool is set.
-
-        Two patterns are supported:
-
-        Pattern 1 — tool sourced from tool_config (swappable by benchmark user):
-            No override needed. Pass tool_config at construction and the base class
-            creates self._tool automatically.
-
-        Pattern 2 — tool hardcoded by the task implementation:
-            Override model_post_init, set self._tool before calling super(), then
-            super() validates it is set.
-            >>> def model_post_init(self, __context):
-            ...     self._tool = MyTool()
-            ...     super().model_post_init(__context)
-        """
-        # Pattern 1: create tool from tool_config if not already set by a subclass
-        if self._tool is None and self.tool_config is not None:
-            self._tool = self.tool_config.make()
-
-        # Launch container if a backend and container config are both available
+        """Called after Pydantic __init__. Launches container if configured, then creates tool."""
+        # Launch container first so it can be passed to the tool factory
         if self.container_backend is not None and self.metadata.container_config is not None:
             self._container = self.container_backend.launch(self.metadata.container_config)
 
-        # Enforce that tool is set (catches Pattern 2 violations at construction time)
-        if self._tool is None:
-            raise ValueError(
-                f"{self.__class__.__name__}.tool is not set. "
-                "Either provide a tool_config, or override model_post_init to set self._tool "
-                "before calling super().model_post_init(__context)."
-            )
+        # Create tool, passing the container so it can connect to it
+        self._tool = self.tool_config.make(container=self._container)
 
     @property
     def tool(self) -> AbstractTool:
-        assert self._tool is not None
-        return self._tool
+        return self._tool  # type: ignore[return-value]
 
     @property
     def container(self) -> Container | None:

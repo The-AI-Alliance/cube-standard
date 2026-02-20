@@ -288,6 +288,7 @@ class TaskConfig(ABC, TypedBaseModel):
 5. Inside `Task.model_post_init()`:
    - Reads config: `self.metadata.container_config`
    - Launches container: `self._container = container_backend.launch(container_config)`
+   - Creates tool: `self._tool = tool_config.make(container=self._container)`
 6. Container lives for the duration of the task
 7. Container is stopped in `task.close()` via `container.stop()`
 

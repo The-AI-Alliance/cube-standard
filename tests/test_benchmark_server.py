@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
-from cube.containers import ContainerBackend
+from cube.containers import Container, ContainerBackend
 from cube.core import Observation
 from cube.server import make_benchmark_fastapi_app
 from cube.task import Task, TaskConfig, TaskMetadata
@@ -23,7 +23,7 @@ class MinimalTool(Tool):
 class MinimalToolConfig(ToolConfig):
     """Minimal tool config for testing."""
 
-    def make(self) -> Tool:
+    def make(self, container: Container | None = None) -> Tool:
         """Return minimal tool."""
         return MinimalTool()
 
@@ -52,7 +52,7 @@ class MinimalTaskConfig(TaskConfig):
         """Create minimal task."""
         return MinimalTask(
             metadata=TaskMetadata(id=self.task_id),
-            tool_config=self.tool_config,
+            tool_config=self.tool_config or MinimalToolConfig(),
             runtime_context=runtime_context,
             container_backend=container_backend,
         )

@@ -14,11 +14,13 @@ Abstract classes:
     via the @tool_action decorator — subclass Tool instead of AbstractTool directly.
 
     ToolConfig — subclasses must implement:
-        - make() -> AbstractTool    instantiate the tool from serialized config data
+        - make(container) -> AbstractTool    instantiate the tool from serialized config data,
+                                             connecting to the container if one was launched
 
 Example — defining a custom tool and its config:
 
     from cube.tool import Tool, ToolConfig, tool_action
+    from cube.containers import Container
 
     class BrowserTool(Tool):
         base_url: str
@@ -36,8 +38,9 @@ Example — defining a custom tool and its config:
     class BrowserToolConfig(ToolConfig):
         base_url: str = "http://localhost:9222"
 
-        def make(self) -> BrowserTool:
-            return BrowserTool(base_url=self.base_url)
+        def make(self, container: Container | None = None) -> BrowserTool:
+            url = container.get_url(port=9222) if container else self.base_url
+            return BrowserTool(base_url=url)
 
 The BrowserToolConfig can then be passed to a Task or Benchmark, letting
 harness users swap browser backends without touching benchmark logic.
@@ -46,14 +49,10 @@ harness users swap browser backends without touching benchmark logic.
 import logging
 from abc import ABC, abstractmethod
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Callable, List
+from typing import Any, Callable, List
 
+from cube.containers import Container
 from cube.core import Action, ActionSchema, Content, Observation, StepError, TypedBaseModel
-
-# Forward reference to avoid circular import
-if TYPE_CHECKING:
-    pass
-
 
 logger = logging.getLogger(__name__)
 
@@ -120,12 +119,14 @@ class ToolConfig(TypedBaseModel, ABC):
     """
 
     @abstractmethod
-    def make(self) -> AbstractTool:
+    def make(self, container: Container | None = None) -> AbstractTool:
         """
         Instantiate Tool from configuration data.
 
-        This method allows creating Tool instances from serialized data,
-        enabling easy swapping of tool configurations in benchmarks.
+        Args:
+            container: The launched container for this task, if any. Use it to
+                       extract connection info (host, ports) to configure the
+                       tool's endpoint. None if the task needs no container.
 
         Returns:
             AbstractTool instance

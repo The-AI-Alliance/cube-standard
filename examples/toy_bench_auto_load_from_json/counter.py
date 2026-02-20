@@ -9,7 +9,7 @@ sitting next to this file.
 from typing import Any, ClassVar, Dict, Tuple
 
 from cube.benchmark import Benchmark, RuntimeContext
-from cube.containers import ContainerBackend
+from cube.containers import Container, ContainerBackend
 from cube.core import Action, ActionSchema, Observation
 from cube.task import Task, TaskConfig
 from cube.tool import Tool, ToolConfig, tool_action
@@ -54,7 +54,7 @@ class CounterToolConfig(ToolConfig):
     increment_by: int = 1
     enable_decrement: bool = False
 
-    def make(self) -> ConfigurableCounterTool:
+    def make(self, container: Container | None = None) -> ConfigurableCounterTool:
         return ConfigurableCounterTool(increment_by=self.increment_by, enable_decrement=self.enable_decrement)
 
 

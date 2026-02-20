@@ -25,7 +25,7 @@ graph TD
     TaskConfig -->|"has"| ToolConfig
 
     %% ToolConfig creates Tool
-    ToolConfig -->|"make()"| Tool
+    ToolConfig -->|"make(container)"| Tool
 
     %% Task uses Tool
     Task -->|"tool field"| Tool
@@ -213,7 +213,7 @@ classDiagram
 
     class ToolConfig {
         <<abstract>>
-        +make() AbstractTool
+        +make(container) AbstractTool
     }
 
     class AbstractTool {
@@ -291,8 +291,8 @@ classDiagram
      - Calls `task_config.make(runtime_context=benchmark._runtime_context, container_backend=benchmark.container_backend)`
      - Inside `make()`: constructs `Task(metadata, tool_config, runtime_context, container_backend, ...)`
      - Inside `Task.model_post_init()`:
-       - Creates tool from `tool_config` (Pattern 1) or subclass sets `_tool` (Pattern 2)
        - Launches container: `_container = container_backend.launch(metadata.container_config)`
+       - Creates tool: `_tool = tool_config.make(container=_container)`
    - **Creates Server**:
      - Calls `make_task_rpc_server(task)`
      - Creates FastAPI app with REST endpoints
@@ -349,7 +349,7 @@ Tools are standalone objects that execute actions:
 
 Task directly holds a reference to its Tool:
 
-- **task.tool**: AbstractTool instance created in `Task.model_post_init()` from `tool_config` (or set directly by subclass)
+- **task.tool**: AbstractTool instance created in `Task.model_post_init()` via `tool_config.make(container)`
 - **task.step()**: Directly calls `self.tool.execute_action(action)`
 - **task.action_set**: Returns `self.filter_actions(self.tool.action_set)`
 - **No Environment wrapper**: Task implements environment dynamics directly

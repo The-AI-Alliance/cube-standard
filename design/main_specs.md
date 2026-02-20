@@ -288,7 +288,7 @@ class Task(TypedBaseModel, ABC):
 
     # Serializable fields
     metadata: TaskMetadata
-    tool_config: ToolConfig | None = None  # Pass to create tool automatically (Pattern 1)
+    tool_config: ToolConfig  # Required; launched container is passed to tool_config.make(container)
     container_backend: ContainerBackend | None = None  # Backend for launching container
     runtime_context: RuntimeContext | None = None  # Shared infrastructure references
     validate_per_step: bool = False  # Whether to evaluate after each step
@@ -299,15 +299,7 @@ class Task(TypedBaseModel, ABC):
     _container: Container | None = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
-        """
-        Called after Pydantic __init__. Creates tool and container.
-
-        Pattern 1 — tool sourced from tool_config (swappable by benchmark user):
-            No override needed. Pass tool_config at construction.
-
-        Pattern 2 — tool hardcoded by the task implementation:
-            Override model_post_init, set self._tool, then call super().
-        """
+        """Called after Pydantic __init__. Launches container if configured, then creates tool."""
 
     @property
     def tool(self) -> AbstractTool: ...

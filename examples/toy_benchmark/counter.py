@@ -9,7 +9,7 @@ This example demonstrates:
 from typing import Any, ClassVar, Dict, Tuple
 
 from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
-from cube.containers import ContainerBackend
+from cube.containers import Container, ContainerBackend
 from cube.core import Action, ActionSchema, Observation
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
@@ -97,7 +97,7 @@ class CounterToolConfig(ToolConfig):
     enable_decrement: bool = False
     enable_reset: bool = False
 
-    def make(self) -> ConfigurableCounterTool:
+    def make(self, container: Container | None = None) -> ConfigurableCounterTool:
         """Create tool instance with configured features."""
         return ConfigurableCounterTool(
             increment_by=self.increment_by,
