@@ -379,14 +379,38 @@ class Benchmark(TypedBaseModel, ABC):
 
     def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "Benchmark":
         """
-        Create a new Benchmark instance containing only the tasks whose glob_key matches the glob_pattern.
-        This is useful for creating smaller benchmarks from a larger one, for example for testing or ablations.
+        Create a new Benchmark instance containing only the tasks whose ``glob_key`` matches ``glob_pattern``.
+
+        This is useful for creating smaller benchmarks from a larger one, for example for testing
+        or ablations.
+
+        ``glob_key`` can be any of the top-level :class:`~cube.task.TaskMetadata` fields:
+
+        * ``id``                    — task identifier
+        * ``split``                 — ``"train"``, ``"val"``, or ``"test"``
+        * ``abstract_description``  — broad description of the task
+        * ``recommended_max_steps`` — integer step budget (matched as a string)
+
+        It can also address a key inside the ``extra_info`` dict using dot-notation:
+
+        * ``extra_info.<key>``  e.g. ``extra_info.difficulty`` or ``extra_info.domain``
+
+        ``glob_pattern`` follows standard Unix shell-style wildcards (``*``, ``?``, ``[seq]``).
+        Non-string field values are converted to strings before matching.
         """
-        task_subset = [
-            tm
-            for tm in self.task_metadata.values()
-            if hasattr(tm, glob_key) and fnmatch.fnmatch(getattr(tm, glob_key), glob_pattern)
-        ]
+        if glob_key.startswith("extra_info."):
+            extra_key = glob_key[len("extra_info.") :]
+            task_subset = [
+                tm
+                for tm in self.task_metadata.values()
+                if extra_key in tm.extra_info and fnmatch.fnmatch(str(tm.extra_info[extra_key]), glob_pattern)
+            ]
+        else:
+            task_subset = [
+                tm
+                for tm in self.task_metadata.values()
+                if hasattr(tm, glob_key) and fnmatch.fnmatch(str(getattr(tm, glob_key)), glob_pattern)
+            ]
         if not task_subset:
             raise ValueError(f"No tasks found matching glob pattern '{glob_pattern}' on key '{glob_key}'")
         return self.subset_from_list(tasks=task_subset, benchmark_name_suffix=f"[{glob_key}={glob_pattern}]")
