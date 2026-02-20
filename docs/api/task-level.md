@@ -635,4 +635,3 @@ The server automatically exposes all methods as RPC endpoints with the same sign
 - **[Benchmark-Level API]({{site.baseurl}}/api/benchmark-level)**: Learn how to manage multiple tasks
 - **[Benchmark Author Guide]({{site.baseurl}}/guides/benchmark-authors)**: Complete tutorial on wrapping a benchmark
 - **[Examples](../examples/)**: See complete implementation examples
-

@@ -28,3 +28,25 @@ All _data_ contributions are licensed under the [Community Data License Agreemen
 > Before you make any git commits with changes, understand what's required for DCO.
 
 See the Alliance contributing guide [section on DCO](https://github.com/The-AI-Alliance/community/blob/main/CONTRIBUTING.md#developer-certificate-of-origin) for details. In practical terms, supporting this requirement means you must use the `-s` flag with your `git commit` commands.
+
+### Pre-commit hooks (recommended)
+
+This repo uses the [`pre-commit`](https://pre-commit.com/) framework to run fast checks locally before you commit, including enforcing the DCO `Signed-off-by` line.
+
+Install the hooks (you only need to do this once per clone):
+
+```sh
+pre-commit install --hook-type pre-commit --hook-type commit-msg
+```
+
+Run the checks on all files (optional, useful the first time):
+
+```sh
+pre-commit run --all-files
+```
+
+When committing, include your sign-off:
+
+```sh
+git commit -s -m "your message"
+```

@@ -22,9 +22,7 @@ def run_graphql_query(token, query, variables=None):
         payload["variables"] = variables
 
     try:
-        response = requests.post(
-            graphql_url, headers=headers, json=payload, timeout=30
-        )  # Added timeout
+        response = requests.post(graphql_url, headers=headers, json=payload, timeout=30)  # Added timeout
         response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
 
         json_response = response.json()
@@ -175,16 +173,12 @@ while retries < max_retries:
         if stats_contributors is not None:
             break
         else:
-            print(
-                f"Contributor stats not available yet (Attempt {retries + 1}/{max_retries}). Waiting 30 seconds..."
-            )
+            print(f"Contributor stats not available yet (Attempt {retries + 1}/{max_retries}). Waiting 30 seconds...")
             time.sleep(30)
             retries += 1
     except GithubException as e:
         if e.status == 202:
-            print(
-                f"Contributor stats computing (Attempt {retries + 1}/{max_retries}). Waiting 30 seconds..."
-            )
+            print(f"Contributor stats computing (Attempt {retries + 1}/{max_retries}). Waiting 30 seconds...")
             time.sleep(30)
             retries += 1
         elif e.status == 404:
@@ -197,12 +191,8 @@ while retries < max_retries:
             break
 
 if stats_contributors is not None:
-    cutoff_date_stats_naive = (
-        cutoff_datetime_naive  # Use naive for comparison consistency
-    )
-    print(
-        f"Cutoff date for contributor stats: {cutoff_date_stats_naive} UTC (comparing week start)"
-    )
+    cutoff_date_stats_naive = cutoff_datetime_naive  # Use naive for comparison consistency
+    print(f"Cutoff date for contributor stats: {cutoff_date_stats_naive} UTC (comparing week start)")
     for stat in stats_contributors:
         if not hasattr(stat, "weeks") or not stat.weeks:
             continue
@@ -216,15 +206,9 @@ if stats_contributors is not None:
                     if hasattr(week_stat, "a") and isinstance(week_stat.a, int):
                         recent_contributor_adds += week_stat.a
             else:
-                print(
-                    f"Warning: Unexpected type for week_stat.w: {type(week_start_time)}. Skipping."
-                )
-    metrics["contributors_additions_recent_weeks"] = (
-        recent_contributor_adds  # Changed name slightly
-    )
-    print(
-        f"Found {recent_contributor_adds} contributor additions (approx) based on recent weekly stats."
-    )
+                print(f"Warning: Unexpected type for week_stat.w: {type(week_start_time)}. Skipping.")
+    metrics["contributors_additions_recent_weeks"] = recent_contributor_adds  # Changed name slightly
+    print(f"Found {recent_contributor_adds} contributor additions (approx) based on recent weekly stats.")
 else:
     metrics["contributors_additions_recent_weeks"] = None
     if retries == max_retries:
@@ -249,35 +233,25 @@ found_view_data_for_target = False
 try:
     views_traffic_obj = repo.get_views_traffic(per="day")
     # Check if the object and the 'views' list exist and are not empty
-    if (
-        views_traffic_obj
-        and hasattr(views_traffic_obj, "views")
-        and views_traffic_obj.views
-    ):
+    if views_traffic_obj and hasattr(views_traffic_obj, "views") and views_traffic_obj.views:
         # Iterate through the list of daily view data
         for view_entry in views_traffic_obj.views:
             # Check if the entry has a timestamp and it's a datetime object
-            if hasattr(view_entry, "timestamp") and isinstance(
-                view_entry.timestamp, datetime
-            ):
+            if hasattr(view_entry, "timestamp") and isinstance(view_entry.timestamp, datetime):
                 # Compare the date part of the timestamp with our target date
                 if view_entry.timestamp.date() == target_traffic_date_naive:
                     # Found the data for yesterday!
                     metrics["traffic_views_last_day_total"] = getattr(
                         view_entry, "count", None
                     )  # Use getattr for safety
-                    metrics["traffic_views_last_day_unique"] = getattr(
-                        view_entry, "uniques", None
-                    )
+                    metrics["traffic_views_last_day_unique"] = getattr(view_entry, "uniques", None)
                     print(
                         f"Found views for {target_traffic_date_naive}: Total={metrics['traffic_views_last_day_total']}, Unique={metrics['traffic_views_last_day_unique']}"
                     )
                     found_view_data_for_target = True
                     break  # Stop searching once found
             else:
-                print(
-                    f"Warning: Skipping view entry with missing or invalid timestamp: {view_entry}"
-                )
+                print(f"Warning: Skipping view entry with missing or invalid timestamp: {view_entry}")
 
         # After checking all entries, if we didn't find the target date
         if not found_view_data_for_target:
@@ -288,9 +262,7 @@ try:
             # metrics['traffic_views_last_day_unique'] = 0
 
     else:
-        print(
-            "Warning: No daily view data list available or attribute 'views' missing."
-        )
+        print("Warning: No daily view data list available or attribute 'views' missing.")
         # Metrics remain None as initialized
 
 except GithubException as e:
@@ -306,35 +278,25 @@ found_clone_data_for_target = False
 try:
     clones_traffic_obj = repo.get_clones_traffic(per="day")
     # Check if the object and the 'clones' list exist and are not empty
-    if (
-        clones_traffic_obj
-        and hasattr(clones_traffic_obj, "clones")
-        and clones_traffic_obj.clones
-    ):
+    if clones_traffic_obj and hasattr(clones_traffic_obj, "clones") and clones_traffic_obj.clones:
         # Iterate through the list of daily clone data
         for clone_entry in clones_traffic_obj.clones:
             # Check if the entry has a timestamp and it's a datetime object
-            if hasattr(clone_entry, "timestamp") and isinstance(
-                clone_entry.timestamp, datetime
-            ):
+            if hasattr(clone_entry, "timestamp") and isinstance(clone_entry.timestamp, datetime):
                 # Compare the date part of the timestamp with our target date
                 if clone_entry.timestamp.date() == target_traffic_date_naive:
                     # Found the data for yesterday!
                     metrics["traffic_clones_last_day_total"] = getattr(
                         clone_entry, "count", None
                     )  # Use getattr for safety
-                    metrics["traffic_clones_last_day_unique"] = getattr(
-                        clone_entry, "uniques", None
-                    )
+                    metrics["traffic_clones_last_day_unique"] = getattr(clone_entry, "uniques", None)
                     print(
                         f"Found clones for {target_traffic_date_naive}: Total={metrics['traffic_clones_last_day_total']}, Unique={metrics['traffic_clones_last_day_unique']}"
                     )
                     found_clone_data_for_target = True
                     break  # Stop searching once found
             else:
-                print(
-                    f"Warning: Skipping clone entry with missing or invalid timestamp: {clone_entry}"
-                )
+                print(f"Warning: Skipping clone entry with missing or invalid timestamp: {clone_entry}")
 
         # After checking all entries, if we didn't find the target date
         if not found_clone_data_for_target:
@@ -345,9 +307,7 @@ try:
             # metrics['traffic_clones_last_day_unique'] = 0
 
     else:
-        print(
-            "Warning: No daily clone data list available or attribute 'clones' missing."
-        )
+        print("Warning: No daily clone data list available or attribute 'clones' missing.")
         # Metrics remain None as initialized
 
 except GithubException as e:
@@ -374,9 +334,7 @@ try:
         }
         top_referrers_data.append(referrer_dict)
 
-    metrics["traffic_top_referrers_data"] = (
-        top_referrers_data  # Store the list of dicts
-    )
+    metrics["traffic_top_referrers_data"] = top_referrers_data  # Store the list of dicts
     print(f"Fetched {len(top_referrers_data)} top referrer entries.")
 
 except GithubException as e:
@@ -420,9 +378,7 @@ issues_closed_count = 0
 issues_comments_count = 0
 try:
     # Issues opened: Use 'since' which filters by creation time
-    opened_issues = repo.get_issues(
-        state="all", sort="created", since=cutoff_datetime_aware
-    )
+    opened_issues = repo.get_issues(state="all", sort="created", since=cutoff_datetime_aware)
     for issue in opened_issues:
         # Double check creation time (though 'since' should handle it)
         # Note: get_issues() returns PRs as well. We need to filter later if needed.
@@ -485,9 +441,7 @@ try:
     metrics["prs_opened_last_period"] = prs_opened_count
     metrics["prs_closed_last_period"] = prs_closed_count
     metrics["prs_merged_last_period"] = prs_merged_count
-    print(
-        f"Found: Opened={prs_opened_count}, Closed={prs_closed_count}, Merged={prs_merged_count}"
-    )
+    print(f"Found: Opened={prs_opened_count}, Closed={prs_closed_count}, Merged={prs_merged_count}")
 
 except GithubException as e:
     print(f"Warning: Could not calculate PR metrics: {e}")
@@ -503,9 +457,7 @@ pr_comments_last_period = 0  # Includes review comments and general PR comments
 
 try:
     # General Issue/PR comments (use issues endpoint)
-    all_comments = repo.get_issues_comments(
-        sort="created", direction="desc", since=cutoff_datetime_aware
-    )
+    all_comments = repo.get_issues_comments(sort="created", direction="desc", since=cutoff_datetime_aware)
     for comment in all_comments:
         # Check creation date again just to be sure
         if comment.created_at >= cutoff_datetime_aware:
@@ -519,9 +471,7 @@ try:
             break
 
     # PR Review Comments
-    review_comments = repo.get_pulls_comments(
-        sort="created", direction="desc", since=cutoff_datetime_aware
-    )
+    review_comments = repo.get_pulls_comments(sort="created", direction="desc", since=cutoff_datetime_aware)
     for comment in review_comments:
         if comment.created_at >= cutoff_datetime_aware:
             pr_comments_last_period += 1
@@ -530,9 +480,7 @@ try:
 
     metrics["issue_comments_last_period"] = issue_comments_last_period
     metrics["pr_comments_last_period"] = pr_comments_last_period  # Combined count
-    print(
-        f"Found: Issue Comments={issue_comments_last_period}, PR Comments={pr_comments_last_period}"
-    )
+    print(f"Found: Issue Comments={issue_comments_last_period}, PR Comments={pr_comments_last_period}")
 
 except GithubException as e:
     print(f"Warning: Could not calculate comment metrics: {e}")
@@ -541,9 +489,7 @@ except GithubException as e:
 
 
 # --- Discussions Metrics (via GraphQL) ---
-print(
-    f"\nCalculating Discussion Metrics for the last {lookback_days} day(s) via GraphQL..."
-)
+print(f"\nCalculating Discussion Metrics for the last {lookback_days} day(s) via GraphQL...")
 
 # Initialize metrics
 metrics["discussions_opened_last_period"] = None
@@ -556,9 +502,7 @@ if metrics.get("has_discussions"):
 
     # --- Query for Discussions Opened ---
     # Use the search API via GraphQL for efficient filtering by creation date
-    search_query_string = (
-        f"repo:{repo_name} type:discussion is:open created:>={since_iso_string}"
-    )
+    search_query_string = f"repo:{repo_name} type:discussion is:open created:>={since_iso_string}"
     # Also count closed ones created in the period? Add another query or adjust logic if needed.
     # This query counts currently 'open' discussions created since the cutoff.
 
@@ -571,19 +515,13 @@ if metrics.get("has_discussions"):
     """
     variables = {"searchQuery": search_query_string}
 
-    print(
-        f"Running GraphQL search for new discussions with query: '{search_query_string}'"
-    )
+    print(f"Running GraphQL search for new discussions with query: '{search_query_string}'")
     graphql_data_disc = run_graphql_query(token, discussions_search_query, variables)
 
     if graphql_data_disc and "search" in graphql_data_disc:
         try:
-            metrics["discussions_opened_last_period"] = graphql_data_disc["search"][
-                "discussionCount"
-            ]
-            print(
-                f"Found via GraphQL Search: Discussions Opened={metrics['discussions_opened_last_period']}"
-            )
+            metrics["discussions_opened_last_period"] = graphql_data_disc["search"]["discussionCount"]
+            print(f"Found via GraphQL Search: Discussions Opened={metrics['discussions_opened_last_period']}")
         except (KeyError, TypeError) as e:
             print(
                 f"Warning: Could not extract discussion count from GraphQL response: {e}. Response: {graphql_data_disc}"
@@ -607,9 +545,7 @@ if metrics.get("has_discussions"):
     metrics["discussions_comments_last_period"] = None  # Explicitly set to None
 
 else:
-    print(
-        "Discussions feature not enabled for this repository. Skipping GraphQL calls."
-    )
+    print("Discussions feature not enabled for this repository. Skipping GraphQL calls.")
     # Ensure metrics are None if discussions are disabled
     metrics["discussions_opened_last_period"] = None
     metrics["discussions_comments_last_period"] = None
