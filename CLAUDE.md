@@ -16,7 +16,7 @@ uv pip install -e ".[docker,daytona,modal]"  # Install all optional backends
 Two independent subsystems:
 
 1. **Core** (`base.py` → `core.py` → `tool.py` → `environment.py` → `benchmark.py`): Task/Tool/Environment abstractions for benchmarks.
-2. **Container API** (`container.py` → `backends/`): Launch containers across Local Docker, Daytona, and Modal. Separates *what* to run (ContainerSpec) from *how* to run it (ContainerBackend).
+2. **Container API** (`container.py` → `backends/`): Launch containers across Local Docker, Daytona, and Modal. Separates *what* to run (ContainerConfig) from *how* to run it (ContainerBackend).
 
 ## Key Patterns
 

@@ -10,10 +10,10 @@ import os
 import sys
 
 from dotenv import load_dotenv
+from test_harness import log, make_health_check_tests, make_tests, run_all
 
 from cube.backends.daytona import DaytonaContainerBackend
-from cube.container import ContainerError, ContainerSpec
-from test_harness import log, make_health_check_tests, make_tests, run_all
+from cube.container import ContainerConfig, ContainerError
 
 load_dotenv()
 
@@ -31,14 +31,14 @@ BACKEND_KWARGS = {
     "auto_delete_minutes": 3,
 }
 backend = DaytonaContainerBackend(**BACKEND_KWARGS)
-spec = ContainerSpec(image="python:3.12-slim")
+spec = ContainerConfig(image="python:3.12-slim")
 
 tests = make_tests(backend, spec)
 tests += make_health_check_tests(DaytonaContainerBackend, spec, BACKEND_KWARGS)
 
 
 def test_declared_ports_enforced():
-    port_spec = ContainerSpec(image="python:3.12-slim", ports=[8080])
+    port_spec = ContainerConfig(image="python:3.12-slim", ports=[8080])
     container = backend.launch(port_spec)
     try:
         try:

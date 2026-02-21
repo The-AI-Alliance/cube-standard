@@ -18,10 +18,10 @@ from tenacity import (
 from cube.container import (
     Container,
     ContainerBackend,
+    ContainerConfig,
     ContainerError,
     ContainerExecError,
     ContainerLaunchError,
-    ContainerSpec,
     ContainerStatus,
     ExecResult,
     HealthCheckError,
@@ -174,19 +174,19 @@ class LocalContainerBackend(ContainerBackend):
     remove_on_close: bool = True
 
     @staticmethod
-    def _validate_spec(spec: ContainerSpec) -> None:
+    def _validate_spec(spec: ContainerConfig) -> None:
         if spec.disk_gb != 10.0:
             raise ContainerLaunchError(
                 "LocalContainerBackend does not support `disk_gb` overrides. "
                 "Use the default value (10.0) or configure disk limits at the Docker daemon level."
             )
 
-    def launch(self, spec: ContainerSpec) -> LocalContainer:
+    def launch(self, spec: ContainerConfig) -> LocalContainer:
         self._validate_spec(spec)
         return self._launch_with_retry(spec)
 
     @_retry_launch
-    def _launch_with_retry(self, spec: ContainerSpec) -> LocalContainer:
+    def _launch_with_retry(self, spec: ContainerConfig) -> LocalContainer:
         client = docker.from_env()
 
         if self.pull_policy == "always" or (

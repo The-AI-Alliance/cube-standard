@@ -53,3 +53,6 @@ line-ending = "auto"
 
 [tool.ruff.lint]
 extend-select = ["I"] # sort imports
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

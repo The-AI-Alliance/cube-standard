@@ -20,7 +20,7 @@ Abstract classes:
 Example — defining a custom tool and its config:
 
     from cube.tool import Tool, ToolConfig, tool_action
-    from cube.containers import Container
+    from cube.container import Container
 
     class BrowserTool(Tool):
         base_url: str
@@ -51,7 +51,7 @@ from abc import ABC, abstractmethod
 from functools import wraps
 from typing import Any, Callable, List
 
-from cube.containers import Container
+from cube.container import Container
 from cube.core import Action, ActionSchema, Content, Observation, StepError, TypedBaseModel
 
 logger = logging.getLogger(__name__)

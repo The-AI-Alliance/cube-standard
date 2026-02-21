@@ -4,6 +4,7 @@ import logging
 import shlex
 import time
 from typing import Any, Dict
+
 import modal
 from tenacity import (
     before_sleep_log,
@@ -16,10 +17,10 @@ from tenacity import (
 from cube.container import (
     Container,
     ContainerBackend,
+    ContainerConfig,
     ContainerError,
     ContainerExecError,
     ContainerLaunchError,
-    ContainerSpec,
     ContainerStatus,
     ExecResult,
     HealthCheckError,
@@ -146,19 +147,19 @@ class ModalContainerBackend(ContainerBackend):
     app_name: str = "cube-container"
 
     @staticmethod
-    def _validate_spec(spec: ContainerSpec) -> None:
+    def _validate_spec(spec: ContainerConfig) -> None:
         if spec.disk_gb != 10.0:
             raise ContainerLaunchError(
                 "ModalContainerBackend does not support `disk_gb` overrides. "
                 "Use the default value (10.0)."
             )
 
-    def launch(self, spec: ContainerSpec) -> ModalContainer:
+    def launch(self, spec: ContainerConfig) -> ModalContainer:
         self._validate_spec(spec)
         return self._launch_with_retry(spec)
 
     @_retry_sandbox
-    def _launch_with_retry(self, spec: ContainerSpec) -> ModalContainer:
+    def _launch_with_retry(self, spec: ContainerConfig) -> ModalContainer:
         try:
             app = modal.App.lookup(self.app_name, create_if_missing=True)
         except Exception as exc:

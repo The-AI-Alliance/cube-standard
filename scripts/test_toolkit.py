@@ -9,21 +9,21 @@ Usage:  PYTHONPATH=scripts uv run python scripts/test_toolkit.py
 import time
 import urllib.request
 
-from cube.backends.toolkit import ToolkitContainerBackend
-from cube.container import ContainerSpec
-
 from test_harness import log, make_health_check_tests, make_tests, run_all
+
+from cube.backends.toolkit import ToolkitContainerBackend
+from cube.container import ContainerConfig
 
 BACKEND_KWARGS = {"timeout_seconds": 600}
 backend = ToolkitContainerBackend(**BACKEND_KWARGS)
-spec = ContainerSpec(image="python:3.12-slim")
+spec = ContainerConfig(image="python:3.12-slim")
 
 tests = make_tests(backend, spec)
 tests += make_health_check_tests(ToolkitContainerBackend, spec, BACKEND_KWARGS)
 
 
 def test_port_forwarding():
-    port_spec = ContainerSpec(image="python:3.12-slim", ports=[8080])
+    port_spec = ContainerConfig(image="python:3.12-slim", ports=[8080])
     container = backend.launch(port_spec)
     try:
         container.exec("python -m http.server 8080 &")

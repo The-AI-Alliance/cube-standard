@@ -21,9 +21,9 @@ from tenacity import (
 from cube.container import (
     Container,
     ContainerBackend,
+    ContainerConfig,
     ContainerExecError,
     ContainerLaunchError,
-    ContainerSpec,
     ContainerStatus,
     ExecResult,
     HealthCheckError,
@@ -269,11 +269,11 @@ class ToolkitContainerBackend(ContainerBackend):
     interactive: bool = True
     preemptable: bool = False
 
-    def launch(self, spec: ContainerSpec) -> ToolkitContainer:
+    def launch(self, spec: ContainerConfig) -> ToolkitContainer:
         return self._launch_with_retry(spec)
 
     @_retry_launch
-    def _launch_with_retry(self, spec: ContainerSpec) -> ToolkitContainer:
+    def _launch_with_retry(self, spec: ContainerConfig) -> ToolkitContainer:
         cmd: list[str] = ["job", "new"]
 
         if self.interactive:

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Tuple
 
 from pydantic import ConfigDict, Field, PrivateAttr
 
-from cube.containers import Container, ContainerBackend, ContainerConfig
+from cube.container import Container, ContainerBackend, ContainerConfig
 from cube.core import (
     Action,
     ActionSchema,

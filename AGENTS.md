@@ -12,7 +12,7 @@ cube-standard/
 │   ├── tool.py                 # Tool abstraction for action spaces
 │   ├── environment.py          # Environment and EnvConfig abstractions
 │   ├── benchmark.py            # Benchmark interface for task collections
-│   ├── container.py            # Container API: ContainerSpec, Container, ContainerBackend
+│   ├── container.py            # Container API: ContainerConfig, Container, ContainerBackend
 │   └── backends/               # Container backend implementations
 │       ├── __init__.py          # Re-exports Local, Daytona, Modal backends
 │       ├── local.py             # LocalContainerBackend (docker-py)
@@ -46,7 +46,7 @@ environment.py (Environment, EnvConfig - composes Task + Tool)
     ↑
 benchmark.py (Benchmark - task collections with tool_config)
 
-container.py (ContainerSpec, Container, ContainerBackend - independent module)
+container.py (ContainerConfig, Container, ContainerBackend - independent module)
     ↑
 backends/ (Local, Daytona, Modal, Toolkit implementations)
 ```
@@ -78,7 +78,7 @@ backends/ (Local, Daytona, Modal, Toolkit implementations)
 - **Benchmark**: Abstract with `setup()`, `close()`, `load_tasks()`, `env_configs()`
 
 ### container.py - Container API
-- **ContainerSpec**: Dataclass defining *what* to run (image, ram_gb, cpu_cores, gpu, disk_gb, ports)
+- **ContainerConfig**: Dataclass defining *what* to run (image, ram_gb, cpu_cores, gpu, disk_gb, ports)
 - **Container**: ABC for running container (exec, forward_port, get_url, stop, get_status, id)
 - **ContainerBackend**: TypedBaseModel ABC for *how* to run (launch, timeout, health_check)
 - **ExecResult**: Dataclass (stdout, stderr, exit_code, duration_seconds)
@@ -94,14 +94,14 @@ backends/ (Local, Daytona, Modal, Toolkit implementations)
 ## Container API Pattern
 
 ```python
-from cube.container import ContainerSpec
+from cube.container import ContainerConfig
 from cube.backends.local import LocalContainerBackend
 
 # 1. User defines backend once
 backend = LocalContainerBackend(timeout_seconds=60)
 
 # 2. Benchmark defines spec per task
-spec = ContainerSpec(image="python:3.12-slim", ram_gb=4, ports=[8080])
+spec = ContainerConfig(image="python:3.12-slim", ram_gb=4, ports=[8080])
 
 # 3. Launch and use
 container = backend.launch(spec)

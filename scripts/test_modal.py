@@ -10,20 +10,20 @@ import time
 import urllib.request
 from urllib.parse import urlparse
 
-from cube.backends.modal import ModalContainerBackend
-from cube.container import ContainerLaunchError, ContainerSpec
-
 from test_harness import log, make_health_check_tests, make_tests, run_all
+
+from cube.backends.modal import ModalContainerBackend
+from cube.container import ContainerConfig, ContainerLaunchError
 
 BACKEND_KWARGS = {"timeout_seconds": 600, "app_name": "cube-test"}
 backend = ModalContainerBackend(**BACKEND_KWARGS)
-spec = ContainerSpec(image="python:3.12-slim")
+spec = ContainerConfig(image="python:3.12-slim")
 
 tests = make_tests(backend, spec)
 tests += make_health_check_tests(ModalContainerBackend, spec, BACKEND_KWARGS)
 
 def test_tunnel_url():
-    port_spec = ContainerSpec(image="python:3.12-slim", ports=[8080])
+    port_spec = ContainerConfig(image="python:3.12-slim", ports=[8080])
     container = ModalContainerBackend(**BACKEND_KWARGS).launch(port_spec)
     try:
         container.exec("python -m http.server 8080 &")
@@ -51,7 +51,7 @@ tests.append(("tunnel URL", test_tunnel_url))
 
 
 def test_disk_override_not_supported():
-    bad_spec = ContainerSpec(image="python:3.12-slim", disk_gb=20.0)
+    bad_spec = ContainerConfig(image="python:3.12-slim", disk_gb=20.0)
     try:
         backend.launch(bad_spec)
         assert False, "should have raised ContainerLaunchError"

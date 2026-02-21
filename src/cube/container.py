@@ -6,11 +6,11 @@ from typing import Any, Callable, Dict
 
 from pydantic import ConfigDict, Field
 
-from cube.base import TypedBaseModel
+from cube.core import TypedBaseModel
 
 
 @dataclass
-class ContainerSpec:
+class ContainerConfig:
     """Declarative description of *what* to run — owned by the benchmark."""
 
     image: str
@@ -31,7 +31,7 @@ class ContainerSpec:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ContainerSpec:
+    def from_dict(cls, data: dict[str, Any]) -> ContainerConfig:
         return cls(**data)
 
 
@@ -118,8 +118,8 @@ class ContainerBackend(TypedBaseModel, ABC):
     backend_config: Dict[str, Any] = Field(default_factory=dict)
 
     @abstractmethod
-    def launch(self, spec: ContainerSpec) -> Container:
-        """Launch a container described by *spec*. Blocks until ready."""
+    def launch(self, config: ContainerConfig) -> Container:
+        """Launch a container described by *config*. Blocks until ready."""
 
     def _run_health_check(self, container: Container) -> None:
         """Run the health check callback, cleaning up on failure."""

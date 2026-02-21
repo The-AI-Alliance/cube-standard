@@ -30,7 +30,7 @@ from typing import Any, ClassVar, Generator
 
 from pydantic import ConfigDict, Field, PrivateAttr
 
-from cube.containers import ContainerBackend
+from cube.container import ContainerBackend
 from cube.core import TypedBaseModel
 from cube.seed import AbstractSeedGenerator
 from cube.task import TaskConfig, TaskMetadata

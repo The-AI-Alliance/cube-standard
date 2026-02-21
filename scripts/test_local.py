@@ -7,20 +7,20 @@ Usage:  uv run scripts/test_local.py
 import time
 import urllib.request
 
-from cube.backends.local import LocalContainerBackend
-from cube.container import ContainerError, ContainerLaunchError, ContainerSpec
-
 from test_harness import log, make_health_check_tests, make_tests, run_all
+
+from cube.backends.local import LocalContainerBackend
+from cube.container import ContainerConfig, ContainerError, ContainerLaunchError
 
 BACKEND_KWARGS = {"timeout_seconds": 60}
 backend = LocalContainerBackend(**BACKEND_KWARGS)
-spec = ContainerSpec(image="alpine:latest")
+spec = ContainerConfig(image="alpine:latest")
 
 tests = make_tests(backend, spec)
 tests += make_health_check_tests(LocalContainerBackend, spec, BACKEND_KWARGS)
 
 def test_port_forwarding():
-    port_spec = ContainerSpec(image="python:3.12-slim", ports=[8080])
+    port_spec = ContainerConfig(image="python:3.12-slim", ports=[8080])
     container = backend.launch(port_spec)
     try:
         container.exec("python -m http.server 8080 &")
@@ -60,7 +60,7 @@ tests.append(("forward unexposed port", test_forward_unexposed_port))
 
 
 def test_disk_override_not_supported():
-    bad_spec = ContainerSpec(image="alpine:latest", disk_gb=20.0)
+    bad_spec = ContainerConfig(image="alpine:latest", disk_gb=20.0)
     try:
         backend.launch(bad_spec)
         assert False, "should have raised ContainerLaunchError"

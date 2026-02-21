@@ -10,7 +10,7 @@ import traceback
 
 from cube.container import (
     ContainerBackend,
-    ContainerSpec,
+    ContainerConfig,
     HealthCheckError,
 )
 
@@ -36,7 +36,7 @@ def _run_one(name: str, fn) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def make_tests(backend: ContainerBackend, spec: ContainerSpec):
+def make_tests(backend: ContainerBackend, spec: ContainerConfig):
     """Return list of (name, callable) test pairs for the given backend."""
 
     tests: list[tuple[str, callable]] = []
@@ -146,7 +146,7 @@ def make_tests(backend: ContainerBackend, spec: ContainerSpec):
 
 def make_health_check_tests(
     backend_cls: type,
-    spec: ContainerSpec,
+    spec: ContainerConfig,
     backend_kwargs: dict,
 ):
     """Return health-check tests (need to create backend with custom health_check)."""

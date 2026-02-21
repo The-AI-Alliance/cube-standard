@@ -26,10 +26,10 @@ from tenacity import (
 from cube.container import (
     Container,
     ContainerBackend,
+    ContainerConfig,
     ContainerError,
     ContainerExecError,
     ContainerLaunchError,
-    ContainerSpec,
     ContainerStatus,
     ExecResult,
     HealthCheckError,
@@ -228,11 +228,11 @@ class DaytonaContainerBackend(ContainerBackend):
     auto_stop_minutes: int = 10
     auto_delete_minutes: int = 5
 
-    def launch(self, spec: ContainerSpec) -> DaytonaContainer:
+    def launch(self, spec: ContainerConfig) -> DaytonaContainer:
         return self._launch_with_retry(spec)
 
     @_retry_sandbox
-    def _launch_with_retry(self, spec: ContainerSpec) -> DaytonaContainer:
+    def _launch_with_retry(self, spec: ContainerConfig) -> DaytonaContainer:
         config_kwargs: dict[str, Any] = {}
         if self.api_key:
             config_kwargs["api_key"] = self.api_key
