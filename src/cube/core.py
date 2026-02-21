@@ -1,10 +1,64 @@
+"""
+Core data models for CUBE.
+
+This module defines the fundamental types used across the framework: Action,
+ActionSchema, Content (and subclasses), Observation, StepError, EnvironmentOutput,
+and TypedBaseModel.
+
+Abstract classes:
+    Content — subclasses must implement:
+        to_markdown() -> str          render content as a Markdown string
+        to_llm_message() -> dict      render content as an LLM message dict
+    Built-in implementations are provided for the most common content types:
+    TextContent, StructuredContent, ImageContent, AudioContent, VideoContent.
+"""
+
+import base64
+import importlib
+import inspect
+import io
+import json
+import traceback
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Protocol, Self, TypeAlias
+from typing import Any, Callable, ClassVar, Self
 
-import litellm.utils
-from pydantic import ConfigDict, Field
+import litellm
+from PIL import Image as PILImage
+from pydantic import BaseModel, Field, field_serializer, field_validator, model_serializer, model_validator
 
-from cube.base import TypedBaseModel
+
+class TypedBaseModel(BaseModel):
+    """
+    Base class for Pydantic models that can save and load their type information.
+
+    When serialized, includes `_type` field with the fully qualified class name.
+    When deserialized, uses `_type` to instantiate the correct subclass.
+
+    This allows saving/loading configs where the field type is an abstract base class
+    but the actual value is a concrete subclass (e.g., AgentConfig -> ReactAgentConfig).
+    """
+
+    @model_serializer(mode="wrap")
+    def _serialize_with_type(self, handler):
+        data = handler(self)
+        data["_type"] = f"{self.__class__.__module__}.{self.__class__.__name__}"
+        return data
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _deserialize_with_type(cls, value, handler):
+        if isinstance(value, dict) and "_type" in value:
+            type_path = value.pop("_type")
+            module_name, class_name = type_path.rsplit(".", 1)
+            module = importlib.import_module(module_name)
+            actual_cls = getattr(module, class_name)
+            return actual_cls.model_validate(value)
+        if isinstance(value, dict) and inspect.isabstract(cls):
+            raise ValueError(
+                f"Cannot deserialize abstract class '{cls.__name__}' directly. "
+                "Ensure the data was serialized from a concrete subclass (contains '_type' field)."
+            )
+        return handler(value)
 
 
 class ActionSchema(TypedBaseModel):
@@ -13,7 +67,6 @@ class ActionSchema(TypedBaseModel):
     Compatible with OAI, Anthropic and VLLM definitions.
 
     Attributes:
-        type (Literal["function"]): The type of the tool, which is always "function".
         name (str): The name of the function.
         description (str): A brief description of the function.
         parameters (dict): A dictionary containing the parameters of the function.
@@ -53,96 +106,267 @@ class Action(TypedBaseModel):
 
     id: str | None = None
     name: str
-    arguments: Dict[str, Any] = Field(default_factory=dict)
+    arguments: dict[str, Any] = Field(default_factory=dict)
 
 
-class Content(TypedBaseModel):
-    """Represents a piece of content in an observation."""
+class Content(TypedBaseModel, ABC):
+    """
+    Abstract base class for all content types in an observation.
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    Subclasses represent specific data types (text, image, audio, video, structured data)
+    and provide `to_markdown()` and `to_llm_message()` implementations.
 
-    tool_call_id: str | None = None  # content could be result of a tool call
-    name: str | None = None  # optional name of the content
-    data: str | bytes
+    Attributes:
+        tool_call_id (str | None): Set if this content is the result of a tool call.
+        name (str | None): Optional label for the content.
+        data (Any): The actual content data; narrowed to a specific type in each subclass.
+    """
+
+    tool_call_id: str | None = None
+    name: str | None = None
+    data: Any
+
+    @abstractmethod
+    def to_markdown(self) -> str:
+        """Render this content as a Markdown string."""
+        ...
+
+    @abstractmethod
+    def to_llm_message(self) -> dict:
+        """Return a well-formed LLM message dict (OpenAI/litellm format)."""
+        ...
+
+    def _build_message(self, msg_content: str | list[dict]) -> dict:
+        """Wrap content into an LLM message dict, applying role and tool_call_id."""
+        if self.tool_call_id:
+            return {"role": "tool", "content": msg_content, "tool_call_id": self.tool_call_id}
+        return {"role": "user", "content": msg_content}
+
+    @classmethod
+    def from_data(cls, data: Any, **kwargs) -> "Content":
+        """Instantiate the appropriate Content subclass based on the type of data.
+
+        Dispatches to TextContent, StructuredContent, or ImageContent based on
+        isinstance checks. Raw bytes are rejected — callers must explicitly construct
+        AudioContent or VideoContent since the media type cannot be inferred.
+
+        Args:
+            data: The content data. Supported types: str, int, float, dict, list, PILImage.Image.
+            **kwargs: Additional fields passed to the subclass (e.g. name, tool_call_id).
+
+        Raises:
+            TypeError: If data is bytes (ambiguous between audio and video) or an unsupported type.
+        """
+        if isinstance(data, PILImage.Image):
+            return ImageContent(data=data, **kwargs)
+        if isinstance(data, (dict, list)):
+            return StructuredContent(data=data, **kwargs)
+        if isinstance(data, (str, int, float)):
+            return TextContent(data=str(data), **kwargs)
+        if isinstance(data, bytes):
+            raise TypeError(
+                "Cannot infer content type from raw bytes. Explicitly construct AudioContent or VideoContent instead."
+            )
+        raise TypeError(
+            f"Unsupported data type for Content.from_data(): {type(data).__name__}. "
+            "Supported types: str, int, float, dict, list, PILImage.Image."
+        )
+
+
+class TextContent(Content):
+    """Text or numeric content, rendered as plain text."""
+
+    data: str
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def coerce_to_str(cls, v: Any) -> str:
+        if isinstance(v, (int, float)):
+            return str(v)
+        return v
+
+    def to_markdown(self) -> str:
+        return f"## {self.name}\n{self.data}" if self.name else self.data
+
+    def to_llm_message(self) -> dict:
+        text = f"## {self.name}\n{self.data}" if self.name else self.data
+        return self._build_message(text)
+
+
+class StructuredContent(Content):
+    """Structured data (dict or list), rendered as a JSON code block."""
+
+    data: dict | list
+
+    def to_markdown(self) -> str:
+        block = f"```json\n{json.dumps(self.data, indent=2)}\n```"
+        return f"## {self.name}\n{block}" if self.name else block
+
+    def to_llm_message(self) -> dict:
+        text = json.dumps(self.data)
+        if self.name:
+            text = f"## {self.name}\n{text}"
+        return self._build_message(text)
+
+
+class ImageContent(Content):
+    """PIL image content, serialized as base64 PNG."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    data: PILImage.Image
+
+    _image_prefix: ClassVar[str] = "data:image/png;base64,"
+
+    def as_base64_image_str(self, data: PILImage.Image) -> str:
+        byte_arr = io.BytesIO()
+        data.save(byte_arr, format="PNG")
+        encoded_image = base64.b64encode(byte_arr.getvalue()).decode("utf-8")
+        return f"{self._image_prefix}{encoded_image}"
+
+    @field_serializer("data")
+    def serialize_data(self, data: PILImage.Image) -> str:
+        """Serialize a PIL Image to a base64 data URL string for JSON compatibility.
+
+        PIL Images are not JSON-serializable by default; this converts them to a
+        prefixed base64 string that can be stored, transmitted, and later reconstructed.
+        """
+        return self.as_base64_image_str(data)
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def deserialize_data(cls, v: Any) -> Any:
+        """Deserialize a base64 data URL string back into a PIL Image.
+
+        Detects the image prefix to distinguish serialized images from plain strings.
+        Forces eager loading via img.load() to prevent the BytesIO buffer from being
+        garbage collected before the pixel data is read (PIL uses lazy loading by default).
+        """
+        if isinstance(v, str) and v.startswith(cls._image_prefix):
+            v = v[len(cls._image_prefix) :]
+            # Decode base64 string to bytes
+            decoded_image = base64.b64decode(v)
+            # Open bytes as PIL Image and load immediately to avoid lazy loading issues
+            img = PILImage.open(io.BytesIO(decoded_image))
+            img.load()  # Force load to prevent BytesIO buffer from being garbage collected
+            return img
+        return v  # Return original value if not a string (e.g., already an Image object)
+
+    def to_markdown(self) -> str:
+        b64_url = self.as_base64_image_str(self.data)
+        alt = self.name or "image"
+        img = f"![{alt}]({b64_url})"
+        return f"## {self.name}\n{img}" if self.name else img
+
+    def to_llm_message(self) -> dict:
+        b64_url = self.as_base64_image_str(self.data)
+        msg_content: list[dict] = [{"type": "image_url", "image_url": {"url": b64_url}}]
+        if self.name:
+            msg_content.insert(0, {"type": "text", "text": f"## {self.name}"})
+        return self._build_message(msg_content)
+
+
+class AudioContent(Content):
+    """Raw audio bytes.
+
+    Placeholder class for future work. Rendering to Markdown and LLM message formats
+    is not yet defined for audio — it is unclear what the best representation would be
+    (e.g. waveform image, transcript, base64 embed). Custom to_markdown() and
+    to_llm_message() implementations should be added once a rendering strategy is decided.
+
+    TODO: define custom rendering functions for audio content.
+    """
+
+    data: bytes
+    duration_seconds: float | None = None
+
+    def to_markdown(self) -> str:
+        raise NotImplementedError("Markdown rendering is not supported for audio content.")
+
+    def to_llm_message(self) -> dict:
+        raise NotImplementedError("Audio is not supported by LLM message format.")
+
+
+class VideoContent(Content):
+    """Raw video bytes.
+
+    Placeholder class for future work. Rendering to Markdown and LLM message formats
+    is not yet defined for video — it is unclear what the best representation would be
+    (e.g. thumbnail image, transcript, base64 embed). Custom to_markdown() and
+    to_llm_message() implementations should be added once a rendering strategy is decided.
+
+    TODO: define custom rendering functions for video content.
+    """
+
+    data: bytes
+    duration_seconds: float | None = None
+
+    def to_markdown(self) -> str:
+        raise NotImplementedError("Markdown rendering is not supported for video content.")
+
+    def to_llm_message(self) -> dict:
+        raise NotImplementedError("Video is not supported by LLM message format.")
 
 
 class Observation(TypedBaseModel):
-    """Represents an observation from the environment."""
+    """
+    Represents an observation from the environment.
+
+    An observation encapsulates the information returned from the environment
+    after an action is taken. It can contain multiple pieces of content with
+    different types (text, images, etc.).
+
+    Attributes:
+        contents (list[Content]): List of content pieces that make up this observation.
+    """
 
     contents: list[Content] = Field(default_factory=list)
 
     @classmethod
     def from_text(cls, text: str) -> Self:
-        return cls(contents=[Content(data=text)])
+        return cls(contents=[TextContent(data=text)])
 
     def __add__(self, other: Self) -> Self:
         self.contents += other.contents
         return self
 
 
+class StepError(TypedBaseModel):
+    """Represents an error that occurred during a step execution."""
+
+    error_type: str
+    exception_str: str
+    stack_trace: str
+
+    @classmethod
+    def from_exception(cls, exc: Exception) -> "StepError":
+        """Create a StepError from an exception object."""
+        return cls(
+            error_type=type(exc).__name__,
+            exception_str=str(exc),
+            stack_trace="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        )
+
+
 class EnvironmentOutput(TypedBaseModel):
-    """Represents the result of an environment step."""
+    """
+    Represents the result of an environment step.
+
+    This follows the Gymnasium API standard for environment responses,
+    containing the observation, reward, termination flags, and additional info.
+
+    Attributes:
+        obs (Observation): The observation from the environment after the step.
+        reward (float): The reward received for the step (default: 0.0).
+        done (bool): Whether the episode has terminated (default: False).
+        truncated (bool): Whether the episode was terminated due to step or time limit (default: False).
+        info (dict): Additional information about the step (default: empty dict).
+        error (StepError|None): python exception if any (default: None).
+    """
 
     obs: Observation
     reward: float = 0.0
     done: bool = False
+    truncated: bool = False
     info: dict = Field(default_factory=dict)
-
-
-class ActionSpace(Protocol):
-    """Base class for action spaces."""
-
-    pass
-
-
-ActionSubset: TypeAlias = tuple[Callable, ...]
-
-
-class Task(ABC):
-    """Represents a task that an agent must complete in an environment."""
-
-    id: str
-    _tool: Any  # access to the environment tool, initialized in setup()
-    validate_per_step: bool = False
-
-    @abstractmethod
-    def setup(self, tool: Any) -> tuple[Observation, dict]:
-        """
-        Set up the task in the given environment.
-
-        Returns:
-            Tuple of (Observation, dict with additional task info)
-        """
-        self._tool = tool
-
-    def teardown(self) -> None:
-        """Optional clean up after task completion."""
-        pass
-
-    @abstractmethod
-    def validate_task(self, obs: Observation) -> tuple[float, dict]:
-        """Validate the current state of the task and return (reward, info)."""
-        pass
-
-    @abstractmethod
-    def filter_actions(self, actions: list[ActionSchema]) -> list[ActionSchema]:
-        """Allows the task to whitelist subset of all the actions provided by the environment."""
-        pass
-
-    def cheat(self):
-        """
-        Solve the task using a pre-defined solution (optional).
-        """
-        raise NotImplementedError
-
-    def obs_postprocess(self, obs: Observation) -> Observation:
-        """Optional post-processing of observation before returning it to the agent."""
-        return obs
-
-    def finished(self) -> bool:
-        """Check if the task is finished."""
-        return False
-
-    def accept_agent_stop(self) -> bool:
-        """Optional, whether the task accepts the agent stopping the task right now. Default is True."""
-        return True
+    error: StepError | None = None
