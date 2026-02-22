@@ -6,10 +6,12 @@ This example demonstrates:
 3. High-level and low-level task/tool interaction patterns
 """
 
+import argparse
+import os
 from typing import Any, ClassVar, Dict, Tuple
 
 from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
-from cube.container import Container, ContainerBackend
+from cube.container import Container, ContainerBackend, ContainerConfig
 from cube.core import Action, ActionSchema, Observation
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
@@ -118,6 +120,11 @@ class ReachTargetTask(Task):
         """Reset the task to its initial state."""
         # Reset tool to initial state
         self.tool.reset()
+        # If this task is containerized, verify we can execute inside the container.
+        if self.container is not None:
+            probe = self.container.exec("echo infra-ready")
+            assert probe.exit_code == 0, f"Container probe failed: {probe.stderr}"
+            assert "infra-ready" in probe.stdout, f"Unexpected container probe output: {probe.stdout!r}"
         obs = Observation.from_text(f"Counter starts at 0. Use 'increment' action to reach {self.target}.")
         return obs, {"task_type": "reach_target", "target": self.target}
 
@@ -147,6 +154,11 @@ class ReachTargetTask(Task):
         """Check if task is complete."""
         assert isinstance(self.tool, ConfigurableCounterTool)
         return self.tool.counter == self.target
+
+    def close(self) -> None:
+        """Cleanup task resources."""
+        if self.container is not None:
+            self.container.stop()
 
 
 # TaskConfig Implementation
@@ -190,18 +202,21 @@ class CounterBenchmark(Benchmark):
             id="count-to-3",
             abstract_description="Increment counter to reach value 3",
             recommended_max_steps=5,
+            container_config=ContainerConfig(image="python:3.12-slim", ram_gb=1.0, cpu_cores=1.0),
             extra_info={"target": 3, "difficulty": "easy"},
         ),
         "count-to-3-with-decrement": TaskMetadata(
             id="count-to-3-with-decrement",
             abstract_description="Increment counter to reach value 3, with decrement available",
             recommended_max_steps=7,
+            container_config=ContainerConfig(image="python:3.12-slim", ram_gb=1.0, cpu_cores=1.0),
             extra_info={"target": 3, "difficulty": "easy", "tool_config": {"enable_decrement": True}},
         ),
         "count-by-2": TaskMetadata(
             id="count-by-2",
             abstract_description="Counter with custom increment amount",
             recommended_max_steps=4,
+            container_config=ContainerConfig(image="python:3.12-slim", ram_gb=1.0, cpu_cores=1.0),
             extra_info={"target": 4, "difficulty": "easy", "tool_config": {"increment_by": 2}},
         ),
     }
@@ -217,12 +232,77 @@ class CounterBenchmark(Benchmark):
 
 
 # Test Function
-def test_counter_benchmark():
+def _make_backend(name: str) -> ContainerBackend | None:
+    normalized = name.lower()
+    if normalized in {"none", "off"}:
+        return None
+    if normalized in {"docker", "local"}:
+        from cube.backends.local import LocalContainerBackend
+
+        return LocalContainerBackend(timeout_seconds=120)
+    if normalized == "daytona":
+        from cube.backends.daytona import DaytonaContainerBackend
+
+        api_key = os.getenv("DAYTONA_API_KEY")
+        if not api_key:
+            try:
+                from dotenv import load_dotenv
+
+                load_dotenv()
+                api_key = os.getenv("DAYTONA_API_KEY")
+            except Exception:
+                pass
+        if not api_key:
+            raise RuntimeError("DAYTONA_API_KEY must be set to use --backend daytona")
+        return DaytonaContainerBackend(
+            api_key=api_key,
+            timeout_seconds=300,
+            ephemeral=True,
+            auto_stop_minutes=5,
+            auto_delete_minutes=3,
+        )
+    if normalized == "modal":
+        from cube.backends.modal import ModalContainerBackend
+
+        return ModalContainerBackend(timeout_seconds=600, app_name="cube-toy-benchmark")
+    raise ValueError(f"Unknown backend '{name}'. Expected one of: none, docker, daytona, modal")
+
+
+def _make_task(
+    benchmark: CounterBenchmark,
+    task_configs: dict[str, CounterTaskConfig],
+    task_id: str,
+) -> ReachTargetTask:
+    cfg = task_configs[task_id]
+    return cfg.make(runtime_context=benchmark._runtime_context, container_backend=benchmark.container_backend)
+
+
+def run_backend_smoke(backend_name: str, container_backend: ContainerBackend | None) -> None:
+    print(f"Running toy benchmark smoke test with backend={backend_name}")
+    benchmark = CounterBenchmark(container_backend=container_backend)
+    benchmark.setup()
+    try:
+        task_configs = {c.task_id: c for c in benchmark.get_task_configs()}
+        task = _make_task(benchmark, task_configs, "count-to-3")
+        try:
+            task.reset()
+            out = task.step(Action(name="increment", arguments={}))
+            assert isinstance(task.tool, ConfigurableCounterTool)
+            assert task.tool.counter == 1
+            assert not out.done
+            print("✓ Smoke test passed")
+        finally:
+            task.close()
+    finally:
+        benchmark.close()
+
+
+def test_counter_benchmark(container_backend: ContainerBackend | None = None, backend_name: str = "none"):
     """Comprehensive test demonstrating task-tool interaction and ToolConfig flexibility."""
-    print("Starting counter benchmark tests...")
+    print(f"Starting counter benchmark tests (backend={backend_name})...")
     print("=" * 60)
 
-    benchmark = CounterBenchmark()
+    benchmark = CounterBenchmark(container_backend=container_backend)
     benchmark.setup()
 
     task_configs = {c.task_id: c for c in benchmark.get_task_configs()}
@@ -232,7 +312,7 @@ def test_counter_benchmark():
     print("Test 1: Single action execution via .step")
     print("=" * 60)
 
-    task1 = task_configs["count-to-3"].make()
+    task1 = _make_task(benchmark, task_configs, "count-to-3")
     obs, _ = task1.reset()
 
     print(f"Initial observation: {obs.contents[0].data}")
@@ -260,7 +340,7 @@ def test_counter_benchmark():
     print("Test 2: Multiple action execution via .step")
     print("=" * 60)
 
-    task2 = task_configs["count-to-3"].make()
+    task2 = _make_task(benchmark, task_configs, "count-to-3")
     task2.reset()
 
     # Execute multiple actions at once
@@ -285,7 +365,7 @@ def test_counter_benchmark():
     print("Test 3: Lower level API (.tool.execute_action)")
     print("=" * 60)
 
-    task3 = task_configs["count-to-3"].make()
+    task3 = _make_task(benchmark, task_configs, "count-to-3")
     task3.reset()
 
     # Lower level: directly call tool.execute_action()
@@ -303,7 +383,7 @@ def test_counter_benchmark():
     print("Test 4: ToolConfig flexibility - enable decrement")
     print("=" * 60)
 
-    task4 = task_configs["count-to-3-with-decrement"].make()
+    task4 = _make_task(benchmark, task_configs, "count-to-3-with-decrement")
     task4.reset()
 
     # Verify decrement is now available
@@ -327,7 +407,7 @@ def test_counter_benchmark():
     print("Test 5: ToolConfig flexibility - custom increment amount")
     print("=" * 60)
 
-    task5 = task_configs["count-by-2"].make()
+    task5 = _make_task(benchmark, task_configs, "count-by-2")
     task5.reset()
 
     # Test increment by 2
@@ -376,4 +456,22 @@ def test_counter_benchmark():
 
 # Main
 if __name__ == "__main__":
-    test_counter_benchmark()
+    parser = argparse.ArgumentParser(description="Run toy counter benchmark")
+    parser.add_argument(
+        "--backend",
+        default="none",
+        choices=["none", "docker", "daytona", "modal"],
+        help="Container backend for task execution",
+    )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Run a quick single-task backend smoke test",
+    )
+    args = parser.parse_args()
+    backend = _make_backend(args.backend)
+
+    if args.smoke:
+        run_backend_smoke(args.backend, backend)
+    else:
+        test_counter_benchmark(container_backend=backend, backend_name=args.backend)
