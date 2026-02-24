@@ -13,30 +13,28 @@ Benchmark-level VM that persists across many tasks, with application-level reset
 
 ```python
 # Benchmark initialization (once)
-benchmark = WebArenaBenchmark(vm_config, tool_config)
-benchmark.start()  # Blocks 5 min - creates VM
-
-# Get task configs
-task_configs = benchmark.get_task_list()
+benchmark = WebArenaBenchmark(default_tool_config=tool_config)
+benchmark.setup()  # Blocks 5 min - creates VM
 
 # Each task runs on Ray worker
 @ray.remote
-def evaluate_task(task_config, agent_config, runtime_info):
-    task = task_config.make(runtime_info=runtime_info)  # Fast: uses existing VM
+def evaluate_task(task_config, runtime_context, agent_config):
+    task = task_config.make(runtime_context=runtime_context)  # Fast: uses existing VM
     agent = agent_config.make()
-    obs = task.reset()  # App-level reset (5-10 sec, not minutes)
+    obs, info = task.setup()  # App-level reset (5-10 sec, not minutes)
     # ... agent loop ...
-    result = task.get_result()
+    result = run_eval(task, obs)
     task.close()
     return result
 
 # Parallel evaluation
-runtime_info = benchmark.runtime_info
-futures = [evaluate_task.remote(tc, agent_config, runtime_info) for tc in task_configs]
+futures = []
+for task_config in benchmark.get_task_configs():
+    futures.append(evaluate_task.remote(task_config, benchmark._runtime_context, agent_config))
 results = ray.get(futures)
 
 # Cleanup
-benchmark.stop()  # Destroys VM
+benchmark.close()  # Destroys VM
 ```
 
 ## Key Design Decisions
@@ -70,36 +68,36 @@ Declarative specification for VM creation.
 @dataclass
 class VMConfig:
     """VM specification. Calling make() creates long-running VM."""
-    
+
     # Required
     snapshot_id: str  # AMI ID (AWS), Image ID (Azure), etc
     provider: Literal["aws", "azure", "gcp"]
-    
+
     # Instance sizing
     instance_type: str = "t3.medium"  # Provider-specific
-    
+
     # Networking (critical for accessing services)
     public_ip: bool = True  # Most benchmarks need this
     allowed_ports: List[int] = [80, 443, 22]  # Firewall rules
-    
+
     # Lifecycle
     timeout_seconds: int = 600  # Max wait for VM boot
     health_check: Callable[[VM], bool] | None = None
     auto_terminate_hours: int = 8  # Safety: prevent runaway costs
-    
+
     # Cost control
     spot_instance: bool = False  # Cheaper but can be terminated
-    
+
     # Provider-specific options
     provider_config: Dict[str, Any] | None = None
     # Examples:
     # - aws: {"security_group_id": "sg-123", "subnet_id": "subnet-456"}
     # - azure: {"resource_group": "benchmarks", "location": "eastus"}
-    
+
     def make(self) -> VM:
         """
         Create and start VM. Blocks until ready or timeout.
-        
+
         Returns: Connected VM object
         Raises: TimeoutError, HealthCheckError, QuotaError, CostLimitError
         """
@@ -114,20 +112,20 @@ Long-running VM with state management capabilities.
 ```python
 class VM(ABC):
     """Running VM for benchmark infrastructure."""
-    
+
     # Access
     @abstractmethod
     def get_url(self, port: int = 80) -> str:
         """
         Get public URL to access service on VM.
-        
+
         Returns: http://12.34.56.78:port or http://hostname:port
         """
-    
+
     @abstractmethod
     def get_ip(self) -> str:
         """Get public IP address."""
-    
+
     # Execution (for application-level resets)
     @abstractmethod
     def exec(
@@ -138,47 +136,47 @@ class VM(ABC):
     ) -> ExecResult:
         """
         Execute command via SSH.
-        
+
         Primary use: Application-level state reset
         Example: vm.exec("psql -f reset_database.sql")
-        
+
         Returns: ExecResult(stdout, stderr, exit_code, duration_seconds)
         Raises: TimeoutError, SSHError
         """
-    
+
     # Service management (optional, for Docker-based benchmarks)
     @abstractmethod
     def restart_service(self, service: str):
         """
         Restart systemd service or Docker container.
-        
+
         Examples:
         - vm.restart_service("postgresql")  # systemd
         - vm.restart_service("docker:webarena-shopping")  # Docker container
-        
+
         Use: Fast reset when app-level reset insufficient
         Time: ~10-30 seconds
         """
-    
+
     # Health monitoring (VMs run for hours)
     @abstractmethod
     def get_status(self) -> VMStatus:
         """
         Check VM and services health.
-        
+
         Returns: VMStatus with running state, uptime, cost estimate
         Use: Detect VM crashes during long benchmark runs
         """
-    
+
     # Lifecycle
     @abstractmethod
     def stop(self, timeout: int = 30):
         """
         Terminate VM and clean up.
-        
+
         Cleanup: Stop instance, delete temporary resources, close SSH
         """
-    
+
     # Properties
     @property
     @abstractmethod
@@ -229,18 +227,27 @@ Benchmarks choose reset strategy based on speed/isolation tradeoff.
 Application-level state reset via commands:
 
 ```python
-class WebArenaTaskLogic:
-    def setup(self, vm: VM):
+class WebArenaTask(Task):
+    def setup(self) -> Tuple[Observation, Dict]:
         """Application-level state reset via VM commands."""
-        # Reset database
-        vm.exec("psql -c 'TRUNCATE users, orders, products CASCADE'")
-        vm.exec("psql -f /fixtures/base_data.sql")
+        # Get VM from runtime_context
+        vm_address = self.runtime_context["vm_address"]
+
+        # Reset database (assuming VM has exec capability)
+        # Note: Actual VM exec not in current API, this is illustrative
+        # vm.exec("psql -c 'TRUNCATE users, orders, products CASCADE'")
+        # vm.exec("psql -f /fixtures/base_data.sql")
 
         # Clear cache
-        vm.exec("redis-cli FLUSHALL")
+        # vm.exec("redis-cli FLUSHALL")
 
         # Reset uploads directory
-        vm.exec("rm -rf /var/uploads && cp -r /fixtures/uploads /var/")
+        # vm.exec("rm -rf /var/uploads && cp -r /fixtures/uploads /var/")
+
+        # Navigate to start URL
+        self.tool.reset()
+        obs = self.tool.get_observation()
+        return obs, {"vm_address": vm_address}
 ```
 
 ### Medium Reset (10-30 seconds) - When Services Corrupted
@@ -248,13 +255,21 @@ class WebArenaTaskLogic:
 Restart services without VM recreation:
 
 ```python
-def setup(self, vm: VM):
+def setup(self) -> Tuple[Observation, Dict]:
+    """Medium reset via service restart."""
+    # Get VM from runtime_context (if VM object is stored there)
+    # vm = self.runtime_context.get("vm")
+
     # If using Docker Compose on VM
-    vm.exec("docker-compose restart")
+    # vm.exec("docker-compose restart")
 
     # Or systemd services
-    vm.restart_service("postgresql")
-    vm.restart_service("nginx")
+    # vm.restart_service("postgresql")
+    # vm.restart_service("nginx")
+
+    self.tool.reset()
+    obs = self.tool.get_observation()
+    return obs, {}
 ```
 
 ### Slow Reset (Never for Per-Task)
@@ -325,20 +340,25 @@ class SharedInfrastructure:
 
 
 class WebArenaBenchmark(Benchmark):
-    def __init__(self):
-        vm_config = VMConfig(snapshot_id="webarena-shopping", provider="aws")
-        self.infrastructure = SharedInfrastructure([vm_config])
+    # Required class-level attributes
+    benchmark_metadata = BenchmarkMetadata(  # or auto-loaded from benchmark_metadata.json
+        name="WebArena",
+        version="1.0",
+        description="Web navigation benchmark"
+    )
+    task_config_class = WebArenaTaskConfig
+    task_metadata: ClassVar[dict[str, TaskMetadata]] = _load_webarena_tasks()  # or auto-loaded from task_metadata.json
 
-    def start(self):
+    # Additional constructor param specific to this benchmark
+    vm_config: VMConfig = VMConfig(snapshot_id="webarena-shopping", provider="aws")
+
+    def _setup(self) -> None:
+        self.infrastructure = SharedInfrastructure([self.vm_config])
         self.infrastructure.start()
+        base_url = self.infrastructure.vms[0].get_url(80)
+        self._runtime_context = {"vm_address": base_url}
 
-    @property
-    def runtime_info(self) -> Dict[str, Any] | None:
-        if not self.infrastructure.vms:
-            return None
-        return {"base_url": self.infrastructure.vms[0].get_url(80)}
-
-    def stop(self):
+    def close(self):
         self.infrastructure.stop()
 ```
 

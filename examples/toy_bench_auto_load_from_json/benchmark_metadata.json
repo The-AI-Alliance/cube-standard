@@ -1,0 +1,7 @@
+{
+  "name": "toy-counter",
+  "version": "1.0.0",
+  "description": "Simplest possible benchmark - count to target value",
+  "num_tasks": 3,
+  "tags": ["toy", "counter", "minimal"]
+}
