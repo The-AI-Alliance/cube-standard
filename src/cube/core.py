@@ -326,6 +326,10 @@ class Observation(TypedBaseModel):
     def from_text(cls, text: str) -> Self:
         return cls(contents=[TextContent(data=text)])
 
+    def to_llm_messages(self) -> list[dict]:
+        """Convert observation to a list of messages suitable for sending to LLM."""
+        return [content.to_llm_message() for content in self.contents]
+
     def __add__(self, other: Self) -> Self:
         self.contents += other.contents
         return self
