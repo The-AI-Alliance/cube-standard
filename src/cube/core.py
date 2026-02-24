@@ -151,7 +151,7 @@ class Content(TypedBaseModel, ABC):
         AudioContent or VideoContent since the media type cannot be inferred.
 
         Args:
-            data: The content data. Supported types: str, int, float, dict, list, PILImage.Image.
+            data: The content data. Supported types: str, int, float, dict, list, BaseModel, PILImage.Image.
             **kwargs: Additional fields passed to the subclass (e.g. name, tool_call_id).
 
         Raises:
@@ -159,7 +159,7 @@ class Content(TypedBaseModel, ABC):
         """
         if isinstance(data, PILImage.Image):
             return ImageContent(data=data, **kwargs)
-        if isinstance(data, (dict, list)):
+        if isinstance(data, (dict, list, BaseModel)):
             return StructuredContent(data=data, **kwargs)
         if isinstance(data, (str, int, float)):
             return TextContent(data=str(data), **kwargs)
@@ -194,9 +194,16 @@ class TextContent(Content):
 
 
 class StructuredContent(Content):
-    """Structured data (dict or list), rendered as a JSON code block."""
+    """Structured data (dict, list, or BaseModel), rendered as a JSON code block."""
 
-    data: dict | list
+    data: dict | list | BaseModel
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def coerce_base_model_to_dict(cls, v: Any) -> Any:
+        if isinstance(v, BaseModel):
+            return v.model_dump()
+        return v
 
     def to_markdown(self) -> str:
         block = f"```json\n{json.dumps(self.data, indent=2)}\n```"
