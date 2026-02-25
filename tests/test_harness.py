@@ -131,7 +131,6 @@ def make_tests(backend: ContainerBackend, spec: ContainerConfig):
     def test_serialization_roundtrip():
         data = backend.model_dump()
         assert "_type" in data
-        assert "health_check" not in data
         log(f"serialized keys: {sorted(data.keys())}")
 
         restored = ContainerBackend.model_validate(data)
@@ -149,12 +148,16 @@ def make_health_check_tests(
     spec: ContainerConfig,
     backend_kwargs: dict,
 ):
-    """Return health-check tests (need to create backend with custom health_check)."""
+    """Return health-check tests (create backend subclasses that override health_check)."""
 
     tests: list[tuple[str, callable]] = []
 
     def test_health_check_pass():
-        b = backend_cls(**backend_kwargs, health_check=lambda c: True)
+        class PassingBackend(backend_cls):
+            def health_check(self, container):
+                return True
+
+        b = PassingBackend(**backend_kwargs)
         container = b.launch(spec)
         try:
             assert container.get_status().running is True
@@ -165,7 +168,11 @@ def make_health_check_tests(
     tests.append(("health check pass", test_health_check_pass))
 
     def test_health_check_fail():
-        b = backend_cls(**backend_kwargs, health_check=lambda c: False)
+        class FailingBackend(backend_cls):
+            def health_check(self, container):
+                return False
+
+        b = FailingBackend(**backend_kwargs)
         try:
             b.launch(spec)
             assert False, "should have raised HealthCheckError"
@@ -175,10 +182,11 @@ def make_health_check_tests(
     tests.append(("health check fail", test_health_check_fail))
 
     def test_health_check_exception():
-        def bad(c):
-            raise RuntimeError("boom")
+        class ErrorBackend(backend_cls):
+            def health_check(self, container):
+                raise RuntimeError("boom")
 
-        b = backend_cls(**backend_kwargs, health_check=bad)
+        b = ErrorBackend(**backend_kwargs)
         try:
             b.launch(spec)
             assert False, "should have raised HealthCheckError"
