@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Integration tests for LocalContainerBackend against a real Docker daemon.
 
-Usage:  uv run scripts/test_local.py
+Usage:  uv run python tests/test_local.py
 """
 
 import time

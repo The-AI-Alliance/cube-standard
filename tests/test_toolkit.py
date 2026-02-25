@@ -3,7 +3,7 @@
 
 Requires: ``eai`` CLI installed and authenticated.
 
-Usage:  PYTHONPATH=scripts uv run python scripts/test_toolkit.py
+Usage:  uv run python tests/test_toolkit.py
 """
 
 import time

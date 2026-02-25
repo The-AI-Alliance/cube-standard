@@ -3,7 +3,7 @@
 
 Requires DAYTONA_API_KEY in the environment (or in a .env file).
 
-Usage:  PYTHONPATH=scripts uv run python scripts/test_daytona.py
+Usage:  uv run python tests/test_daytona.py
 """
 
 import os

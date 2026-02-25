@@ -19,11 +19,16 @@ cube-standard/
 │       ├── daytona.py           # DaytonaContainerBackend (Daytona SDK)
 │       ├── modal.py             # ModalContainerBackend (Modal Sandbox)
 │       └── toolkit.py           # ToolkitContainerBackend (HPC/SLURM stub)
-├── scripts/                    # Integration test scripts
+├── tests/                     # Unit + integration tests
 │   ├── test_harness.py          # Shared test logic for all backends
 │   ├── test_local.py            # Docker backend tests
 │   ├── test_daytona.py          # Daytona backend tests
-│   └── test_modal.py            # Modal backend tests
+│   ├── test_modal.py            # Modal backend tests
+│   ├── test_benchmark.py        # Benchmark tests
+│   ├── test_core.py             # Core data structure tests
+│   ├── test_seed.py             # Seed tests
+│   ├── test_task.py             # Task tests
+│   └── test_tool.py             # Tool tests
 ├── design/                     # Design documents
 │   ├── docker_wrapper.md        # Container API design spec
 │   ├── main_specs.md            # Core CUBE specs
@@ -118,9 +123,9 @@ make format    # Format code with Ruff
 make lint      # Lint and auto-fix with Ruff
 
 # Integration tests (real backends, not mocks)
-PYTHONPATH=scripts uv run python scripts/test_local.py     # Requires Docker
-PYTHONPATH=scripts uv run python scripts/test_daytona.py   # Requires DAYTONA_API_KEY
-PYTHONPATH=scripts uv run python scripts/test_modal.py     # Requires Modal token
+uv run python tests/test_local.py     # Requires Docker
+uv run python tests/test_daytona.py   # Requires DAYTONA_API_KEY
+uv run python tests/test_modal.py     # Requires Modal token
 ```
 
 ## Project Configuration
@@ -138,4 +143,4 @@ PYTHONPATH=scripts uv run python scripts/test_modal.py     # Requires Modal toke
 - Container backends use `tenacity` retry decorators for transient failures
 - `ContainerBackend` is serializable (Pydantic + TypedBaseModel), `Container` is not
 - `health_check: Callable` is excluded from serialization via `Field(exclude=True)`
-- Test scripts share logic via `test_harness.py` — backend-specific tests append to the shared list
+- Integration test scripts share logic via `test_harness.py` — backend-specific tests append to the shared list

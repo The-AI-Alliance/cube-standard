@@ -3,7 +3,7 @@
 
 Requires: modal token set --token-id <id> --token-secret <secret>
 
-Usage:  uv run scripts/test_modal.py
+Usage:  uv run python tests/test_modal.py
 """
 
 import time

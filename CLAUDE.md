@@ -28,12 +28,12 @@ Two independent subsystems:
 
 ## Testing
 
-Integration test scripts in `scripts/` — real backends, no mocks:
+Integration test scripts in `tests/` — real backends, no mocks:
 
 ```bash
-PYTHONPATH=scripts uv run python scripts/test_local.py     # Docker daemon
-PYTHONPATH=scripts uv run python scripts/test_daytona.py   # DAYTONA_API_KEY
-PYTHONPATH=scripts uv run python scripts/test_modal.py     # Modal token
+uv run python tests/test_local.py     # Docker daemon
+uv run python tests/test_daytona.py   # DAYTONA_API_KEY
+uv run python tests/test_modal.py     # Modal token
 ```
 
 ## Dependencies
