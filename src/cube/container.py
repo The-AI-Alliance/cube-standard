@@ -2,15 +2,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict
+from typing import Any, Dict
 
-from pydantic import ConfigDict, Field
+from pydantic import Field
 
 from cube.core import TypedBaseModel
 
 
-@dataclass
-class ContainerConfig:
+class ContainerConfig(TypedBaseModel):
     """Declarative description of *what* to run — owned by the benchmark."""
 
     image: str
@@ -19,20 +18,6 @@ class ContainerConfig:
     gpu: bool = False
     disk_gb: float = 10.0
     ports: list[int] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "image": self.image,
-            "ram_gb": self.ram_gb,
-            "cpu_cores": self.cpu_cores,
-            "gpu": self.gpu,
-            "disk_gb": self.disk_gb,
-            "ports": self.ports,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ContainerConfig:
-        return cls(**data)
 
 
 @dataclass
@@ -74,6 +59,9 @@ class ContainerExecError(ContainerError):
 class Container(ABC):
     """Runtime handle to a running container (not serializable)."""
 
+    def __repr__(self) -> str:
+        return f"<{type(self).__name__} id={self.id}>"
+
     @abstractmethod
     def exec(
         self,
@@ -109,22 +97,19 @@ class Container(ABC):
 class ContainerBackend(TypedBaseModel, ABC):
     """Serializable configuration for *how* to run containers."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
     timeout_seconds: int = 1800
-    health_check: Callable[[Container], bool] | None = Field(
-        default=None, exclude=True
-    )
     backend_config: Dict[str, Any] = Field(default_factory=dict)
 
     @abstractmethod
     def launch(self, config: ContainerConfig) -> Container:
         """Launch a container described by *config*. Blocks until ready."""
 
+    def health_check(self, container: Container) -> bool:
+        """Override to perform custom health checks. Return True if healthy."""
+        return True
+
     def _run_health_check(self, container: Container) -> None:
-        """Run the health check callback, cleaning up on failure."""
-        if self.health_check is None:
-            return
+        """Run the health check, cleaning up on failure."""
         try:
             ok = self.health_check(container)
             if not ok:
@@ -134,9 +119,7 @@ class ContainerBackend(TypedBaseModel, ABC):
             raise
         except Exception as exc:
             container.stop()
-            raise HealthCheckError(
-                f"Health check raised an exception: {exc}"
-            ) from exc
+            raise HealthCheckError(f"Health check raised an exception: {exc}") from exc
 
 
 def port_from_url(url: str) -> int:

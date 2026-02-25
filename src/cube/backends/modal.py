@@ -44,6 +44,7 @@ _retry_io = retry(
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
+
 class ModalContainer(Container):
     """Runtime handle backed by a Modal Sandbox."""
 
@@ -74,9 +75,7 @@ class ModalContainer(Container):
 
         start = time.monotonic()
         try:
-            process = self._sandbox.exec(
-                "bash", "-c", wrapped, **kwargs
-            )
+            process = self._sandbox.exec("bash", "-c", wrapped, **kwargs)
             stdout = process.stdout.read()
             stderr = process.stderr.read()
             exit_code = process.wait()
@@ -101,19 +100,14 @@ class ModalContainer(Container):
         try:
             tunnels = self._sandbox.tunnels()
             if container_port not in tunnels:
-                raise ContainerError(
-                    f"Port {container_port} has no tunnel. "
-                    f"Available: {list(tunnels.keys())}"
-                )
+                raise ContainerError(f"Port {container_port} has no tunnel. Available: {list(tunnels.keys())}")
             url = tunnels[container_port].url
             self._url_cache[container_port] = url
             return url
         except ContainerError:
             raise
         except Exception as exc:
-            raise ContainerError(
-                f"Failed to get tunnel for port {container_port}: {exc}"
-            ) from exc
+            raise ContainerError(f"Failed to get tunnel for port {container_port}: {exc}") from exc
 
     @_retry_io
     def stop(self, timeout: int = 10) -> None:
@@ -141,24 +135,23 @@ class ModalContainer(Container):
                 backend_info={"id": self.id},
             )
 
+
 class ModalContainerBackend(ContainerBackend):
     """Launch containers as Modal Sandboxes."""
 
     app_name: str = "cube-container"
 
-    def launch(self, spec: ContainerConfig) -> ModalContainer:
-        return self._launch_with_retry(spec)
+    def launch(self, config: ContainerConfig) -> ModalContainer:
+        return self._launch_with_retry(config)
 
     @_retry_sandbox
-    def _launch_with_retry(self, spec: ContainerConfig) -> ModalContainer:
+    def _launch_with_retry(self, config: ContainerConfig) -> ModalContainer:
         try:
             app = modal.App.lookup(self.app_name, create_if_missing=True)
         except Exception as exc:
-            raise ContainerLaunchError(
-                f"Failed to look up Modal app '{self.app_name}': {exc}"
-            ) from exc
+            raise ContainerLaunchError(f"Failed to look up Modal app '{self.app_name}': {exc}") from exc
 
-        image = modal.Image.from_registry(spec.image)
+        image = modal.Image.from_registry(config.image)
 
         kwargs: dict[str, Any] = {
             "app": app,
@@ -166,28 +159,24 @@ class ModalContainerBackend(ContainerBackend):
             "timeout": self.timeout_seconds,
         }
 
-        if spec.cpu_cores:
-            kwargs["cpu"] = spec.cpu_cores
-        if spec.ram_gb:
-            kwargs["memory"] = int(spec.ram_gb * 1024)
-        if spec.gpu:
+        if config.cpu_cores:
+            kwargs["cpu"] = config.cpu_cores
+        if config.ram_gb:
+            kwargs["memory"] = int(config.ram_gb * 1024)
+        if config.gpu:
             kwargs["gpu"] = "any"
 
-        if spec.ports:
-            kwargs["encrypted_ports"] = spec.ports
+        if config.ports:
+            kwargs["encrypted_ports"] = config.ports
 
-        logger.info("Creating Modal sandbox with image %s …", spec.image)
+        logger.info("Creating Modal sandbox with image %s …", config.image)
         try:
             sandbox = modal.Sandbox.create(**kwargs)
         except Exception as exc:
-            raise ContainerLaunchError(
-                f"Failed to create Modal sandbox from '{spec.image}': {exc}"
-            ) from exc
+            raise ContainerLaunchError(f"Failed to create Modal sandbox from '{config.image}': {exc}") from exc
 
         container = ModalContainer(sandbox)
         logger.info("Modal sandbox created: %s", container.id)
 
         self._run_health_check(container)
         return container
-
-

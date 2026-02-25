@@ -44,6 +44,7 @@ _retry_io = retry(
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
+
 class LocalContainer(Container):
     """Runtime handle backed by a local Docker container."""
 
@@ -83,9 +84,7 @@ class LocalContainer(Container):
                 environment=env,
             )
         except docker.errors.APIError as exc:
-            raise ContainerExecError(
-                f"Docker exec failed: {exc}"
-            ) from exc
+            raise ContainerExecError(f"Docker exec failed: {exc}") from exc
         duration = time.monotonic() - start
 
         stdout = (output[0] or b"").decode("utf-8", errors="replace")
@@ -106,10 +105,7 @@ class LocalContainer(Container):
         ports = self._container.ports
         key = f"{container_port}/tcp"
         if key not in ports or not ports[key]:
-            raise ContainerError(
-                f"Port {container_port} is not exposed. "
-                f"Available ports: {list(ports.keys())}"
-            )
+            raise ContainerError(f"Port {container_port} is not exposed. Available ports: {list(ports.keys())}")
         host_port = int(ports[key][0]["HostPort"])
         self._port_map[container_port] = host_port
         return host_port
@@ -144,12 +140,8 @@ class LocalContainer(Container):
                 try:
                     stats = self._container.stats(stream=False)
                     mem = stats.get("memory_stats", {})
-                    resource_usage["memory_bytes"] = float(
-                        mem.get("usage", 0)
-                    )
-                    resource_usage["memory_limit_bytes"] = float(
-                        mem.get("limit", 0)
-                    )
+                    resource_usage["memory_bytes"] = float(mem.get("usage", 0))
+                    resource_usage["memory_limit_bytes"] = float(mem.get("limit", 0))
                 except Exception:
                     pass
 
@@ -166,6 +158,7 @@ class LocalContainer(Container):
                 backend_info={"docker_status": "removed", "id": self.id},
             )
 
+
 class LocalContainerBackend(ContainerBackend):
     """Launch containers on the local Docker daemon."""
 
@@ -173,53 +166,48 @@ class LocalContainerBackend(ContainerBackend):
     network_mode: str = "bridge"
     remove_on_close: bool = True
 
-    def launch(self, spec: ContainerConfig) -> LocalContainer:
-        return self._launch_with_retry(spec)
+    def launch(self, config: ContainerConfig) -> LocalContainer:
+        return self._launch_with_retry(config)
 
     @_retry_launch
-    def _launch_with_retry(self, spec: ContainerConfig) -> LocalContainer:
+    def _launch_with_retry(self, config: ContainerConfig) -> LocalContainer:
         client = docker.from_env()
 
-        if self.pull_policy == "always" or (
-            self.pull_policy == "missing"
-            and not _image_exists(client, spec.image)
-        ):
-            logger.info("Pulling image %s …", spec.image)
+        if config.disk_gb != 10.0:
+            logger.warning(
+                "disk_gb=%.1f ignored — Docker does not enforce disk limits at container level",
+                config.disk_gb,
+            )
+
+        if self.pull_policy == "always" or (self.pull_policy == "missing" and not _image_exists(client, config.image)):
+            logger.info("Pulling image %s …", config.image)
             try:
-                client.images.pull(spec.image)
+                client.images.pull(config.image)
             except docker.errors.APIError as exc:
-                raise ContainerLaunchError(
-                    f"Failed to pull image '{spec.image}': {exc}"
-                ) from exc
+                raise ContainerLaunchError(f"Failed to pull image '{config.image}': {exc}") from exc
 
         kwargs: dict[str, Any] = {}
-        kwargs["mem_limit"] = f"{int(spec.ram_gb * 1024)}m"
-        kwargs["nano_cpus"] = int(spec.cpu_cores * 1e9)
+        kwargs["mem_limit"] = f"{int(config.ram_gb * 1024)}m"
+        kwargs["nano_cpus"] = int(config.cpu_cores * 1e9)
 
-        if spec.gpu:
-            kwargs["device_requests"] = [
-                docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
-            ]
+        if config.gpu:
+            kwargs["device_requests"] = [docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])]
 
-        if spec.ports:
-            kwargs["ports"] = {f"{p}/tcp": None for p in spec.ports}
+        if config.ports:
+            kwargs["ports"] = {f"{p}/tcp": None for p in config.ports}
 
         try:
             docker_container = client.containers.run(
-                spec.image,
+                config.image,
                 command="sleep infinity",
                 detach=True,
                 network_mode=self.network_mode,
                 **kwargs,
             )
         except docker.errors.APIError as exc:
-            raise ContainerLaunchError(
-                f"Failed to create container from '{spec.image}': {exc}"
-            ) from exc
+            raise ContainerLaunchError(f"Failed to create container from '{config.image}': {exc}") from exc
 
-        container = LocalContainer(
-            docker_container, client, remove_on_close=self.remove_on_close
-        )
+        container = LocalContainer(docker_container, client, remove_on_close=self.remove_on_close)
         deadline = time.monotonic() + self.timeout_seconds
         while time.monotonic() < deadline:
             docker_container.reload()
@@ -235,6 +223,7 @@ class LocalContainerBackend(ContainerBackend):
 
         self._run_health_check(container)
         return container
+
 
 def _image_exists(client: docker.DockerClient, image: str) -> bool:
     try:

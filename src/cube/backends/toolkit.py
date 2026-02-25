@@ -71,13 +71,9 @@ def _run_eai(
             timeout=timeout,
         )
     except FileNotFoundError as exc:
-        raise ContainerLaunchError(
-            "The 'eai' CLI tool is not installed or not on PATH."
-        ) from exc
+        raise ContainerLaunchError("The 'eai' CLI tool is not installed or not on PATH.") from exc
     except subprocess.TimeoutExpired as exc:
-        raise ContainerExecError(
-            f"eai command timed out after {timeout}s: {' '.join(cmd)}"
-        ) from exc
+        raise ContainerExecError(f"eai command timed out after {timeout}s: {' '.join(cmd)}") from exc
     return result
 
 
@@ -126,10 +122,7 @@ class ToolkitContainer(Container):
         full_command = " && ".join(parts)
 
         # Wrap with exit-code capture since eai job exec doesn't relay exit codes
-        wrapped = (
-            f"timeout {effective_timeout}s bash -lc {shlex.quote(full_command)}; "
-            f"echo EXIT_CODE:$?"
-        )
+        wrapped = f"timeout {effective_timeout}s bash -lc {shlex.quote(full_command)}; echo EXIT_CODE:$?"
 
         start = time.monotonic()
         result = _run_eai(
@@ -198,8 +191,7 @@ class ToolkitContainer(Container):
         time.sleep(2)
         if proc.poll() is not None:
             raise ContainerExecError(
-                f"Port-forward process exited immediately "
-                f"(rc={proc.returncode}) for port {container_port}"
+                f"Port-forward process exited immediately (rc={proc.returncode}) for port {container_port}"
             )
 
         self._port_forwards[container_port] = proc
@@ -269,11 +261,11 @@ class ToolkitContainerBackend(ContainerBackend):
     interactive: bool = True
     preemptable: bool = False
 
-    def launch(self, spec: ContainerConfig) -> ToolkitContainer:
-        return self._launch_with_retry(spec)
+    def launch(self, config: ContainerConfig) -> ToolkitContainer:
+        return self._launch_with_retry(config)
 
     @_retry_launch
-    def _launch_with_retry(self, spec: ContainerConfig) -> ToolkitContainer:
+    def _launch_with_retry(self, config: ContainerConfig) -> ToolkitContainer:
         cmd: list[str] = ["job", "new"]
 
         if self.interactive:
@@ -282,16 +274,16 @@ class ToolkitContainerBackend(ContainerBackend):
             cmd.append("--preemptable")
 
         cmd += ["--tunnel"]
-        cmd += ["-i", spec.image]
-        cmd += ["--cpu", str(int(spec.cpu_cores))]
-        cmd += ["--mem", f"{int(spec.ram_gb)}"]
+        cmd += ["-i", config.image]
+        cmd += ["--cpu", str(int(config.cpu_cores))]
+        cmd += ["--mem", f"{int(config.ram_gb)}"]
 
-        if spec.gpu:
+        if config.gpu:
             cmd += ["--gpu", "1"]
 
         cmd += ["--", "sleep", "infinity"]
 
-        logger.info("Creating EAI Toolkit job with image %s …", spec.image)
+        logger.info("Creating EAI Toolkit job with image %s …", config.image)
 
         result = _run_eai(
             cmd,
@@ -301,9 +293,7 @@ class ToolkitContainerBackend(ContainerBackend):
         )
 
         if result.returncode != 0:
-            raise ContainerLaunchError(
-                f"Failed to create EAI job: {result.stderr.strip()}"
-            )
+            raise ContainerLaunchError(f"Failed to create EAI job: {result.stderr.strip()}")
 
         # Parse job ID from output
         try:
@@ -315,9 +305,7 @@ class ToolkitContainerBackend(ContainerBackend):
             if first_line:
                 job_id = first_line
             else:
-                raise ContainerLaunchError(
-                    f"Could not parse job ID from eai output: {result.stdout}"
-                ) from exc
+                raise ContainerLaunchError(f"Could not parse job ID from eai output: {result.stdout}") from exc
 
         logger.info("EAI job created: %s — waiting for RUNNING state …", job_id)
 
@@ -339,9 +327,7 @@ class ToolkitContainerBackend(ContainerBackend):
             if state == "running":
                 break
             if state in ("failed", "cancelled", "killed"):
-                raise ContainerLaunchError(
-                    f"EAI job {job_id} entered terminal state: {state}"
-                )
+                raise ContainerLaunchError(f"EAI job {job_id} entered terminal state: {state}")
             time.sleep(5)
         else:
             # Timed out — try to kill the job before raising
@@ -355,8 +341,7 @@ class ToolkitContainerBackend(ContainerBackend):
             except Exception:
                 pass
             raise ContainerLaunchError(
-                f"EAI job {job_id} did not reach RUNNING state "
-                f"within {self.timeout_seconds}s (last state: {state})"
+                f"EAI job {job_id} did not reach RUNNING state within {self.timeout_seconds}s (last state: {state})"
             )
 
         container = ToolkitContainer(job_id, profile=self.profile, account=self.account)
