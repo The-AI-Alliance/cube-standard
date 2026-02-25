@@ -1,16 +1,17 @@
-#!/usr/bin/env python3
 """Integration tests for ModalContainerBackend against the real Modal API.
 
 Requires: modal token set --token-id <id> --token-secret <secret>
-
-Usage:  uv run python tests/test_modal.py
 """
 
 import time
 import urllib.request
 from urllib.parse import urlparse
 
-from test_harness import log, make_container_common_tests, make_container_health_check_tests, run_all
+import pytest
+
+modal = pytest.importorskip("modal")
+
+from test_harness import log, make_container_common_tests, make_container_health_check_tests
 
 from cube.backends.modal import ModalContainerBackend
 from cube.container import ContainerConfig
@@ -19,8 +20,13 @@ BACKEND_KWARGS = {"timeout_seconds": 600, "app_name": "cube-test"}
 backend = ModalContainerBackend(**BACKEND_KWARGS)
 spec = ContainerConfig(image="python:3.12-slim")
 
-tests = make_container_common_tests(backend, spec)
-tests += make_container_health_check_tests(backend, spec)
+_all_tests = make_container_common_tests(backend, spec) + make_container_health_check_tests(backend, spec)
+
+
+@pytest.mark.parametrize("name,fn", _all_tests, ids=[t[0] for t in _all_tests])
+def test_container(name, fn):
+    fn()
+
 
 def test_tunnel_url():
     port_spec = ContainerConfig(image="python:3.12-slim", ports=[8080])
@@ -45,10 +51,3 @@ def test_tunnel_url():
             log(f"HTTP GET attempt: {exc}")
     finally:
         container.stop()
-
-
-tests.append(("tunnel URL", test_tunnel_url))
-
-
-if __name__ == "__main__":
-    run_all("ModalContainerBackend integration tests", tests)

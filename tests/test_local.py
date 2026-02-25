@@ -1,23 +1,27 @@
-#!/usr/bin/env python3
-"""Integration tests for LocalContainerBackend against a real Docker daemon.
-
-Usage:  uv run python tests/test_local.py
-"""
+"""Integration tests for LocalContainerBackend against a real Docker daemon."""
 
 import time
 import urllib.request
 
-from test_harness import log, make_container_common_tests, make_container_health_check_tests, run_all
+import pytest
+
+docker = pytest.importorskip("docker")
+
+from test_harness import log, make_container_common_tests, make_container_health_check_tests
 
 from cube.backends.local import LocalContainerBackend
 from cube.container import ContainerConfig, ContainerError
 
-BACKEND_KWARGS = {"timeout_seconds": 60}
-backend = LocalContainerBackend(**BACKEND_KWARGS)
+backend = LocalContainerBackend(timeout_seconds=60)
 spec = ContainerConfig(image="alpine:latest")
 
-tests = make_container_common_tests(backend, spec)
-tests += make_container_health_check_tests(backend, spec)
+_all_tests = make_container_common_tests(backend, spec) + make_container_health_check_tests(backend, spec)
+
+
+@pytest.mark.parametrize("name,fn", _all_tests, ids=[t[0] for t in _all_tests])
+def test_container(name, fn):
+    fn()
+
 
 def test_port_forwarding():
     port_spec = ContainerConfig(image="python:3.12-slim", ports=[8080])
@@ -41,23 +45,11 @@ def test_port_forwarding():
         container.stop()
 
 
-tests.append(("port forwarding", test_port_forwarding))
-
-
 def test_forward_unexposed_port():
     container = backend.launch(spec)
     try:
-        try:
+        with pytest.raises(ContainerError):
             container.forward_port(9999)
-            assert False, "should have raised ContainerError"
-        except ContainerError:
-            log("correctly raised ContainerError for unexposed port")
+        log("correctly raised ContainerError for unexposed port")
     finally:
         container.stop()
-
-
-tests.append(("forward unexposed port", test_forward_unexposed_port))
-
-
-if __name__ == "__main__":
-    run_all("LocalContainerBackend integration tests", tests)

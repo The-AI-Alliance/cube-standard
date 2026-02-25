@@ -54,5 +54,12 @@ line-ending = "auto"
 [tool.ruff.lint]
 extend-select = ["I"] # sort imports
 
+[tool.ruff.lint.per-file-ignores]
+# Integration tests use pytest.importorskip / pytest.skip before imports
+"tests/test_local.py" = ["E402"]
+"tests/test_modal.py" = ["E402"]
+"tests/test_daytona.py" = ["E402"]
+"tests/test_toolkit.py" = ["E402"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

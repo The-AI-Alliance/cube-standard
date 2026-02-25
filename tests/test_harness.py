@@ -1,12 +1,11 @@
 """Shared test harness for all container backend integration tests.
 
-Each backend test script creates a backend + spec, then calls ``run_all()``.
+Each backend test module creates a backend + spec, then uses
+``make_container_common_tests`` / ``make_container_health_check_tests``
+with ``@pytest.mark.parametrize`` to register them as pytest tests.
 """
 
 from __future__ import annotations
-
-import sys
-import traceback
 
 from cube.container import (
     ContainerBackend,
@@ -17,18 +16,6 @@ from cube.container import (
 
 def log(msg: str) -> None:
     print(f"  {msg}")
-
-
-def _run_one(name: str, fn) -> bool:
-    print(f"\n[TEST] {name}")
-    try:
-        fn()
-        print("  \u2713 PASSED")
-        return True
-    except Exception as exc:
-        print(f"  \u2717 FAILED: {exc}")
-        traceback.print_exc()
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -199,29 +186,3 @@ def make_container_health_check_tests(
     tests.append(("health check exception", test_health_check_exception))
 
     return tests
-
-
-# ---------------------------------------------------------------------------
-# Runner
-# ---------------------------------------------------------------------------
-
-
-def run_all(
-    label: str,
-    tests: list[tuple[str, callable]],
-) -> None:
-    print("=" * 60)
-    print(label)
-    print("=" * 60)
-
-    passed = failed = 0
-    for name, fn in tests:
-        if _run_one(name, fn):
-            passed += 1
-        else:
-            failed += 1
-
-    print(f"\n{'=' * 60}")
-    print(f"Results: {passed} passed, {failed} failed, {passed + failed} total")
-    print("=" * 60)
-    sys.exit(1 if failed else 0)

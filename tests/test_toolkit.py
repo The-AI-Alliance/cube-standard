@@ -1,25 +1,33 @@
-#!/usr/bin/env python3
 """Integration tests for ToolkitContainerBackend against a real EAI Toolkit cluster.
 
 Requires: ``eai`` CLI installed and authenticated.
-
-Usage:  uv run python tests/test_toolkit.py
 """
 
+import shutil
 import time
 import urllib.request
 
-from test_harness import log, make_container_common_tests, make_container_health_check_tests, run_all
+import pytest
+
+if shutil.which("eai") is None:
+    pytest.skip("eai CLI not installed", allow_module_level=True)
+
+from test_harness import log, make_container_common_tests, make_container_health_check_tests
 
 from cube.backends.toolkit import ToolkitContainerBackend
 from cube.container import ContainerConfig
 
-BACKEND_KWARGS = {"timeout_seconds": 600}
-backend = ToolkitContainerBackend(**BACKEND_KWARGS)
+backend = ToolkitContainerBackend(timeout_seconds=600)
 spec = ContainerConfig(image="python:3.12-slim")
 
-tests = make_container_common_tests(backend, spec)
-tests += make_container_health_check_tests(backend, spec)
+_all_tests = make_container_common_tests(backend, spec) + make_container_health_check_tests(
+    backend, spec
+)
+
+
+@pytest.mark.parametrize("name,fn", _all_tests, ids=[t[0] for t in _all_tests])
+def test_container(name, fn):
+    fn()
 
 
 def test_port_forwarding():
@@ -42,9 +50,3 @@ def test_port_forwarding():
         log(f"HTTP GET {url} -> {resp.status}")
     finally:
         container.stop()
-
-
-tests.append(("port forwarding", test_port_forwarding))
-
-if __name__ == "__main__":
-    run_all("ToolkitContainerBackend integration tests", tests)
