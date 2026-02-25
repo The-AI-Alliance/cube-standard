@@ -7,7 +7,7 @@ Usage:  uv run python tests/test_local.py
 import time
 import urllib.request
 
-from test_harness import log, make_health_check_tests, make_tests, run_all
+from test_harness import log, make_container_common_tests, make_container_health_check_tests, run_all
 
 from cube.backends.local import LocalContainerBackend
 from cube.container import ContainerConfig, ContainerError
@@ -16,8 +16,8 @@ BACKEND_KWARGS = {"timeout_seconds": 60}
 backend = LocalContainerBackend(**BACKEND_KWARGS)
 spec = ContainerConfig(image="alpine:latest")
 
-tests = make_tests(backend, spec)
-tests += make_health_check_tests(LocalContainerBackend, spec, BACKEND_KWARGS)
+tests = make_container_common_tests(backend, spec)
+tests += make_container_health_check_tests(backend, spec)
 
 def test_port_forwarding():
     port_spec = ContainerConfig(image="python:3.12-slim", ports=[8080])

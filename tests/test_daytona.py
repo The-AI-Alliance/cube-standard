@@ -10,7 +10,7 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from test_harness import log, make_health_check_tests, make_tests, run_all
+from test_harness import log, make_container_common_tests, make_container_health_check_tests, run_all
 
 from cube.backends.daytona import DaytonaContainerBackend
 from cube.container import ContainerConfig, ContainerError
@@ -33,8 +33,8 @@ BACKEND_KWARGS = {
 backend = DaytonaContainerBackend(**BACKEND_KWARGS)
 spec = ContainerConfig(image="python:3.12-slim")
 
-tests = make_tests(backend, spec)
-tests += make_health_check_tests(DaytonaContainerBackend, spec, BACKEND_KWARGS)
+tests = make_container_common_tests(backend, spec)
+tests += make_container_health_check_tests(backend, spec)
 
 
 def test_declared_ports_enforced():

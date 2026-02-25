@@ -9,7 +9,7 @@ Usage:  uv run python tests/test_toolkit.py
 import time
 import urllib.request
 
-from test_harness import log, make_health_check_tests, make_tests, run_all
+from test_harness import log, make_container_common_tests, make_container_health_check_tests, run_all
 
 from cube.backends.toolkit import ToolkitContainerBackend
 from cube.container import ContainerConfig
@@ -18,8 +18,8 @@ BACKEND_KWARGS = {"timeout_seconds": 600}
 backend = ToolkitContainerBackend(**BACKEND_KWARGS)
 spec = ContainerConfig(image="python:3.12-slim")
 
-tests = make_tests(backend, spec)
-tests += make_health_check_tests(ToolkitContainerBackend, spec, BACKEND_KWARGS)
+tests = make_container_common_tests(backend, spec)
+tests += make_container_health_check_tests(backend, spec)
 
 
 def test_port_forwarding():

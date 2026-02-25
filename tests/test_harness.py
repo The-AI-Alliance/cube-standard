@@ -36,7 +36,7 @@ def _run_one(name: str, fn) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def make_tests(backend: ContainerBackend, spec: ContainerConfig):
+def make_container_common_tests(backend: ContainerBackend, spec: ContainerConfig):
     """Return list of (name, callable) test pairs for the given backend."""
 
     tests: list[tuple[str, callable]] = []
@@ -143,12 +143,14 @@ def make_tests(backend: ContainerBackend, spec: ContainerConfig):
     return tests
 
 
-def make_health_check_tests(
-    backend_cls: type,
+def make_container_health_check_tests(
+    backend: ContainerBackend,
     spec: ContainerConfig,
-    backend_kwargs: dict,
 ):
     """Return health-check tests (create backend subclasses that override health_check)."""
+
+    backend_cls = type(backend)
+    backend_kwargs = {k: v for k, v in backend.model_dump().items() if k != "_type"}
 
     tests: list[tuple[str, callable]] = []
 

@@ -10,7 +10,7 @@ import time
 import urllib.request
 from urllib.parse import urlparse
 
-from test_harness import log, make_health_check_tests, make_tests, run_all
+from test_harness import log, make_container_common_tests, make_container_health_check_tests, run_all
 
 from cube.backends.modal import ModalContainerBackend
 from cube.container import ContainerConfig
@@ -19,8 +19,8 @@ BACKEND_KWARGS = {"timeout_seconds": 600, "app_name": "cube-test"}
 backend = ModalContainerBackend(**BACKEND_KWARGS)
 spec = ContainerConfig(image="python:3.12-slim")
 
-tests = make_tests(backend, spec)
-tests += make_health_check_tests(ModalContainerBackend, spec, BACKEND_KWARGS)
+tests = make_container_common_tests(backend, spec)
+tests += make_container_health_check_tests(backend, spec)
 
 def test_tunnel_url():
     port_spec = ContainerConfig(image="python:3.12-slim", ports=[8080])
