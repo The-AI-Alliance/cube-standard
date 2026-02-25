@@ -64,7 +64,11 @@ class AbstractTool(ABC):
     """
 
     def reset(self) -> None:
-        """Optional reset the tool to its initial state"""
+        """Optional: reset the tool to its initial state."""
+        pass
+
+    def close(self) -> None:
+        """Optional: clean up tool resources (connections, processes, files, etc.)."""
         pass
 
     @abstractmethod
