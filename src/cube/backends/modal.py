@@ -146,16 +146,7 @@ class ModalContainerBackend(ContainerBackend):
 
     app_name: str = "cube-container"
 
-    @staticmethod
-    def _validate_spec(spec: ContainerConfig) -> None:
-        if spec.disk_gb != 10.0:
-            raise ContainerLaunchError(
-                "ModalContainerBackend does not support `disk_gb` overrides. "
-                "Use the default value (10.0)."
-            )
-
     def launch(self, spec: ContainerConfig) -> ModalContainer:
-        self._validate_spec(spec)
         return self._launch_with_retry(spec)
 
     @_retry_sandbox

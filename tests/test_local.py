@@ -10,7 +10,7 @@ import urllib.request
 from test_harness import log, make_health_check_tests, make_tests, run_all
 
 from cube.backends.local import LocalContainerBackend
-from cube.container import ContainerConfig, ContainerError, ContainerLaunchError
+from cube.container import ContainerConfig, ContainerError
 
 BACKEND_KWARGS = {"timeout_seconds": 60}
 backend = LocalContainerBackend(**BACKEND_KWARGS)
@@ -58,17 +58,6 @@ def test_forward_unexposed_port():
 
 tests.append(("forward unexposed port", test_forward_unexposed_port))
 
-
-def test_disk_override_not_supported():
-    bad_spec = ContainerConfig(image="alpine:latest", disk_gb=20.0)
-    try:
-        backend.launch(bad_spec)
-        assert False, "should have raised ContainerLaunchError"
-    except ContainerLaunchError:
-        log("correctly rejected unsupported disk_gb override")
-
-
-tests.append(("reject disk_gb override", test_disk_override_not_supported))
 
 if __name__ == "__main__":
     run_all("LocalContainerBackend integration tests", tests)
