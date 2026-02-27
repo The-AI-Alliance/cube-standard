@@ -9,8 +9,19 @@ Changes vs kusha (per discussions/2026-02-26-cube-al2-osworld-parity.md §Layer 
   4. ComputerConfig.make() accepts container=None (ignored; OSWorld uses desktop_env)
   5. execute_action errors bubble up as StepError via base class
      (errors-as-observations are kept as Observations for agent visibility)
-  6. Both computer_13 and pyautogui action spaces supported via action_space config field
+  6. Two concrete tool classes: Computer13 (13 primitives) and PyAutoGUIComputer
   7. cache_dir / vm_dir root parametrised via CUBE_CACHE_DIR env var
+
+Action space design
+-------------------
+Instead of one Computer class with a filtered action_set, there are two separate
+tool classes — each exposes only the actions relevant to its action space, which
+is the single-source-of-truth for @tool_action auto-discovery:
+
+  Computer13        — 13 mouse/keyboard primitives + wait/done/fail
+  PyAutoGUIComputer — run_pyautogui + wait/done/fail
+
+Both inherit ComputerBase for shared VM lifecycle and task helpers.
 """
 
 import logging
@@ -54,39 +65,26 @@ class VMProvider(str, Enum):
 
 
 # ---------------------------------------------------------------------------
-# Action space enum
-# ---------------------------------------------------------------------------
-
-
-class ActionSpace(str, Enum):
-    """Supported desktop_env action spaces."""
-
-    COMPUTER_13 = "computer_13"
-    PYAUTOGUI = "pyautogui"
-
-
-# ---------------------------------------------------------------------------
-# ComputerConfig
+# Config classes
 # ---------------------------------------------------------------------------
 
 
 class ComputerConfig(ToolConfig):
     """
-    Serializable configuration for the Computer tool.
+    Shared serializable configuration for Computer tool variants.
 
     Maps to desktop_env.DesktopEnv constructor arguments.
 
     cache_dir and vm_dir default to $CUBE_CACHE_DIR/benchmarks/osworld/{cache,vm_data}.
     Override CUBE_CACHE_DIR env var to change the root data directory.
+
+    Use Computer13Config or PyAutoGUIConfig — not this base class directly.
     """
+
     provider: VMProvider = VMProvider.DOCKER
     region: str | None = None
     path_to_vm: str | None = None
     snapshot_name: str = "init_state"
-    # action_space controls which desktop_env internal action space is initialised.
-    # "computer_13" or "pyautogui" — affects which @tool_action methods are exposed
-    # via execute_action dispatch. CUBE action discovery via @tool_action handles both.
-    action_space: ActionSpace = ActionSpace.COMPUTER_13
     cache_dir: str = str(_CUBE_CACHE_ROOT / "benchmarks" / "osworld" / "cache")
     vm_dir: str = str(_CUBE_CACHE_ROOT / "benchmarks" / "osworld" / "vm_data")
     screen_size: tuple[int, int] = (1920, 1080)
@@ -99,62 +97,54 @@ class ComputerConfig(ToolConfig):
     # Adds ~1-2s per step but gives the agent up-to-date state.
     observe_after_action: bool = True
 
-    def make(self, container: Container | None = None) -> "Computer":
-        """
-        Instantiate Computer from this config.
+    def make(self, container: Container | None = None) -> "ComputerBase":
+        raise TypeError(
+            f"{type(self).__name__} is a base config. "
+            "Use Computer13Config or PyAutoGUIConfig instead."
+        )
 
-        `container` is accepted to satisfy the cube ToolConfig.make() signature
-        but is unused — OSWorld manages its own VM lifecycle via desktop_env.
-        """
+
+class Computer13Config(ComputerConfig):
+    """Config for Computer13 (13 mouse/keyboard primitives + wait/done/fail)."""
+
+    def make(self, container: Container | None = None) -> "Computer13":
         if container is not None:
             logger.warning(
-                "ComputerConfig.make() received a cube Container, but the OSWorld "
+                "Computer13Config.make() received a cube Container, but the OSWorld "
                 "Computer tool manages its own VM via desktop_env. The container "
                 "argument will be ignored."
             )
-        return Computer(self)
+        return Computer13(self)
+
+
+class PyAutoGUIConfig(ComputerConfig):
+    """Config for PyAutoGUIComputer (run_pyautogui + wait/done/fail)."""
+
+    def make(self, container: Container | None = None) -> "PyAutoGUIComputer":
+        if container is not None:
+            logger.warning(
+                "PyAutoGUIConfig.make() received a cube Container, but the OSWorld "
+                "Computer tool manages its own VM via desktop_env. The container "
+                "argument will be ignored."
+            )
+        return PyAutoGUIComputer(self)
 
 
 # ---------------------------------------------------------------------------
-# Action space membership sets
-# ---------------------------------------------------------------------------
-
-_COMPUTER_13_ACTIONS: frozenset[str] = frozenset({
-    "click", "double_click", "right_click", "mouse_down", "mouse_up",
-    "move_to", "drag_to", "scroll", "typing", "press", "key_down",
-    "key_up", "hotkey", "wait", "done", "fail",
-})
-
-_PYAUTOGUI_ACTIONS: frozenset[str] = frozenset({
-    "run_pyautogui", "wait", "done", "fail",
-})
-
-# ---------------------------------------------------------------------------
-# Computer tool
+# ComputerBase — shared VM lifecycle and task helpers
 # ---------------------------------------------------------------------------
 
 
-class Computer(Tool):
+class ComputerBase(Tool):
     """
-    Desktop/VM computer tool backed by desktop_env.DesktopEnv.
+    Shared base for Computer13 and PyAutoGUIComputer.
 
-    Provides mouse, keyboard, and screen-reading actions for the agent.
-    Raw observations (screenshot + accessibility tree) are returned and
-    post-processed by OSWorldTask.obs_postprocess() before the agent sees them.
+    Provides VM lifecycle (init, setup_task, evaluate_task, get_observation, close)
+    and the three terminal @tool_action signals shared by both action spaces:
+    wait, done, fail.
 
-    Action methods are decorated with @tool_action so that cube.tool.Tool
-    auto-discovers them for action_set and execute_action dispatch.
-
-    Both action spaces are supported:
-      - "computer_13": individual mouse/keyboard primitives (default)
-      - "pyautogui":   run_pyautogui() code execution with SoM tag_N variables
-
-    MIGRATION DELTA vs kusha version:
-    - Base: Tool instead of Tool + ComputerActionSpace Protocol
-    - @tool_action on every method instead of get_protocol_members()
-    - No manual action_set override
-    - make() accepts container=None
-    - execute_action errors bubble up as StepError (handled by base class)
+    Subclasses add the action-space-specific @tool_action methods and are
+    paired with their own Config class.
 
     NOTE: ToolWithTelemetry should be added once it moves from agentlab2 to cube.
     """
@@ -167,11 +157,6 @@ class Computer(Tool):
         The VM boots at this point; the snapshot restore happens later in setup_task().
         Marked for revisiting: consider lazy init if boot time is a problem.
         """
-        if not _DESKTOP_ENV_AVAILABLE:
-            raise ImportError(
-                "desktop_env is not installed. Install it with: pip install desktop-env"
-            )
-
         self.config = config
         self._current_task_config: dict | None = None
         self._last_marks: list[list[int]] = []
@@ -185,7 +170,7 @@ class Computer(Tool):
             logger.info(f"desktop_env will download VMs to: {vm_dir}")
 
         self._env = DesktopEnv(
-            action_space=config.action_space,
+            action_space=self._desktop_env_action_space,
             provider_name=config.provider.value,
             region=config.region,
             path_to_vm=config.path_to_vm,
@@ -198,23 +183,8 @@ class Computer(Tool):
             os_type=config.os_type,
         )
 
-    # ------------------------------------------------------------------
-    # action_set override: filter by configured action space
-    # ------------------------------------------------------------------
-
-    @property
-    def action_set(self):
-        """Return only the actions relevant to the configured action_space.
-
-        computer_13: all mouse/keyboard primitives + wait/done/fail
-        pyautogui:   run_pyautogui + wait/done/fail
-        """
-        allowed = (
-            _PYAUTOGUI_ACTIONS
-            if self.config.action_space == ActionSpace.PYAUTOGUI
-            else _COMPUTER_13_ACTIONS
-        )
-        return [a for a in super().action_set if a.name in allowed]
+    # Subclasses set this to the desktop_env action_space string
+    _desktop_env_action_space: str = "computer_13"
 
     # ------------------------------------------------------------------
     # execute_action override: optionally fetch full obs after each action
@@ -332,8 +302,55 @@ class Computer(Tool):
             self._env.close()
 
     # ------------------------------------------------------------------
+    # Terminal signals — shared by both action spaces
+    # ------------------------------------------------------------------
+
+    @tool_action
+    def wait(self) -> str:
+        """Wait one step without taking any action."""
+        return self._execute_desktop_action("WAIT")
+
+    @tool_action
+    def done(self) -> str:
+        """Signal that the task has been completed successfully.
+
+        Sets _is_done=True so that OSWorldTask.finished() returns True on the
+        next step check, triggering evaluate() and clean task termination.
+        """
+        self._is_done = True
+        return "Task marked as done"
+
+    @tool_action
+    def fail(self) -> str:
+        """Signal that the task cannot be completed (infeasible or failed).
+
+        Sets _is_done=True so that OSWorldTask.finished() returns True on the
+        next step check, triggering evaluate() and clean task termination.
+        """
+        self._is_done = True
+        return "Task marked as failed"
+
+
+# ---------------------------------------------------------------------------
+# Computer13 — 13 mouse/keyboard primitives
+# ---------------------------------------------------------------------------
+
+
+class Computer13(ComputerBase):
+    """
+    Desktop/VM computer tool with the computer_13 action space.
+
+    Exposes 13 mouse/keyboard primitives as @tool_action methods, plus the
+    shared wait/done/fail terminal signals inherited from ComputerBase.
+
+    Action methods are decorated with @tool_action so that cube.tool.Tool
+    auto-discovers them for action_set and execute_action dispatch.
+    """
+
+    _desktop_env_action_space = "computer_13"
+
+    # ------------------------------------------------------------------
     # Agent actions — computer_13 action space
-    # Decorated with @tool_action so cube.tool.Tool auto-discovers them.
     # ------------------------------------------------------------------
 
     @tool_action
@@ -494,34 +511,25 @@ class Computer(Tool):
             {"action_type": "HOTKEY", "parameters": {"keys": keys}}
         )
 
-    @tool_action
-    def wait(self) -> str:
-        """Wait one step without taking any action."""
-        return self._execute_desktop_action("WAIT")
 
-    @tool_action
-    def done(self) -> str:
-        """Signal that the task has been completed successfully.
+# ---------------------------------------------------------------------------
+# PyAutoGUIComputer — pyautogui code execution action space
+# ---------------------------------------------------------------------------
 
-        Sets _is_done=True so that OSWorldTask.finished() returns True on the
-        next step check, triggering evaluate() and clean task termination.
-        """
-        self._is_done = True
-        return "Task marked as done"
 
-    @tool_action
-    def fail(self) -> str:
-        """Signal that the task cannot be completed (infeasible or failed).
+class PyAutoGUIComputer(ComputerBase):
+    """
+    Desktop/VM computer tool with the pyautogui action space.
 
-        Sets _is_done=True so that OSWorldTask.finished() returns True on the
-        next step check, triggering evaluate() and clean task termination.
-        """
-        self._is_done = True
-        return "Task marked as failed"
+    Exposes run_pyautogui() as a @tool_action method, plus the shared
+    wait/done/fail terminal signals inherited from ComputerBase.
 
-    # ------------------------------------------------------------------
-    # pyautogui action space — only exposed when action_space="pyautogui"
-    # ------------------------------------------------------------------
+    The agent writes Python code using pyautogui; SoM tag_N variables
+    (center coordinates of numbered bounding boxes) are prepended automatically
+    so agents can reference screen elements by index.
+    """
+
+    _desktop_env_action_space = "pyautogui"
 
     @tool_action
     def run_pyautogui(self, code: str) -> str:

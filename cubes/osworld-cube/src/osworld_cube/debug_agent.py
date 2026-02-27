@@ -25,7 +25,7 @@ from pathlib import Path
 from cube.core import Action, ActionSchema, Observation
 from cube.task import TaskMetadata
 from osworld_cube.benchmark import OSWorldTaskConfig
-from osworld_cube.computer import ComputerConfig
+from osworld_cube.computer import Computer13Config
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ def get_debug_task_configs() -> list[OSWorldTaskConfig]:
             },
         )
         configs.append(
-            OSWorldTaskConfig(task_id=meta.id, tool_config=ComputerConfig(), metadata=meta)
+            OSWorldTaskConfig(task_id=meta.id, tool_config=Computer13Config(), metadata=meta)
         )
     logger.debug("[get_debug_task_configs] Loaded %d configs from %s", len(configs), _TASKS_FILE)
     return configs

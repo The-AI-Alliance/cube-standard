@@ -13,7 +13,7 @@ Changes vs kusha (per discussions/2026-02-26-cube-al2-osworld-parity.md §Layer 
   8. Add OSWorldTaskConfig (new class)
 
 Entry point for the simple agent loop:
-    benchmark = OSWorldBenchmark(default_tool_config=ComputerConfig())
+    benchmark = OSWorldBenchmark(default_tool_config=Computer13Config())
     benchmark.setup()
     for task_config in benchmark.get_task_configs():
         task = task_config.make()
@@ -58,7 +58,7 @@ from cube.benchmark import Benchmark, BenchmarkMetadata
 from cube.containers import ContainerBackend
 from cube.task import TaskConfig, TaskMetadata
 
-from osworld_cube.computer import ComputerConfig, _CUBE_CACHE_ROOT
+from osworld_cube.computer import ComputerConfig, Computer13Config, _CUBE_CACHE_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,7 @@ class OSWorldBenchmark(Benchmark):
         task_config_class:   type[TaskConfig] = OSWorldTaskConfig
 
     Constructor params (set by benchmark users):
-        default_tool_config:  ComputerConfig     — how to connect to the VM
+        default_tool_config:  Computer13Config | PyAutoGUIConfig  — how to connect to the VM
         domain:               str                — domain filter ("all" or e.g. "chrome")
         tasks_file:           str | None         — flat JSON task file (overrides repo)
         test_set_name:        str                — filename inside evaluation_examples/ (default "test_all.json")
@@ -279,13 +279,6 @@ class OSWorldBenchmark(Benchmark):
           3. Load task metadata from JSON files → populate instance shadow of task_metadata
           4. Apply domain filter and shuffle
         """
-        from osworld_cube.computer import _DESKTOP_ENV_AVAILABLE
-
-        if not _DESKTOP_ENV_AVAILABLE:
-            raise ImportError(
-                "desktop_env is not installed. Install it before running OSWorldBenchmark.\n"
-                "See: https://github.com/xlang-ai/OSWorld#installation"
-            )
         self.install()
 
         logger.info(

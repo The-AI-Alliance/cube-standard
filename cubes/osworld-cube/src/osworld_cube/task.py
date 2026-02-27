@@ -43,7 +43,7 @@ from cube.core import ActionSchema, Observation
 from cube.task import Task, TaskMetadata
 
 if TYPE_CHECKING:
-    from osworld_cube.computer import Computer
+    from osworld_cube.computer import ComputerBase
 
 logger = logging.getLogger(__name__)
 
@@ -89,9 +89,6 @@ class OSWorldTask(Task):
         """Return self.tool cast to Computer for type-checker satisfaction."""
         return self.tool  # type: ignore[return-value]
 
-    # ------------------------------------------------------------------
-    # reset() — replaces kusha's setup(self, tool)
-    # ------------------------------------------------------------------
 
     def reset(self) -> tuple[Observation, dict]:
         """
@@ -143,9 +140,6 @@ class OSWorldTask(Task):
         }
         return obs, info
 
-    # ------------------------------------------------------------------
-    # evaluate() — replaces kusha's validate_task()
-    # ------------------------------------------------------------------
 
     def evaluate(self, obs: Observation) -> tuple[float, dict]:
         """
@@ -180,9 +174,6 @@ class OSWorldTask(Task):
             "expected": evaluator.get("expected", {}),
         }
 
-    # ------------------------------------------------------------------
-    # finished() — adds obs arg vs kusha's finished()
-    # ------------------------------------------------------------------
 
     def finished(self, obs: Observation) -> bool:
         """
@@ -298,10 +289,6 @@ class OSWorldTask(Task):
         domain-specific action restriction (e.g. disable hotkey for web tasks).
         """
         return actions
-
-    # ------------------------------------------------------------------
-    # close() — replaces kusha's teardown()
-    # ------------------------------------------------------------------
 
     def close(self) -> None:
         """Clean up task resources.
