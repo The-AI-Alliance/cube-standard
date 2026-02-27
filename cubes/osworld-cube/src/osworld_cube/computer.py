@@ -18,47 +18,21 @@ import os
 import time
 from enum import Enum
 from io import BytesIO
+from typing import Literal
 from pathlib import Path
 
 from PIL import Image
 
 from cube.containers import Container
-from cube.core import Content, ImageContent, Observation, TextContent
+from cube.core import Action, Content, ImageContent, Observation, StepError, TextContent
 from cube.tool import Tool, ToolConfig, tool_action
+from desktop_env.desktop_env import DesktopEnv
+import desktop_env.providers.docker.manager as docker_manager
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# desktop_env import guard
-# desktop_env reads PROXY_CONFIG_FILE at import time (controllers/setup.py).
-# Set the env var before importing so the path resolves correctly regardless
-# of the current working directory.
-# ---------------------------------------------------------------------------
-
+# TODO: get this _CUBE_CACHE_ROOT from the cube package maybe with some helper method liek get_cube_cache_dir().
 _CUBE_CACHE_ROOT = Path(os.environ.get("CUBE_CACHE_DIR", str(Path.home() / ".agentlab2")))
-
-if "PROXY_CONFIG_FILE" not in os.environ:
-    _default_proxy_config = (
-        _CUBE_CACHE_ROOT
-        / "benchmarks"
-        / "osworld"
-        / "OSWorld"
-        / "evaluation_examples"
-        / "settings"
-        / "proxy"
-        / "dataimpulse.json"
-    )
-    os.environ["PROXY_CONFIG_FILE"] = str(_default_proxy_config)
-
-try:
-    from desktop_env.desktop_env import DesktopEnv
-    import desktop_env.providers.docker.manager as docker_manager
-
-    _DESKTOP_ENV_AVAILABLE = True
-except ImportError:
-    DesktopEnv = None  # type: ignore[assignment,misc]
-    docker_manager = None  # type: ignore[assignment]
-    _DESKTOP_ENV_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +54,18 @@ class VMProvider(str, Enum):
 
 
 # ---------------------------------------------------------------------------
+# Action space enum
+# ---------------------------------------------------------------------------
+
+
+class ActionSpace(str, Enum):
+    """Supported desktop_env action spaces."""
+
+    COMPUTER_13 = "computer_13"
+    PYAUTOGUI = "pyautogui"
+
+
+# ---------------------------------------------------------------------------
 # ComputerConfig
 # ---------------------------------------------------------------------------
 
@@ -93,7 +79,6 @@ class ComputerConfig(ToolConfig):
     cache_dir and vm_dir default to $CUBE_CACHE_DIR/benchmarks/osworld/{cache,vm_data}.
     Override CUBE_CACHE_DIR env var to change the root data directory.
     """
-
     provider: VMProvider = VMProvider.DOCKER
     region: str | None = None
     path_to_vm: str | None = None
@@ -101,14 +86,14 @@ class ComputerConfig(ToolConfig):
     # action_space controls which desktop_env internal action space is initialised.
     # "computer_13" or "pyautogui" — affects which @tool_action methods are exposed
     # via execute_action dispatch. CUBE action discovery via @tool_action handles both.
-    action_space: str = "computer_13"
+    action_space: ActionSpace = ActionSpace.COMPUTER_13
     cache_dir: str = str(_CUBE_CACHE_ROOT / "benchmarks" / "osworld" / "cache")
     vm_dir: str = str(_CUBE_CACHE_ROOT / "benchmarks" / "osworld" / "vm_data")
     screen_size: tuple[int, int] = (1920, 1080)
     headless: bool = True
     require_a11y_tree: bool = True
     require_terminal: bool = False
-    os_type: str = "Ubuntu"
+    os_type: Literal["Ubuntu", "Windows"] = "Ubuntu"
     enable_proxy: bool = False
     # Get full observation (screenshot + axtree) after every action.
     # Adds ~1-2s per step but gives the agent up-to-date state.
@@ -129,6 +114,20 @@ class ComputerConfig(ToolConfig):
             )
         return Computer(self)
 
+
+# ---------------------------------------------------------------------------
+# Action space membership sets
+# ---------------------------------------------------------------------------
+
+_COMPUTER_13_ACTIONS: frozenset[str] = frozenset({
+    "click", "double_click", "right_click", "mouse_down", "mouse_up",
+    "move_to", "drag_to", "scroll", "typing", "press", "key_down",
+    "key_up", "hotkey", "wait", "done", "fail",
+})
+
+_PYAUTOGUI_ACTIONS: frozenset[str] = frozenset({
+    "run_pyautogui", "wait", "done", "fail",
+})
 
 # ---------------------------------------------------------------------------
 # Computer tool
@@ -200,10 +199,28 @@ class Computer(Tool):
         )
 
     # ------------------------------------------------------------------
+    # action_set override: filter by configured action space
+    # ------------------------------------------------------------------
+
+    @property
+    def action_set(self):
+        """Return only the actions relevant to the configured action_space.
+
+        computer_13: all mouse/keyboard primitives + wait/done/fail
+        pyautogui:   run_pyautogui + wait/done/fail
+        """
+        allowed = (
+            _PYAUTOGUI_ACTIONS
+            if self.config.action_space == ActionSpace.PYAUTOGUI
+            else _COMPUTER_13_ACTIONS
+        )
+        return [a for a in super().action_set if a.name in allowed]
+
+    # ------------------------------------------------------------------
     # execute_action override: optionally fetch full obs after each action
     # ------------------------------------------------------------------
 
-    def execute_action(self, action):  # type: ignore[override]
+    def execute_action(self, action: Action) -> Observation | StepError:
         """Execute action; append full VM observation if observe_after_action=True."""
         action_obs = super().execute_action(action)
 
@@ -517,9 +534,21 @@ class Computer(Tool):
             code: Python code using pyautogui and optional tag_N variables
                   (e.g. "pyautogui.click(*tag_3)")
         """
+        from desktop_env.desktop_env import _fix_pyautogui_less_than_bug
+
         tag_vars = ""
         for i, mark in enumerate(self._last_marks):
             x, y, w, h = mark
             tag_vars += f"tag_{i + 1} = ({int(x + w // 2)}, {int(y + h // 2)})\n"
-        self._env.step(tag_vars + code)
+
+        fixed_code = _fix_pyautogui_less_than_bug(tag_vars + code)
+        result = self._env.controller.execute_python_command(fixed_code)
+        time.sleep(2)  # replicate desktop_env.step()'s default pause
+
+        if result:
+            returncode = result.get("returncode", 0)
+            error = result.get("error", "") or result.get("stderr", "")
+            if returncode != 0 and error:
+                return f"Error executing code:\n{error.strip()}"
+
         return "Success"

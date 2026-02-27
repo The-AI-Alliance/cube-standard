@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from cube.core import ImageContent, Observation, TextContent
 from cube.task import TaskMetadata
-
 from osworld_cube.computer import ComputerConfig, VMProvider
 from osworld_cube.task import OSWorldTask
 
@@ -64,6 +63,3 @@ def test_instantiate_and_get_first_obs():
         assert info["task_domain"] == "os"
     finally:
         task.close()
-
-if __name__ == "__main__":
-    test_instantiate_and_get_first_obs()

@@ -306,6 +306,7 @@ def trim_accessibility_tree(linearized_accessibility_tree: str, max_tokens: int)
     """Trim a linearized accessibility tree to fit within a token budget.
 
     Requires tiktoken. Only used when agents have a strict context limit.
+    TODO: remove if not used anywhere.
     """
     import tiktoken
 

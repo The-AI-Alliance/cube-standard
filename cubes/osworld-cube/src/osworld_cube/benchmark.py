@@ -49,7 +49,7 @@ import logging
 import os
 import random
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Generator
 from copy import deepcopy
 from pathlib import Path
 from typing import ClassVar
@@ -221,11 +221,12 @@ class OSWorldBenchmark(Benchmark):
     # ------------------------------------------------------------------
 
     domain: str = "all"
+    # TODO: Check if this the correct place for this? make it ENUM probably. 
     """Domain filter: "all" or a specific domain like "chrome", "libreoffice"."""
 
     tasks_file: str | None = None
     """Path to a flat JSON array of task dicts (overrides OSWorld repo structure)."""
-
+    
     test_set_name: str = "test_all.json"
     """Filename of the test set index inside <evaluation_examples>/."""
 
@@ -248,7 +249,7 @@ class OSWorldBenchmark(Benchmark):
     # get_task_configs() override — inject metadata into each config
     # ------------------------------------------------------------------
 
-    def get_task_configs(self) -> Iterator[TaskConfig]:
+    def get_task_configs(self) -> Generator[TaskConfig, None, None]:
         """
         Yield OSWorldTaskConfig objects, each carrying a copy of the TaskMetadata.
 
@@ -320,6 +321,11 @@ class OSWorldBenchmark(Benchmark):
         # Populate instance-level shadow of the ClassVar
         # (same pattern used by cube.Benchmark.subset_from_list)
         object.__setattr__(self, "task_metadata", loaded)
+
+        # OSWorld manages its own VM lifecycle via desktop_env — no shared runtime
+        # infrastructure is needed. Populate _runtime_context to suppress the
+        # Benchmark.setup() warning that fires when it is left empty.
+        self._runtime_context = {"osworld": True}
 
         logger.info(f"OSWorldBenchmark ready with {len(loaded)} tasks")
 

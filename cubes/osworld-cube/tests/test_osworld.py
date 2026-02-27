@@ -1,11 +1,5 @@
 """
-Tests for osworld-cube: Computer, OSWorldTask, OSWorldBenchmark.
-
-All tests mock desktop_env so no real VM is required.
-
-Run with:
-    cd cube-standard/cubes/osworld-cube
-    uv run pytest tests/ -v
+## deprecate these tests. Or update to check compliance with cube protocol ABC
 """
 
 from __future__ import annotations

@@ -25,15 +25,19 @@
 #       task = task_config.make()
 #       ...
 
-from osworld_cube.computer import Computer, ComputerConfig, VMProvider
+from osworld_cube.computer import ActionSpace, Computer, ComputerConfig, VMProvider
 from osworld_cube.task import OSWorldTask
 from osworld_cube.benchmark import OSWorldBenchmark, OSWorldTaskConfig
+from osworld_cube.debug_agent import get_debug_task_configs, make_debug_agent
 
 __all__ = [
+    "ActionSpace",
     "Computer",
     "ComputerConfig",
     "VMProvider",
     "OSWorldTask",
     "OSWorldBenchmark",
     "OSWorldTaskConfig",
+    "get_debug_task_configs",
+    "make_debug_agent",
 ]
