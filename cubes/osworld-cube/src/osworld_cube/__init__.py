@@ -27,11 +27,9 @@
 
 from osworld_cube.computer import (
     Computer13,
-    Computer13Config,
     ComputerBase,
     ComputerConfig,
     PyAutoGUIComputer,
-    PyAutoGUIConfig,
     VMProvider,
 )
 from osworld_cube.task import OSWorldTask
@@ -45,8 +43,6 @@ __all__ = [
     "PyAutoGUIComputer",
     # Config classes
     "ComputerConfig",
-    "Computer13Config",
-    "PyAutoGUIConfig",
     "VMProvider",
     # Task / benchmark
     "OSWorldTask",

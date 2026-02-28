@@ -13,7 +13,7 @@ Changes vs kusha (per discussions/2026-02-26-cube-al2-osworld-parity.md §Layer 
   8. Add OSWorldTaskConfig (new class)
 
 Entry point for the simple agent loop:
-    benchmark = OSWorldBenchmark(default_tool_config=Computer13Config())
+    benchmark = OSWorldBenchmark(default_tool_config=ComputerConfig())
     benchmark.setup()
     for task_config in benchmark.get_task_configs():
         task = task_config.make()
@@ -58,7 +58,7 @@ from cube.benchmark import Benchmark, BenchmarkMetadata
 from cube.containers import ContainerBackend
 from cube.task import TaskConfig, TaskMetadata
 
-from osworld_cube.computer import ComputerConfig, Computer13Config, _CUBE_CACHE_ROOT
+from osworld_cube.computer import ComputerConfig, _CUBE_CACHE_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,7 @@ class OSWorldBenchmark(Benchmark):
         task_config_class:   type[TaskConfig] = OSWorldTaskConfig
 
     Constructor params (set by benchmark users):
-        default_tool_config:  Computer13Config | PyAutoGUIConfig  — how to connect to the VM
+        default_tool_config:  ComputerConfig  — how to connect to the VM (action_space selects variant)
         domain:               str                — domain filter ("all" or e.g. "chrome")
         tasks_file:           str | None         — flat JSON task file (overrides repo)
         test_set_name:        str                — filename inside evaluation_examples/ (default "test_all.json")
@@ -187,6 +187,7 @@ class OSWorldBenchmark(Benchmark):
 
     TODO: Remove domain/shuffle fields in favour of subset_from_glob() once that
     becomes the standard filtering pattern.
+    TODO: Add the ability to select other subsets in the repo.
     """
 
     # ------------------------------------------------------------------
@@ -219,7 +220,7 @@ class OSWorldBenchmark(Benchmark):
     # ------------------------------------------------------------------
     # Instance fields
     # ------------------------------------------------------------------
-
+    default_tool_config : ComputerConfig = ComputerConfig()
     domain: str = "all"
     # TODO: Check if this the correct place for this? make it ENUM probably. 
     """Domain filter: "all" or a specific domain like "chrome", "libreoffice"."""

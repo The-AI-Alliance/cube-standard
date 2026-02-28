@@ -11,17 +11,7 @@ Changes vs kusha (per discussions/2026-02-26-cube-al2-osworld-parity.md §Layer 
      (errors-as-observations are kept as Observations for agent visibility)
   6. Two concrete tool classes: Computer13 (13 primitives) and PyAutoGUIComputer
   7. cache_dir / vm_dir root parametrised via CUBE_CACHE_DIR env var
-
-Action space design
--------------------
-Instead of one Computer class with a filtered action_set, there are two separate
-tool classes — each exposes only the actions relevant to its action space, which
-is the single-source-of-truth for @tool_action auto-discovery:
-
-  Computer13        — 13 mouse/keyboard primitives + wait/done/fail
-  PyAutoGUIComputer — run_pyautogui + wait/done/fail
-
-Both inherit ComputerBase for shared VM lifecycle and task helpers.
+  8. action_space field on ComputerConfig selects the tool variant — no subconfigs needed
 """
 
 import logging
@@ -64,6 +54,16 @@ class VMProvider(str, Enum):
     VOLCENGINE = "volcengine"
 
 
+class ActionSpace(str, Enum):
+    """desktop_env action space variants.
+
+    Values match the desktop_env action_space string passed to DesktopEnv().
+    """
+
+    COMPUTER_13 = "computer_13"
+    PYAUTOGUI = "pyautogui"
+
+
 # ---------------------------------------------------------------------------
 # Config classes
 # ---------------------------------------------------------------------------
@@ -71,16 +71,19 @@ class VMProvider(str, Enum):
 
 class ComputerConfig(ToolConfig):
     """
-    Shared serializable configuration for Computer tool variants.
+    Serializable configuration for Computer tool variants.
 
     Maps to desktop_env.DesktopEnv constructor arguments.
 
     cache_dir and vm_dir default to $CUBE_CACHE_DIR/benchmarks/osworld/{cache,vm_data}.
     Override CUBE_CACHE_DIR env var to change the root data directory.
 
-    Use Computer13Config or PyAutoGUIConfig — not this base class directly.
+    action_space selects the tool variant:
+      "computer_13" → Computer13 (13 mouse/keyboard primitives + wait/done/fail)
+      "pyautogui"   → PyAutoGUIComputer (run_pyautogui + wait/done/fail)
     """
 
+    action_space: ActionSpace = ActionSpace.COMPUTER_13
     provider: VMProvider = VMProvider.DOCKER
     region: str | None = None
     path_to_vm: str | None = None
@@ -98,36 +101,15 @@ class ComputerConfig(ToolConfig):
     observe_after_action: bool = True
 
     def make(self, container: Container | None = None) -> "ComputerBase":
-        raise TypeError(
-            f"{type(self).__name__} is a base config. "
-            "Use Computer13Config or PyAutoGUIConfig instead."
-        )
-
-
-class Computer13Config(ComputerConfig):
-    """Config for Computer13 (13 mouse/keyboard primitives + wait/done/fail)."""
-
-    def make(self, container: Container | None = None) -> "Computer13":
         if container is not None:
             logger.warning(
-                "Computer13Config.make() received a cube Container, but the OSWorld "
+                "ComputerConfig.make() received a cube Container, but the OSWorld "
                 "Computer tool manages its own VM via desktop_env. The container "
                 "argument will be ignored."
             )
+        if self.action_space == ActionSpace.PYAUTOGUI:
+            return PyAutoGUIComputer(self)
         return Computer13(self)
-
-
-class PyAutoGUIConfig(ComputerConfig):
-    """Config for PyAutoGUIComputer (run_pyautogui + wait/done/fail)."""
-
-    def make(self, container: Container | None = None) -> "PyAutoGUIComputer":
-        if container is not None:
-            logger.warning(
-                "PyAutoGUIConfig.make() received a cube Container, but the OSWorld "
-                "Computer tool manages its own VM via desktop_env. The container "
-                "argument will be ignored."
-            )
-        return PyAutoGUIComputer(self)
 
 
 # ---------------------------------------------------------------------------
@@ -183,8 +165,8 @@ class ComputerBase(Tool):
             os_type=config.os_type,
         )
 
-    # Subclasses set this to the desktop_env action_space string
-    _desktop_env_action_space: str = "computer_13"
+    # Subclasses override this to select the desktop_env action space
+    _desktop_env_action_space: ActionSpace = ActionSpace.COMPUTER_13
 
     # ------------------------------------------------------------------
     # execute_action override: optionally fetch full obs after each action
@@ -347,7 +329,7 @@ class Computer13(ComputerBase):
     auto-discovers them for action_set and execute_action dispatch.
     """
 
-    _desktop_env_action_space = "computer_13"
+    _desktop_env_action_space = ActionSpace.COMPUTER_13
 
     # ------------------------------------------------------------------
     # Agent actions — computer_13 action space
@@ -529,7 +511,7 @@ class PyAutoGUIComputer(ComputerBase):
     so agents can reference screen elements by index.
     """
 
-    _desktop_env_action_space = "pyautogui"
+    _desktop_env_action_space = ActionSpace.PYAUTOGUI
 
     @tool_action
     def run_pyautogui(self, code: str) -> str:

@@ -1,6 +1,4 @@
-"""
-## deprecate these tests. Or update to check compliance with cube protocol ABC
-"""
+"""Tests for osworld_cube — verifies compliance with the CUBE protocol ABCs."""
 
 from __future__ import annotations
 
@@ -10,7 +8,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 from PIL import Image
 
 from cube.core import Action, Observation, TextContent
@@ -94,30 +91,30 @@ class TestComputer:
         assert computer.config is not None
 
     @patch(PATCH_DOCKER_MGR, None)
-    def test_init_raises_without_desktop_env(self):
-        from osworld_cube import computer as mod
-        from osworld_cube.computer import ComputerConfig
-
-        orig = mod._DESKTOP_ENV_AVAILABLE
-        mod._DESKTOP_ENV_AVAILABLE = False
-        try:
-            with pytest.raises(ImportError, match="desktop_env"):
-                ComputerConfig().make()
-        finally:
-            mod._DESKTOP_ENV_AVAILABLE = orig
-
-    @patch(PATCH_DOCKER_MGR, None)
     @patch(PATCH_DESKTOP_ENV)
-    def test_action_set_discovered(self, mock_cls):
+    def test_action_set_computer13(self, mock_cls):
         from osworld_cube.computer import ComputerConfig
 
         mock_cls.return_value = _make_mock_env()
-        computer = ComputerConfig().make()
+        computer = ComputerConfig(action_space="computer_13").make()
         names = {a.name for a in computer.action_set}
-        # All expected computer_13 + pyautogui actions must be present
         for expected in ("click", "double_click", "right_click", "drag_to", "scroll",
-                         "typing", "press", "hotkey", "wait", "done", "fail", "run_pyautogui"):
+                         "typing", "press", "hotkey", "wait", "done", "fail"):
             assert expected in names, f"Missing action: {expected}"
+        assert "run_pyautogui" not in names
+
+    @patch(PATCH_DOCKER_MGR, None)
+    @patch(PATCH_DESKTOP_ENV)
+    def test_action_set_pyautogui(self, mock_cls):
+        from osworld_cube.computer import ComputerConfig
+
+        mock_cls.return_value = _make_mock_env()
+        computer = ComputerConfig(action_space="pyautogui").make()
+        names = {a.name for a in computer.action_set}
+        assert "run_pyautogui" in names
+        for terminal in ("wait", "done", "fail"):
+            assert terminal in names, f"Missing action: {terminal}"
+        assert "click" not in names
 
     @patch(PATCH_DOCKER_MGR, None)
     @patch(PATCH_DESKTOP_ENV)
@@ -207,14 +204,14 @@ class TestComputer:
 
         mock_env = _make_mock_env()
         mock_cls.return_value = mock_env
-        computer = ComputerConfig(observe_after_action=False).make()
+        computer = ComputerConfig(action_space="pyautogui", observe_after_action=False).make()
 
         computer.update_marks([[10, 20, 30, 40], [50, 60, 10, 10]])
         computer.run_pyautogui("pyautogui.click(*tag_1)")
 
         # tag_1 center: (10 + 30//2, 20 + 40//2) = (25, 40)
         # tag_2 center: (50 + 10//2, 60 + 10//2) = (55, 65)
-        call_code = mock_env.step.call_args[0][0]
+        call_code = mock_env.controller.execute_python_command.call_args[0][0]
         assert "tag_1 = (25, 40)" in call_code
         assert "tag_2 = (55, 65)" in call_code
         assert "pyautogui.click(*tag_1)" in call_code
@@ -460,8 +457,7 @@ class TestOSWorldBenchmark:
                 test_set_name="test_all.json",
                 shuffle=False,
             )
-            with patch("osworld_cube.computer._DESKTOP_ENV_AVAILABLE", True):
-                bench.setup()
+            bench.setup()
 
             assert len(bench.task_metadata) == 2
             assert "chrome-1" in bench.task_metadata
@@ -480,8 +476,7 @@ class TestOSWorldBenchmark:
                 domain="chrome",
                 shuffle=False,
             )
-            with patch("osworld_cube.computer._DESKTOP_ENV_AVAILABLE", True):
-                bench.setup()
+            bench.setup()
 
             assert len(bench.task_metadata) == 1
             assert "chrome-1" in bench.task_metadata
@@ -504,9 +499,8 @@ class TestOSWorldBenchmark:
                 shuffle=True,
                 shuffle_seed=0,
             )
-            with patch("osworld_cube.computer._DESKTOP_ENV_AVAILABLE", True):
-                bench_no_shuffle.setup()
-                bench_shuffled.setup()
+            bench_no_shuffle.setup()
+            bench_shuffled.setup()
 
             keys_no_shuffle = list(bench_no_shuffle.task_metadata.keys())
             keys_shuffled = list(bench_shuffled.task_metadata.keys())
@@ -524,8 +518,7 @@ class TestOSWorldBenchmark:
                 test_set_path=str(eval_dir),
                 shuffle=False,
             )
-            with patch("osworld_cube.computer._DESKTOP_ENV_AVAILABLE", True):
-                bench.setup()
+            bench.setup()
 
             configs = list(bench.get_task_configs())
             assert len(configs) == 2
@@ -546,8 +539,7 @@ class TestOSWorldBenchmark:
                 test_set_path=str(eval_dir),
                 shuffle=False,
             )
-            with patch("osworld_cube.computer._DESKTOP_ENV_AVAILABLE", True):
-                bench.setup()
+            bench.setup()
 
             cfg = next(bench.get_task_configs())
 
@@ -577,21 +569,11 @@ class TestOSWorldBenchmark:
             tasks_file=tasks_file,
             shuffle=False,
         )
-        with patch("osworld_cube.computer._DESKTOP_ENV_AVAILABLE", True):
-            bench.setup()
+        bench.setup()
 
         assert len(bench.task_metadata) == 2
         assert bench.task_metadata["flat-1"].abstract_description == "Flat task 1"
         assert bench.task_metadata["flat-2"].extra_info["domain"] == "chrome"
-
-    def test_setup_raises_without_desktop_env(self):
-        from osworld_cube.benchmark import OSWorldBenchmark
-        from osworld_cube.computer import ComputerConfig
-
-        bench = OSWorldBenchmark(default_tool_config=ComputerConfig())
-        with patch("osworld_cube.computer._DESKTOP_ENV_AVAILABLE", False):
-            with pytest.raises(ImportError, match="desktop_env"):
-                bench.setup()
 
     def test_fix_settings_paths(self):
         from osworld_cube.benchmark import OSWorldBenchmark
@@ -626,8 +608,7 @@ class TestOSWorldBenchmark:
                 test_set_path=str(eval_dir),
                 shuffle=False,
             )
-            with patch("osworld_cube.computer._DESKTOP_ENV_AVAILABLE", True):
-                bench.setup()
+            bench.setup()
 
             chrome_bench = bench.subset_from_glob("extra_info.domain", "chrome")
             assert len(chrome_bench.task_metadata) == 1

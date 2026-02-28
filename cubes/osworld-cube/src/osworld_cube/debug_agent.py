@@ -25,7 +25,7 @@ from pathlib import Path
 from cube.core import Action, ActionSchema, Observation
 from cube.task import TaskMetadata
 from osworld_cube.benchmark import OSWorldTaskConfig
-from osworld_cube.computer import Computer13Config
+from osworld_cube.computer import ComputerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -57,24 +57,7 @@ _TASK_ACTIONS: dict[str, list[Action]] = {
         Action(name="press", arguments={"key": "enter"}),
         Action(name="wait", arguments={}),
         Action(name="done", arguments={}),
-    ],
-    "simple-open-text-editor": [
-        # Open a terminal and launch gedit with the target filename
-        Action(name="hotkey", arguments={"keys": ["ctrl", "alt", "t"]}),
-        Action(name="wait", arguments={}),
-        Action(name="typing", arguments={"text": "gedit ~/Desktop/notes.txt"}),
-        Action(name="press", arguments={"key": "enter"}),
-        # Wait for gedit to open
-        Action(name="wait", arguments={}),
-        # Type content into the editor
-        Action(name="typing", arguments={"text": "Meeting at 3pm"}),
-        # Save the file
-        Action(name="hotkey", arguments={"keys": ["ctrl", "s"]}),
-        # Quit gedit
-        Action(name="hotkey", arguments={"keys": ["ctrl", "q"]}),
-        Action(name="wait", arguments={}),
-        Action(name="done", arguments={}),
-    ],
+    ]
 }
 
 
@@ -169,7 +152,7 @@ def get_debug_task_configs() -> list[OSWorldTaskConfig]:
             },
         )
         configs.append(
-            OSWorldTaskConfig(task_id=meta.id, tool_config=Computer13Config(), metadata=meta)
+            OSWorldTaskConfig(task_id=meta.id, tool_config=ComputerConfig(), metadata=meta)
         )
     logger.debug("[get_debug_task_configs] Loaded %d configs from %s", len(configs), _TASKS_FILE)
     return configs
