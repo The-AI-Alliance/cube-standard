@@ -12,6 +12,7 @@ dependencies = [
     "pillow>=12.1.0",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.8.0",
+    "python-dotenv>=1.2.1",
     "uvicorn[standard]>=0.34.0",
 ]
 
@@ -29,7 +30,6 @@ docker = [
 ]
 daytona = [
     "daytona>=0.142.0",
-    "python-dotenv>=1.2.1",
     "tenacity>=9.1.4",
 ]
 modal = [

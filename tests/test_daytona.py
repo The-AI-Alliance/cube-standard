@@ -6,15 +6,11 @@ Requires DAYTONA_API_KEY in the environment (or in a .env file).
 import os
 
 import pytest
+from dotenv import load_dotenv
 
 daytona = pytest.importorskip("daytona")
 
-try:
-    from dotenv import load_dotenv
-
-    load_dotenv()
-except ImportError:
-    pass
+load_dotenv()
 
 if not os.environ.get("DAYTONA_API_KEY"):
     pytest.skip("DAYTONA_API_KEY not set", allow_module_level=True)
