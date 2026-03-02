@@ -1,5 +1,5 @@
 [project]
-name = "cube-standard"
+name = "cube"
 version = "0.1.0"
 description = "Common Unified Benchmark Environments"
 readme = "README.md"
@@ -15,6 +15,7 @@ dependencies = [
     "pillow>=9.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.8.0",
+    "python-dotenv>=1.2.1",
     "uvicorn[standard]>=0.34.0",
 ]
 
@@ -26,6 +27,10 @@ dev = [
     "pre-commit>=3.6.0",
     "ruff>=0.8.0",
 ]
+
+[build-system]
+requires = ["uv_build>=0.8.22,<0.9.0"]
+build-backend = "uv_build"
 
 [tool.ruff]
 fix = true
