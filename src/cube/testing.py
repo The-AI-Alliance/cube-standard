@@ -6,9 +6,8 @@ Public API
 run_debug_episode(task, agent, *, max_steps)  →  dict
 run_debug_suite(benchmark_name, task_ids, run_fn)  →  list[dict]
 assert_debug_tasks_reward_one(module, *, max_steps)  →  None
-parametrize_debug_tasks(module, *, max_steps)  →  pytest.mark.parametrize decorator
 
-Module protocol (for assert_debug_tasks_reward_one / parametrize_debug_tasks)
+Module protocol (for assert_debug_tasks_reward_one)
 ----------------------------------------------------------------------
 The ``module`` argument must expose two callables:
 
@@ -21,15 +20,6 @@ The ``module`` argument must expose two callables:
 
 Example usage in a test file::
 
-    import pytest
-    import osworld_cube.debug_agent as _mod
-    from cube.testing import parametrize_debug_tasks
-
-    @parametrize_debug_tasks(_mod)
-    def test_debug_tasks(task_id, module):
-        ...  # body is filled in automatically; just define the fixture signature
-
-    # Or simpler — skip parametrize and assert all at once:
     def test_debug_tasks():
         from cube.testing import assert_debug_tasks_reward_one
         import osworld_cube.debug_agent as _mod
