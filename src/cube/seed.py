@@ -11,9 +11,9 @@ Abstract classes:
 """
 
 import hashlib
+import random
 from abc import ABC, abstractmethod
 
-import numpy as np
 from pydantic import BaseModel
 
 from cube.task import TaskMetadata
@@ -35,10 +35,10 @@ class BasicSeedGenerator(AbstractSeedGenerator):
         combined = f"{text}_{self.meta_seed}"
         # Hash it to get a consistent number
         hash_obj = hashlib.md5(combined.encode())
-        # Convert hash to integer and take modulo to fit numpy's seed range
+        # Convert hash to integer and take modulo to fit seed range
         return int(hash_obj.hexdigest(), 16) % (2**32)
 
     def __call__(self, task_metadata: TaskMetadata) -> list[int]:
         base_seed = self.make_base_seed(task_metadata.id)
-        rng = np.random.default_rng(base_seed)
-        return rng.integers(0, 2**32, size=self.n_seed).tolist()
+        rng = random.Random(base_seed)
+        return [rng.randrange(2**32) for _ in range(self.n_seed)]

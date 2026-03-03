@@ -1,20 +1,22 @@
 [project]
 name = "cube-standard"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "Common Unified Benchmark Environments"
 readme = "README.md"
+urls = { Repository = "https://github.com/The-AI-Alliance/cube-standard" }
 authors = [
-    { name = "Nicolas Gontier", email = "nicolas.gontier@servicenow.com" }
+    { name = "Nicolas Gontier", email = "nicolas.gontier@servicenow.com" },
+    { name = "Aman Jaiswal", email = "amanjaiswal73892@gmail.com" },
+    { name = "Alexandre Lacoste", email = "alexandre.lacoste@servicenow.com" },
 ]
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
-    "litellm>=1.0.0",
-    "numpy>=1.24.0",
     "numpydoc>=1.8.0",
     "pillow>=9.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.8.0",
+    "python-dotenv>=1.2.1",
     "uvicorn[standard]>=0.34.0",
 ]
 
@@ -26,6 +28,13 @@ dev = [
     "pre-commit>=3.6.0",
     "ruff>=0.8.0",
 ]
+
+[build-system]
+requires = ["uv_build>=0.6.0,<0.7.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "cube"
 
 [tool.ruff]
 fix = true
