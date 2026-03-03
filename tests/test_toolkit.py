@@ -20,9 +20,7 @@ from cube.container import ContainerConfig
 backend = ToolkitContainerBackend(timeout_seconds=600)
 spec = ContainerConfig(image="python:3.12-slim")
 
-_all_tests = make_container_common_tests(backend, spec) + make_container_health_check_tests(
-    backend, spec
-)
+_all_tests = make_container_common_tests(backend, spec) + make_container_health_check_tests(backend, spec)
 
 
 @pytest.mark.parametrize("name,fn", _all_tests, ids=[t[0] for t in _all_tests])

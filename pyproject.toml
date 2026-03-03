@@ -74,3 +74,8 @@ extend-select = ["I"] # sort imports
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.1",
+]

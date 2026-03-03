@@ -355,6 +355,11 @@ toolkit = [
     { name = "tenacity" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pre-commit" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "daytona", marker = "extra == 'daytona'", specifier = ">=0.142.0" },
@@ -377,6 +382,9 @@ requires-dist = [
     { name = "tenacity", marker = "extra == 'toolkit'", specifier = ">=9.1.4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pre-commit", specifier = ">=4.5.1" }]
 
 [[package]]
 name = "daytona"
