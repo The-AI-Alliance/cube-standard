@@ -210,6 +210,10 @@ class Tool(AbstractTool):
         - Method that does not exist on the class at all.
         - Method that exists but is not decorated with @tool_action.
         """
+        # Check instance dict first — catches dynamically attached actions (not in any class dict)
+        method = self.__dict__.get(action.name)
+        if method and callable(method) and getattr(method, "_is_action", False):
+            return method
         method = getattr(self, action.name, None)
         if not method:
             raise ValueError(f"Action {action.name} does not exist in {self.__class__.__name__}.")
@@ -279,6 +283,11 @@ class Tool(AbstractTool):
                 if attr_name in cls.__dict__
             )
             if callable(attr) and is_action:
+                actions.append(ActionSchema.from_function(attr))
+
+        # Also discover instance-level actions attached via setattr (not in any class dict)
+        for name, attr in self.__dict__.items():
+            if not name.startswith("_") and callable(attr) and getattr(attr, "_is_action", False):
                 actions.append(ActionSchema.from_function(attr))
 
         return actions
