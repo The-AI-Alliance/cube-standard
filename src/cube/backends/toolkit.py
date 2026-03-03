@@ -1,4 +1,7 @@
-"""EAI Toolkit / HPC backend — runs containers as EAI jobs via the ``eai`` CLI."""
+"""
+EAI Toolkit / HPC backend — runs containers as EAI jobs via the ``eai`` CLI.
+Public documentation: https://docs.console.elementai.com/
+"""
 
 from __future__ import annotations
 
