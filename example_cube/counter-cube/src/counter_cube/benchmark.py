@@ -1,21 +1,8 @@
-"""Step 4b of 4 — Benchmark.
+"""Benchmark for counter-cube.
 
-Benchmark is the top-level registry. Its two responsibilities:
-  1. Hold metadata (as ClassVar) so it's available without instantiation.
-  2. Vend TaskConfig objects via get_task_configs().
-
-Three ClassVar attributes are required:
-  benchmark_metadata  — BenchmarkMetadata describing the benchmark itself
-  task_metadata       — dict[task_id, TaskMetadata] for all tasks
-  task_config_class   — the TaskConfig subclass used to create tasks
-
-For large benchmarks, metadata can be loaded from JSON/CSV files instead
-of defined inline — see examples/toy_bench_auto_load_from_json/ for that
-pattern. The inline approach shown here is easier to read at a glance.
-
-_setup() and close() are no-ops here because this benchmark needs no
-shared infrastructure (no VMs, no databases). Real cubes use _setup() to
-start containers or connection pools and close() to tear them down.
+Top-level registry: holds ClassVar metadata and vends TaskConfig objects.
+Required ClassVars: benchmark_metadata, task_metadata, task_config_class.
+_setup() / close() are no-ops here — real benchmarks use them for containers.
 """
 
 from typing import ClassVar

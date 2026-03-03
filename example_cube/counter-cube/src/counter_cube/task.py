@@ -1,40 +1,11 @@
-"""Step 3 & 4a of 4 — Task and TaskConfig.
+"""Task and TaskConfig for counter-cube.
 
-Task owns one Tool instance and implements the gym-like episode loop:
+Task owns a Tool and implements the episode loop (reset / step / evaluate / close).
+Must implement: reset() → (Observation, info), evaluate(obs) → (reward, info).
+Optional: finished() for early termination, filter_actions() to restrict actions.
 
-  obs, info = task.reset()          # initialise; return first observation
-  while not done:
-      env_out = task.step(action)   # execute action, get next obs + reward
-  reward, info = task.evaluate(obs) # final scoring
-  task.close()                      # cleanup
-
-Two abstract methods you must implement:
-  reset()    — initialise the tool, return (Observation, info_dict)
-  evaluate() — return (reward: float, info: dict) given current obs
-
-Optional hooks worth knowing:
-  finished()       — return True to trigger early termination (done=True)
-                     without waiting for the agent to call the stop action.
-  filter_actions() — restrict the action set at the Task level without
-                     touching the Tool. Preferred over overriding Tool.action_set
-                     because it keeps the tool stateless and reusable.
-
-Task is a Pydantic model. Store task-specific parameters in
-metadata.extra_info (a plain dict). Do NOT add new Pydantic fields for
-per-task data — extra_info is the intended extension point.
-
-TaskConfig is the serializable description of a single task instance. Like
-ToolConfig it must be a Pydantic model (for cross-process transport) and
-must implement make() to produce a Task.
-
-The typical pattern:
-  1. Look up TaskMetadata from the Benchmark class by task_id.
-  2. Build the ToolConfig: prefer an explicit override on this TaskConfig,
-     fall back to per-task defaults stored in metadata.extra_info.
-  3. Construct and return the Task.
-
-task_id and seed are inherited from the base TaskConfig class; you rarely
-need to add new fields here.
+Store per-task parameters in metadata.extra_info — don't add new Pydantic fields.
+TaskConfig is serializable; implement make() to produce a Task.
 """
 
 from typing import Any
