@@ -12,8 +12,6 @@ from cube.task import TaskConfig, TaskMetadata
 from counter_cube.task import CounterTaskConfig
 
 
-
-
 class CounterBenchmark(Benchmark):
     """Registry of counter tasks — minimal benchmark with no shared infrastructure."""
 
@@ -39,7 +37,6 @@ class CounterBenchmark(Benchmark):
             recommended_max_steps=7,
             extra_info={"target": 3, "difficulty": "easy", "tool_config": {"enable_decrement": True}},
         ),
-        
         "count-by-2": TaskMetadata(
             id="count-by-2",
             abstract_description="Reach 4 using an increment-by-2 tool",

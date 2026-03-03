@@ -1,6 +1,5 @@
 from cube.testing import run_debug_episode, assert_debug_tasks_reward_one
 import counter_cube.debug as debug_mod
-import pytest
 
 
 def test_all_debug_tasks_reward_one():

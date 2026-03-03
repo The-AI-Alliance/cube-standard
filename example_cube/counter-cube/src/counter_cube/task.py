@@ -17,7 +17,6 @@ from cube.task import Task, TaskConfig, TaskMetadata
 from counter_cube.tool import CounterToolConfig
 
 
-
 class ReachTargetTask(Task):
     """Task: increment the counter until it equals `target`.
 
@@ -36,7 +35,6 @@ class ReachTargetTask(Task):
         return obs, {"task_type": "reach_target", "target": self.target}
 
     def evaluate(self, obs: Observation) -> tuple[float, dict[str, Any]]:
-
         value = self.tool._env.counter
 
         if value == self.target:
@@ -66,8 +64,8 @@ class CounterTaskConfig(TaskConfig):
         """
         # Import here to avoid circular import (benchmark imports task)
         from counter_cube.benchmark import CounterBenchmark
-        #TODO: find a proper solution for this circular import issue.
-        
+        # TODO: find a proper solution for this circular import issue.
+
         task_metadata: TaskMetadata = CounterBenchmark.task_metadata[self.task_id]
         tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
         return ReachTargetTask(

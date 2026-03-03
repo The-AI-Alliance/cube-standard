@@ -47,17 +47,20 @@ def test_enable_decrement():
     names = [a.name for a in tool.action_set]
     assert "decrement" in names
 
+
 def test_disable_decrement():
     """enable_decrement=False keeps decrement out of the action set."""
     tool = CounterToolConfig(enable_decrement=False).make()
     names = [a.name for a in tool.action_set]
     assert "decrement" not in names
 
+
 def test_enable_increment_by():
     """enable_increment_by=True adds increment_by to the action set."""
     tool = CounterToolConfig(enable_increment_by=True).make()
     names = [a.name for a in tool.action_set]
     assert "increment_by" in names
+
 
 def test_add_tool_action_custom():
     """add_tool_action attaches a user-supplied function as a discoverable action."""
@@ -166,8 +169,7 @@ def test_decrement_task(task_configs):
     names = [a.name for a in task.action_set]
     assert "decrement" in names
 
-    task.step(INCREMENT)          # 0 → 1
-    env_out = task.step(DECREMENT)  # 1 → 0
+    task.step(INCREMENT)  # 0 → 1
     assert task.tool._env.counter == 0
     task.close()
 
