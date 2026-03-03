@@ -1,4 +1,4 @@
-.PHONY: help install format lint run
+.PHONY: help install format lint run test
 
 help:
 	@echo "make install    - Install dependencies in editable mode"
@@ -18,6 +18,6 @@ lint:
 
 run:
 	uv run python -m cube
-	
+
 test:
 	uv run pytest tests/
