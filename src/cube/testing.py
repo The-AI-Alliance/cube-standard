@@ -93,9 +93,7 @@ def run_debug_episode(
         t0 = time.perf_counter()
         obs, info = task.reset()
         reset_time = time.perf_counter() - t0
-        logger.info(
-            f"[run_debug_episode] task={task_id!r}  reset done in {reset_time:.1f}s  info={info}"
-        )
+        logger.info(f"[run_debug_episode] task={task_id!r}  reset done in {reset_time:.1f}s  info={info}")
 
         env_out = None
         while report["steps"] < max_steps:

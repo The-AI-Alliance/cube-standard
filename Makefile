@@ -10,14 +10,16 @@ install:
 	uv sync --all-extras
 	uv pip install -e .
 
-format:
-	uv run ruff format .
-
 lint:
 	uv run ruff check --fix .
+	uv run ruff format .
+
+lint-check:
+	uvx ruff check --diff .
+	uvx ruff format --diff .
 
 run:
 	uv run python -m cube
-	
+
 test:
 	uv run pytest tests/
