@@ -22,9 +22,10 @@ import traceback
 from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, Self
 
-import litellm
 from PIL import Image as PILImage
 from pydantic import BaseModel, Field, field_serializer, field_validator, model_serializer, model_validator
+
+from cube.utils import function_to_dict
 
 
 class TypedBaseModel(BaseModel):
@@ -79,7 +80,7 @@ class ActionSchema(TypedBaseModel):
     @classmethod
     def from_function(cls, func: Callable) -> Self:
         """Create tool object from python function."""
-        schema = litellm.utils.function_to_dict(func)
+        schema = function_to_dict(func)
         return cls(**schema)
 
     def as_dict(self) -> dict[str, Any]:
