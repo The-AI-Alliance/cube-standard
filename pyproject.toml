@@ -1,8 +1,9 @@
 [project]
-name = "cube"
-version = "0.1.0"
+name = "cube-standard"
+version = "0.1.0rc1"
 description = "Common Unified Benchmark Environments"
 readme = "README.md"
+urls = { Repository = "https://github.com/The-AI-Alliance/cube-standard" }
 authors = [
     { name = "Nicolas Gontier", email = "nicolas.gontier@servicenow.com" },
     { name = "Aman Jaiswal", email = "amanjaiswal73892@gmail.com" },
@@ -31,8 +32,11 @@ dev = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.8.22,<0.9.0"]
+requires = ["uv_build>=0.6.0,<0.7.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "cube"
 
 [tool.ruff]
 fix = true
