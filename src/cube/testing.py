@@ -4,7 +4,7 @@ CUBE testing utilities — framework-level harness for debug episodes.
 Public API
 ----------
 run_debug_episode(task, agent, *, max_steps)  →  dict
-run_debug_suite(benchmark_name, task_ids, run_fn)  →  list[dict]
+run_debug_suite(benchmark_name, module, *, max_steps)  →  list[dict]
 assert_debug_tasks_reward_one(module, *, max_steps)  →  None
 
 Module protocol (for assert_debug_tasks_reward_one)
@@ -149,26 +149,32 @@ def run_debug_episode(
 
 def run_debug_suite(
     benchmark_name: str,
-    task_ids: list[str],
-    run_fn: Callable[[str], dict],
+    module: types.ModuleType,
+    *,
+    max_steps: int = 20,
 ) -> list[dict]:
     """
     Run all debug tasks for a benchmark and print a JSON report.
+
     Args:
         benchmark_name: Label used in the JSON output (e.g. ``"osworld-cube"``).
-        task_ids:       Ordered list of task IDs to run.
-        run_fn:         Callable ``(task_id: str) -> dict`` that constructs the
-                        task + agent and delegates to ``run_debug_episode``.
+        module:         A module exposing ``get_debug_task_configs()`` and
+                        ``make_debug_agent(task_id)``.
+        max_steps:      Safety cap passed to ``run_debug_episode`` (default 20).
 
     Returns:
         List of per-episode report dicts (same schema as ``run_debug_episode``).
         The caller is responsible for exit-code handling.
     """
+    task_configs = {tc.task_id: tc for tc in module.get_debug_task_configs()}
     logger.info(
         "[run_debug_suite] benchmark=%r  running %d task(s): %s",
-        benchmark_name, len(task_ids), task_ids,
+        benchmark_name, len(task_configs), list(task_configs),
     )
-    results = [run_fn(tid) for tid in task_ids]
+    results = [
+        run_debug_episode(tc.make(), module.make_debug_agent(tid), max_steps=max_steps)
+        for tid, tc in task_configs.items()
+    ]
     output = {"benchmark": benchmark_name, "debug_episodes": results}
     print(json.dumps(output, indent=2))
     return results
