@@ -169,7 +169,7 @@ class Content(TypedBaseModel, ABC):
             )
         raise TypeError(
             f"Unsupported data type for Content.from_data(): {type(data).__name__}. "
-            "Supported types: str, int, float, dict, list, PILImage.Image."
+            "Supported types: str, int, float, dict, list, BaseModel, PILImage.Image."
         )
 
 
