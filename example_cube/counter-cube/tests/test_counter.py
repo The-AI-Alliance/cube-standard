@@ -8,6 +8,7 @@ import pytest
 
 from cube.core import Action, Observation
 from counter_cube import CounterBenchmark, CounterTaskConfig, CounterTool, CounterToolConfig
+from counter_cube.pluggable_tool import CounterToolPluggable
 
 INCREMENT = Action(name="increment", arguments={})
 DECREMENT = Action(name="decrement", arguments={})
@@ -60,7 +61,7 @@ def test_enable_increment_by():
 
 def test_add_tool_action_custom():
     """add_tool_action attaches a user-supplied function as a discoverable action."""
-    tool = CounterToolConfig().make()
+    tool = CounterToolPluggable(CounterToolConfig())
 
     def reset_counter(env) -> str:
         """Reset counter to zero."""
