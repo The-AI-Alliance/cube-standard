@@ -164,8 +164,7 @@ def get_debug_task_configs() -> list[OSWorldTaskConfig]:
 
 if __name__ == "__main__":
     import sys
-
-    from cube.testing import run_debug_episode as _run
+    import osworld_cube.debug_agent as _mod
     from cube.testing import run_debug_suite
 
     logging.basicConfig(
@@ -174,14 +173,7 @@ if __name__ == "__main__":
         datefmt="%H:%M:%S",
     )
 
-    task_configs = {tc.task_id: tc for tc in get_debug_task_configs()}
-
-    def _run_one(tid: str) -> dict:
-        task = task_configs[tid].make()
-        agent = make_debug_agent(tid)
-        return _run(task, agent, max_steps=20)
-
-    results = run_debug_suite("osworld-cube", list(task_configs), _run_one)
+    results = run_debug_suite("osworld-cube", _mod)
 
     # Exit non-zero if any episode failed or got reward 0
     failed = [r for r in results if r["error"] or not r["done"] or r["reward"] <= 0]

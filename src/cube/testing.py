@@ -4,7 +4,26 @@ CUBE testing utilities — framework-level harness for debug episodes.
 Public API
 ----------
 run_debug_episode(task, agent, *, max_steps)  →  dict
-run_debug_suite(benchmark_name, task_ids, run_fn)  →  list[dict]
+run_debug_suite(benchmark_name, module, *, max_steps)  →  list[dict]
+assert_debug_tasks_reward_one(module, *, max_steps)  →  None
+
+Module protocol (for assert_debug_tasks_reward_one)
+----------------------------------------------------------------------
+The ``module`` argument must expose two callables:
+
+    get_debug_task_configs() -> list[TaskConfig]
+        Return one TaskConfig per debug task. Each config must have a
+        ``.task_id`` attribute and a ``.make()`` method that returns a Task.
+
+    make_debug_agent(task_id: str) -> Callable[[Observation, list[ActionSchema]], Action]
+        Return a deterministic agent for the given task_id.
+
+Example usage in a test file::
+
+    def test_debug_tasks():
+        from cube.testing import assert_debug_tasks_reward_one
+        import osworld_cube.debug_agent as _mod
+        assert_debug_tasks_reward_one(_mod)
 """
 
 from __future__ import annotations
@@ -12,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import types
 from collections.abc import Callable
 
 from cube.core import Action, ActionSchema, Observation
@@ -129,31 +149,71 @@ def run_debug_episode(
 
 def run_debug_suite(
     benchmark_name: str,
-    task_ids: list[str],
-    run_fn: Callable[[str], dict],
+    module: types.ModuleType,
+    *,
+    max_steps: int = 20,
 ) -> list[dict]:
     """
     Run all debug tasks for a benchmark and print a JSON report.
 
-    This is the shared orchestration layer so each benchmark's ``__main__``
-    does not duplicate JSON formatting and benchmark labelling. Task
-    construction remains benchmark-specific via ``run_fn``.
-
     Args:
         benchmark_name: Label used in the JSON output (e.g. ``"osworld-cube"``).
-        task_ids:       Ordered list of task IDs to run.
-        run_fn:         Callable ``(task_id: str) -> dict`` that constructs the
-                        task + agent and delegates to ``run_debug_episode``.
+        module:         A module exposing ``get_debug_task_configs()`` and
+                        ``make_debug_agent(task_id)``.
+        max_steps:      Safety cap passed to ``run_debug_episode`` (default 20).
 
     Returns:
         List of per-episode report dicts (same schema as ``run_debug_episode``).
         The caller is responsible for exit-code handling.
     """
+    task_configs = {tc.task_id: tc for tc in module.get_debug_task_configs()}
     logger.info(
         "[run_debug_suite] benchmark=%r  running %d task(s): %s",
-        benchmark_name, len(task_ids), task_ids,
+        benchmark_name, len(task_configs), list(task_configs),
     )
-    results = [run_fn(tid) for tid in task_ids]
+    results = [
+        run_debug_episode(tc.make(), module.make_debug_agent(tid), max_steps=max_steps)
+        for tid, tc in task_configs.items()
+    ]
     output = {"benchmark": benchmark_name, "debug_episodes": results}
     print(json.dumps(output, indent=2))
     return results
+
+
+def assert_debug_tasks_reward_one(
+    module: types.ModuleType,
+    *,
+    max_steps: int = 20,
+) -> None:
+    """
+    Assert that every debug task in ``module`` completes with reward == 1.0.
+
+    Discovers tasks via ``module.get_debug_task_configs()``, builds a fresh
+    deterministic agent via ``module.make_debug_agent(task_id)``, runs each
+    episode through ``run_debug_episode``, and raises ``AssertionError`` on
+    the first failure.
+
+    Intended for use in a single catch-all test function::
+
+        def test_debug_tasks():
+            import osworld_cube.debug_agent as mod
+            from cube.testing import assert_debug_tasks_reward_one
+            assert_debug_tasks_reward_one(mod)
+
+    Args:
+        module:    A module exposing ``get_debug_task_configs()`` and
+                   ``make_debug_agent(task_id)``.
+        max_steps: Safety cap passed to ``run_debug_episode`` (default 20).
+
+    Raises:
+        AssertionError: If any episode does not complete, errors, or gets
+                        reward < 1.0.
+    """
+    task_configs = {tc.task_id: tc for tc in module.get_debug_task_configs()}
+    for task_id, task_config in task_configs.items():
+        task = task_config.make()
+        agent = module.make_debug_agent(task_id)
+        report = run_debug_episode(task, agent, max_steps=max_steps)
+        assert not report["error"], f"[{task_id}] Episode error: {report['error']}"
+        assert report["done"], f"[{task_id}] Episode did not complete: {report}"
+        assert report["reward"] == 1.0, f"[{task_id}] Expected reward=1.0, got {report['reward']}: {report}"
