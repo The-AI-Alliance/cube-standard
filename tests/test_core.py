@@ -4,6 +4,7 @@ import json
 
 import pytest
 from PIL import Image as PILImage
+from pydantic import BaseModel
 
 from cube.core import (
     Action,
@@ -72,6 +73,14 @@ def test_content_from_data_image_gives_image_content():
     assert isinstance(Content.from_data(PILImage.new("RGB", (10, 10))), ImageContent)
 
 
+def test_content_from_data_base_model_gives_structured_content():
+    class Point(BaseModel):
+        x: int
+        y: int
+
+    assert isinstance(Content.from_data(Point(x=1, y=2)), StructuredContent)
+
+
 def test_content_from_data_bytes_raises_type_error():
     with pytest.raises(TypeError, match="bytes"):
         Content.from_data(b"raw bytes")
@@ -100,6 +109,15 @@ def test_text_content_to_llm_message():
 def test_structured_content_to_markdown_json_block():
     expected = f"```json\n{json.dumps({'score': 42}, indent=2)}\n```"
     assert StructuredContent(data={"score": 42}).to_markdown() == expected
+
+
+def test_structured_content_coerces_base_model_to_dict():
+    class Point(BaseModel):
+        x: int
+        y: int
+
+    content = StructuredContent(data=Point(x=3, y=4))
+    assert content.data == {"x": 3, "y": 4}
 
 
 def test_structured_content_to_llm_message():

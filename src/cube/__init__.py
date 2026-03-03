@@ -1,10 +1,21 @@
 """CUBE Standard - Common Unified Benchmark Environments."""
 
+import os
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 
 try:
     __version__ = version("cube-standard")
 except PackageNotFoundError:
     __version__ = "unknown"
 
-__all__ = ["__version__"]
+_CUBE_CACHE_ROOT = Path(os.environ.get("CUBE_CACHE_DIR", str(Path.home() / ".cube")))
+# TODO: ad helper function to clear cache, get cache size, etc.
+
+
+def get_cache_dir(benchmark_name: str) -> Path:
+    """Get the cache directory for a specific benchmark."""
+    return _CUBE_CACHE_ROOT / benchmark_name
+
+
+__all__ = ["__version__", "get_cache_dir"]

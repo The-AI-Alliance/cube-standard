@@ -64,7 +64,11 @@ class AbstractTool(ABC):
     """
 
     def reset(self) -> None:
-        """Optional reset the tool to its initial state"""
+        """Optional: reset the tool to its initial state."""
+        pass
+
+    def close(self) -> None:
+        """Optional: clean up tool resources (connections, processes, files, etc.)."""
         pass
 
     @abstractmethod
@@ -199,25 +203,51 @@ class Tool(AbstractTool):
         - Clear intent: Obvious which methods are actions
     """
 
+    def get_action_method(self, action: Action) -> Callable:
+        """Return the bound method for an action, or raise ValueError if it is not registered.
+
+        Raises distinct errors for:
+        - Method that does not exist on the class at all.
+        - Method that exists but is not decorated with @tool_action.
+        """
+        # Check instance dict first — catches dynamically attached actions (not in any class dict)
+        method = self.__dict__.get(action.name)
+        if method and callable(method) and getattr(method, "_is_action", False):
+            return method
+        method = getattr(self, action.name, None)
+        if not method:
+            raise ValueError(f"Action {action.name} does not exist in {self.__class__.__name__}.")
+        is_registered = any(
+            getattr(cls.__dict__.get(action.name), "_is_action", False)
+            for cls in type(self).__mro__
+            if action.name in cls.__dict__
+        )
+        if not is_registered:
+            raise ValueError(
+                f"Action {action.name} exists in {self.__class__.__name__} but is not decorated with @tool_action. Add @tool_action to expose it as an action."
+            )
+        return method
+
     def execute_action(self, action: Action) -> Observation | StepError:
         """Execute an action by name."""
-        # Get the method
-        method = getattr(self, action.name, None)
-
-        if not method:
-            raise ValueError(f"Method '{action.name}' does not exist in {self.__class__.__name__}.")
-        if not getattr(method, "_is_action", False):
-            raise ValueError(
-                f"Method '{action.name}' exists in {self.__class__.__name__} but is not decorated with @tool_action. Add @tool_action to expose it as an action."
-            )
-
+        method = self.get_action_method(action)
         try:
             action_result = method(**action.arguments) or "Success"
         except Exception as e:
             action_result = f"Error executing action {action.name}: {e}"
             logger.exception(action_result)
             return StepError.from_exception(e)
+        return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
+    async def async_execute_action(self, action: Action) -> Observation | StepError:
+        """Async version of execute_action for tools whose action methods are coroutines."""
+        method = self.get_action_method(action)
+        try:
+            action_result = (await method(**action.arguments)) or "Success"
+        except Exception as e:
+            action_result = f"Error executing action {action.name}: {e}"
+            logger.exception(action_result)
+            return StepError.from_exception(e)
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
     @property
@@ -227,14 +257,37 @@ class Tool(AbstractTool):
 
         # Introspect the class to find all methods marked as actions
         for attr_name in dir(self):
-            # Skip private/protected methods and properties
+            # Skip private/protected methods and the action_set property itself
             if attr_name.startswith("_") or attr_name == "action_set":
+                continue
+
+            # Skip properties — calling getattr on a property invokes its getter,
+            # which may have side effects (e.g. raising if a resource is not yet initialized).
+            if any(
+                isinstance(cls.__dict__.get(attr_name), property)
+                for cls in type(self).__mro__
+                if attr_name in cls.__dict__
+            ):
                 continue
 
             attr = getattr(self, attr_name)
 
-            # Check if it's marked as an action
-            if callable(attr) and getattr(attr, "_is_action", False):
+            # Check if this attr_name is a method marked as an action.
+            # We walk up the class hierarchy (method resolution order, MRO)
+            # because a subclass may override a method without repeating
+            # @tool_action - as long as the decorator appears on the method
+            # in any parent class, the override is still treated as an action.
+            is_action = any(
+                getattr(cls.__dict__.get(attr_name), "_is_action", False)
+                for cls in type(self).__mro__
+                if attr_name in cls.__dict__
+            )
+            if callable(attr) and is_action:
+                actions.append(ActionSchema.from_function(attr))
+
+        # Also discover instance-level actions attached via setattr (not in any class dict)
+        for name, attr in self.__dict__.items():
+            if not name.startswith("_") and callable(attr) and getattr(attr, "_is_action", False):
                 actions.append(ActionSchema.from_function(attr))
 
         return actions
