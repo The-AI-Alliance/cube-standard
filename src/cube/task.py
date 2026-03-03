@@ -193,7 +193,7 @@ class Task(TypedBaseModel, ABC):
     def reset(self) -> Tuple[Observation, Dict]:
         """
         Reset the task to its initial state.
-        Should call self.tool.reset() to reset the tool as well
+        Must call self.tool.reset() to reset the tool as well.
 
         Returns:
             Tuple of (Observation, dict with additional task info)
@@ -284,13 +284,16 @@ class Task(TypedBaseModel, ABC):
 
     def close(self) -> None:
         """
-        (Optional) Cleanup task resources.
-        Examples:
-        - Close browser / vm / container
-        - Cleanup temp files
-        - Reset state for next task
+        Cleanup task resources. Calls self.tool.close() automatically.
+        Override to add task-specific cleanup, and call super().close() to
+        ensure the tool is also cleaned up.
+
+        Examples of additional task-specific cleanup:
+        - Stop containers
+        - Remove temp files
+        - Close network connections
         """
-        pass
+        self.tool.close()
 
 
 class TaskConfig(ABC, TypedBaseModel):

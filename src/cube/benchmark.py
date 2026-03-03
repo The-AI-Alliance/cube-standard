@@ -483,3 +483,17 @@ class Benchmark(TypedBaseModel, ABC):
         Clean up runtime resources that were created during setup().
         """
         pass
+
+    def install(self) -> None:
+        """
+        Optional method to install any dependencies required by the benchmark.
+        By default, does nothing. Override this method in your benchmark if you need to perform installation steps before setup().
+        """
+        pass
+
+    def uninstall(self) -> None:
+        """
+        Optional method to uninstall any dependencies installed by the benchmark.
+        By default, does nothing. Override this method in your benchmark if you need to perform cleanup steps after close().
+        """
+        pass

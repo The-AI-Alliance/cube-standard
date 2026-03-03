@@ -22,9 +22,10 @@ import traceback
 from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, Self
 
-import litellm
 from PIL import Image as PILImage
 from pydantic import BaseModel, Field, field_serializer, field_validator, model_serializer, model_validator
+
+from cube.utils import function_to_dict
 
 
 class TypedBaseModel(BaseModel):
@@ -79,7 +80,7 @@ class ActionSchema(TypedBaseModel):
     @classmethod
     def from_function(cls, func: Callable) -> Self:
         """Create tool object from python function."""
-        schema = litellm.utils.function_to_dict(func)
+        schema = function_to_dict(func)
         return cls(**schema)
 
     def as_dict(self) -> dict[str, Any]:
@@ -151,7 +152,7 @@ class Content(TypedBaseModel, ABC):
         AudioContent or VideoContent since the media type cannot be inferred.
 
         Args:
-            data: The content data. Supported types: str, int, float, dict, list, PILImage.Image.
+            data: The content data. Supported types: str, int, float, dict, list, BaseModel, PILImage.Image.
             **kwargs: Additional fields passed to the subclass (e.g. name, tool_call_id).
 
         Raises:
@@ -159,7 +160,7 @@ class Content(TypedBaseModel, ABC):
         """
         if isinstance(data, PILImage.Image):
             return ImageContent(data=data, **kwargs)
-        if isinstance(data, (dict, list)):
+        if isinstance(data, (dict, list, BaseModel)):
             return StructuredContent(data=data, **kwargs)
         if isinstance(data, (str, int, float)):
             return TextContent(data=str(data), **kwargs)
@@ -169,7 +170,7 @@ class Content(TypedBaseModel, ABC):
             )
         raise TypeError(
             f"Unsupported data type for Content.from_data(): {type(data).__name__}. "
-            "Supported types: str, int, float, dict, list, PILImage.Image."
+            "Supported types: str, int, float, dict, list, BaseModel, PILImage.Image."
         )
 
 
@@ -194,9 +195,16 @@ class TextContent(Content):
 
 
 class StructuredContent(Content):
-    """Structured data (dict or list), rendered as a JSON code block."""
+    """Structured data (dict, list, or BaseModel), rendered as a JSON code block."""
 
-    data: dict | list
+    data: dict | list | BaseModel
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def coerce_base_model_to_dict(cls, v: Any) -> Any:
+        if isinstance(v, BaseModel):
+            return v.model_dump()
+        return v
 
     def to_markdown(self) -> str:
         block = f"```json\n{json.dumps(self.data, indent=2)}\n```"
@@ -325,6 +333,10 @@ class Observation(TypedBaseModel):
     @classmethod
     def from_text(cls, text: str) -> Self:
         return cls(contents=[TextContent(data=text)])
+
+    def to_llm_messages(self) -> list[dict]:
+        """Convert observation to a list of messages suitable for sending to LLM."""
+        return [content.to_llm_message() for content in self.contents]
 
     def __add__(self, other: Self) -> Self:
         self.contents += other.contents
