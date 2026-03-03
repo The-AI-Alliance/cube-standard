@@ -9,12 +9,20 @@ from urllib.parse import urlparse
 
 import pytest
 
-modal = pytest.importorskip("modal")
-
-from test_harness import log, make_container_common_tests, make_container_health_check_tests
-
 from cube.backends.modal import ModalContainerBackend
 from cube.container import ContainerConfig
+from tests.backends.test_harness import log, make_container_common_tests, make_container_health_check_tests
+
+modal = pytest.importorskip("modal")
+
+try:
+    import modal.config as _mc
+
+    cfg = _mc.config
+    if not (cfg.get("token_id") and cfg.get("token_secret")):
+        raise ValueError("no token")
+except Exception as _e:
+    pytest.skip(f"Modal token not configured: {_e}", allow_module_level=True)
 
 BACKEND_KWARGS = {"timeout_seconds": 600, "app_name": "cube-test"}
 backend = ModalContainerBackend(**BACKEND_KWARGS)

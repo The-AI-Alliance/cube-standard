@@ -5,12 +5,17 @@ import urllib.request
 
 import pytest
 
-docker = pytest.importorskip("docker")
-
-from test_harness import log, make_container_common_tests, make_container_health_check_tests
-
 from cube.backends.local import LocalContainerBackend
 from cube.container import ContainerConfig, ContainerError
+from tests.backends.test_harness import log, make_container_common_tests, make_container_health_check_tests
+
+docker = pytest.importorskip("docker")
+
+try:
+    docker.DockerClient().ping()
+except Exception as _e:
+    pytest.skip(f"Docker daemon not reachable: {_e}", allow_module_level=True)
+
 
 backend = LocalContainerBackend(timeout_seconds=60)
 spec = ContainerConfig(image="alpine:latest")

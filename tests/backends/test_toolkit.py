@@ -3,21 +3,33 @@
 Requires: ``eai`` CLI installed and authenticated.
 """
 
+import os
 import shutil
+import subprocess
 import time
 import urllib.request
 
 import pytest
 
+from cube.backends.toolkit import ToolkitContainerBackend
+from cube.container import ContainerConfig
+from tests.backends.test_harness import log, make_container_common_tests, make_container_health_check_tests
+
 if shutil.which("eai") is None:
     pytest.skip("eai CLI not installed", allow_module_level=True)
 
-from test_harness import log, make_container_common_tests, make_container_health_check_tests
+_probe = ["eai", "user", "get"]
+if _EAI_PROFILE := os.environ.get("EAI_PROFILE"):
+    _probe += ["--profile", _EAI_PROFILE]
 
-from cube.backends.toolkit import ToolkitContainerBackend
-from cube.container import ContainerConfig
+try:
+    _result = subprocess.run(_probe, capture_output=True, text=True, timeout=10)
+    if _result.returncode != 0:
+        raise RuntimeError(_result.stderr.strip())
+except Exception as _e:
+    pytest.skip(f"eai endpoint not reachable: {_e}", allow_module_level=True)
 
-backend = ToolkitContainerBackend(timeout_seconds=600)
+backend = ToolkitContainerBackend(timeout_seconds=600, profile=_EAI_PROFILE)
 spec = ContainerConfig(image="python:3.12-slim")
 
 _all_tests = make_container_common_tests(backend, spec) + make_container_health_check_tests(backend, spec)

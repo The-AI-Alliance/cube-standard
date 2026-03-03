@@ -74,6 +74,7 @@ extend-select = ["I"] # sort imports
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-rs"
 
 [dependency-groups]
 dev = [

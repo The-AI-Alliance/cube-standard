@@ -8,17 +8,16 @@ import os
 import pytest
 from dotenv import load_dotenv
 
+from cube.backends.daytona import DaytonaContainerBackend
+from cube.container import ContainerConfig, ContainerError
+from tests.backends.test_harness import log, make_container_common_tests, make_container_health_check_tests
+
 daytona = pytest.importorskip("daytona")
 
 load_dotenv()
 
 if not os.environ.get("DAYTONA_API_KEY"):
     pytest.skip("DAYTONA_API_KEY not set", allow_module_level=True)
-
-from test_harness import log, make_container_common_tests, make_container_health_check_tests
-
-from cube.backends.daytona import DaytonaContainerBackend
-from cube.container import ContainerConfig, ContainerError
 
 backend = DaytonaContainerBackend(
     api_key=os.environ["DAYTONA_API_KEY"],
