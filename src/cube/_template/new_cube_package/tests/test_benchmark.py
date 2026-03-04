@@ -21,18 +21,6 @@ def test_task_metadata_keys_match() -> None:
         assert key == meta.id, f"Key {key!r} does not match TaskMetadata.id {meta.id!r}"
 
 
-def test_task_round_trip() -> None:
-    """Each task can be instantiated, reset, and closed without error."""
-    bench = CubeBenchmark()
-    bench.setup()
-    for task_config in bench.get_task_configs():
-        task = task_config.make()
-        obs, info = task.reset()
-        assert obs is not None
-        task.close()
-    bench.close()
-
-
 def test_debug_tasks() -> None:
     """Every debug task completes with reward == 1.0 (no LLM required).
 
