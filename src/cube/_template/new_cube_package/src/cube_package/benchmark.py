@@ -15,21 +15,13 @@ OPTION B — auto-load from CSV / JSON files
     class body.  The framework will automatically load them from files placed
     next to THIS file (benchmark.py):
 
-        src/cube_package/benchmark_metadata.csv   ← or .json
-        src/cube_package/task_metadata.csv         ← or .json
+        src/cube_package/benchmark_metadata.json   ← or .csv
+        src/cube_package/task_metadata.json         ← or .csv
 
     Both files are included in this template — just fill them in and remove
     the inline ClassVar definitions below.
 
-    CSV format for benchmark_metadata.csv:
-        name,version,description,num_tasks,tags
-        my-bench,0.1.0,My benchmark description,5,"[""tag1"",""tag2""]"
-
-    CSV format for task_metadata.csv (one row per task):
-        id,abstract_description,recommended_max_steps,extra_info
-        task-1,Do something useful,10,"{""key"": ""value""}"
-
-    JSON is also supported — see cube.benchmark.Benchmark for full details.
+    See cube.benchmark.Benchmark for full format details.
 
 _setup() / close() are the right place to start/stop shared infrastructure
 (Docker daemons, database servers, etc.).  Leave them as no-ops if your
@@ -52,10 +44,12 @@ class CubeBenchmark(Benchmark):
         name="new-cube-package",
         version="0.1.0",
         description="TODO: describe what this benchmark tests",
-        # authors=["Your Name"],
-        # license="Apache-2.0",
+        authors=[],  # e.g. ["Your Name"]
+        license="",  # e.g. "Apache-2.0"
+        requirements={},  # e.g. {"docker": True}
         num_tasks=1,  # update when you add more tasks
         tags=[],  # e.g. ["web", "navigation"]
+        extra_info={},
     )
 
     task_metadata: ClassVar[dict[str, TaskMetadata]] = {
@@ -63,8 +57,10 @@ class CubeBenchmark(Benchmark):
         # Keys must match TaskMetadata.id exactly.
         "example-task": TaskMetadata(
             id="example-task",
+            split="test",  # "train", "val", or "test"
             abstract_description="TODO: one-sentence description of what this task tests",
             recommended_max_steps=10,
+            container_config=None,  # set if task needs a container
             extra_info={
                 # Arbitrary per-task parameters; read in Task / TaskConfig via
                 # metadata.extra_info["key"].
