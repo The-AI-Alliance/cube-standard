@@ -10,7 +10,6 @@ import pytest
 from cube import cli
 from cube.cli import _DEFAULT_NAME, _resolve_debug_module, cmd_init, cmd_list, cmd_test, main
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
