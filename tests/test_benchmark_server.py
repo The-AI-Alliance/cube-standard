@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
-from cube.containers import Container, ContainerBackend
+from cube.container import Container, ContainerBackend
 from cube.core import Observation
 from cube.server import make_benchmark_fastapi_app
 from cube.task import Task, TaskConfig, TaskMetadata

@@ -9,7 +9,7 @@ sitting next to this file.
 from typing import Any, ClassVar, Dict, Tuple
 
 from cube.benchmark import Benchmark, RuntimeContext
-from cube.containers import Container, ContainerBackend
+from cube.container import Container, ContainerBackend
 from cube.core import Action, ActionSchema, Observation
 from cube.task import Task, TaskConfig
 from cube.tool import Tool, ToolConfig, tool_action
