@@ -63,8 +63,7 @@ def cmd_init(name: str, cwd: Path) -> None:
     if dest.exists():
         err_console.print(
             Panel(
-                f"[error]'{dest}'[/error] already exists.\n"
-                "Choose a different name or remove it first.",
+                f"[error]'{dest}'[/error] already exists.\nChoose a different name or remove it first.",
                 title="[error]Error[/error]",
                 border_style="red",
                 padding=(0, 1),
@@ -133,7 +132,7 @@ def cmd_list() -> None:
             Panel(
                 "No cube benchmarks found in the current environment.\n"
                 "Install a cube package (e.g. [cmd]uv sync[/cmd]) and make sure its\n"
-                "[file]pyproject.toml[/file] declares a [cmd][project.entry-points.\"cube.benchmarks\"][/cmd] section.",
+                '[file]pyproject.toml[/file] declares a [cmd][project.entry-points."cube.benchmarks"][/cmd] section.',
                 title="[brand]cube list[/brand]",
                 border_style="yellow",
                 padding=(0, 1),
@@ -213,7 +212,7 @@ def _resolve_debug_module(name: str) -> str:
 
     ep = matched[name]
     # ep.value is "some.module:ClassName" — derive debug module from the package
-    benchmark_module = ep.value.split(":")[0]      # e.g. "counter_cube.benchmark"
+    benchmark_module = ep.value.split(":")[0]  # e.g. "counter_cube.benchmark"
     package_root = benchmark_module.rsplit(".", 1)[0]  # e.g. "counter_cube"
     return f"{package_root}.debug"
 
@@ -299,9 +298,7 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
 
         done_str = "[success]✓[/success]" if r["done"] else "[error]✗[/error]"
         reward_str = (
-            f"[success]{r['reward']:.3f}[/success]"
-            if r["reward"] == 1.0
-            else f"[error]{r['reward']:.3f}[/error]"
+            f"[success]{r['reward']:.3f}[/success]" if r["reward"] == 1.0 else f"[error]{r['reward']:.3f}[/error]"
         )
         table.add_row(
             r["task_id"],
@@ -332,7 +329,11 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
             Panel(
                 "\n".join(
                     f"  [file]{r['task_id']}[/file]  "
-                    + (f"error: [error]{r['error']}[/error]" if r["error"] else f"reward={r['reward']:.3f}, done={r['done']}")
+                    + (
+                        f"error: [error]{r['error']}[/error]"
+                        if r["error"]
+                        else f"reward={r['reward']:.3f}, done={r['done']}"
+                    )
                     for r in failures
                 ),
                 title="[error]Failures[/error]",

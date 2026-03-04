@@ -83,9 +83,7 @@ class CubeTaskConfig(TaskConfig):
         from cube_package.benchmark import CubeBenchmark  # noqa: PLC0415
 
         task_metadata: TaskMetadata = CubeBenchmark.task_metadata[self.task_id]
-        tool_cfg = self.tool_config or CubeToolConfig(
-            **task_metadata.extra_info.get("tool_config", {})
-        )
+        tool_cfg = self.tool_config or CubeToolConfig(**task_metadata.extra_info.get("tool_config", {}))
         return CubeTask(
             metadata=task_metadata,
             tool_config=tool_cfg,

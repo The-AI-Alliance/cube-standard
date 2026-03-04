@@ -75,9 +75,7 @@ class DebugAgent:
     def get_action(self, obs: Observation) -> Action:
         """Return the next predetermined action."""
         if self._step >= len(self._actions):
-            raise StopIteration(
-                f"[DebugAgent] task={self._task_id!r}: all {len(self._actions)} actions exhausted"
-            )
+            raise StopIteration(f"[DebugAgent] task={self._task_id!r}: all {len(self._actions)} actions exhausted")
         action = self._actions[self._step]
         logger.info(
             "[DebugAgent] task=%r  step=%d/%d  action=%s",

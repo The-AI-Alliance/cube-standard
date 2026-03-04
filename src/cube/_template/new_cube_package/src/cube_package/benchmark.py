@@ -55,7 +55,7 @@ class CubeBenchmark(Benchmark):
         # authors=["Your Name"],
         # license="Apache-2.0",
         num_tasks=1,  # update when you add more tasks
-        tags=[],      # e.g. ["web", "navigation"]
+        tags=[],  # e.g. ["web", "navigation"]
     )
 
     task_metadata: ClassVar[dict[str, TaskMetadata]] = {
