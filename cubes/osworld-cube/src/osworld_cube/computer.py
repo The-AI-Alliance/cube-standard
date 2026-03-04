@@ -3,19 +3,18 @@ Computer tool — CUBE port of kusha/AgentLab2 tools/computer.py.
 
 Changes vs kusha (per discussions/2026-02-26-cube-al2-osworld-parity.md §Layer 2):
 
-  1. Base class: plain Tool (ToolWithTelemetry not yet in cube-standard; revisit later)
+  1. Base class: plain Tool (telemetry works automatically via cube.tool.Tool)
   2. Action discovery: @tool_action on each method instead of ComputerActionSpace Protocol
   3. No manual action_set override — inherited from cube.tool.Tool
   4. ComputerConfig.make() accepts container=None (ignored; OSWorld uses desktop_env)
   5. execute_action errors bubble up as StepError via base class
      (errors-as-observations are kept as Observations for agent visibility)
   6. Two concrete tool classes: Computer13 (13 primitives) and PyAutoGUIComputer
-  7. cache_dir / vm_dir root parametrised via CUBE_CACHE_DIR env var
+  7. cache_dir / vm_dir root via cube.get_cache_dir("osworld-cube")
   8. action_space field on ComputerConfig selects the tool variant — no subconfigs needed
 """
 
 import logging
-import os
 import time
 from enum import Enum
 from io import BytesIO
@@ -24,7 +23,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from cube.containers import Container
+import cube
+from cube.container import Container
 from cube.core import Action, Content, ImageContent, Observation, StepError, TextContent
 from cube.tool import Tool, ToolConfig, tool_action
 from desktop_env.desktop_env import DesktopEnv
@@ -32,8 +32,7 @@ import desktop_env.providers.docker.manager as docker_manager
 
 logger = logging.getLogger(__name__)
 
-# TODO: get this _CUBE_CACHE_ROOT from the cube package maybe with some helper method liek get_cube_cache_dir().
-_CUBE_CACHE_ROOT = Path(os.environ.get("CUBE_CACHE_DIR", str(Path.home() / ".agentlab2")))
+_CUBE_CACHE_ROOT = cube.get_cache_dir("osworld-cube")
 
 
 # ---------------------------------------------------------------------------
@@ -88,8 +87,8 @@ class ComputerConfig(ToolConfig):
     region: str | None = None
     path_to_vm: str | None = None
     snapshot_name: str = "init_state"
-    cache_dir: str = str(_CUBE_CACHE_ROOT / "benchmarks" / "osworld" / "cache")
-    vm_dir: str = str(_CUBE_CACHE_ROOT / "benchmarks" / "osworld" / "vm_data")
+    cache_dir: str = str(_CUBE_CACHE_ROOT / "cache")
+    vm_dir: str = str(_CUBE_CACHE_ROOT /"vm_data")
     screen_size: tuple[int, int] = (1920, 1080)
     headless: bool = True
     require_a11y_tree: bool = True
@@ -128,7 +127,6 @@ class ComputerBase(Tool):
     Subclasses add the action-space-specific @tool_action methods and are
     paired with their own Config class.
 
-    NOTE: ToolWithTelemetry should be added once it moves from agentlab2 to cube.
     """
 
     def __init__(self, config: ComputerConfig) -> None:

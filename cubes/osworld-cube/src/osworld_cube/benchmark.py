@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from cube.benchmark import Benchmark, BenchmarkMetadata
-from cube.containers import ContainerBackend
+from cube.container import ContainerBackend
 from cube.task import TaskConfig, TaskMetadata
 
 from osworld_cube.computer import ComputerConfig, _CUBE_CACHE_ROOT
@@ -77,8 +77,6 @@ def ensure_proxy_config_in_env(env_path: Path = Path(".env")) -> None:
     key = "PROXY_CONFIG_FILE"
     value = str(
         _CUBE_CACHE_ROOT
-        / "benchmarks"
-        / "osworld"
         / "OSWorld"
         / "evaluation_examples"
         / "settings"
@@ -102,7 +100,7 @@ def ensure_proxy_config_in_env(env_path: Path = Path(".env")) -> None:
 # Paths — rooted under CUBE_CACHE_DIR (default ~/.agentlab2)
 # ---------------------------------------------------------------------------
 
-OSWORLD_BASE_DIR = _CUBE_CACHE_ROOT / "benchmarks" / "osworld"
+OSWORLD_BASE_DIR = _CUBE_CACHE_ROOT 
 OSWORLD_REPO_DIR = OSWORLD_BASE_DIR / "OSWorld"
 OSWORLD_VM_DIR = OSWORLD_BASE_DIR / "vm_data"
 OSWORLD_CACHE_DIR = OSWORLD_BASE_DIR / "cache"

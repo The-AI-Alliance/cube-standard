@@ -9,8 +9,8 @@ dependencies = [
     "pillow>=9.0",
 ]
 
-[tool.uv.sources]
-cube-standard = { path = "../../", editable = true }
+[project.entry-points."cube.benchmarks"]
+osworld-cube = "osworld_cube.benchmark:OSWorldBenchmark"
 
 [build-system]
 requires = ["uv_build>=0.8,<0.9"]
