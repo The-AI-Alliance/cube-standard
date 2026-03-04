@@ -7,9 +7,6 @@ on:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write  # Required for trusted publishing (OIDC)
 
     steps:
       - uses: actions/checkout@v4
