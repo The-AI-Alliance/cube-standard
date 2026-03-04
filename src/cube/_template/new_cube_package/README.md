@@ -3,6 +3,15 @@
 This directory is the canonical starting point for a new CUBE benchmark package.
 Copy it, rename things, and follow the TODOs in each file.
 
+**If you copy-paste manually** (rather than using `cube init`), find every placeholder
+that needs renaming:
+
+```bash
+grep -r "cube_package\|new-cube-package\|CubeTask\|CubeBenchmark\|CubeTool" src/ pyproject.toml
+```
+
+Replace all occurrences with names that match your benchmark.
+
 ## Quick start
 
 ```bash
@@ -26,9 +35,9 @@ new_cube_package/
 └── src/cube_package/
     ├── __init__.py
     ├── benchmark.py            ← CubeBenchmark (registry, metadata, task list)
-    ├── benchmark_metadata.csv  ← Option B: load benchmark metadata from CSV
+    ├── benchmark_metadata.json ← Option B: load benchmark metadata from JSON
     ├── task.py                 ← CubeTask + CubeTaskConfig (episode loop)
-    ├── task_metadata.csv       ← Option B: load task metadata from CSV
+    ├── task_metadata.json      ← Option B: load task metadata from JSON
     ├── tool.py                 ← CubeTool + CubeToolConfig + @tool_action methods
     └── debug.py                ← deterministic agent for `cube test`
 ```
@@ -51,7 +60,7 @@ See `examples/counter-cube/` in the cube-standard repo for a complete reference 
 
 - [ ] `tool.py` — add `@tool_action` methods; delete `example_action` placeholder
 - [ ] `task.py` — implement `reset()` and `evaluate()`; optionally `finished()`
-- [ ] `benchmark.py` — fill in `BenchmarkMetadata` and `task_metadata` (or switch to CSV)
+- [ ] `benchmark.py` — fill in `BenchmarkMetadata` and `task_metadata` (or switch to JSON/CSV files)
 - [ ] `debug.py` — add one entry to `_TASK_ACTIONS` per task
 - [ ] `pyproject.toml` — update `name`, `description`, and the `cube.benchmarks` entry-point key
 - [ ] Run `cube test <your-benchmark-name>` — all tasks must pass

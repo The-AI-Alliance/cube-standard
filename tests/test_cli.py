@@ -57,6 +57,32 @@ def test_cmd_init_default_name(tmp_path):
     assert (tmp_path / _DEFAULT_NAME).is_dir()
 
 
+def test_cmd_init_rejects_placeholder_names(tmp_path):
+    for placeholder in ("cube_package", "new_cube_package", "new-cube-package"):
+        with pytest.raises(SystemExit) as exc:
+            cmd_init(name=placeholder, cwd=tmp_path)
+        assert exc.value.code == 1
+
+
+def test_cmd_init_renames_package_directory(tmp_path):
+    cmd_init(name="my-bench", cwd=tmp_path)
+    dest = tmp_path / "my-bench"
+    assert (dest / "src" / "my_bench").is_dir(), "src/my_bench/ directory should exist"
+    assert not (dest / "src" / "cube_package").exists(), "src/cube_package/ should be gone"
+
+
+def test_cmd_init_substitutes_placeholders(tmp_path):
+    cmd_init(name="my-bench", cwd=tmp_path)
+    dest = tmp_path / "my-bench"
+    pyproject = (dest / "pyproject.toml").read_text()
+    assert "my-bench" in pyproject
+    assert "cube_package" not in pyproject
+    assert "new-cube-package" not in pyproject
+    benchmark_py = (dest / "src" / "my_bench" / "benchmark.py").read_text()
+    assert "my_bench" in benchmark_py
+    assert "cube_package" not in benchmark_py
+
+
 def test_cmd_init_refuses_to_overwrite(tmp_path):
     (tmp_path / "existing").mkdir()
     with pytest.raises(SystemExit) as exc:

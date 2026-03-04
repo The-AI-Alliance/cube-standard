@@ -9,10 +9,12 @@ from cube_package.benchmark import CubeBenchmark
 
 
 def test_benchmark_metadata() -> None:
-    """Benchmark metadata is valid and non-empty."""
+    """Benchmark metadata is valid, non-empty, and has no unfilled placeholders."""
     meta = CubeBenchmark.benchmark_metadata
     assert meta.name, "benchmark name must not be empty"
     assert meta.version, "benchmark version must not be empty"
+    assert meta.description, "benchmark description must not be empty"
+    assert "TODO" not in meta.description, "benchmark description still contains a TODO placeholder"
 
 
 def test_task_metadata_keys_match() -> None:
@@ -28,4 +30,6 @@ def test_debug_tasks() -> None:
       1. Fill in _TASK_ACTIONS in debug.py with action sequences per task ID.
       2. Ensure each sequence drives the task to done=True, reward=1.0.
     """
+    configs = _debug_mod.get_debug_task_configs()
+    assert configs, "No debug tasks registered. Fill in _TASK_ACTIONS in debug.py."
     assert_debug_tasks_reward_one(_debug_mod)

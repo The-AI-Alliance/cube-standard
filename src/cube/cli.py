@@ -49,15 +49,30 @@ err_console = Console(stderr=True, theme=_THEME)
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 _TEMPLATE_DIR = Path(__file__).parent / "_template" / "new_cube_package"
-_DEFAULT_NAME = "new_cube_package"
+_DEFAULT_NAME = "my-benchmark"
 _VERSION = "0.1.0rc1"
 
 
 # ── Commands ───────────────────────────────────────────────────────────────────
 
 
+_PLACEHOLDER_NAMES = {"cube_package", "new_cube_package", "new-cube-package"}
+
+
 def cmd_init(name: str, cwd: Path) -> None:
     """Copy the template into *cwd*/<name>, refusing to overwrite anything."""
+    if name in _PLACEHOLDER_NAMES:
+        err_console.print(
+            Panel(
+                f"[error]'{name}'[/error] conflicts with internal template placeholders.\n"
+                "Choose a different name (e.g. [cmd]cube init my-bench[/cmd]).",
+                title="[error]Error[/error]",
+                border_style="red",
+                padding=(0, 1),
+            )
+        )
+        sys.exit(1)
+
     dest = cwd / name
 
     if dest.exists():
@@ -71,8 +86,35 @@ def cmd_init(name: str, cwd: Path) -> None:
         )
         sys.exit(1)
 
+    module_name = name.replace("-", "_")
+
     with console.status(f"[info]Scaffolding[/info] [file]{name}[/file]…", spinner="dots"):
         shutil.copytree(_TEMPLATE_DIR, dest)
+
+        # Rename the Python package directory: src/cube_package/ → src/<module_name>/
+        old_pkg_dir = dest / "src" / "cube_package"
+        new_pkg_dir = dest / "src" / module_name
+        if old_pkg_dir.exists():
+            old_pkg_dir.rename(new_pkg_dir)
+
+        # Substitute placeholders in all text files (most-specific patterns first)
+        replacements = [
+            ("new-cube-package", name),
+            ("new_cube_package", module_name),
+            ("cube_package", module_name),
+        ]
+        for f in dest.rglob("*"):
+            if not f.is_file():
+                continue
+            try:
+                text = f.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, PermissionError):
+                continue
+            new_text = text
+            for old, new in replacements:
+                new_text = new_text.replace(old, new)
+            if new_text != text:
+                f.write_text(new_text, encoding="utf-8")
 
     # ── Created-files table ────────────────────────────────────────────────────
     files = sorted(p for p in dest.rglob("*") if p.is_file())
@@ -274,6 +316,19 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         spinner="dots",
     ):
         results = run_debug_suite(resolved, module, max_steps=max_steps)
+
+    if not results:
+        err_console.print(
+            Panel(
+                "No debug tasks were run.\n"
+                "Make sure [file]debug.py[/file] has entries in [cmd]_TASK_ACTIONS[/cmd] "
+                "and [cmd]get_debug_task_configs()[/cmd] returns at least one config.",
+                title="[warning]No tasks found[/warning]",
+                border_style="yellow",
+                padding=(0, 1),
+            )
+        )
+        sys.exit(1)
 
     # ── Results table ──────────────────────────────────────────────────────────
     table = Table(
