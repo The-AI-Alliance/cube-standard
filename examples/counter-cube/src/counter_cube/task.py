@@ -11,7 +11,7 @@ TaskConfig is serializable; implement make() to produce a Task.
 from typing import Any
 
 from cube.benchmark import RuntimeContext
-from cube.containers import ContainerBackend
+from cube.container import ContainerBackend
 from cube.core import Observation
 from cube.task import Task, TaskConfig, TaskMetadata
 from counter_cube.tool import CounterToolConfig
