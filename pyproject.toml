@@ -20,6 +20,9 @@ dependencies = [
     "uvicorn[standard]>=0.34.0",
 ]
 
+[project.scripts]
+cube = "cube.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",

@@ -10,6 +10,9 @@ dependencies = [
 [tool.uv.sources]
 cube-standard = { path = "../../", editable = true }
 
+[project.entry-points."cube.benchmarks"]
+counter-cube = "counter_cube.benchmark:CounterBenchmark"
+
 [build-system]
 requires = ["uv_build>=0.8,<0.9"]
 build-backend = "uv_build"
