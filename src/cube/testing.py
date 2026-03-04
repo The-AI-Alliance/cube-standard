@@ -75,7 +75,7 @@ def run_debug_episode(
         step_times_s, error.
     """
     task_id = task.metadata.id
-    logger.info("[run_debug_episode] Starting episode for task=%r", task_id)
+    logger.info(f"[run_debug_episode] Starting episode for task={task_id!r}")
 
     report: dict = {
         "task_id": task_id,
@@ -89,14 +89,11 @@ def run_debug_episode(
 
     episode_start = time.perf_counter()
     try:
-        logger.info("[run_debug_episode] task=%r  calling reset() …", task_id)
+        logger.info(f"[run_debug_episode] task={task_id!r}  calling reset() …")
         t0 = time.perf_counter()
         obs, info = task.reset()
         reset_time = time.perf_counter() - t0
-        logger.info(
-            "[run_debug_episode] task=%r  reset done in %.1fs  info=%s",
-            task_id, reset_time, info,
-        )
+        logger.info(f"[run_debug_episode] task={task_id!r}  reset done in {reset_time:.1f}s  info={info}")
 
         env_out = None
         while report["steps"] < max_steps:
@@ -111,14 +108,8 @@ def run_debug_episode(
 
             obs = env_out.obs
             logger.info(
-                "[run_debug_episode] task=%r  step=%d  action=%s  "
-                "reward=%.3f  done=%s  step_time=%.3fs",
-                task_id,
-                report["steps"],
-                action.name,
-                env_out.reward,
-                env_out.done,
-                step_time,
+                f"[run_debug_episode] task={task_id!r}  step={report['steps']}  action={action.name}  "
+                f"reward={env_out.reward:.3f}  done={env_out.done}  step_time={step_time:.3f}s"
             )
 
             if env_out.done:
@@ -129,19 +120,14 @@ def run_debug_episode(
             report["reward"] = env_out.reward
 
     except Exception as exc:
-        logger.exception("[run_debug_episode] task=%r  episode failed: %s", task_id, exc)
+        logger.exception(f"[run_debug_episode] task={task_id!r}  episode failed: {exc}")
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
         task.close()
         report["episode_time_s"] = round(time.perf_counter() - episode_start, 2)
         logger.info(
-            "[run_debug_episode] task=%r  DONE  reward=%.3f  steps=%d  "
-            "episode_time=%.1fs  error=%s",
-            task_id,
-            report["reward"],
-            report["steps"],
-            report["episode_time_s"],
-            report["error"],
+            f"[run_debug_episode] task={task_id!r}  DONE  reward={report['reward']:.3f}  steps={report['steps']}  "
+            f"episode_time={report['episode_time_s']:.1f}s  error={report['error']}"
         )
 
     return report
@@ -168,8 +154,7 @@ def run_debug_suite(
     """
     task_configs = {tc.task_id: tc for tc in module.get_debug_task_configs()}
     logger.info(
-        "[run_debug_suite] benchmark=%r  running %d task(s): %s",
-        benchmark_name, len(task_configs), list(task_configs),
+        f"[run_debug_suite] benchmark={benchmark_name!r}  running {len(task_configs)} task(s): {list(task_configs)}"
     )
     results = [
         run_debug_episode(tc.make(), module.make_debug_agent(tid), max_steps=max_steps)
@@ -188,10 +173,8 @@ def assert_debug_tasks_reward_one(
     """
     Assert that every debug task in ``module`` completes with reward == 1.0.
 
-    Discovers tasks via ``module.get_debug_task_configs()``, builds a fresh
-    deterministic agent via ``module.make_debug_agent(task_id)``, runs each
-    episode through ``run_debug_episode``, and raises ``AssertionError`` on
-    the first failure.
+    Delegates to ``run_debug_suite`` (using ``module.__name__`` as the benchmark
+    label), then asserts reward == 1.0 for every episode.
 
     Intended for use in a single catch-all test function::
 
@@ -209,11 +192,8 @@ def assert_debug_tasks_reward_one(
         AssertionError: If any episode does not complete, errors, or gets
                         reward < 1.0.
     """
-    task_configs = {tc.task_id: tc for tc in module.get_debug_task_configs()}
-    for task_id, task_config in task_configs.items():
-        task = task_config.make()
-        agent = module.make_debug_agent(task_id)
-        report = run_debug_episode(task, agent, max_steps=max_steps)
+    for report in run_debug_suite(module.__name__, module, max_steps=max_steps):
+        task_id = report["task_id"]
         assert not report["error"], f"[{task_id}] Episode error: {report['error']}"
         assert report["done"], f"[{task_id}] Episode did not complete: {report}"
         assert report["reward"] == 1.0, f"[{task_id}] Expected reward=1.0, got {report['reward']}: {report}"

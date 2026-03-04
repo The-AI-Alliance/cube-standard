@@ -1,7 +1,7 @@
 """Tests for cube.task - Task, TaskMetadata, STOP_ACTION."""
 
 from cube.benchmark import RuntimeContext  # noqa: F401 – required for Task.model_rebuild()
-from cube.containers import Container
+from cube.container import Container
 from cube.core import Action, EnvironmentOutput, Observation, StepError, TextContent
 from cube.task import STOP_ACTION, Task, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
