@@ -15,7 +15,7 @@ Typical customisation points
   agent based on the current config.
 """
 
-from cube.containers import Container
+from cube.container import Container
 from cube.tool import Tool, ToolConfig, tool_action
 
 
