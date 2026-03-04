@@ -10,6 +10,19 @@ This repo contains the code and documentation for the **AI Alliance: CUBE Standa
 
 Principal developer: [ServiceNow](https://servicenow.com/){:target="sn"}.
 
+## For benchmark contributors
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Quick reference:
+
+```sh
+cube init my-bench    # scaffold a new benchmark package from the template
+cd my-bench
+uv sync
+cube test my-bench    # run the debug compliance suite
+```
+
+`cube list` shows all installed benchmarks. See [CONTRIBUTING.md](CONTRIBUTING.md) for the five-layer architecture and implementation order.
+
 ## Getting Involved
 
 We welcome contributions as PRs. Please see our [Alliance community repo](https://github.com/The-AI-Alliance/community/) for general information about contributing to any of our projects. This section provides some specific details you need to know.
