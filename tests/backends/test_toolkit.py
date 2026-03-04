@@ -44,7 +44,7 @@ def test_port_forwarding():
     port_spec = ContainerConfig(image="python:3.12-slim", ports=[8080])
     container = backend.launch(port_spec)
     try:
-        container.exec("python -m http.server 8080 &")
+        container.exec("python -m http.server 8080 </dev/null >/dev/null 2>&1 & disown")
         time.sleep(3)
 
         host_port = container.forward_port(8080)

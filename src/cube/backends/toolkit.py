@@ -72,6 +72,7 @@ def _run_eai(
             capture_output=True,
             text=True,
             timeout=timeout,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
         raise ContainerLaunchError("The 'eai' CLI tool is not installed or not on PATH.") from exc
@@ -127,6 +128,7 @@ class ToolkitContainer(Container):
         # Wrap with exit-code capture since eai job exec doesn't relay exit codes
         wrapped = f"timeout {effective_timeout}s bash -lc {shlex.quote(full_command)}; echo EXIT_CODE:$?"
 
+        logger.info("exec [%s]: %s", self._job_id[:8], command)
         start = time.monotonic()
         result = _run_eai(
             ["job", "exec", self._job_id, "--", "bash", "-c", wrapped],
@@ -135,6 +137,7 @@ class ToolkitContainer(Container):
             timeout=effective_timeout + 30,
         )
         duration = time.monotonic() - start
+        logger.info("exec [%s]: done in %.1fs, exit_code=%s", self._job_id[:8], duration, result.returncode)
 
         stdout = result.stdout
         stderr = result.stderr
@@ -222,6 +225,7 @@ class ToolkitContainer(Container):
         self._port_map.clear()
 
         # Kill the EAI job
+        logger.info("stop [%s]: killing job", self._job_id[:8])
         try:
             _run_eai(
                 ["job", "kill", self._job_id],
@@ -261,7 +265,7 @@ class ToolkitContainerBackend(ContainerBackend):
 
     profile: str | None = None
     account: str | None = None
-    interactive: bool = True
+    interactive: bool = False
     preemptable: bool = False
 
     def launch(self, config: ContainerConfig) -> ToolkitContainer:
@@ -273,10 +277,13 @@ class ToolkitContainerBackend(ContainerBackend):
 
         if self.interactive:
             cmd.append("--interactive")
-        if self.preemptable:
+        elif self.preemptable:
             cmd.append("--preemptable")
+        else:
+            cmd.append("--non-preemptable")
 
         cmd += ["--tunnel"]
+        cmd += ["--format", "json", "--no-header"]
         cmd += ["-i", config.image]
         cmd += ["--cpu", str(int(config.cpu_cores))]
         cmd += ["--mem", f"{int(config.ram_gb)}"]
@@ -331,6 +338,7 @@ class ToolkitContainerBackend(ContainerBackend):
                 break
             if state in ("failed", "cancelled", "killed"):
                 raise ContainerLaunchError(f"EAI job {job_id} entered terminal state: {state}")
+            logger.info("EAI job [%s] state=%s, waiting …", job_id[:8], state)
             time.sleep(5)
         else:
             # Timed out — try to kill the job before raising
