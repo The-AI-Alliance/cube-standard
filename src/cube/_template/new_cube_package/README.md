@@ -6,20 +6,15 @@ Copy it, rename things, and follow the TODOs in each file.
 ## Quick start
 
 ```bash
-# 1. Copy the template
-cp -r src/cube/_template/new_cube_package my-bench
-
-# 2. Rename placeholders (all at once with sed, or use your editor)
-#    cube_package  → my_bench
-#    CubeBenchmark → MyBenchmark
-#    new-cube-package → my-bench
-
-# 3. Install in editable mode
+# 1. Scaffold from the template
+cube init my-bench        # copies _template/new_cube_package and renames placeholders
 cd my-bench
+
+# 2. Install in editable mode
 uv sync
 
-# 4. Run the debug compliance suite
-cube test my-bench        # uses the registered entry-point name
+# 3. Run the debug compliance suite
+cube test my-bench        # resolves via cube.benchmarks entry-point
 # or: cube test my_bench.debug
 ```
 
@@ -38,14 +33,35 @@ new_cube_package/
     └── debug.py                ← deterministic agent for `cube test`
 ```
 
+## The five layers
+
+Work through the files in this order — each layer depends on the one above it:
+
+| # | File | What to implement |
+|---|------|-------------------|
+| 1 | `tool.py` | Subclass `Tool`; add `@tool_action` methods; expose config via `CubeToolConfig` |
+| 2 | `task.py` | `reset()` (opening observation) and `evaluate()` (reward); `finished()` is optional |
+| 3 | `benchmark.py` | Fill `BenchmarkMetadata` and `task_metadata` (inline or via CSV/JSON) |
+| 4 | `debug.py` | One deterministic action sequence per task; must reach `reward == 1.0` |
+| 5 | `pyproject.toml` | Update `name`, `description`, and the `cube.benchmarks` entry-point key |
+
+See `examples/counter-cube/` in the cube-standard repo for a complete reference implementation covering all four layers.
+
 ## Checklist
 
-- [ ] `pyproject.toml` — update `name`, `description`, and the `cube.benchmarks` entry-point key
-- [ ] `benchmark.py` — fill in `BenchmarkMetadata` and `task_metadata` (or switch to CSV)
 - [ ] `tool.py` — add `@tool_action` methods; delete `example_action` placeholder
-- [ ] `task.py` — implement `reset()`, `evaluate()`, and (optionally) `finished()`
-- [ ] `debug.py` — add one entry to `_TASK_ACTIONS` per task; sequences must reach `reward == 1.0`
+- [ ] `task.py` — implement `reset()` and `evaluate()`; optionally `finished()`
+- [ ] `benchmark.py` — fill in `BenchmarkMetadata` and `task_metadata` (or switch to CSV)
+- [ ] `debug.py` — add one entry to `_TASK_ACTIONS` per task
+- [ ] `pyproject.toml` — update `name`, `description`, and the `cube.benchmarks` entry-point key
 - [ ] Run `cube test <your-benchmark-name>` — all tasks must pass
+
+## Key invariants
+
+- Every `@tool_action` must return something `Content.from_data()` can wrap (str, dict, PIL Image, …).
+- `evaluate()` must return `(reward: float, info: dict)` — `reward == 1.0` means solved.
+- `TaskConfig` must be JSON-serializable (it travels over the network to workers).
+- `debug.py` action sequences must be deterministic and reach `reward == 1.0` — `cube test` enforces this.
 
 ## How `cube test` works
 
