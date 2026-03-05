@@ -23,7 +23,15 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, Self
 
 from PIL import Image as PILImage
-from pydantic import BaseModel, Field, field_serializer, field_validator, model_serializer, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializeAsAny,
+    field_serializer,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from cube.utils import function_to_dict
 
@@ -328,7 +336,7 @@ class Observation(TypedBaseModel):
         contents (list[Content]): List of content pieces that make up this observation.
     """
 
-    contents: list[Content] = Field(default_factory=list)
+    contents: list[SerializeAsAny[Content]] = Field(default_factory=list)
 
     @classmethod
     def from_text(cls, text: str) -> Self:
