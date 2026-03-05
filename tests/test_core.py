@@ -150,11 +150,15 @@ def test_observation_from_text_and_add():
     assert combined.contents == [TextContent(data="hello"), TextContent(data="world")]
 
 
-def test_observation_json_serialization_with_image():
-    img = PILImage.new("RGB", (10, 10))
+def test_observation_round_trip_with_image():
+    img = PILImage.new("RGB", (10, 10), color=(0, 0, 255))
     obs = Observation(contents=[ImageContent(data=img)])
     data = obs.model_dump_json()
     assert ImageContent._image_prefix in data
+    restored = Observation.model_validate_json(data)
+    assert isinstance(restored.contents[0], ImageContent)
+    assert restored.contents[0].data.size == img.size
+    assert restored.contents[0].data.getpixel((0, 0)) == (0, 0, 255)
 
 
 # --- StepError ---
