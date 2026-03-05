@@ -20,7 +20,7 @@ import io
 import json
 import traceback
 from abc import ABC, abstractmethod
-from typing import Any, Callable, ClassVar, Literal, Self
+from typing import Any, Callable, ClassVar, Self
 
 from PIL import Image as PILImage
 from pydantic import BaseModel, Field, field_serializer, field_validator, model_serializer, model_validator
@@ -328,7 +328,9 @@ class Observation(TypedBaseModel):
         contents (list[Content]): List of content pieces that make up this observation.
     """
 
-    contents: list[TextContent | StructuredContent | ImageContent | AudioContent | VideoContent] = Field(default_factory=list)
+    contents: list[TextContent | StructuredContent | ImageContent | AudioContent | VideoContent] = Field(
+        default_factory=list
+    )
 
     @classmethod
     def from_text(cls, text: str) -> Self:
