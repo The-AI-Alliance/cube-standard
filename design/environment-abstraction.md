@@ -10,8 +10,8 @@ Cubes and harnesses (e.g. AgentLab2) should be completely independent packages. 
 
 - `MiniWobTask.reset()` calls `self.tool.goto()`, `self.tool.evaluate_js()`, `self.tool.page_obs()`
 - `MiniWobTask.finished()` calls `self.tool.evaluate_js()`
-- None of these methods exist on cube's `AbstractTool`
-- `MiniWobTaskConfig` asserts: `"tool_config must be set to either BrowsergymConfig or PlaywrightConfig"` — naming agentlab2 classes by string
+- None of these methods exist on cube's `AbstractEnvironment`
+- `MiniWobTaskConfig` asserts: `"env_config must be set to either BrowsergymConfig or PlaywrightConfig"` — naming agentlab2 classes by string
 
 MiniWob cannot run without an agentlab2 tool being injected. The dependency direction is wrong.
 
@@ -34,7 +34,7 @@ There are three distinct sources of actions:
 Layer 1 – Cube (owns the contract)
   Defines AbstractXxxEnvironment:
     • task-internal methods:  goto(url), evaluate_js(js), page_obs()    [not in agent's action_set]
-    • agent-facing actions:   @tool_action browser_click, browser_type, ...
+    • agent-facing actions:   @environment_action browser_click, browser_type, ...
   Provides DefaultXxxEnvironment:
     • minimal working implementation (e.g. raw Playwright, requests)
     • cube works standalone, no harness required
@@ -66,7 +66,7 @@ The cube defines its own abstract environment AND ships a default concrete imple
 ```python
 # miniwob_cube/environment.py
 
-class AbstractMiniWobEnvironment(AbstractTool):
+class AbstractMiniWobEnvironment(AbstractEnvironment):
     """Contract that any MiniWob environment must satisfy."""
 
     # Task-internal (used by MiniWobTask, NOT in agent action_set)
@@ -78,17 +78,17 @@ class AbstractMiniWobEnvironment(AbstractTool):
     def page_obs(self) -> Observation: ...
 
     # Agent-facing actions
-    @tool_action
+    @environment_action
     @abstractmethod
     def browser_click(self, bid: str) -> str: ...
 
-    @tool_action
+    @environment_action
     @abstractmethod
     def browser_type(self, bid: str, text: str) -> str: ...
     # ...
 
 
-class DefaultMiniWobEnvironment(AbstractMiniWobEnvironment, Tool):
+class DefaultMiniWobEnvironment(AbstractMiniWobEnvironment, Environment):
     """Works out of the box with raw Playwright — no agentlab2 needed."""
     # simple but functional implementation
 ```
@@ -110,51 +110,49 @@ class MiniWobBrowsergymEnv(BrowsergymTool, AbstractMiniWobEnvironment):
     pass
 ```
 
-The harness user passes `tool_config=MiniWobBrowsergymConfig()` to override the default. If they don't, the default impl is used.
+The harness user passes `env_config=MiniWobBrowsergymConfig()` to override the default. If they don't, the default impl is used.
 
 ### Requirement 3 — Agent users add custom actions
 
-The existing `@tool_action` + subclassing already handles this for users who own the environment class. For users who want to add actions without subclassing (e.g. injecting a standalone function):
+The existing `@environment_action` + subclassing already handles this for users who own the environment class. For users who want to inject extra tools without subclassing (e.g. a standalone calculator or code-execution tool alongside a browser task), the harness expresses them as serializable configs.
+
+`TaskConfig` carries both the main env config and any extra tool configs. All configs are serializable so they cross worker boundaries safely. `Task.model_post_init` instantiates them, mirroring the existing `env_config` → `_env` pattern:
 
 ```python
-# examples/test.py pattern:
-class MyTool():
-    def add2(env: MyEnv):
-        env.state += 2
-```
+class TaskConfig(ABC, TypedBaseModel):
+    task_id: str
+    seed: int | None = None
+    env_config: EnvironmentConfig | None = None
+    extra_tool_configs: list[EnvironmentConfig] = []   # ← new field
 
-This needs a first-class concept on `Task`: a list of **extra actions** — callables of the form `(env, **kwargs) -> result` registered separately from the environment's built-in methods.
+class Task(TypedBaseModel, ABC):
+    # serializable fields
+    extra_tool_configs: list[EnvironmentConfig] = []
 
-```python
-class ExtraAction(TypedBaseModel):
-    schema: ActionSchema
-    fn: Callable  # (env, **kwargs) -> result
+    # non-serializable runtime state (set during model_post_init)
+    _env: AbstractEnvironment | None = PrivateAttr(default=None)
+    _extra_tools: list[AbstractEnvironment] = PrivateAttr(default_factory=list)  # ← new
 
-class Task:
-    extra_actions: list[ExtraAction] = []
+    def model_post_init(self, __context):
+        # ... existing container + env setup ...
+        self._extra_tools = [cfg.make() for cfg in self.extra_tool_configs]
 
     @property
     def action_set(self):
-        return self.filter_actions(
-            self.tool.action_set + [ea.schema for ea in self.extra_actions]
-        )
+        extra = [schema for tool in self._extra_tools for schema in tool.action_set]
+        return self.filter_actions(self.env.action_set + extra)
 
     def step(self, action):
-        # dispatch to env or extra_actions
-        if action.name in {a.name for a in self.tool.action_set}:
-            result = self.tool.execute_action(action)
+        # dispatch to main env or extra tools
+        if action.name in {a.name for a in self.env.action_set}:
+            result = self.env.execute_action(action)
         else:
-            ea = next(ea for ea in self.extra_actions if ea.schema.name == action.name)
-            result = ea.fn(self.tool, **action.arguments)
+            tool = next(
+                t for t in self._extra_tools
+                if action.name in {a.name for a in t.action_set}
+            )
+            result = tool.execute_action(action)
 ```
-
----
-
-## Naming
-
-`Tool` → `Environment` (or `AbstractEnvironment`, `EnvironmentConfig`, `Environment`)
-
-This reflects what the class actually is: the stateful environment the agent interacts with, not the agent's tool. The rename is independent of the design changes above and can be done separately.
 
 ---
 
@@ -166,5 +164,4 @@ This reflects what the class actually is: the stateful environment the agent int
 | Define `DefaultMiniWobEnvironment` | `miniwob_cube/environment.py` | New class (raw Playwright) |
 | Remove forced `tool_config` assert | `miniwob_cube/task.py` | Default to `DefaultMiniWobEnvConfig` |
 | Define `MiniWobBrowsergymEnv` | `agentlab2/cubes/miniwob_adapter.py` | New adapter class |
-| Add `extra_actions` to `Task` | `cube-standard/src/cube/task.py` | New field + dispatch logic |
-| Rename `Tool` → `Environment` | `cube-standard/src/cube/tool.py` | Rename (separate PR) |
+| Add `extra_tool_configs` to `TaskConfig` and `Task` | `cube-standard/src/cube/task.py` | New field on both + `_extra_tools` PrivateAttr + dispatch logic in `step()` |
