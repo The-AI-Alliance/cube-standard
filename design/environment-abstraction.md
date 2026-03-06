@@ -10,158 +10,140 @@ Cubes and harnesses (e.g. AgentLab2) should be completely independent packages. 
 
 - `MiniWobTask.reset()` calls `self.tool.goto()`, `self.tool.evaluate_js()`, `self.tool.page_obs()`
 - `MiniWobTask.finished()` calls `self.tool.evaluate_js()`
-- None of these methods exist on cube's `AbstractEnvironment`
+- None of these methods exist on cube's base classes
 - `MiniWobTaskConfig` asserts: `"env_config must be set to either BrowsergymConfig or PlaywrightConfig"` — naming agentlab2 classes by string
 
 MiniWob cannot run without an agentlab2 tool being injected. The dependency direction is wrong.
 
-```
+```text
 CURRENT (wrong):
   miniwob-cube --[runtime dependency]--> agentlab2
 
 CORRECT:
   miniwob-cube --> cube-standard (only)
-  agentlab2    --> miniwob-cube  (to provide an optimized implementation)
+  agentlab2    --> miniwob-cube  (to provide a concrete implementation)
 ```
 
 ---
 
-## Three-Layer Model
+## Naming note: Tool vs Environment
 
-There are three distinct sources of actions:
+AL2 calls its browser backends `BrowsergymTool` and `PlaywrightTool`. Cube-standard went through
+a rename from `Tool` → `Environment`. In practice, the distinction is mostly philosophical:
+from the agent's perspective these are "tools it uses"; from the task's perspective they are
+"the environment it runs in." Both framings are valid, and the rename touches a lot of code for
+limited conceptual gain. This document uses "tool/environment" interchangeably and does not
+mandate which name the codebase settles on.
 
+---
+
+## Key insight: the abstract is domain-level, not benchmark-level
+
+The first instinct when fixing the coupling is to have each cube define its own
+`AbstractXxxEnvironment`. But that forces every benchmark designer to write both an abstract
+and a concrete class — an unrealistic burden, especially when many benchmarks share the same
+backend (browser, terminal, etc.).
+
+The right level for the abstract is the **domain**, not the benchmark:
+
+```text
+AbstractBrowserTool  ←  defined once in cube-standard
+  task-internal:  goto(url), evaluate_js(js), page_obs()
+  agent-facing:   browser_click, browser_type, browser_hover, ...
 ```
-Layer 1 – Cube (owns the contract)
-  Defines AbstractXxxEnvironment:
-    • task-internal methods:  goto(url), evaluate_js(js), page_obs()    [not in agent's action_set]
-    • agent-facing actions:   @environment_action browser_click, browser_type, ...
-  Provides DefaultXxxEnvironment:
-    • minimal working implementation (e.g. raw Playwright, requests)
-    • cube works standalone, no harness required
+
+A web benchmark like MiniWob simply **declares** that its tasks require an `AbstractBrowserTool`.
+It does not implement one. Only a genuinely novel domain (robot arm, GUI app, terminal) needs a
+new abstract+concrete pair.
+
+---
+
+## What benchmark designers write
+
+```python
+# miniwob_cube/task.py
+
+from cube.tools.browser import AbstractBrowserTool
+
+class MiniWobTask(Task):
+    def reset(self, tool: AbstractBrowserTool):
+        tool.goto("https://...")
+        return tool.page_obs()
+
+    def finished(self, tool: AbstractBrowserTool) -> bool:
+        return tool.evaluate_js("reward()")
+```
+
+No agentlab2 import. No assert on concrete class names. The dependency arrow is correct.
+
+---
+
+## Two-layer model
+
+```text
+Layer 1 – cube-standard (owns the contracts)
+  AbstractBrowserTool:
+    • task-internal:   goto(url), evaluate_js(js), page_obs()
+    • agent-facing:    browser_click, browser_type, ...
+  DefaultBrowserTool:
+    • thin Playwright wrapper; ships with cube-standard (see decision below)
 
 Layer 2 – Harness (provides optimized implementations)
-  BrowsergymEnv satisfies AbstractMiniWobEnvironment
-  PlaywrightEnv  satisfies AbstractMiniWobEnvironment
-  These are drop-in replacements, not requirements.
-
-Layer 3 – Agent user (adds custom actions at runtime)
-  Extra functions (env, **kwargs) -> result registered on the task
-  Exposed in action_set, dispatched separately from env built-ins
+  BrowsergymTool  implements AbstractBrowserTool  (full BrowserGym stack)
+  PlaywrightTool  implements AbstractBrowserTool  (lightweight, sync Playwright)
 ```
+
+Note: dynamic action addition by agent users was considered but is deferred — it adds complexity
+without a concrete use case at this stage.
 
 ---
 
-## Desired Requirements (from `examples/test.py`)
+## Where does DefaultBrowserTool live? — the decision
 
-```
-1. benchmark -> task -> env comes with its own default actions.
-2. harness has existing env actions that can manipulate env.
-3. Agent users can define their own env actions.
-```
+### Initial thinking: keep cube-standard lean (Option B)
 
-### Requirement 1 — Cube provides default actions
+The simplest approach is to put no concrete implementation in cube-standard at all.
+Cube-standard defines only `AbstractBrowserTool`; harnesses like AL2 provide everything concrete.
+Cube-standard stays a pure standards package with no `playwright` dependency.
 
-The cube defines its own abstract environment AND ships a default concrete implementation:
+This was appealing until stress testing entered the picture.
 
-```python
-# miniwob_cube/environment.py
+### The stress-test requirement rules it out
 
-class AbstractMiniWobEnvironment(AbstractEnvironment):
-    """Contract that any MiniWob environment must satisfy."""
+Cube-standard ships `cube.testing.run_stress_test`, which is designed to run with only
+`pip install cube my_cube` — no harness required:
 
-    # Task-internal (used by MiniWobTask, NOT in agent action_set)
-    @abstractmethod
-    def goto(self, url: str) -> str: ...
-    @abstractmethod
-    def evaluate_js(self, js: str) -> Any: ...
-    @abstractmethod
-    def page_obs(self) -> Observation: ...
-
-    # Agent-facing actions
-    @environment_action
-    @abstractmethod
-    def browser_click(self, bid: str) -> str: ...
-
-    @environment_action
-    @abstractmethod
-    def browser_type(self, bid: str, text: str) -> str: ...
-    # ...
-
-
-class DefaultMiniWobEnvironment(AbstractMiniWobEnvironment, Environment):
-    """Works out of the box with raw Playwright — no agentlab2 needed."""
-    # simple but functional implementation
+```bash
+cube stress-test my_cube
 ```
 
-`MiniWobTaskConfig.make()` defaults to `DefaultMiniWobEnvironment`. The assert requiring agentlab2 is removed.
+The mini harness calls `task_config.make()`, which instantiates a tool and runs a full episode.
+For MiniWob that tool is a browser. If the only concrete `BrowserTool` lives in AL2, the stress
+test cannot run without AL2 — defeating the entire point of the compliance check.
 
-### Requirement 2 — Harness provides an optimized drop-in
+The stress test is the concrete use case that answers "is standalone runnability a hard
+requirement?" — **yes**.
 
-The harness implements the cube's interface. The dependency arrow is now correct: agentlab2 imports from miniwob-cube, never the other way.
+### Decision: DefaultBrowserTool ships in cube-standard (Option A)
 
-```python
-# agentlab2/cubes/miniwob_adapter.py
-
-from miniwob_cube.environment import AbstractMiniWobEnvironment
-from agentlab2.tools.browsergym import BrowsergymTool
-
-class MiniWobBrowsergymEnv(BrowsergymTool, AbstractMiniWobEnvironment):
-    """Drop-in: gives MiniWob tasks the full BrowserGym stack."""
-    pass
+```text
+cube-standard:  AbstractBrowserTool + DefaultBrowserTool (thin Playwright wrapper)
+miniwob-cube:   depends on cube-standard only; runs standalone, stress-test passes
+agentlab2:      provides BrowsergymTool as optimized drop-in
 ```
 
-The harness user passes `env_config=MiniWobBrowsergymConfig()` to override the default. If they don't, the default impl is used.
-
-### Requirement 3 — Agent users add custom actions
-
-The existing `@environment_action` + subclassing already handles this for users who own the environment class. For users who want to inject extra tools without subclassing (e.g. a standalone calculator or code-execution tool alongside a browser task), the harness expresses them as serializable configs.
-
-`TaskConfig` carries both the main env config and any extra tool configs. All configs are serializable so they cross worker boundaries safely. `Task.model_post_init` instantiates them, mirroring the existing `env_config` → `_env` pattern:
-
-```python
-class TaskConfig(ABC, TypedBaseModel):
-    task_id: str
-    seed: int | None = None
-    env_config: EnvironmentConfig | None = None
-    extra_tool_configs: list[EnvironmentConfig] = []   # ← new field
-
-class Task(TypedBaseModel, ABC):
-    # serializable fields
-    extra_tool_configs: list[EnvironmentConfig] = []
-
-    # non-serializable runtime state (set during model_post_init)
-    _env: AbstractEnvironment | None = PrivateAttr(default=None)
-    _extra_tools: list[AbstractEnvironment] = PrivateAttr(default_factory=list)  # ← new
-
-    def model_post_init(self, __context):
-        # ... existing container + env setup ...
-        self._extra_tools = [cfg.make() for cfg in self.extra_tool_configs]
-
-    @property
-    def action_set(self):
-        extra = [schema for tool in self._extra_tools for schema in tool.action_set]
-        return self.filter_actions(self.env.action_set + extra)
-
-    def step(self, action):
-        # dispatch to main env or extra tools
-        if action.name in {a.name for a in self.env.action_set}:
-            result = self.env.execute_action(action)
-        else:
-            tool = next(
-                t for t in self._extra_tools
-                if action.name in {a.name for a in t.action_set}
-            )
-            result = tool.execute_action(action)
-```
+The cost is that cube-standard gains a `playwright` dependency. This is acceptable: Playwright
+is stable, widely available, and the alternative (a separate `cube-browser` package) adds a
+third package to maintain for limited benefit.
 
 ---
 
-## Summary of Changes Needed
+## Summary of changes needed
 
 | What | Where | Change |
 |---|---|---|
-| Define `AbstractMiniWobEnvironment` | `miniwob_cube/environment.py` | New file |
-| Define `DefaultMiniWobEnvironment` | `miniwob_cube/environment.py` | New class (raw Playwright) |
-| Remove forced `tool_config` assert | `miniwob_cube/task.py` | Default to `DefaultMiniWobEnvConfig` |
-| Define `MiniWobBrowsergymEnv` | `agentlab2/cubes/miniwob_adapter.py` | New adapter class |
-| Add `extra_tool_configs` to `TaskConfig` and `Task` | `cube-standard/src/cube/task.py` | New field on both + `_extra_tools` PrivateAttr + dispatch logic in `step()` |
+| Define `AbstractBrowserTool` | `cube-standard/src/cube/tools/browser.py` | New file |
+| Define `DefaultBrowserTool` | `cube-standard/src/cube/tools/browser.py` | New class (thin Playwright wrapper) |
+| Remove forced `tool_config` assert | `miniwob_cube/task.py` | Use `AbstractBrowserTool` type instead |
+| Remove agentlab2 class name strings | `miniwob_cube/task.py` | No more `"BrowsergymConfig or PlaywrightConfig"` in assert |
+| Provide optimized browser tool | `agentlab2` | `BrowsergymTool` implements `AbstractBrowserTool` |
