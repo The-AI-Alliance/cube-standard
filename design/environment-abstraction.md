@@ -74,10 +74,8 @@ Layer 1 – cube-standard (owns the contracts)
   AbstractBrowserTool:
     • task-internal:   goto(url), evaluate_js(js), page_obs()
     • agent-facing:    browser_click, browser_type, ...
-  DefaultBrowserTool:
-    • thin Playwright wrapper; ships with cube-standard (see decision below)
 
-Layer 2 – Harness (provides optimized implementations)
+Layer 2 – cube-tools/cube-browser-tool (provides implementations)
   BrowsergymTool  implements AbstractBrowserTool  (full BrowserGym stack)
   PlaywrightTool  implements AbstractBrowserTool  (lightweight, sync Playwright)
 ```
@@ -136,13 +134,20 @@ instructions if `cube-browser-tool` is not present and no tool is provided.
 
 ---
 
-## Summary of changes needed
+## Summary of changes
 
-| What | Where | Change |
-|---|---|---|
-| Define `AbstractBrowserTool` | `cube-standard/src/cube/tools/browser.py` | New file — `@runtime_checkable Protocol` |
-| Define `BrowsergymTool`, `PlaywrightTool` | `cube-standard/cube-tools/cube-browser-tool/` | New package in repo; implements `AbstractBrowserTool` |
-| Remove forced `tool_config` assert | `miniwob_cube/task.py` | Use `AbstractBrowserTool` type instead |
-| Remove agentlab2 class name strings | `miniwob_cube/task.py` | No more `"BrowsergymConfig or PlaywrightConfig"` in assert |
-| Add optional extra | `miniwob-cube/pyproject.toml` | `[project.optional-dependencies] browser = ["cube-browser-tool"]` |
-| Helpful error in stress test | `cube-standard/src/cube/testing.py` | `ImportError` with install hint if no browser tool available |
+### cube-standard repo
+
+| What | Where | Status |
+| --- | --- | --- |
+| Define `AbstractBrowserTool` / `AsyncAbstractBrowserTool` | `cube-standard/src/cube/tools/browser.py` | Done |
+| Helpful `ImportError` in debug/stress runner | `cube-standard/src/cube/testing.py` | Done |
+| Define `BrowsergymTool`, `PlaywrightTool` | `cube-standard/cube-tools/cube-browser-tool/` | Follow-up PR |
+
+### AgentLab2 repo (miniwob-cube)
+
+| What | Where | Status |
+| --- | --- | --- |
+| `MiniWobTask.tool` typed as `AbstractBrowserTool` | `miniwob_cube/task.py` | Done |
+| Remove agentlab2 class name strings from assert | `miniwob_cube/task.py` | Done |
+| Add optional extra once `cube-browser-tool` exists | `miniwob-cube/pyproject.toml` → `[project.optional-dependencies] browser = ["cube-browser-tool"]` | Follow-up PR |
