@@ -11,11 +11,11 @@ from typing import Any, ClassVar, Dict, Tuple
 from cube.benchmark import Benchmark, RuntimeContext
 from cube.container import Container, ContainerBackend
 from cube.core import Action, ActionSchema, Observation
+from cube.environment import Environment, EnvironmentConfig, environment_action
 from cube.task import Task, TaskConfig
-from cube.tool import Tool, ToolConfig, tool_action
 
 
-class ConfigurableCounterTool(Tool):
+class ConfigurableCounterEnvironment(Environment):
     def __init__(self, increment_by: int = 1, enable_decrement: bool = False):
         self.counter = 0
         self.history: list[str] = []
@@ -26,19 +26,19 @@ class ConfigurableCounterTool(Tool):
         self.counter = 0
         self.history = []
 
-    @tool_action
+    @environment_action
     def increment(self) -> str:
         """Increment the counter"""
         self.counter += self.increment_by
         self.history.append("increment")
         return f"Counter is now {self.counter}"
 
-    @tool_action
+    @environment_action
     def get_value(self) -> str:
         """Get the current counter value"""
         return f"Counter value is: {self.counter}"
 
-    @tool_action
+    @environment_action
     def decrement(self) -> str:
         """Decrement the counter by 1"""
         self.counter -= 1
@@ -50,12 +50,12 @@ class ConfigurableCounterTool(Tool):
         return [a for a in super().action_set if a.name != "decrement" or self.enable_decrement]
 
 
-class CounterToolConfig(ToolConfig):
+class CounterEnvironmentConfig(EnvironmentConfig):
     increment_by: int = 1
     enable_decrement: bool = False
 
-    def make(self, container: Container | None = None) -> ConfigurableCounterTool:
-        return ConfigurableCounterTool(increment_by=self.increment_by, enable_decrement=self.enable_decrement)
+    def make(self, container: Container | None = None) -> ConfigurableCounterEnvironment:
+        return ConfigurableCounterEnvironment(increment_by=self.increment_by, enable_decrement=self.enable_decrement)
 
 
 class ReachTargetTask(Task):
@@ -64,18 +64,18 @@ class ReachTargetTask(Task):
         return self.metadata.extra_info["target"]
 
     def reset(self) -> Tuple[Observation, Dict[str, Any]]:
-        self.tool.reset()
+        self.env.reset()
         obs = Observation.from_text(f"Counter starts at 0. Use 'increment' to reach {self.target}.")
         return obs, {"target": self.target}
 
     def evaluate(self, obs: Observation) -> Tuple[float, Dict[str, Any]]:
-        assert isinstance(self.tool, ConfigurableCounterTool)
-        solved = self.tool.counter == self.target
-        return (1.0 if solved else 0.0), {"solved": solved, "value": self.tool.counter}
+        assert isinstance(self.env, ConfigurableCounterEnvironment)
+        solved = self.env.counter == self.target
+        return (1.0 if solved else 0.0), {"solved": solved, "value": self.env.counter}
 
     def finished(self, obs: Observation) -> bool:
-        assert isinstance(self.tool, ConfigurableCounterTool)
-        return self.tool.counter == self.target
+        assert isinstance(self.env, ConfigurableCounterEnvironment)
+        return self.env.counter == self.target
 
 
 class CounterTaskConfig(TaskConfig):
@@ -85,10 +85,10 @@ class CounterTaskConfig(TaskConfig):
         container_backend: ContainerBackend | None = None,
     ) -> ReachTargetTask:
         task_metadata = CounterBenchmark.task_metadata[self.task_id]
-        tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
+        env_cfg = self.env_config or CounterEnvironmentConfig(**task_metadata.extra_info.get("env_config", {}))
         return ReachTargetTask(
             metadata=task_metadata,
-            tool_config=tool_cfg,
+            env_config=env_cfg,
             runtime_context=runtime_context,
             container_backend=container_backend,
         )

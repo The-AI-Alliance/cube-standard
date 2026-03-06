@@ -1,49 +1,49 @@
 """
-Tool configuration for CUBE benchmarks.
+Environment configuration for CUBE benchmarks.
 
-This module defines AbstractTool, Tool, ToolConfig, and the @tool_action decorator
-for implementing and configuring agent action interfaces. ToolConfig allows researchers
-to swap tool implementations for experimentation, enabling research on different tool
-sets and configurations without modifying benchmark code.
+This module defines AbstractEnvironment, Environment, EnvironmentConfig, and the
+@environment_action decorator for implementing and configuring agent action interfaces.
 
 Abstract classes:
-    AbstractTool — subclasses must implement:
+    AbstractEnvironment — subclasses must implement:
         - execute_action(action: Action) -> Observation | StepError
         - action_set (property) -> list[ActionSchema]
-    Tool is a concrete subclass of AbstractTool that implements both automatically
-    via the @tool_action decorator — subclass Tool instead of AbstractTool directly.
+    Environment is a concrete subclass of AbstractEnvironment that implements both
+    automatically via the @environment_action decorator — subclass Environment instead
+    of AbstractEnvironment directly.
 
-    ToolConfig — subclasses must implement:
-        - make(container) -> AbstractTool    instantiate the tool from serialized config data,
-                                             connecting to the container if one was launched
+    EnvironmentConfig — subclasses must implement:
+        - make(container) -> AbstractEnvironment    instantiate the environment from
+                                                    serialized config data, connecting
+                                                    to the container if one was launched
 
-Example — defining a custom tool and its config:
+Example — defining a custom environment and its config:
 
-    from cube.tool import Tool, ToolConfig, tool_action
+    from cube.environment import Environment, EnvironmentConfig, environment_action
     from cube.container import Container
 
-    class BrowserTool(Tool):
+    class BrowserEnvironment(Environment):
         base_url: str
 
-        @tool_action
+        @environment_action
         def navigate(self, url: str) -> str:
             '''Navigate to a URL and return the page title.'''
             ...
 
-        @tool_action
+        @environment_action
         def click(self, selector: str) -> str:
             '''Click on an element identified by a CSS selector.'''
             ...
 
-    class BrowserToolConfig(ToolConfig):
+    class BrowserEnvironmentConfig(EnvironmentConfig):
         base_url: str = "http://localhost:9222"
 
-        def make(self, container: Container | None = None) -> BrowserTool:
+        def make(self, container: Container | None = None) -> BrowserEnvironment:
             url = container.get_url(port=9222) if container else self.base_url
-            return BrowserTool(base_url=url)
+            return BrowserEnvironment(base_url=url)
 
-The BrowserToolConfig can then be passed to a Task or Benchmark, letting
-harness users swap browser backends without touching benchmark logic.
+The BrowserEnvironmentConfig can then be passed to a Task or Benchmark, letting
+harness users swap environment backends without touching benchmark logic.
 """
 
 import logging
@@ -57,18 +57,18 @@ from cube.core import Action, ActionSchema, Content, Observation, StepError, Typ
 logger = logging.getLogger(__name__)
 
 
-class AbstractTool(ABC):
+class AbstractEnvironment(ABC):
     """
     Abstract interface for objects that can react on a list of actions.
-    List defined by the Protocol that tool inherits.
+    List defined by the functions that environment implements.
     """
 
     def reset(self) -> None:
-        """Optional: reset the tool to its initial state."""
+        """Optional: reset the environment to its initial state."""
         pass
 
     def close(self) -> None:
-        """Optional: clean up tool resources (connections, processes, files, etc.)."""
+        """Optional: clean up environment resources (connections, processes, files, etc.)."""
         pass
 
     @abstractmethod
@@ -80,16 +80,16 @@ class AbstractTool(ABC):
     @abstractmethod
     def action_set(self) -> List[ActionSchema]:
         """
-        Returns list of actions supported by that tool.
-        Tool definitions in litellm-compatible format.
+        Returns list of actions supported by that environment.
+        Environment definitions in litellm-compatible format.
 
-        Returns a JSON-serializable list of tool descriptors, each with:
+        Returns a JSON-serializable list of action descriptors, each with:
         - type: "function"
         - function: {name, description, parameters (JSON Schema)}
 
         This format is compatible with litellm/OpenAI function calling.
         Agents use this to discover available actions without knowing
-        tool implementations in advance.
+        environment implementations in advance.
 
         Example return value:
         [
@@ -112,45 +112,43 @@ class AbstractTool(ABC):
         pass
 
 
-class ToolConfig(TypedBaseModel, ABC):
+class EnvironmentConfig(TypedBaseModel, ABC):
     """
-    Configuration for creating task-specific tools.
-
-    ToolConfig enables research on tool variability by allowing researchers to:
-    - Swap out different tool implementations (e.g., Playwright vs Selenium)
-    - Provide different tool sets (e.g., basic vs advanced browser tools)
-    - Configure tool behavior (e.g., browser types, shell environments)
+    Configuration for creating task-specific environments.
     """
 
     @abstractmethod
-    def make(self, container: Container | None = None) -> AbstractTool:
+    def make(self, container: Container | None = None) -> AbstractEnvironment:
         """
-        Instantiate Tool from configuration data.
+        Instantiate Environment from configuration data.
 
         Args:
             container: The launched container for this task, if any. Use it to
                        extract connection info (host, ports) to configure the
-                       tool's endpoint. None if the task needs no container.
+                       environment's endpoint. None if the task needs no container.
 
         Returns:
-            AbstractTool instance
+            AbstractEnvironment instance
         """
         pass
 
 
-def tool_action(func: Callable) -> Callable:
+def environment_action(func: Callable) -> Callable:
     """
-    Decorator to mark a method as an action in a Tool.
+    Decorator to mark a method as a primitive action in an Environment.
 
     This decorator automatically registers methods as actions that will be
-    discovered by the Tool's action_set property.
+    discovered by the Environment's action_set property.
 
     Usage:
-        class MyTool(Tool):
-            @tool_action
+        class MyEnvironment(AbstractEnvironment):
+            state = 0
+
+            @environment_action
             def my_action(self, param: str) -> str:
                 '''Action description.'''
-                return f"Result: {param}"
+                state += 1
+                return f"State is now {state}"
     """
 
     @wraps(func)
@@ -162,27 +160,29 @@ def tool_action(func: Callable) -> Callable:
     return wrapper
 
 
-class Tool(AbstractTool):
+class Environment(AbstractEnvironment):
     """
-    Base class for tools with automatic action discovery via decorators.
+    Base class for environments with automatic action discovery via decorators.
 
-    Tool subclasses should mark their action methods with the @tool_action decorator.
+    Environment subclasses should mark their primitive action methods with the @environment_action decorator.
     The action_set property will automatically discover and expose these methods.
 
     Example:
         ```python
-        from cube.tool import Tool, tool_action, Action
+        from cube.environment import Environment, environment_action, Action
 
-        class CalculatorTool(Tool):
-            '''Calculator tool with basic arithmetic operations.'''
+        class CalculatorEnvironment(Environment):
+            '''Calculator environment with basic arithmetic operations.'''
+            result: float = 0.0
 
-            @tool_action
+            @environment_action
             def add(self, a: float, b: float) -> str:
                 '''Add two numbers together.'''
-                return f"Result: {a + b}"
+                self.result = a + b
+                return f"Result: {self.result}"
 
         # Usage
-        calc = CalculatorTool()
+        calc = CalculatorEnvironment()
 
         # Automatic discovery of actions
         print("Available actions:")
@@ -197,7 +197,7 @@ class Tool(AbstractTool):
         ```
 
     Benefits:
-        - Zero boilerplate: Just add @tool_action decorator
+        - Zero boilerplate: Just add @environment_action decorator
         - Single source of truth: Method signature and docstring define the action
         - No duplication: Each function defined exactly once
         - Clear intent: Obvious which methods are actions
@@ -208,7 +208,7 @@ class Tool(AbstractTool):
 
         Raises distinct errors for:
         - Method that does not exist on the class at all.
-        - Method that exists but is not decorated with @tool_action.
+        - Method that exists but is not decorated with @environment_action.
         """
         # Check instance dict first — catches dynamically attached actions (not in any class dict)
         method = self.__dict__.get(action.name)
@@ -224,7 +224,7 @@ class Tool(AbstractTool):
         )
         if not is_registered:
             raise ValueError(
-                f"Action {action.name} exists in {self.__class__.__name__} but is not decorated with @tool_action. Add @tool_action to expose it as an action."
+                f"Action {action.name} exists in {self.__class__.__name__} but is not decorated with @environment_action. Add @environment_action to expose it as an action."
             )
         return method
 
@@ -252,7 +252,7 @@ class Tool(AbstractTool):
 
     @property
     def action_set(self) -> List[ActionSchema]:
-        """Automatically discover all methods marked with @tool_action decorator."""
+        """Automatically discover all methods marked with @environment_action decorator."""
         actions = []
 
         # Introspect the class to find all methods marked as actions
@@ -275,7 +275,7 @@ class Tool(AbstractTool):
             # Check if this attr_name is a method marked as an action.
             # We walk up the class hierarchy (method resolution order, MRO)
             # because a subclass may override a method without repeating
-            # @tool_action - as long as the decorator appears on the method
+            # @environment_action - as long as the decorator appears on the method
             # in any parent class, the override is still treated as an action.
             is_action = any(
                 getattr(cls.__dict__.get(attr_name), "_is_action", False)

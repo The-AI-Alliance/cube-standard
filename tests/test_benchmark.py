@@ -6,22 +6,22 @@ import pytest
 
 from cube.benchmark import Benchmark, BenchmarkMetadata
 from cube.core import Observation
+from cube.environment import Environment, EnvironmentConfig, environment_action
 from cube.task import Task, TaskConfig, TaskMetadata
-from cube.tool import Tool, ToolConfig, tool_action
 
 # --- Minimal fixtures ---
 
 
-class _Tool(Tool):
-    @tool_action
+class _Environment(Environment):
+    @environment_action
     def noop(self) -> str:
         """No-op."""
         return "ok"
 
 
-class _ToolConfig(ToolConfig):
+class _EnvironmentConfig(EnvironmentConfig):
     def make(self, container=None):
-        return _Tool()
+        return _Environment()
 
 
 class _Task(Task):
@@ -36,7 +36,7 @@ class _TaskConfig(TaskConfig):
     def make(self, runtime_context=None, container_backend=None):
         return _Task(
             metadata=TaskMetadata(id=self.task_id),
-            tool_config=self.tool_config or _ToolConfig(),
+            env_config=self.env_config or _EnvironmentConfig(),
         )
 
 

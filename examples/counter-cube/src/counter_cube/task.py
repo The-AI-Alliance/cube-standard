@@ -11,10 +11,10 @@ TaskConfig is serializable; implement make() to produce a Task.
 from typing import Any
 
 from cube.benchmark import RuntimeContext
-from cube.containers import ContainerBackend
+from cube.container import ContainerBackend
 from cube.core import Observation
 from cube.task import Task, TaskConfig, TaskMetadata
-from counter_cube.tool import CounterToolConfig
+from counter_cube.environment import CounterEnvironment, CounterEnvironmentConfig
 
 
 class ReachTargetTask(Task):
@@ -29,13 +29,14 @@ class ReachTargetTask(Task):
         return self.metadata.extra_info["target"]
 
     def reset(self) -> tuple[Observation, dict[str, Any]]:
-        """Reset tool state and return the opening observation."""
-        self.tool.reset()
+        """Reset environment state and return the opening observation."""
+        self.env.reset()
         obs = Observation.from_text(f"Counter starts at 0. Use 'increment' action to reach {self.target}.")
         return obs, {"task_type": "reach_target", "target": self.target}
 
     def evaluate(self, obs: Observation) -> tuple[float, dict[str, Any]]:
-        value = self.tool._env.counter
+        assert isinstance(self.env, CounterEnvironment)
+        value = self.env.counter
 
         if value == self.target:
             return 1.0, {"solved": True, "value": value}
@@ -44,7 +45,8 @@ class ReachTargetTask(Task):
         return progress * 0.5, {"solved": False, "value": value, "target": self.target}
 
     def finished(self, obs: Observation) -> bool:
-        return self.tool._env.counter == self.target
+        assert isinstance(self.env, CounterEnvironment)
+        return self.env.counter == self.target
 
 
 class CounterTaskConfig(TaskConfig):
@@ -57,9 +59,9 @@ class CounterTaskConfig(TaskConfig):
     ) -> ReachTargetTask:
         """Build the task.
 
-        tool_config precedence (highest to lowest):
-          1. explicit tool_config set on this TaskConfig instance
-          2. per-task tool_config in metadata.extra_info["tool_config"]
+        env_config precedence (highest to lowest):
+          1. explicit env_config set on this TaskConfig instance
+          2. per-task env_config in metadata.extra_info["env_config"]
           3. CounterToolConfig defaults
         """
         # Import here to avoid circular import (benchmark imports task)
@@ -67,10 +69,10 @@ class CounterTaskConfig(TaskConfig):
         # TODO: find a proper solution for this circular import issue.
 
         task_metadata: TaskMetadata = CounterBenchmark.task_metadata[self.task_id]
-        tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
+        env_cfg = self.env_config or CounterEnvironmentConfig(**task_metadata.extra_info.get("env_config", {}))
         return ReachTargetTask(
             metadata=task_metadata,
-            tool_config=tool_cfg,
+            env_config=env_cfg,
             runtime_context=runtime_context,
             container_backend=container_backend,
         )

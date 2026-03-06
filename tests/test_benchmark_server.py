@@ -6,26 +6,26 @@ from fastapi.testclient import TestClient
 from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
 from cube.container import Container, ContainerBackend
 from cube.core import Observation
+from cube.environment import Environment, EnvironmentConfig, environment_action
 from cube.server import make_benchmark_fastapi_app
 from cube.task import Task, TaskConfig, TaskMetadata
-from cube.tool import Tool, ToolConfig, tool_action
 
 
-class MinimalTool(Tool):
-    """Minimal tool for testing."""
+class MinimalEnvironment(Environment):
+    """Minimal environment for testing."""
 
-    @tool_action
+    @environment_action
     def test_action(self) -> str:
         """Test action."""
         return "Test action executed"
 
 
-class MinimalToolConfig(ToolConfig):
-    """Minimal tool config for testing."""
+class MinimalEnvironmentConfig(EnvironmentConfig):
+    """Minimal environment config for testing."""
 
-    def make(self, container: Container | None = None) -> Tool:
-        """Return minimal tool."""
-        return MinimalTool()
+    def make(self, container: Container | None = None) -> MinimalEnvironment:
+        """Return minimal environment."""
+        return MinimalEnvironment()
 
 
 class MinimalTask(Task):
@@ -33,7 +33,7 @@ class MinimalTask(Task):
 
     def reset(self):
         """Reset the task to its initial state."""
-        self.tool.reset()
+        self.env.reset()
         return Observation.from_text("Test observation"), {}
 
     def evaluate(self, obs: Observation):
@@ -52,7 +52,7 @@ class MinimalTaskConfig(TaskConfig):
         """Create minimal task."""
         return MinimalTask(
             metadata=TaskMetadata(id=self.task_id),
-            tool_config=self.tool_config or MinimalToolConfig(),
+            env_config=self.env_config or MinimalEnvironmentConfig(),
             runtime_context=runtime_context,
             container_backend=container_backend,
         )

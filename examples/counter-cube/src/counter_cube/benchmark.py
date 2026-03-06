@@ -35,13 +35,13 @@ class CounterBenchmark(Benchmark):
             id="count-to-3-with-decrement",
             abstract_description="Increment counter to reach value 3, with decrement available",
             recommended_max_steps=7,
-            extra_info={"target": 3, "difficulty": "easy", "tool_config": {"enable_decrement": True}},
+            extra_info={"target": 3, "difficulty": "easy", "env_config": {"enable_decrement": True}},
         ),
         "count-by-2": TaskMetadata(
             id="count-by-2",
             abstract_description="Reach 4 using an increment-by-2 tool",
             recommended_max_steps=4,
-            extra_info={"target": 4, "difficulty": "easy", "tool_config": {"enable_increment_by": True}},
+            extra_info={"target": 4, "difficulty": "easy", "env_config": {"enable_increment_by": True}},
         ),
     }
 

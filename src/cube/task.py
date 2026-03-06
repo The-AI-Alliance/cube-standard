@@ -35,7 +35,7 @@ from cube.core import (
     StructuredContent,
     TypedBaseModel,
 )
-from cube.tool import AbstractTool, ToolConfig
+from cube.environment import AbstractEnvironment, EnvironmentConfig
 
 if TYPE_CHECKING:
     from cube.benchmark import RuntimeContext
@@ -87,8 +87,8 @@ class Task(TypedBaseModel, ABC):
     Represents a task that an agent must complete in an environment.
 
     On construction, the base class launches the container (if configured) and then
-    calls tool_config.make(container) to create the tool, so the tool can connect
-    to the container from the start.
+    calls env_config.make(container) to create the environment, so the environment can
+    connect to the container from the start.
 
     This class contains:
     1. task logic:
@@ -108,7 +108,7 @@ class Task(TypedBaseModel, ABC):
 
     # Serializable fields
     metadata: TaskMetadata
-    tool_config: ToolConfig = Field(description="Tool configuration used to instantiate the tool.")
+    env_config: EnvironmentConfig = Field(description="Environment configuration used to instantiate the environment.")
     container_backend: ContainerBackend | None = Field(
         default=None, description="Optional backend used to launch a container during model_post_init."
     )
@@ -124,21 +124,21 @@ class Task(TypedBaseModel, ABC):
     )
 
     # Non-serializable runtime state, set during model_post_init
-    _tool: AbstractTool | None = PrivateAttr(default=None)
+    _env: AbstractEnvironment | None = PrivateAttr(default=None)
     _container: Container | None = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
-        """Called after Pydantic __init__. Launches container if configured, then creates tool."""
-        # Launch container first so it can be passed to the tool factory
+        """Called after Pydantic __init__. Launches container if configured, then creates environment."""
+        # Launch container first so it can be passed to the environment factory
         if self.container_backend is not None and self.metadata.container_config is not None:
             self._container = self.container_backend.launch(self.metadata.container_config)
 
-        # Create tool, passing the container so it can connect to it
-        self._tool = self.tool_config.make(container=self._container)
+        # Create environment, passing the container so it can connect to it
+        self._env = self.env_config.make(container=self._container)
 
     @property
-    def tool(self) -> AbstractTool:
-        return self._tool  # type: ignore[return-value]
+    def env(self) -> AbstractEnvironment:
+        return self._env  # type: ignore[return-value]
 
     @property
     def container(self) -> Container | None:
@@ -151,16 +151,16 @@ class Task(TypedBaseModel, ABC):
     @property
     def action_set(self) -> List[ActionSchema]:
         """
-        Returns tool.action_set filtered if self.filter_actions() is implemented.
-        Tool definitions in litellm-compatible format.
+        Returns env.action_set filtered if self.filter_actions() is implemented.
+        Environment action definitions in litellm-compatible format.
 
-        Returns a JSON-serializable list of tool descriptors, each with:
+        Returns a JSON-serializable list of action descriptors, each with:
         - type: "function"
         - function: {name, description, parameters (JSON Schema)}
 
         This format is compatible with litellm/OpenAI function calling.
         Agents use this to discover available actions without knowing
-        tool implementations in advance.
+        environment implementations in advance.
 
         Example return value:
         [
@@ -180,12 +180,12 @@ class Task(TypedBaseModel, ABC):
             }
         ]
         """
-        return self.filter_actions(self.tool.action_set)
+        return self.filter_actions(self.env.action_set)
 
     def filter_actions(self, actions: list[ActionSchema]) -> list[ActionSchema]:
         """
-        (Optional) Allows the task to whitelist subset of all the actions provided by the tool.
-        By default filters nothing, keep all tool actions.
+        (Optional) Allows the task to whitelist subset of all the actions provided by the environment.
+        By default filters nothing, keep all environment actions.
         """
         return actions
 
@@ -193,7 +193,7 @@ class Task(TypedBaseModel, ABC):
     def reset(self) -> Tuple[Observation, Dict]:
         """
         Reset the task to its initial state.
-        Must call self.tool.reset() to reset the tool as well.
+        Must call self.env.reset() to reset the environment as well.
 
         Returns:
             Tuple of (Observation, dict with additional task info)
@@ -204,7 +204,7 @@ class Task(TypedBaseModel, ABC):
         """
         Execute action, return next state.
         - check if agent action is a STOP_ACTION
-        - if not, execute the action and get the observation (self.tool.execute_action(act))
+        - if not, execute the action and get the observation (self.env.execute_action(act))
         - check if the task is done (self.finished(obs))
         - if done or self.validate_per_step, evaluate state (self.evaluate(obs))
         - return EnvironmentOutput with obs, reward, info, error, ...
@@ -230,7 +230,7 @@ class Task(TypedBaseModel, ABC):
                 obs += Observation.from_text("Task finished by the agent.")
                 done = True
                 break
-            result = self.tool.execute_action(action)
+            result = self.env.execute_action(action)
             if isinstance(result, Observation):
                 obs += result
             elif isinstance(result, StepError):
@@ -284,16 +284,16 @@ class Task(TypedBaseModel, ABC):
 
     def close(self) -> None:
         """
-        Cleanup task resources. Calls self.tool.close() automatically.
+        Cleanup task resources. Calls self.env.close() automatically.
         Override to add task-specific cleanup, and call super().close() to
-        ensure the tool is also cleaned up.
+        ensure the environment is also cleaned up.
 
         Examples of additional task-specific cleanup:
         - Stop containers
         - Remove temp files
         - Close network connections
         """
-        self.tool.close()
+        self.env.close()
 
 
 class TaskConfig(ABC, TypedBaseModel):
@@ -301,13 +301,13 @@ class TaskConfig(ABC, TypedBaseModel):
     Serializable task configuration (Pydantic BaseModel).
 
     Must be JSON-serializable to pass to workers.
-    Holds the minimal data needed to instantiate a Task: task_id, seed, and tool_config.
+    Holds the minimal data needed to instantiate a Task: task_id, seed, and env_config.
     TaskMetadata is retrieved via task_id.
     """
 
     task_id: str
     seed: int | None = None
-    tool_config: ToolConfig | None = None
+    env_config: EnvironmentConfig | None = None
 
     @abstractmethod
     def make(
@@ -329,7 +329,7 @@ class TaskConfig(ABC, TypedBaseModel):
         >>> task_metadata = MyBenchmark.task_metadata[self.task_id]
         >>> return MyTask(
         ...     metadata=task_metadata,
-        ...     tool_config=self.tool_config,
+        ...     env_config=self.env_config,
         ...     runtime_context=runtime_context,
         ...     container_backend=container_backend,
         ... )

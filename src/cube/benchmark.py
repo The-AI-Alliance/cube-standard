@@ -32,9 +32,9 @@ from pydantic import ConfigDict, Field, PrivateAttr
 
 from cube.container import ContainerBackend
 from cube.core import TypedBaseModel
+from cube.environment import EnvironmentConfig
 from cube.seed import AbstractSeedGenerator
 from cube.task import TaskConfig, TaskMetadata
-from cube.tool import ToolConfig
 
 logger = logging.getLogger(__name__)
 
@@ -100,9 +100,9 @@ class Benchmark(TypedBaseModel, ABC):
     container_backend: ContainerBackend | None = Field(
         default=None
     )  # optional container backend to be used for all tasks in this benchmark
-    default_tool_config: ToolConfig | None = Field(
+    default_env_config: EnvironmentConfig | None = Field(
         default=None
-    )  # default tool config to be used for tasks that don't specify their own
+    )  # default environment config to be used for tasks that don't specify their own
     seed_generator: AbstractSeedGenerator | None = Field(
         default=None
     )  # optional seed generator for tasks that require random seeds
@@ -363,8 +363,8 @@ class Benchmark(TypedBaseModel, ABC):
             )
         if self.container_backend is None:
             logger.warning("Benchmark initialization did not define a container backend.")
-        if self.default_tool_config is None:
-            logger.warning("Benchmark initialization did not define a default tool config.")
+        if self.default_env_config is None:
+            logger.warning("Benchmark initialization did not define a default environment config.")
         if self.seed_generator is None:
             logger.warning("Benchmark initialization did not define a seed generator.")
 
@@ -373,9 +373,9 @@ class Benchmark(TypedBaseModel, ABC):
         for tm in self.task_metadata.values():
             if self.seed_generator is not None:
                 for seed in self.seed_generator(tm):
-                    yield self.task_config_class(task_id=tm.id, tool_config=self.default_tool_config, seed=seed)
+                    yield self.task_config_class(task_id=tm.id, env_config=self.default_env_config, seed=seed)
             else:
-                yield self.task_config_class(task_id=tm.id, tool_config=self.default_tool_config, seed=None)
+                yield self.task_config_class(task_id=tm.id, env_config=self.default_env_config, seed=None)
 
     def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "Benchmark":
         """

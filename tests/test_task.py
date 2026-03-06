@@ -3,25 +3,25 @@
 from cube.benchmark import RuntimeContext  # noqa: F401 – required for Task.model_rebuild()
 from cube.container import Container
 from cube.core import Action, EnvironmentOutput, Observation, StepError, TextContent
+from cube.environment import Environment, EnvironmentConfig, environment_action
 from cube.task import STOP_ACTION, Task, TaskMetadata
-from cube.tool import Tool, ToolConfig, tool_action
 
 
-class GreetTool(Tool):
-    @tool_action
+class GreetEnvironment(Environment):
+    @environment_action
     def greet(self, name: str) -> str:
         """Greet someone."""
         return f"Hello, {name}!"
 
-    @tool_action
+    @environment_action
     def fail(self) -> str:
         """Always raises."""
         raise ValueError("action failed")
 
 
-class GreetToolConfig(ToolConfig):
-    def make(self, container: Container | None = None) -> GreetTool:
-        return GreetTool()
+class GreetEnvironmentConfig(EnvironmentConfig):
+    def make(self, container: Container | None = None) -> GreetEnvironment:
+        return GreetEnvironment()
 
 
 class SimpleTask(Task):
@@ -35,7 +35,7 @@ class SimpleTask(Task):
 def make_task(**kwargs) -> SimpleTask:
     return SimpleTask(
         metadata=TaskMetadata(id="simple-task"),
-        tool_config=GreetToolConfig(),
+        env_config=GreetEnvironmentConfig(),
         **kwargs,
     )
 
@@ -91,6 +91,6 @@ def test_task_validate_per_step_triggers_evaluate():
     assert out.info == {"score": 0.5}
 
 
-def test_task_action_set_comes_from_tool():
+def test_task_action_set_comes_from_environment():
     names = {a.name for a in make_task().action_set}
     assert names == {"greet", "fail"}
