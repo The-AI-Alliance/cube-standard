@@ -23,9 +23,13 @@ OPTION B — auto-load from CSV / JSON files
 
     See cube.benchmark.Benchmark for full format details.
 
-_setup() / close() are the right place to start/stop shared infrastructure
-(Docker daemons, database servers, etc.).  Leave them as no-ops if your
-tasks are self-contained.
+_setup() / close() are abstract in the base class and MUST be implemented.
+They are the right place to start/stop shared infrastructure (Docker daemons,
+database servers, etc.).  Leave them as no-ops if your tasks are self-contained.
+
+install() / uninstall() are optional hooks for one-time setup such as
+downloading datasets or pulling Docker images.  Override them only if your
+benchmark needs installation steps; the base class provides no-op defaults.
 """
 
 from typing import ClassVar

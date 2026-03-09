@@ -1,18 +1,22 @@
 """cube CLI — entry point for the `cube` command.
 
 Usage:
+    cube list           List all cube benchmarks installed in the current
+                        environment (registered under the cube.benchmarks
+                        entry-point group).  Shows name, version, task count,
+                        tags, and description for each benchmark.
     cube init [NAME]    Copy the new_cube_package template into <cwd>/<NAME>.
-                        NAME defaults to "new_cube_package".
+                        NAME defaults to "new_cube_package". The template lives
+                        at src/cube/_template/new_cube_package/ inside the
+                        cube-standard package, so it is always in sync with the
+                        rest of the codebase and can be edited directly as normal
+                        Python files.
     cube test NAME      Run the debug suite and check compliance (every debug task
                         must reach reward == 1.0).  NAME is either a benchmark
                         entry-point name (e.g. counter-cube) or a dotted module
                         path (e.g. counter_cube.debug).  When an entry-point name
                         is given the debug module is auto-derived from the
                         registered benchmark module.
-
-The template lives at src/cube/_template/new_cube_package/ inside the
-cube-standard package, so it is always in sync with the rest of the codebase
-and can be edited directly as normal Python files.
 """
 
 import importlib

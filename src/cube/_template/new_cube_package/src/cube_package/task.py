@@ -52,7 +52,7 @@ class CubeTask(Task):
         info : dict
             Evaluation details (e.g. {"solved": True, "value": 42}).
         """
-        # TODO: inspect self.tool._env to determine whether the goal is met.
+        # TODO: inspect obs and self.tool to determine the reward of the current state.
         solved = False  # replace with real check
         return (1.0 if solved else 0.0), {"solved": solved}
 
@@ -61,7 +61,7 @@ class CubeTask(Task):
 
         Called automatically by Task.step() after each action.
         """
-        # TODO: return True when the goal is definitely achieved.
+        # TODO: return True when the goal is achieved.
         return False
 
 

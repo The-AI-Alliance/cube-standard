@@ -7,7 +7,7 @@ Copy it, rename things, and follow the TODOs in each file.
 that needs renaming:
 
 ```bash
-grep -r "cube_package\|new-cube-package\|CubeTask\|CubeBenchmark\|CubeTool" src/ pyproject.toml
+grep -r "cube_package\|new-cube-package\|CubeTask\|CubeBenchmark\|CubeTool\|CubeEnv" src/ pyproject.toml
 ```
 
 Replace all occurrences with names that match your benchmark.
@@ -50,17 +50,17 @@ Work through the files in this order — each layer depends on the one above it:
 |---|------|-------------------|
 | 1 | `tool.py` | Subclass `Tool`; add `@tool_action` methods; expose config via `CubeToolConfig` |
 | 2 | `task.py` | `reset()` (opening observation) and `evaluate()` (reward); `finished()` is optional |
-| 3 | `benchmark.py` | Fill `BenchmarkMetadata` and `task_metadata` (inline or via CSV/JSON) |
+| 3 | `benchmark.py` | Fill `BenchmarkMetadata` and `task_metadata` (inline or via CSV/JSON); `_setup()` and `close()` to spinup / close resources |
 | 4 | `debug.py` | One deterministic action sequence per task; must reach `reward == 1.0` |
 | 5 | `pyproject.toml` | Update `name`, `description`, and the `cube.benchmarks` entry-point key |
 
-See `examples/counter-cube/` in the cube-standard repo for a complete reference implementation covering all four layers.
+See `examples/counter-cube/` in the cube-standard repo for a complete reference implementation covering all five layers.
 
 ## Checklist
 
 - [ ] `tool.py` — add `@tool_action` methods; delete `example_action` placeholder
 - [ ] `task.py` — implement `reset()` and `evaluate()`; optionally `finished()`
-- [ ] `benchmark.py` — fill in `BenchmarkMetadata` and `task_metadata` (or switch to JSON/CSV files)
+- [ ] `benchmark.py` — fill in `BenchmarkMetadata` and `task_metadata` (or switch to JSON/CSV files); implement `_setup()` and `close()`; optionally `install()` and `uninstall()`
 - [ ] `debug.py` — add one entry to `_TASK_ACTIONS` per task
 - [ ] `pyproject.toml` — update `name`, `description`, and the `cube.benchmarks` entry-point key
 - [ ] Run `cube test <your-benchmark-name>` — all tasks must pass
@@ -69,7 +69,7 @@ See `examples/counter-cube/` in the cube-standard repo for a complete reference 
 
 - Every `@tool_action` must return something `Content.from_data()` can wrap (str, dict, PIL Image, …).
 - `evaluate()` must return `(reward: float, info: dict)` — `reward == 1.0` means solved.
-- `TaskConfig` must be JSON-serializable (it travels over the network to workers).
+- `TaskConfig` must be lightweight (no reference to TaskMetadata) and JSON-serializable: it travels over the network to workers
 - `debug.py` action sequences must be deterministic and reach `reward == 1.0` — `cube test` enforces this.
 
 ## How `cube test` works
