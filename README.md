@@ -45,6 +45,14 @@ cd cube-standard
 uv sync --extra dev
 ```
 
+## CLI commands
+
+| Command | What it does |
+| --- | --- |
+| `cube init [NAME]` | Scaffolds a new benchmark package from the built-in template |
+| `cube list` | Lists all installed benchmarks registered under `cube.benchmarks` entry points |
+| `cube test NAME` | Runs the debug suite and asserts `reward == 1.0` on every debug task |
+
 ## For benchmark contributors
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Quick reference:
@@ -56,7 +64,7 @@ uv sync
 cube test my-bench    # run the debug compliance suite
 ```
 
-`cube list` shows all installed benchmarks. See [CONTRIBUTING.md](CONTRIBUTING.md) for the five-layer architecture and implementation order.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the five-layer architecture and implementation order.
 
 ## Getting Involved
 
