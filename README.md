@@ -1,4 +1,4 @@
-![The AI Alliance banner](https://the-ai-alliance.github.io/assets/images/ai-alliance-logo-horiz-pos-blue-cmyk-trans.png)
+<img width="3168" height="1344" alt="Untitled" src="https://github.com/user-attachments/assets/68e50a4d-fe15-4d08-b52e-38dae3122493" />
 
 # README for CUBE Standard
 
@@ -8,7 +8,63 @@
 
 This repo contains the code and documentation for the **AI Alliance: CUBE Standard** project, which meets a common necessity, to standardize benchmark wrapping so the community can wrap various otherwise-incompatible benchmarks uniformly and use them everywhere.
 
-Principal developer: [ServiceNow](https://servicenow.com/){:target="sn"}.
+Principal developer: [ServiceNow AI Research](https://servicenow.com/research).
+
+## Installation
+
+Requires Python 3.12+. Install with [uv](https://docs.astral.sh/uv/):
+
+```sh
+uv add cube-standard
+```
+
+Or with pip:
+
+```sh
+pip install cube-standard
+```
+
+To include optional container backends:
+
+```sh
+# Docker support
+uv add "cube-standard[docker]"
+
+# Modal support
+uv add "cube-standard[modal]"
+
+# Daytona support
+uv add "cube-standard[daytona]"
+```
+
+For development (includes test and lint tools):
+
+```sh
+git clone https://github.com/The-AI-Alliance/cube-standard
+cd cube-standard
+uv sync --extra dev
+```
+
+## CLI commands
+
+| Command | What it does |
+| --- | --- |
+| `cube init [NAME]` | Scaffolds a new benchmark package from the built-in template |
+| `cube list` | Lists all installed benchmarks registered under `cube.benchmarks` entry points |
+| `cube test NAME` | Runs the debug suite and asserts `reward == 1.0` on every debug task |
+
+## For benchmark contributors
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Quick reference:
+
+```sh
+cube init my-bench    # scaffold a new benchmark package from the template
+cd my-bench
+uv sync
+cube test my-bench    # run the debug compliance suite
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the five-layer architecture and implementation order.
 
 ## Getting Involved
 
