@@ -1,4 +1,4 @@
-![The AI Alliance banner](https://the-ai-alliance.github.io/assets/images/ai-alliance-logo-horiz-pos-blue-cmyk-trans.png)
+<img width="3168" height="1344" alt="Untitled" src="https://github.com/user-attachments/assets/68e50a4d-fe15-4d08-b52e-38dae3122493" />
 
 # README for CUBE Standard
 
@@ -8,7 +8,7 @@
 
 This repo contains the code and documentation for the **AI Alliance: CUBE Standard** project, which meets a common necessity, to standardize benchmark wrapping so the community can wrap various otherwise-incompatible benchmarks uniformly and use them everywhere.
 
-Principal developer: [ServiceNow](https://servicenow.com/){:target="sn"}.
+Principal developer: [ServiceNow AI Research](https://servicenow.com/research).
 
 ## Installation
 
