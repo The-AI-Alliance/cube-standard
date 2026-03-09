@@ -156,10 +156,17 @@ def run_debug_suite(
     logger.info(
         f"[run_debug_suite] benchmark={benchmark_name!r}  running {len(task_configs)} task(s): {list(task_configs)}"
     )
-    results = [
-        run_debug_episode(tc.make(), module.make_debug_agent(tid), max_steps=max_steps)
-        for tid, tc in task_configs.items()
-    ]
+    results = []
+    for tid, tc in task_configs.items():
+        try:
+            task = tc.make()
+        except ImportError as exc:
+            raise ImportError(
+                f"{exc}\n\n"
+                f"Hint: '{benchmark_name}' may require an optional tool package that is not installed.\n"
+                f"Check the benchmark's optional extras in its pyproject.toml"
+            ) from exc
+        results.append(run_debug_episode(task, module.make_debug_agent(tid), max_steps=max_steps))
     output = {"benchmark": benchmark_name, "debug_episodes": results}
     print(json.dumps(output, indent=2))
     return results
