@@ -10,6 +10,41 @@ This repo contains the code and documentation for the **AI Alliance: CUBE Standa
 
 Principal developer: [ServiceNow](https://servicenow.com/){:target="sn"}.
 
+## Installation
+
+Requires Python 3.12+. Install with [uv](https://docs.astral.sh/uv/):
+
+```sh
+uv add cube-standard
+```
+
+Or with pip:
+
+```sh
+pip install cube-standard
+```
+
+To include optional container backends:
+
+```sh
+# Docker support
+uv add "cube-standard[docker]"
+
+# Modal support
+uv add "cube-standard[modal]"
+
+# Daytona support
+uv add "cube-standard[daytona]"
+```
+
+For development (includes test and lint tools):
+
+```sh
+git clone https://github.com/The-AI-Alliance/cube-standard
+cd cube-standard
+uv sync --extra dev
+```
+
 ## For benchmark contributors
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Quick reference:
