@@ -10,7 +10,7 @@ implementation of the ``AbstractBrowserTool`` protocol defined in
 import logging
 import time
 from io import BytesIO
-from typing import Any
+from typing import Any, Literal
 
 from cube.core import Action, Content, Observation, StepError
 from cube.tool import Tool, ToolConfig
@@ -101,10 +101,23 @@ class SyncPlaywrightTool(Tool, BrowserActionSpace):
         self._page = self._browser.new_page(viewport=self.config.viewport)
 
     def close(self) -> None:
-        """Release all Playwright resources (page, browser, playwright instance)."""
-        self._page.close()
-        self._browser.close()
-        self._pw.stop()
+        """Release all Playwright resources (page, browser, playwright instance).
+
+        Attempts all three cleanup steps regardless of individual failures.
+        Raises ``RuntimeError`` listing all errors if any cleanup step failed.
+        """
+        errors = []
+        for action, label in [
+            (self._page.close, "page"),
+            (self._browser.close, "browser"),
+            (self._pw.stop, "playwright"),
+        ]:
+            try:
+                action()
+            except Exception as e:
+                errors.append(f"{label}: {e}")
+        if errors:
+            raise RuntimeError(f"Errors during SyncPlaywrightTool.close(): {'; '.join(errors)}")
 
     # ------------------------------------------------------------------
     # Action dispatch override — appends page_obs() after every action
@@ -236,8 +249,12 @@ class SyncPlaywrightTool(Tool, BrowserActionSpace):
         from_elem = self._page.locator(from_selector)
         from_elem.hover(timeout=500)
         self._page.mouse.down()
-        to_elem = self._page.locator(to_selector)
-        to_elem.hover(timeout=500)
+        try:
+            to_elem = self._page.locator(to_selector)
+            to_elem.hover(timeout=500)
+        except Exception:
+            self._page.mouse.up()
+            raise
         self._page.mouse.up()
 
     def browser_select_option(self, selector: str, value: str) -> None:
@@ -264,7 +281,7 @@ class SyncPlaywrightTool(Tool, BrowserActionSpace):
         """
         self._page.mouse.click(x, y, delay=100)
 
-    def browser_scroll(self, selector: str, direction: str, amount: int) -> None:
+    def browser_scroll(self, selector: str, direction: Literal["up", "down", "left", "right"], amount: int) -> None:
         """Scroll an element in the specified direction.
 
         Parameters
@@ -279,8 +296,12 @@ class SyncPlaywrightTool(Tool, BrowserActionSpace):
         elem = self._page.locator(selector).first
         elem.scroll_into_view_if_needed()
         box = elem.bounding_box()
-        if box:
-            self._page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        if box is None:
+            raise ValueError(
+                f"browser_scroll: element '{selector}' has no bounding box "
+                f"(it may be hidden or have zero dimensions)."
+            )
+        self._page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
         delta_x = {"left": -amount, "right": amount}.get(direction, 0)
         delta_y = {"up": -amount, "down": amount}.get(direction, 0)
         self._page.mouse.wheel(delta_x, delta_y)

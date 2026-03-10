@@ -17,6 +17,7 @@ description; ``Parameters`` sections populate the per-argument JSON schema
 """
 
 from abc import ABC, abstractmethod
+from typing import Literal
 
 from cube.tool import tool_action
 
@@ -123,7 +124,7 @@ class BrowserActionSpace(ABC):
 
     @tool_action
     @abstractmethod
-    def browser_scroll(self, selector: str, direction: str, amount: int) -> None:
+    def browser_scroll(self, selector: str, direction: Literal["up", "down", "left", "right"], amount: int) -> None:
         """Scroll an element in the specified direction.
 
         Parameters
@@ -271,7 +272,7 @@ class BidBrowserActionSpace(ABC):
 
     @tool_action
     @abstractmethod
-    def browser_scroll(self, bid: str, direction: str, amount: int) -> None:
+    def browser_scroll(self, bid: str, direction: Literal["up", "down", "left", "right"], amount: int) -> None:
         """Scroll an element in the specified direction.
 
         Parameters
