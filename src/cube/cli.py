@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 from rich import box
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -319,7 +319,7 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         f"[info]Running debug suite for[/info] [file]{resolved}[/file]…",
         spinner="dots",
     ):
-        results = run_debug_suite(resolved, module, max_steps=max_steps)
+        results = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False)
 
     if not results:
         err_console.print(
@@ -334,32 +334,84 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         )
         sys.exit(1)
 
-    # ── Results table ──────────────────────────────────────────────────────────
-    table = Table(
-        show_header=True,
-        box=box.SIMPLE,
-        padding=(0, 1),
-        show_edge=False,
-        header_style="bold",
-    )
-    table.add_column("task_id", style="file", no_wrap=True)
-    table.add_column("done", justify="center")
-    table.add_column("reward", justify="right")
-    table.add_column("steps", justify="right")
-    table.add_column("time (s)", justify="right")
-    table.add_column("error", style="error")
-
     failures: list[dict] = []
     for r in results:
         passed = not r["error"] and r["done"] and r["reward"] == 1.0
         if not passed:
             failures.append(r)
 
+    # ── Latency: p50, p95, p99 from step_times_s across all episodes ────────────
+    all_step_times: list[float] = []
+    for r in results:
+        all_step_times.extend(r.get("step_times_s") or [])
+    if all_step_times:
+        sorted_times = sorted(all_step_times)
+        n = len(sorted_times)
+        p50_s = sorted_times[int(0.50 * (n - 1))] if n else 0.0
+        p95_s = sorted_times[int(0.95 * (n - 1))] if n else 0.0
+        p99_s = sorted_times[int(0.99 * (n - 1))] if n else 0.0
+    else:
+        p50_s = p95_s = p99_s = 0.0
+
+    def _latency_bar(sec: float, max_sec: float = 0.2, width: int = 24) -> str:
+        if max_sec <= 0:
+            return "░" * width
+        filled = min(int((sec / max_sec) * width), width)
+        return "█" * filled + "░" * (width - filled)
+
+    # ── Stress-test style layout: CUBE Stress Test + COMPLIANCE + LATENCY ────────
+    status_str = "Passed" if not failures else "Failed"
+    progress_str = f"{len(results) - len(failures)}/{len(results)}"
+    header_lines = [
+        "[bold]CUBE Stress Test[/bold]",
+        "",
+        f"Benchmark: [file]{resolved}[/file]    Status: [{'success' if not failures else 'error'}]{status_str}[/]    Progress: {progress_str}",
+    ]
+
+    # COMPLIANCE: named checks from stress_test_specs.md (NULL where not measured)
+    full_episode_status = "[success]✓[/success]" if not failures else "[error]✗[/error]"
+    compliance_checks = [
+        ("debug_tasks_exist", "[success]✓[/success]" if results else "[dim]NULL[/dim]"),
+        ("debug_agent_exists", "[success]✓[/success]" if results else "[dim]NULL[/dim]"),
+        ("full_episode", full_episode_status),
+        ("reset_reproducibility", "[dim]NULL[/dim]"),
+        ("tools_list", "[dim]NULL[/dim]"),
+        ("close_idempotent", "[dim]NULL[/dim]"),
+        ("benchmark_metadata", "[dim]NULL[/dim]"),
+    ]
+    compliance_header = Text.from_markup("[bold]COMPLIANCE[/bold]")
+    compliance_checks_table = Table(
+        show_header=False,
+        box=box.SIMPLE,
+        padding=(0, 1),
+        show_edge=False,
+    )
+    compliance_checks_table.add_column("check", style="dim", no_wrap=True)
+    compliance_checks_table.add_column("status", no_wrap=True)
+    for name, status in compliance_checks:
+        compliance_checks_table.add_row(name, status)
+
+    # Task-level results table (per-episode)
+    task_results_table = Table(
+        show_header=True,
+        box=box.SIMPLE,
+        padding=(0, 1),
+        show_edge=False,
+        header_style="bold",
+    )
+    task_results_table.add_column("task_id", style="file", no_wrap=True)
+    task_results_table.add_column("done", justify="center")
+    task_results_table.add_column("reward", justify="right")
+    task_results_table.add_column("steps", justify="right")
+    task_results_table.add_column("time (s)", justify="right")
+    task_results_table.add_column("error", style="error")
+
+    for r in results:
         done_str = "[success]✓[/success]" if r["done"] else "[error]✗[/error]"
         reward_str = (
             f"[success]{r['reward']:.3f}[/success]" if r["reward"] == 1.0 else f"[error]{r['reward']:.3f}[/error]"
         )
-        table.add_row(
+        task_results_table.add_row(
             r["task_id"],
             done_str,
             reward_str,
@@ -368,16 +420,34 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
             r["error"] or "",
         )
 
+    max_lat = max(p50_s, p95_s, p99_s, 0.001)
+    latency_lines = [
+        "[bold]LATENCY (seconds)[/bold]",
+        f"  p50 │{_latency_bar(p50_s, max_lat)}│ [dim]{p50_s:.3f}s[/dim]",
+        f"  p95 │{_latency_bar(p95_s, max_lat)}│ [dim]{p95_s:.3f}s[/dim]",
+        f"  p99 │{_latency_bar(p99_s, max_lat)}│ [dim]{p99_s:.3f}s[/dim]",
+    ]
+
     border = "green" if not failures else "red"
     status_text = (
         f"[success]{len(results)} task(s) passed[/success]"
         if not failures
         else f"[error]{len(failures)} / {len(results)} task(s) failed[/error]"
     )
+
     console.print(
         Panel(
-            table,
-            title=f"[brand]cube test[/brand]  [file]{module_name}[/file]  —  {status_text}",
+            Group(
+                Text.from_markup("\n".join(header_lines)),
+                "",
+                compliance_header,
+                compliance_checks_table,
+                "",
+                task_results_table,
+                "",
+                Text.from_markup("\n".join(latency_lines)),
+            ),
+            title=f"[bold]CUBE Stress Test[/bold]  [file]{module_name}[/file]  —  {status_text}",
             border_style=border,
             padding=(0, 1),
         )

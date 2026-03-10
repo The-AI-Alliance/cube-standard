@@ -272,7 +272,7 @@ def test_cmd_test_passes_max_steps(fake_debug_in_sys_modules):
         with patch("cube.testing.run_debug_suite", return_value=results) as mock_suite:
             cmd_test("fake_debug.debug", max_steps=5)
 
-    mock_suite.assert_called_once_with("fake_debug.debug", fake_debug_in_sys_modules, max_steps=5)
+    mock_suite.assert_called_once_with("fake_debug.debug", fake_debug_in_sys_modules, max_steps=5, print_json=False)
 
 
 # ── main() ────────────────────────────────────────────────────────────────────

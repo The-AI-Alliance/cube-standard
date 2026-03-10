@@ -138,15 +138,17 @@ def run_debug_suite(
     module: types.ModuleType,
     *,
     max_steps: int = 20,
+    print_json: bool = True,
 ) -> list[dict]:
     """
-    Run all debug tasks for a benchmark and print a JSON report.
+    Run all debug tasks for a benchmark and optionally print a JSON report.
 
     Args:
         benchmark_name: Label used in the JSON output (e.g. ``"osworld-cube"``).
         module:         A module exposing ``get_debug_task_configs()`` and
                         ``make_debug_agent(task_id)``.
         max_steps:      Safety cap passed to ``run_debug_episode`` (default 20).
+        print_json:     If True, print the JSON report to stdout (default True).
 
     Returns:
         List of per-episode report dicts (same schema as ``run_debug_episode``).
@@ -167,8 +169,9 @@ def run_debug_suite(
                 f"Check the benchmark's optional extras in its pyproject.toml"
             ) from exc
         results.append(run_debug_episode(task, module.make_debug_agent(tid), max_steps=max_steps))
-    output = {"benchmark": benchmark_name, "debug_episodes": results}
-    print(json.dumps(output, indent=2))
+    if print_json:
+        output = {"benchmark": benchmark_name, "debug_episodes": results}
+        print(json.dumps(output, indent=2))
     return results
 
 
