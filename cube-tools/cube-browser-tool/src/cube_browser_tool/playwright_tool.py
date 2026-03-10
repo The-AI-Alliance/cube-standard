@@ -298,8 +298,7 @@ class SyncPlaywrightTool(Tool, BrowserActionSpace):
         box = elem.bounding_box()
         if box is None:
             raise ValueError(
-                f"browser_scroll: element '{selector}' has no bounding box "
-                f"(it may be hidden or have zero dimensions)."
+                f"browser_scroll: element '{selector}' has no bounding box (it may be hidden or have zero dimensions)."
             )
         self._page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
         delta_x = {"left": -amount, "right": amount}.get(direction, 0)

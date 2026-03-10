@@ -1,6 +1,5 @@
 from cube_browser_tool._utils import flatten_axtree, prune_html
 
-
 # ---------------------------------------------------------------------------
 # prune_html
 # ---------------------------------------------------------------------------
@@ -82,8 +81,8 @@ def test_flatten_axtree_nested_children() -> None:
     assert any("textbox" in line for line in lines)
     assert any("button" in line for line in lines)
     # Children should be indented relative to parent
-    dialog_line = next(i for i, l in enumerate(lines) if "dialog" in l)
-    child_line = next(i for i, l in enumerate(lines) if "textbox" in l)
+    dialog_line = next(i for i, line in enumerate(lines) if "dialog" in line)
+    child_line = next(i for i, line in enumerate(lines) if "textbox" in line)
     assert lines[child_line].startswith(" "), "children should be indented"
     assert dialog_line < child_line
 
