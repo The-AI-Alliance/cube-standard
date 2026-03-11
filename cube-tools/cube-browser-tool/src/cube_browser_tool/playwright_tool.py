@@ -83,7 +83,7 @@ class PlaywrightConfig(ToolConfig):
 class SyncPlaywrightTool(Tool, BrowserActionSpace):
     """Synchronous Playwright browser tool.
 
-    Implements the ``AbstractBrowserTool`` protocol via:
+    Implements the ``cube.tools.browser.AbstractBrowserTool`` protocol via:
     - ``Tool`` (cube-standard): automatic ``action_set`` discovery and
       ``execute_action`` dispatch via the ``@tool_action`` decorator.
     - ``BrowserActionSpace``: abstract CSS-selector action contracts with
