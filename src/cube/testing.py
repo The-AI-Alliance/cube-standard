@@ -18,6 +18,14 @@ The ``module`` argument must expose two callables:
     make_debug_agent(task_id: str) -> Callable[[Observation, list[ActionSchema]], Action]
         Return a deterministic agent for the given task_id.
 
+Optionally, the module may also expose:
+
+    setup_debug_suite() -> None
+        Called once before any debug episodes run (e.g. start a local server).
+
+    teardown_debug_suite() -> None
+        Called once after all debug episodes finish, even if they fail.
+
 Example usage in a test file::
 
     def test_debug_tasks():
@@ -152,21 +160,34 @@ def run_debug_suite(
         List of per-episode report dicts (same schema as ``run_debug_episode``).
         The caller is responsible for exit-code handling.
     """
-    task_configs = {tc.task_id: tc for tc in module.get_debug_task_configs()}
-    logger.info(
-        f"[run_debug_suite] benchmark={benchmark_name!r}  running {len(task_configs)} task(s): {list(task_configs)}"
-    )
-    results = []
-    for tid, tc in task_configs.items():
-        try:
-            task = tc.make()
-        except ImportError as exc:
-            raise ImportError(
-                f"{exc}\n\n"
-                f"Hint: '{benchmark_name}' may require an optional tool package that is not installed.\n"
-                f"Check the benchmark's optional extras in its pyproject.toml"
-            ) from exc
-        results.append(run_debug_episode(task, module.make_debug_agent(tid), max_steps=max_steps))
+    setup = getattr(module, "setup_debug_suite", None)
+    teardown = getattr(module, "teardown_debug_suite", None)
+
+    if setup is not None:
+        logger.info(f"[run_debug_suite] benchmark={benchmark_name!r}  calling setup_debug_suite()")
+        setup()
+
+    try:
+        task_configs = {tc.task_id: tc for tc in module.get_debug_task_configs()}
+        logger.info(
+            f"[run_debug_suite] benchmark={benchmark_name!r}  running {len(task_configs)} task(s): {list(task_configs)}"
+        )
+        results = []
+        for tid, tc in task_configs.items():
+            try:
+                task = tc.make()
+            except ImportError as exc:
+                raise ImportError(
+                    f"{exc}\n\n"
+                    f"Hint: '{benchmark_name}' may require an optional tool package that is not installed.\n"
+                    f"Check the benchmark's optional extras in its pyproject.toml"
+                ) from exc
+            results.append(run_debug_episode(task, module.make_debug_agent(tid), max_steps=max_steps))
+    finally:
+        if teardown is not None:
+            logger.info(f"[run_debug_suite] benchmark={benchmark_name!r}  calling teardown_debug_suite()")
+            teardown()
+
     output = {"benchmark": benchmark_name, "debug_episodes": results}
     print(json.dumps(output, indent=2))
     return results
