@@ -18,4 +18,17 @@ def get_cache_dir(benchmark_name: str) -> Path:
     return _CUBE_CACHE_ROOT / benchmark_name
 
 
-__all__ = ["__version__", "get_cache_dir"]
+from cube.tools.computer import AbstractComputerTool, ComputerToolConfig
+from cube.vm import VM, VMBackend, VMConfig
+
+__all__ = [
+    "__version__",
+    "get_cache_dir",
+    # VM abstraction
+    "VMConfig",
+    "VMBackend",
+    "VM",
+    # Computer tool protocols
+    "ComputerToolConfig",
+    "AbstractComputerTool",
+]

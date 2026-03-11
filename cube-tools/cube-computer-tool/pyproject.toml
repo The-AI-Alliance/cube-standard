@@ -1,0 +1,45 @@
+[project]
+name = "cube-computer-tool"
+version = "0.1.0"
+description = "Concrete desktop/VM computer tool implementations for cube-standard benchmarks"
+requires-python = ">=3.12"
+dependencies = [
+    "cube-standard",
+    "requests>=2.0",
+    "docker>=7.0",
+    "pillow>=9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.6.0,<0.7.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "cube_computer_tool"
+
+[tool.uv.sources]
+cube-standard = { path = "../.." }
+
+[tool.ruff]
+fix = true
+line-length = 120
+indent-width = 4
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-rs"
+markers = ["integration: requires Docker + KVM"]
