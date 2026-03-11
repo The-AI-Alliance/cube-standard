@@ -77,3 +77,19 @@ The NeMo Gym pattern makes reward computation pluggable — you can swap the ver
 | Head server for config distribution | CUBE's registry is a cleaner solution |
 | Session cookies for state | CUBE's Python object identity is cleaner; sessions are only needed for HTTP, which `spawn() → URL` already handles |
 | Ray built into the protocol | Ray belongs in the harness (AL2 already has it); coupling the protocol to Ray's versioning is a mistake |
+
+---
+
+## Future Features (based on our conversations)
+
+
+### 6. Multi agent setup
+
+- turn base -vs- not (async)
+- same act/obs or not
+
+
+### 7. Async actions + Stream observations
+
+- Async actions does **not** necessarily imply streaming observations
+- Streaming observatios implies Async actions
