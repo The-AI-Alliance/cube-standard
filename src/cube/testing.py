@@ -30,14 +30,45 @@ from __future__ import annotations
 
 import json
 import logging
+import platform
 import time
 import types
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 from cube.core import Action, ActionSchema, Observation
 from cube.task import Task
 
 logger = logging.getLogger(__name__)
+
+# Used for report.cube_version and .save()
+try:
+    import importlib.metadata
+
+    _CUBE_VERSION = importlib.metadata.version("cube-standard")
+except Exception:
+    _CUBE_VERSION = "0.1.0rc1"
+
+
+def _validate_action_set(action_set: list) -> tuple[bool, str]:
+    """
+    Validate action_set per stress_test_specs.md tools_list check (Option A).
+
+    Returns (True, "") if non-empty and each schema has name, description, parameters.
+    Does not require parameter-level descriptions.
+    """
+    if not action_set or not isinstance(action_set, list):
+        return False, "action_set is empty or not a list"
+    for i, item in enumerate(action_set):
+        if not hasattr(item, "name") or not isinstance(getattr(item, "name", None), str):
+            return False, f"action_set[{i}] missing or invalid 'name'"
+        if not (getattr(item, "name", "") or "").strip():
+            return False, f"action_set[{i}] has empty 'name'"
+        if not hasattr(item, "description") or not isinstance(getattr(item, "description", None), str):
+            return False, f"action_set[{i}] missing or invalid 'description'"
+        if not hasattr(item, "parameters") or not isinstance(getattr(item, "parameters", None), dict):
+            return False, f"action_set[{i}] missing or invalid 'parameters'"
+    return True, ""
 
 
 def run_debug_episode(
@@ -85,6 +116,11 @@ def run_debug_episode(
         "episode_time_s": 0.0,
         "step_times_s": [],
         "error": None,
+        "tools_list_ok": False,
+        "tools_list_error": "",
+        "reset_time_s": 0.0,
+        "close_idempotent_ok": False,
+        "profiling": [],
     }
 
     episode_start = time.perf_counter()
@@ -93,7 +129,15 @@ def run_debug_episode(
         t0 = time.perf_counter()
         obs, info = task.reset()
         reset_time = time.perf_counter() - t0
+        report["reset_time_s"] = round(reset_time, 4)
         logger.info(f"[run_debug_episode] task={task_id!r}  reset done in {reset_time:.1f}s  info={info}")
+
+        # tools_list compliance: non-empty action_set with name, description, parameters per schema
+        tools_ok, tools_msg = _validate_action_set(getattr(task, "action_set", None) or [])
+        report["tools_list_ok"] = tools_ok
+        report["tools_list_error"] = tools_msg
+        if not tools_ok:
+            logger.warning(f"[run_debug_episode] task={task_id!r}  tools_list check failed: {tools_msg}")
 
         env_out = None
         while report["steps"] < max_steps:
@@ -107,6 +151,8 @@ def run_debug_episode(
             report["steps"] += 1
 
             obs = env_out.obs
+            if isinstance(env_out.info, dict) and "profiling" in env_out.info:
+                report["profiling"].append(env_out.info["profiling"])
             logger.info(
                 f"[run_debug_episode] task={task_id!r}  step={report['steps']}  action={action.name}  "
                 f"reward={env_out.reward:.3f}  done={env_out.done}  step_time={step_time:.3f}s"
@@ -124,6 +170,11 @@ def run_debug_episode(
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
         task.close()
+        try:
+            task.close()
+            report["close_idempotent_ok"] = True
+        except Exception:
+            report["close_idempotent_ok"] = False
         report["episode_time_s"] = round(time.perf_counter() - episode_start, 2)
         logger.info(
             f"[run_debug_episode] task={task_id!r}  DONE  reward={report['reward']:.3f}  steps={report['steps']}  "
@@ -131,6 +182,77 @@ def run_debug_episode(
         )
 
     return report
+
+
+def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str]:
+    """
+    Same seed → identical first observation (stress_test_specs.md).
+    Uses first task config only: make() twice, reset() each, compare first obs.
+    """
+    configs = list(getattr(module, "get_debug_task_configs", lambda: [])())
+    if not configs:
+        return False, "no debug task configs"
+    tc = configs[0]
+    t1 = t2 = None
+    try:
+        t1 = tc.make()
+        t2 = tc.make()
+        obs1, _ = t1.reset()
+        obs2, _ = t2.reset()
+        dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else str(obs1)
+        dump2 = obs2.model_dump() if hasattr(obs2, "model_dump") else str(obs2)
+        ok = dump1 == dump2
+    except Exception as e:
+        return False, str(e)
+    finally:
+        for t in (t1, t2):
+            if t is not None:
+                try:
+                    t.close()
+                except Exception:
+                    pass
+    return ok, "" if ok else "first observation differed between two resets"
+
+
+def check_benchmark_metadata(module: types.ModuleType) -> tuple[bool, str]:
+    """
+    benchmark.metadata has non-empty name, version (stress_test_specs.md).
+    Module may expose get_benchmark_metadata() or benchmark_metadata.
+    """
+    meta = getattr(module, "get_benchmark_metadata", None)
+    if callable(meta):
+        meta = meta()
+    else:
+        meta = getattr(module, "benchmark_metadata", None)
+    if meta is None:
+        return False, "no benchmark_metadata or get_benchmark_metadata"
+    name = getattr(meta, "name", None) or (meta.get("name") if isinstance(meta, dict) else None)
+    version = getattr(meta, "version", None) or (meta.get("version") if isinstance(meta, dict) else None)
+    if not name or not str(name).strip():
+        return False, "metadata name empty"
+    if not version or not str(version).strip():
+        return False, "metadata version empty"
+    return True, ""
+
+
+def aggregate_profiling(episode_reports: list[dict]) -> dict[str, float]:
+    """
+    Aggregate info["profiling"] from episode reports into mean duration per operation (seconds).
+    Each step's profiling is { "op_name": (start_ts, end_ts), ... }.
+    """
+    durations: dict[str, list[float]] = {}
+    for r in episode_reports:
+        for step_prof in r.get("profiling") or []:
+            if not isinstance(step_prof, dict):
+                continue
+            for op_name, val in step_prof.items():
+                if isinstance(val, (list, tuple)) and len(val) >= 2:
+                    try:
+                        dur = float(val[1]) - float(val[0])
+                        durations.setdefault(op_name, []).append(dur)
+                    except (TypeError, ValueError):
+                        pass
+    return {op: sum(v) / len(v) for op, v in durations.items() if v}
 
 
 def run_debug_suite(
@@ -173,6 +295,91 @@ def run_debug_suite(
         output = {"benchmark": benchmark_name, "debug_episodes": results}
         print(json.dumps(output, indent=2))
     return results
+
+
+def build_stress_test_report(
+    benchmark_name: str,
+    results: list[dict],
+    compliance_passed: list[str],
+    compliance_failed: list[str],
+) -> "StressTestReport":
+    """Build a stress-test report from suite results and compliance check names."""
+    all_step_times: list[float] = []
+    reset_times: list[float] = []
+    for r in results:
+        all_step_times.extend(r.get("step_times_s") or [])
+        if "reset_time_s" in r and r["reset_time_s"]:
+            reset_times.append(r["reset_time_s"])
+    if all_step_times:
+        sorted_times = sorted(all_step_times)
+        n = len(sorted_times)
+        p50 = sorted_times[int(0.50 * (n - 1))] if n else 0.0
+        p95 = sorted_times[int(0.95 * (n - 1))] if n else 0.0
+        p99 = sorted_times[int(0.99 * (n - 1))] if n else 0.0
+    else:
+        p50 = p95 = p99 = 0.0
+    task_setup_time_s = sum(reset_times) / len(reset_times) if reset_times else None
+    episode_times = [r.get("episode_time_s", 0) for r in results if "episode_time_s" in r]
+    episode_time_s = sum(episode_times) / len(episode_times) if episode_times else 0.0
+    profiling = aggregate_profiling(results)
+    return StressTestReport(
+        cube_version=_CUBE_VERSION,
+        benchmark=benchmark_name,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        hardware={
+            "cpu_count": getattr(platform, "cpu_count", lambda: None)(),
+            "python_version": platform.python_version(),
+        },
+        compliance={"passed": compliance_passed, "failed": compliance_failed},
+        performance={
+            "task_setup_time_s": task_setup_time_s,
+            "step_latency_p50_s": p50,
+            "step_latency_p95_s": p95,
+            "step_latency_p99_s": p99,
+            "episode_time_s": episode_time_s,
+            "profiling": profiling if profiling else None,
+        },
+    )
+
+
+class StressTestReport:
+    """
+    Stress-test report (stress_test_specs.md §3.1 MVP output).
+    """
+
+    def __init__(
+        self,
+        cube_version: str,
+        benchmark: str,
+        timestamp: str,
+        hardware: dict,
+        compliance: dict,
+        performance: dict,
+    ):
+        self.cube_version = cube_version
+        self.benchmark = benchmark
+        self.timestamp = timestamp
+        self.hardware = hardware
+        self.compliance = compliance
+        self.performance = performance
+
+    def save(self, path: str) -> None:
+        """Write report as JSON (e.g. cube_stress_test_baseline.json)."""
+        data = {
+            "cube_version": self.cube_version,
+            "benchmark": self.benchmark,
+            "timestamp": self.timestamp,
+            "hardware": self.hardware,
+            "compliance": self.compliance,
+            "performance": {k: v for k, v in self.performance.items() if v is not None},
+        }
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def print_summary(self) -> None:
+        """Print a short summary to stdout (optional)."""
+        print(f"Compliance: {len(self.compliance['passed'])} passed, {len(self.compliance['failed'])} failed")
+        print(f"Performance: task_setup_time_s={self.performance.get('task_setup_time_s')}, ...")
 
 
 def assert_debug_tasks_reward_one(

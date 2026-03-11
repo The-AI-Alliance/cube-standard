@@ -263,9 +263,20 @@ def _resolve_debug_module(name: str) -> str:
     return f"{package_root}.debug"
 
 
-def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
+def cmd_test(
+    module_name: str,
+    *,
+    max_steps: int = 20,
+    output_path: str | None = None,
+) -> None:
     """Import *module_name* (or resolve an entry-point name) and run the debug compliance suite."""
-    from cube.testing import run_debug_suite
+    from cube.testing import (
+        aggregate_profiling,
+        build_stress_test_report,
+        check_benchmark_metadata,
+        check_reset_reproducibility,
+        run_debug_suite,
+    )
 
     resolved = _resolve_debug_module(module_name)
     if resolved != module_name:
@@ -340,6 +351,37 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         if not passed:
             failures.append(r)
 
+    # ── Extra compliance checks (stress_test_specs.md) ─────────────────────────────
+    reset_ok, _ = check_reset_reproducibility(module)
+    meta_ok, _ = check_benchmark_metadata(module)
+    close_idempotent_ok = all(r.get("close_idempotent_ok", False) for r in results)
+    tools_list_ok = all(r.get("tools_list_ok", False) for r in results)
+    compliance_passed = []
+    compliance_failed = []
+    if results:
+        compliance_passed.append("test_debug_tasks_exist")
+        compliance_passed.append("test_debug_agent_exists")
+    if not failures:
+        compliance_passed.append("test_full_episode")
+    else:
+        compliance_failed.append("test_full_episode")
+    if reset_ok:
+        compliance_passed.append("test_reset_reproducibility")
+    else:
+        compliance_failed.append("test_reset_reproducibility")
+    if tools_list_ok:
+        compliance_passed.append("test_tools_list")
+    else:
+        compliance_failed.append("test_tools_list")
+    if close_idempotent_ok:
+        compliance_passed.append("test_close_idempotent")
+    else:
+        compliance_failed.append("test_close_idempotent")
+    if meta_ok:
+        compliance_passed.append("test_benchmark_metadata")
+    else:
+        compliance_failed.append("test_benchmark_metadata")
+
     # ── Latency: p50, p95, p99 from step_times_s across all episodes ────────────
     all_step_times: list[float] = []
     for r in results:
@@ -368,16 +410,16 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         f"Benchmark: [file]{resolved}[/file]    Status: [{'success' if not failures else 'error'}]{status_str}[/]    Progress: {progress_str}",
     ]
 
-    # COMPLIANCE: named checks from stress_test_specs.md (NULL where not measured)
+    # COMPLIANCE: named checks from stress_test_specs.md
     full_episode_status = "[success]✓[/success]" if not failures else "[error]✗[/error]"
     compliance_checks = [
         ("debug_tasks_exist", "[success]✓[/success]" if results else "[dim]NULL[/dim]"),
         ("debug_agent_exists", "[success]✓[/success]" if results else "[dim]NULL[/dim]"),
         ("full_episode", full_episode_status),
-        ("reset_reproducibility", "[dim]NULL[/dim]"),
-        ("tools_list", "[dim]NULL[/dim]"),
-        ("close_idempotent", "[dim]NULL[/dim]"),
-        ("benchmark_metadata", "[dim]NULL[/dim]"),
+        ("reset_reproducibility", "[success]✓[/success]" if reset_ok else "[error]✗[/error]"),
+        ("tools_list", "[success]✓[/success]" if tools_list_ok else "[error]✗[/error]"),
+        ("close_idempotent", "[success]✓[/success]" if close_idempotent_ok else "[error]✗[/error]"),
+        ("benchmark_metadata", "[success]✓[/success]" if meta_ok else "[error]✗[/error]"),
     ]
     compliance_header = Text.from_markup("[bold]COMPLIANCE[/bold]")
     compliance_checks_table = Table(
@@ -427,6 +469,23 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         f"  p95 │{_latency_bar(p95_s, max_lat)}│ [dim]{p95_s:.3f}s[/dim]",
         f"  p99 │{_latency_bar(p99_s, max_lat)}│ [dim]{p99_s:.3f}s[/dim]",
     ]
+    reset_times = [r.get("reset_time_s") for r in results if r.get("reset_time_s") is not None]
+    mean_setup_s = sum(reset_times) / len(reset_times) if reset_times else None
+    if mean_setup_s is not None:
+        latency_lines.append("")
+        latency_lines.append(f"[bold]Task setup (mean)[/bold]: [dim]{mean_setup_s:.4f}s[/dim]")
+    profiling_agg = aggregate_profiling(results)
+    if profiling_agg:
+        latency_lines.append("")
+        latency_lines.append("[bold]Profiling[/bold]")
+        for op_name, dur_s in profiling_agg.items():
+            latency_lines.append(f"  {op_name}: [dim]{dur_s:.4f}s[/dim]")
+
+    # Build and optionally save stress-test report
+    report = build_stress_test_report(resolved, results, compliance_passed, compliance_failed)
+    if output_path:
+        report.save(output_path)
+        console.print(f"[dim]Baseline saved to [file]{output_path}[/file][/dim]")
 
     border = "green" if not failures else "red"
     status_text = (
@@ -537,10 +596,16 @@ def main() -> None:
             )
             sys.exit(1)
         max_steps = 20
+        output_path = None
         remaining = args[2:]
-        if remaining and remaining[0].startswith("--max-steps="):
-            max_steps = int(remaining[0].split("=", 1)[1])
-        cmd_test(args[1], max_steps=max_steps)
+        for opt in remaining:
+            if opt.startswith("--max-steps="):
+                max_steps = int(opt.split("=", 1)[1])
+            elif opt.startswith("--output="):
+                output_path = opt.split("=", 1)[1]
+            elif opt == "--save-baseline":
+                output_path = "cube_stress_test_baseline.json"
+        cmd_test(args[1], max_steps=max_steps, output_path=output_path)
     else:
         err_console.print(f"[error]Unknown command:[/error] [cmd]{command}[/cmd]")
         _print_help()

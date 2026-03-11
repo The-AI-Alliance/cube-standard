@@ -327,11 +327,11 @@ def test_main_test_dispatches_with_default_max_steps():
     with patch("cube.cli.cmd_test") as mock_test:
         with patch.object(sys, "argv", ["cube", "test", "counter-cube"]):
             main()
-    mock_test.assert_called_once_with("counter-cube", max_steps=20)
+    mock_test.assert_called_once_with("counter-cube", max_steps=20, output_path=None)
 
 
 def test_main_test_dispatches_with_custom_max_steps():
     with patch("cube.cli.cmd_test") as mock_test:
         with patch.object(sys, "argv", ["cube", "test", "counter-cube", "--max-steps=5"]):
             main()
-    mock_test.assert_called_once_with("counter-cube", max_steps=5)
+    mock_test.assert_called_once_with("counter-cube", max_steps=5, output_path=None)
