@@ -1,9 +1,4 @@
-"""Internal utilities shared across tool implementations.
-
-``prune_html`` is adapted from agentlab2.utils; ``flatten_axtree`` is adapted
-from agentlab2.tools.playwright. Both are vendored here to avoid any dependency
-on AgentLab2.
-"""
+"""Internal utilities shared across tool implementations."""
 
 import re
 

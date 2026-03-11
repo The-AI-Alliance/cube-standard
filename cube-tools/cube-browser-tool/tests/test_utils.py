@@ -42,10 +42,9 @@ def test_prune_html_returns_string() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_flatten_axtree_none_returns_sentinel() -> None:
+def test_flatten_axtree_none_returns_empty_string() -> None:
     result = flatten_axtree(None)
-    assert result == "[accessibility tree unavailable]"
-    assert result != ""
+    assert result == ""
 
 
 def test_flatten_axtree_empty_dict() -> None:

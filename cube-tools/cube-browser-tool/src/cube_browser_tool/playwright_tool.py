@@ -17,6 +17,7 @@ from cube.tool import Tool, ToolConfig
 from PIL import Image
 from playwright.sync_api import Page as SyncPage
 from playwright.sync_api import sync_playwright
+from pydantic import field_validator
 
 from cube_browser_tool._utils import flatten_axtree, prune_html
 from cube_browser_tool.action_spaces import BrowserActionSpace
@@ -60,6 +61,21 @@ class PlaywrightConfig(ToolConfig):
     prune_html: bool = True
     pw_kwargs: dict = {}
 
+    @field_validator("max_wait")
+    @classmethod
+    def _validate_max_wait(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("max_wait must be positive")
+        return v
+
+    @field_validator("pw_kwargs")
+    @classmethod
+    def _validate_pw_kwargs(cls, v: dict) -> dict:
+        overlap = {"headless", "chromium_sandbox"} & v.keys()
+        if overlap:
+            raise ValueError(f"pw_kwargs keys {overlap} shadow named config fields")
+        return v
+
     def make(self, container=None) -> "SyncPlaywrightTool":
         return SyncPlaywrightTool(self)
 
@@ -90,6 +106,10 @@ class SyncPlaywrightTool(Tool, BrowserActionSpace):
             **config.pw_kwargs,
         )
         self._page: SyncPage = self._browser.new_page(viewport=config.viewport)
+
+    @property
+    def page(self) -> SyncPage:
+        return self._page
 
     # ------------------------------------------------------------------
     # Tool lifecycle
@@ -325,3 +345,4 @@ class SyncPlaywrightTool(Tool, BrowserActionSpace):
 
     def noop(self) -> None:
         """No-op: take no action and return the current page state."""
+        pass

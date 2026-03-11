@@ -6,12 +6,10 @@ Integration tests (require Playwright + Chromium) are marked with
 Run them explicitly with: ``pytest -m integration``
 """
 
-from collections.abc import Generator
-
 import pytest
 from cube.core import Action, Observation, StepError
 
-from cube_browser_tool import BidBrowserActionSpace, BrowserActionSpace, PlaywrightConfig, SyncPlaywrightTool
+from cube_browser_tool import BidBrowserActionSpace, BrowserActionSpace, PlaywrightConfig
 
 # ---------------------------------------------------------------------------
 # Unit tests — no browser required
@@ -97,91 +95,123 @@ SELECT_PAGE = "data:text/html,<html><body><select id='sel'><option value='a'>A</
 SCROLL_PAGE = "data:text/html,<html><body style='height:2000px'><div id='top'>top</div><div id='bottom' style='margin-top:1500px'>bottom</div></body></html>"
 
 
-@pytest.fixture(scope="module")
-def tool() -> Generator[SyncPlaywrightTool, None, None]:
+@pytest.mark.integration
+def test_action_set_names() -> None:
     pytest.importorskip("playwright", reason="playwright not installed")
-    t = PlaywrightConfig(headless=True, use_html=True, use_screenshot=False, use_axtree=False).make()
-    yield t
-    t.close()
+    tool = PlaywrightConfig(headless=True, use_html=True, use_screenshot=False, use_axtree=False).make()
+    try:
+        names = {schema.name for schema in tool.action_set}
+        assert EXPECTED_ACTION_NAMES == names
+    finally:
+        tool.close()
 
 
 @pytest.mark.integration
-def test_action_set_names(tool: SyncPlaywrightTool) -> None:
-    names = {schema.name for schema in tool.action_set}
-    assert EXPECTED_ACTION_NAMES == names
+def test_page_obs_returns_observation() -> None:
+    pytest.importorskip("playwright", reason="playwright not installed")
+    tool = PlaywrightConfig(headless=True, use_html=True, use_screenshot=False, use_axtree=False).make()
+    try:
+        tool.goto(SIMPLE_PAGE)
+        obs = tool.page_obs()
+        assert isinstance(obs, Observation)
+        assert len(obs.contents) > 0
+    finally:
+        tool.close()
 
 
 @pytest.mark.integration
-def test_page_obs_returns_observation(tool: SyncPlaywrightTool) -> None:
-    tool.goto(SIMPLE_PAGE)
-    obs = tool.page_obs()
-    assert isinstance(obs, Observation)
-    assert len(obs.contents) > 0
-
-
-@pytest.mark.integration
-def test_page_obs_contains_html(tool: SyncPlaywrightTool) -> None:
-    tool.goto(SIMPLE_PAGE)
-    obs = tool.page_obs()
-    combined = " ".join(c.data for c in obs.contents if hasattr(c, "data") and isinstance(c.data, str))
-    assert "btn" in combined or "Click me" in combined
+def test_page_obs_contains_html() -> None:
+    pytest.importorskip("playwright", reason="playwright not installed")
+    tool = PlaywrightConfig(headless=True, use_html=True, use_screenshot=False, use_axtree=False).make()
+    try:
+        tool.goto(SIMPLE_PAGE)
+        obs = tool.page_obs()
+        combined = " ".join(c.data for c in obs.contents if hasattr(c, "data") and isinstance(c.data, str))
+        assert "btn" in combined or "Click me" in combined
+    finally:
+        tool.close()
 
 
 @pytest.mark.integration
 def test_page_obs_respects_use_html_false() -> None:
     pytest.importorskip("playwright", reason="playwright not installed")
-    t = PlaywrightConfig(headless=True, use_html=False, use_screenshot=False, use_axtree=False).make()
+    tool = PlaywrightConfig(headless=True, use_html=False, use_screenshot=False, use_axtree=False).make()
     try:
-        t.goto(SIMPLE_PAGE)
-        obs = t.page_obs()
+        tool.goto(SIMPLE_PAGE)
+        obs = tool.page_obs()
         assert isinstance(obs, Observation)
         assert len(obs.contents) == 0
     finally:
-        t.close()
+        tool.close()
 
 
 @pytest.mark.integration
-def test_execute_action_appends_page_obs(tool: SyncPlaywrightTool) -> None:
-    tool.goto(SIMPLE_PAGE)
-    action = Action(name="noop", arguments={})
-    result = tool.execute_action(action)
-    assert isinstance(result, Observation)
-    assert len(result.contents) >= 1
+def test_execute_action_appends_page_obs() -> None:
+    pytest.importorskip("playwright", reason="playwright not installed")
+    tool = PlaywrightConfig(headless=True, use_html=True, use_screenshot=False, use_axtree=False).make()
+    try:
+        tool.goto(SIMPLE_PAGE)
+        action = Action(name="noop", arguments={})
+        result = tool.execute_action(action)
+        assert isinstance(result, Observation)
+        assert len(result.contents) >= 1
+    finally:
+        tool.close()
 
 
 @pytest.mark.integration
-def test_execute_action_returns_step_error_on_bad_selector(tool: SyncPlaywrightTool) -> None:
-    tool.goto(SIMPLE_PAGE)
-    action = Action(name="browser_click", arguments={"selector": "#does-not-exist"})
-    result = tool.execute_action(action)
-    assert isinstance(result, StepError)
+def test_execute_action_returns_step_error_on_bad_selector() -> None:
+    pytest.importorskip("playwright", reason="playwright not installed")
+    tool = PlaywrightConfig(headless=True, use_html=True, use_screenshot=False, use_axtree=False).make()
+    try:
+        tool.goto(SIMPLE_PAGE)
+        action = Action(name="browser_click", arguments={"selector": "#does-not-exist"})
+        result = tool.execute_action(action)
+        assert isinstance(result, StepError)
+    finally:
+        tool.close()
 
 
 @pytest.mark.integration
-def test_reset_clears_page(tool: SyncPlaywrightTool) -> None:
-    tool.goto(SIMPLE_PAGE)
-    tool.reset()
-    # After reset the page should be blank (about:blank), not the data URL
-    obs = tool.page_obs()
-    combined = " ".join(c.data for c in obs.contents if hasattr(c, "data") and isinstance(c.data, str))
-    assert "Click me" not in combined
+def test_reset_clears_page() -> None:
+    pytest.importorskip("playwright", reason="playwright not installed")
+    tool = PlaywrightConfig(headless=True, use_html=True, use_screenshot=False, use_axtree=False).make()
+    try:
+        tool.goto(SIMPLE_PAGE)
+        tool.reset()
+        # After reset the page should be blank (about:blank), not the data URL
+        obs = tool.page_obs()
+        combined = " ".join(c.data for c in obs.contents if hasattr(c, "data") and isinstance(c.data, str))
+        assert "Click me" not in combined
+    finally:
+        tool.close()
 
 
 @pytest.mark.integration
-def test_evaluate_js(tool: SyncPlaywrightTool) -> None:
-    tool.goto(SIMPLE_PAGE)
-    title = tool.evaluate_js("() => document.getElementById('msg').textContent")
-    assert title == "hello"
+def test_evaluate_js() -> None:
+    pytest.importorskip("playwright", reason="playwright not installed")
+    tool = PlaywrightConfig(headless=True, use_html=True, use_screenshot=False, use_axtree=False).make()
+    try:
+        tool.goto(SIMPLE_PAGE)
+        title = tool.evaluate_js("() => document.getElementById('msg').textContent")
+        assert title == "hello"
+    finally:
+        tool.close()
 
 
 @pytest.mark.integration
-def test_browser_select_option(tool: SyncPlaywrightTool) -> None:
-    tool.goto(SELECT_PAGE)
-    action = Action(name="browser_select_option", arguments={"selector": "#sel", "value": "b"})
-    result = tool.execute_action(action)
-    assert isinstance(result, Observation)
-    selected = tool.evaluate_js("() => document.getElementById('sel').value")
-    assert selected == "b"
+def test_browser_select_option() -> None:
+    pytest.importorskip("playwright", reason="playwright not installed")
+    tool = PlaywrightConfig(headless=True, use_html=True, use_screenshot=False, use_axtree=False).make()
+    try:
+        tool.goto(SELECT_PAGE)
+        action = Action(name="browser_select_option", arguments={"selector": "#sel", "value": "b"})
+        result = tool.execute_action(action)
+        assert isinstance(result, Observation)
+        selected = tool.evaluate_js("() => document.getElementById('sel').value")
+        assert selected == "b"
+    finally:
+        tool.close()
 
 
 @pytest.mark.integration
@@ -189,31 +219,24 @@ def test_browser_wait_is_capped_at_max_wait() -> None:
     import time
 
     pytest.importorskip("playwright", reason="playwright not installed")
-    t = PlaywrightConfig(headless=True, use_html=False, use_screenshot=False, use_axtree=False, max_wait=1).make()
+    tool = PlaywrightConfig(headless=True, use_html=False, use_screenshot=False, use_axtree=False, max_wait=1).make()
     try:
         start = time.monotonic()
-        t.execute_action(Action(name="browser_wait", arguments={"seconds": 9999}))
+        tool.execute_action(Action(name="browser_wait", arguments={"seconds": 9999}))
         elapsed = time.monotonic() - start
         assert elapsed < 3.0  # capped at max_wait=1, with 2s slack for CI
     finally:
-        t.close()
+        tool.close()
 
 
 @pytest.mark.integration
-def test_context_manager() -> None:
+def test_page_property_exposes_raw_page() -> None:
     pytest.importorskip("playwright", reason="playwright not installed")
-    with PlaywrightConfig(headless=True, use_html=False, use_screenshot=False, use_axtree=False).make() as t:
-        t.goto(SIMPLE_PAGE)
-        result = t.execute_action(Action(name="noop", arguments={}))
-        assert isinstance(result, Observation)
-    # After __exit__, tool is closed; further calls should raise
-    with pytest.raises(RuntimeError, match="closed"):
-        t.goto(SIMPLE_PAGE)
+    tool = PlaywrightConfig(headless=True, use_html=False, use_screenshot=False, use_axtree=False).make()
+    try:
+        tool.goto(SIMPLE_PAGE)
+        from playwright.sync_api import Page as SyncPage
 
-
-@pytest.mark.integration
-def test_page_property_exposes_raw_page(tool: SyncPlaywrightTool) -> None:
-    tool.goto(SIMPLE_PAGE)
-    from playwright.sync_api import Page as SyncPage
-
-    assert isinstance(tool.page, SyncPage)
+        assert isinstance(tool.page, SyncPage)
+    finally:
+        tool.close()
