@@ -207,6 +207,32 @@ class Computer(Tool):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def run_shell_command(self, command: str, timeout: int = 30) -> str:
+        """Execute a shell command inside the VM and return its stdout.
+
+        Not a @tool_action — intended for task evaluation and scripting, not
+        for agent actions.
+
+        Args:
+            command: Shell command to run (e.g. ``"cat ~/Desktop/hello.txt"``).
+            timeout: Request timeout in seconds.
+
+        Returns:
+            Combined stdout/stderr output from the command, or an error string.
+        """
+        try:
+            resp = requests.post(
+                f"{self._vm.endpoint}/execute",
+                json={"command": command, "shell": True},
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            return result.get("output", result.get("stdout", ""))
+        except Exception as exc:
+            logger.warning("Shell command failed: %r — %s", command, exc)
+            return f"Error: {exc}"
+
     def _run_setup_action(self, setup_action: dict) -> None:
         """Send a task setup action to POST /setup/execute."""
         payload = {"shell": True, "command": setup_action.get("command", "")}
