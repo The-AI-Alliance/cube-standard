@@ -315,6 +315,14 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
             )
             sys.exit(1)
 
+    ensure_resources = getattr(module, "ensure_resources", None)
+    if callable(ensure_resources):
+        with console.status(
+            f"[info]Downloading resources for[/info] [file]{resolved}[/file]…",
+            spinner="dots",
+        ):
+            ensure_resources()
+
     with console.status(
         f"[info]Running debug suite for[/info] [file]{resolved}[/file]…",
         spinner="dots",
