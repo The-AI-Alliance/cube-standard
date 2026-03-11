@@ -65,10 +65,21 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
     param_info = inspect.signature(input_function).parameters
 
     for param_name, param in param_info.items():
-        if hasattr(param, "annotation"):
-            param_type = _json_schema_type(param.annotation.__name__)
-        else:
+        annotation = param.annotation
+        if annotation is inspect.Parameter.empty:
             param_type = None
+        elif isinstance(annotation, str):
+            param_type = _json_schema_type(annotation)
+        elif hasattr(annotation, "__name__"):
+            param_type = _json_schema_type(annotation.__name__)
+        else:
+            # Handle Union types (e.g., list | None, str | None)
+            args = getattr(annotation, "__args__", None)
+            if args:
+                first = next((a for a in args if a is not type(None)), None)
+                param_type = _json_schema_type(first.__name__) if first and hasattr(first, "__name__") else None
+            else:
+                param_type = None
         param_description = None
         param_enum = None
 
