@@ -77,78 +77,13 @@ def execute_action(self, action: Action) -> Observation | StepError:
 
 ---
 
-## Phase 1 — SyncPlaywrightTool
+## Phase 1 — SyncPlaywrightTool ✓ DONE
 
-### Status: implementation complete — validation pending (next session)
-
-**Files created:** `pyproject.toml`, `src/cube_browser_tool/__init__.py`,
-`src/cube_browser_tool/action_spaces.py`, `src/cube_browser_tool/_utils.py`,
-`src/cube_browser_tool/playwright_tool.py`, `tests/test_playwright_tool.py`
-
-### What was done
-
-All Phase 1 source files have been written and reviewed against their AgentLab2
-counterparts. Key diffs / intentional divergences from AgentLab2:
-
-#### `_utils.py` (adapted from `agentlab2/utils.py`)
-
-- `prune_html`: identical logic; added type hints (`html: str -> str`) and NumPy
-  docstring; inline comments restored from agentlab2 style.
-- `flatten_axtree`: moved here from `agentlab2/tools/playwright.py` (was
-  module-level function there); docstring uses Google style (matching the
-  agentlab2 original) — inner function renamed `traverse_node` (was `_traverse`).
-- Removed: `parse_actions` (agentlab2-specific, depends on `litellm.Message` and
-  `cube.core.Action` — not needed here).
-- Removed: `import json`, `from cube.core import Action`, `from litellm import
-  Message` (no longer needed).
-
-#### `action_spaces.py` (adapted from `agentlab2/action_spaces/browser_action_space.py`)
-
-- Added module-level docstring explaining both ABCs and design intent.
-- All method return types changed `str` → `None` (actions don't return content;
-  `page_obs()` is appended by `execute_action`).
-- All methods gained full NumPy-style docstrings with `Parameters` sections
-  (needed for `function_to_dict` JSON schema generation).
-- Method order: reordered to `click, type, press_key, hover, drag, select_option,
-  mouse_click_xy, scroll, back, forward, wait, noop`.
-- `goto` **removed** from both ABCs — it is task-internal, not agent-facing.
-- `browser_scroll(selector/bid, direction, amount)` **added** to both ABCs (absent
-  in agentlab2).
-
-#### `playwright_tool.py` (adapted from `agentlab2/tools/playwright.py`)
-
-- Added module-level docstring; async imports (`asyncio`, `async_playwright`,
-  `AsyncPage`) removed (Phase 2).
-- `PlaywrightConfig`: added `viewport: dict = {"width": 1280, "height": 720}`;
-  reordered fields; removed `make_async()`; added full NumPy docstring.
-- Base class changed `ToolWithTelemetry` → `Tool` (cube-standard's base).
-- Imports changed from `agentlab2.*` to `cube_browser_tool.*`.
-- `__init__`: removed `super().__init__()`; `new_page()` → `new_page(viewport=...)`.
-- `page` property removed (internal `_page` used directly).
-- `execute_action` renamed from `_execute_action`; result construction inlined.
-- `reset()`: passes `viewport=self.config.viewport` to `new_page()`.
-- `page_obs()`: builds `contents = []` list then `Observation(contents=contents)`
-  (vs. mutating `obs.contents` in agentlab2); `name` and `data` computed inline.
-- `evaluate_js`: `logger.info` → `logger.debug`; f-string → %-format.
-- `goto`: kept as task-internal (not `@tool_action`); added full docstring.
-- `browser_scroll` **added** (new vs agentlab2) with full mouse-wheel impl.
-- All action methods: return type annotated `-> None`; full NumPy docstrings.
-- `noop`: `pass` body removed (empty body with docstring only).
-- `flatten_axtree` removed from module level — imported from `_utils.py`.
-- `AsyncPlaywrightTool` removed — deferred to Phase 2.
-
-### What is left to do (next session)
-
-- [ ] **Verify diffs are correct** — re-read each file and confirm no logic
-      regressions vs. the agentlab2 originals.
-- [ ] **Installation check** — `pip install -e ".[dev]"` (or `uv pip install`)
-      from `cube-tools/cube-browser-tool/`; confirm no import errors.
-- [ ] **Playwright browser install** — `playwright install chromium` if needed.
-- [ ] **Run tests** — `pytest tests/test_playwright_tool.py`; fix any failures.
-- [ ] **`__init__.py` exports** — confirm public API (`PlaywrightConfig`,
-      `SyncPlaywrightTool`, `BrowserActionSpace`, `BidBrowserActionSpace`) is
-      exported correctly.
-- [ ] Once green: tag Phase 1 complete and move to Phase 2.
+All files implemented, tests passing. Adapted from AgentLab2 with key changes:
+`BrowserActionSpace`/`BidBrowserActionSpace` ABCs in `action_spaces.py`;
+`flatten_axtree`/`prune_html` in `_utils.py`; `SyncPlaywrightTool` extends `Tool`
+with `@tool_action` methods; `execute_action` appends `page_obs()` on success;
+`browser_scroll` added (new vs AL2); `goto` kept as task-internal only.
 
 ### `PlaywrightConfig`
 
