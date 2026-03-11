@@ -127,7 +127,7 @@ def make_task_fastapi_app(task: Task) -> FastAPI:
     - /cube/reset - Reset a task
     - /cube/close - Close a task
     - /cube/status - Get task status
-    - /cube/priviledged_info - Get task priviledged info
+    - /cube/privileged_info - Get task privileged info
 
     Returns:
         FastAPI app
@@ -176,10 +176,10 @@ def make_task_fastapi_app(task: Task) -> FastAPI:
         """Get task status."""
         return task.get_status()
 
-    @app.get("/cube/priviledged_info")
-    def get_priviledged_info() -> Any:
-        """Get task priviledged info."""
-        return task.get_priviledged_info()
+    @app.get("/cube/privileged_info")
+    def get_privileged_info() -> Any:
+        """Get task privileged info."""
+        return task.get_privileged_info()
 
     return app
 
