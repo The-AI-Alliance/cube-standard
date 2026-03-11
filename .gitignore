@@ -41,6 +41,9 @@ cucumber.log
 # Mac file system indexing files:
 .DS_Store
 
+# Claude Code project settings (personal, not for version control)
+.claude/
+
 # Credentials
 *.secrets
 
