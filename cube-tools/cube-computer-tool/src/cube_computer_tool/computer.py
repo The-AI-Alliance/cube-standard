@@ -35,13 +35,10 @@ Usage:
         tool.close()
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import time
 from io import BytesIO
-from typing import List, Optional
 
 import requests
 from PIL import Image
@@ -101,7 +98,7 @@ class Computer(Tool):
         super().__init__()
         self._config = config
         self._vm = vm
-        self._task_config: Optional[dict] = None
+        self._task_config: dict | None = None
         self._is_done: bool = False
 
     # ------------------------------------------------------------------
@@ -284,18 +281,11 @@ class Computer(Tool):
         return self._execute_pyautogui(f"pyautogui.moveTo({x}, {y})")
 
     @tool_action
-    def click(
-        self,
-        x: Optional[int] = None,
-        y: Optional[int] = None,
-        button: str = "left",
-        num_clicks: int = 1,
-    ) -> str:
-        """Click the mouse button at an optional position."""
-        args = f"button='{button}', clicks={num_clicks}"
-        if x is not None and y is not None:
-            args = f"{x}, {y}, {args}"
-        return self._execute_pyautogui(f"pyautogui.click({args})")
+    def click(self, x: int, y: int, button: str = "left", num_clicks: int = 1) -> str:
+        """Click the mouse button at position (x, y)."""
+        return self._execute_pyautogui(
+            f"pyautogui.click({x}, {y}, button='{button}', clicks={num_clicks})"
+        )
 
     @tool_action
     def mouse_down(self, button: str = "left") -> str:
@@ -308,13 +298,13 @@ class Computer(Tool):
         return self._execute_pyautogui(f"pyautogui.mouseUp(button='{button}')")
 
     @tool_action
-    def right_click(self, x: Optional[int] = None, y: Optional[int] = None) -> str:
-        """Right-click at an optional position."""
+    def right_click(self, x: int, y: int) -> str:
+        """Right-click at position (x, y)."""
         return self.click(x=x, y=y, button="right")
 
     @tool_action
-    def double_click(self, x: Optional[int] = None, y: Optional[int] = None) -> str:
-        """Double-click at an optional position."""
+    def double_click(self, x: int, y: int) -> str:
+        """Double-click at position (x, y)."""
         return self.click(x=x, y=y, num_clicks=2)
 
     @tool_action
@@ -359,7 +349,7 @@ class Computer(Tool):
         return self._execute_pyautogui(f"pyautogui.keyUp('{key}')")
 
     @tool_action
-    def hotkey(self, keys: List[str]) -> str:
+    def hotkey(self, keys: list) -> str:
         """Press a key combination simultaneously (e.g. ['ctrl', 'c'])."""
         if isinstance(keys, str):
             keys = keys.split("+")
