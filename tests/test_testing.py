@@ -104,9 +104,9 @@ def _make_module(task_ids=("t1",), *, fail=False):
 
     benchmark = DoneBenchmark()
     config_cls = FailTaskConfig if fail else DoneTaskConfig
-    mod.setup_benchmark = lambda: benchmark
-    mod.get_debug_task_configs = lambda: [config_cls(task_id=tid) for tid in task_ids]
-    mod.make_debug_agent = lambda tid: stop_agent
+    mod.get_benchmark = lambda: benchmark  # type: ignore[attr-defined]
+    mod.get_debug_task_configs = lambda: [config_cls(task_id=tid) for tid in task_ids]  # type: ignore[attr-defined]
+    mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
 
     return mod, benchmark
 

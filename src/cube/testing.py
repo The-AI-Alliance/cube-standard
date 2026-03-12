@@ -11,7 +11,7 @@ Module protocol (for assert_debug_tasks_reward_one and run_debug_suite)
 ----------------------------------------------------------------------
 The ``module`` argument must expose three callables:
 
-    setup_benchmark() -> Benchmark
+    get_benchmark() -> Benchmark
         Called once before any debug episodes run. Returns a Benchmark instance.
         This is needed to call benchmark.install() and benchmark.setup() before each debug suite run.
 
@@ -148,7 +148,7 @@ def run_debug_suite(
 
     Args:
         benchmark_name: Label used in the JSON output (e.g. ``"osworld-cube"``).
-        module:         A module exposing ``setup_benchmark()``,
+        module:         A module exposing ``get_benchmark()``,
                         ``get_debug_task_configs()``, and
                         ``make_debug_agent(task_id)``.
         max_steps:      Safety cap passed to ``run_debug_episode`` (default 20).
@@ -161,8 +161,8 @@ def run_debug_suite(
     results = []
     try:
         # Step 1: create and install the benchmark.
-        logger.info(f"[run_debug_suite] benchmark={benchmark_name!r}  calling setup_benchmark()")
-        benchmark = module.setup_benchmark()
+        logger.info(f"[run_debug_suite] benchmark={benchmark_name!r}  calling get_benchmark()")
+        benchmark = module.get_benchmark()
         benchmark.install()
         benchmark.setup()
 
@@ -213,7 +213,7 @@ def assert_debug_tasks_reward_one(
             assert_debug_tasks_reward_one(mod)
 
     Args:
-        module:    A module exposing ``setup_benchmark()``,
+        module:    A module exposing ``get_benchmark()``,
                    ``get_debug_task_configs()``, and
                    ``make_debug_agent(task_id)``.
         max_steps: Safety cap passed to ``run_debug_episode`` (default 20).
