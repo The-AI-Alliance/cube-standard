@@ -1,11 +1,11 @@
-"""Tests for cube.tool - Tool, ToolConfig, tool_action."""
+"""Tests for cube.tool - Tool, AsyncTool, ToolConfig, tool_action."""
 
 import inspect
 
 import pytest
 
 from cube.core import Action, Observation, StepError, TextContent
-from cube.tool import Tool, tool_action
+from cube.tool import AsyncTool, Tool, tool_action
 
 
 def assert_tool_docstrings_valid(tool_cls: type) -> None:
@@ -56,6 +56,30 @@ class EchoTool(Tool):
     def not_an_action(self) -> str:
         """Not decorated."""
         return "hidden"
+
+
+class AsyncEchoTool(AsyncTool):
+    @tool_action
+    async def echo(self, text: str) -> str:
+        """Echo the given text."""
+        return text
+
+    @tool_action
+    async def add(self, a: float, b: float) -> str:
+        """Add two numbers."""
+        return str(a + b)
+
+    @tool_action
+    async def crash(self) -> str:
+        """Always raises."""
+        raise RuntimeError("intentional error")
+
+    async def not_an_action(self) -> str:
+        """Not decorated."""
+        return "hidden"
+
+
+# ── sync Tool ──────────────────────────────────────────────────────────────────
 
 
 def test_tool_action_decorator_sets_flag():
@@ -110,7 +134,78 @@ def test_tool_execute_action_exception_returns_step_error():
     assert result.exception_str == "intentional error"
 
 
-# --- assert_tool_docstrings_valid ---
+# ── AsyncTool ─────────────────────────────────────────────────────────────────
+
+
+def test_async_tool_action_decorator_sets_flag():
+    tool = AsyncEchoTool()
+    assert getattr(tool.echo, "_is_action", False) is True
+    assert getattr(tool.not_an_action, "_is_action", False) is False
+
+
+def test_async_tool_action_set_discovers_only_decorated_methods():
+    action_names = {a.name for a in AsyncEchoTool().action_set}
+    assert action_names == {"echo", "add", "crash"}
+
+
+def test_async_tool_action_set_schemas_have_descriptions():
+    for schema in AsyncEchoTool().action_set:
+        assert schema.description != ""
+
+
+@pytest.mark.asyncio
+async def test_async_tool_execute_action_returns_observation():
+    result = await AsyncEchoTool().execute_action(Action(name="echo", arguments={"text": "hello"}))
+    assert isinstance(result, Observation)
+    assert result.contents == [TextContent(data="hello")]
+
+
+@pytest.mark.asyncio
+async def test_async_tool_execute_action_none_returns_success():
+    """A @tool_action returning None should yield an Observation with 'Success'."""
+
+    class SilentAsyncTool(AsyncTool):
+        @tool_action
+        async def do_nothing(self) -> None:
+            """Does nothing."""
+
+    result = await SilentAsyncTool().execute_action(Action(name="do_nothing", arguments={}))
+    assert isinstance(result, Observation)
+    assert result.contents == [TextContent(data="Success")]
+
+
+@pytest.mark.asyncio
+async def test_async_tool_execute_action_unknown_method_raises():
+    with pytest.raises(ValueError, match="does not exist"):
+        await AsyncEchoTool().execute_action(Action(name="nonexistent", arguments={}))
+
+
+@pytest.mark.asyncio
+async def test_async_tool_execute_action_non_action_method_raises():
+    with pytest.raises(ValueError, match="not decorated"):
+        await AsyncEchoTool().execute_action(Action(name="not_an_action", arguments={}))
+
+
+@pytest.mark.asyncio
+async def test_async_tool_execute_action_exception_returns_step_error():
+    result = await AsyncEchoTool().execute_action(Action(name="crash", arguments={}))
+    assert isinstance(result, StepError)
+    assert result.error_type == "RuntimeError"
+    assert result.exception_str == "intentional error"
+
+
+def test_async_tool_rejects_sync_action_at_class_definition():
+    """AsyncTool raises TypeError at class definition if a @tool_action method is sync."""
+    with pytest.raises(TypeError, match="not async"):
+
+        class _BadAsyncTool(AsyncTool):
+            @tool_action
+            def sync_action(self) -> str:
+                """This should not be allowed."""
+                return "oops"
+
+
+# ── assert_tool_docstrings_valid ─────────────────────────────────────────────────────────────────
 
 
 class WellDocumentedTool(Tool):
