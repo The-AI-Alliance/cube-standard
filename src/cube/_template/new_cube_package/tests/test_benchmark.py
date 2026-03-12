@@ -30,6 +30,6 @@ def test_debug_tasks() -> None:
       1. Fill in _TASK_ACTIONS in debug.py with action sequences per task ID.
       2. Ensure each sequence drives the task to done=True, reward=1.0.
     """
-    configs = _debug_mod.get_debug_task_configs()
+    configs = list(_debug_mod.get_debug_benchmark().get_task_configs())
     assert configs, "No debug tasks registered. Fill in _TASK_ACTIONS in debug.py."
     assert_debug_tasks_reward_one(_debug_mod)
