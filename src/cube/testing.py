@@ -148,7 +148,8 @@ def run_debug_suite(
 
     Args:
         benchmark_name: Label used in the JSON output (e.g. ``"osworld-cube"``).
-        module:         A module exposing ``get_debug_task_configs()`` and
+        module:         A module exposing ``setup_benchmark()``,
+                        ``get_debug_task_configs()``, and
                         ``make_debug_agent(task_id)``.
         max_steps:      Safety cap passed to ``run_debug_episode`` (default 20).
 
@@ -157,6 +158,7 @@ def run_debug_suite(
         The caller is responsible for exit-code handling.
     """
     benchmark = None
+    results = []
     try:
         # Step 1: create and install the benchmark.
         logger.info(f"[run_debug_suite] benchmark={benchmark_name!r}  calling setup_benchmark()")
@@ -169,7 +171,6 @@ def run_debug_suite(
         logger.info(
             f"[run_debug_suite] benchmark={benchmark_name!r}  running {len(task_configs)} task(s): {list(task_configs)}"
         )
-        results = []
         for tid, tc in task_configs.items():
             try:
                 task = tc.make(
@@ -212,7 +213,8 @@ def assert_debug_tasks_reward_one(
             assert_debug_tasks_reward_one(mod)
 
     Args:
-        module:    A module exposing ``get_debug_task_configs()`` and
+        module:    A module exposing ``setup_benchmark()``,
+                   ``get_debug_task_configs()``, and
                    ``make_debug_agent(task_id)``.
         max_steps: Safety cap passed to ``run_debug_episode`` (default 20).
 

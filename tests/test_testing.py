@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import PrivateAttr
 
-from cube.benchmark import Benchmark, BenchmarkMetadata
+from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext  # noqa: F401
 from cube.container import Container
 from cube.core import Action, Observation
 from cube.task import STOP_ACTION, Task, TaskConfig, TaskMetadata
@@ -75,14 +75,19 @@ class DoneBenchmark(Benchmark):
     task_metadata = {}
     task_config_class = DoneTaskConfig
 
+    _install_calls: int = PrivateAttr(default=0)
     _setup_calls: int = PrivateAttr(default=0)
     _close_calls: int = PrivateAttr(default=0)
+
+    def install(self) -> None:
+        self._install_calls += 1
 
     def _setup(self) -> None:
         self._setup_calls += 1
 
     def close(self) -> None:
         self._close_calls += 1
+        super().close()
 
 
 def stop_agent(obs, action_set):
@@ -187,6 +192,7 @@ def test_suite_reports_contain_task_ids():
 def test_suite_benchmark_setup_and_close_called():
     mod, benchmark = _make_module()
     run_debug_suite("bench", mod)
+    assert benchmark._install_calls == 1
     assert benchmark._setup_calls == 1
     assert benchmark._close_calls == 1
 
