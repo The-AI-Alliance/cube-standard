@@ -294,3 +294,27 @@ def test_generic_list_annotation_resolves_to_array() -> None:
     result = function_to_dict(func_with_generic_list)
     props = result["parameters"]["properties"]
     assert props["tags"]["type"] == "array"
+# --- Google-style docstrings ---
+
+
+def google_func(x: int, y: str) -> None:
+    """Add x to y.
+
+    Args:
+        x: The integer value.
+        y: The string value.
+    """
+
+
+def test_function_to_dict_google_description():
+    result = function_to_dict(google_func)
+    assert result["description"] == "Add x to y."
+
+
+def test_function_to_dict_google_params():
+    result = function_to_dict(google_func)
+    props = result["parameters"]["properties"]
+    assert props["x"]["description"] == "The integer value."
+    assert props["y"]["description"] == "The string value."
+    assert props["x"]["type"] == "integer"
+    assert props["y"]["type"] == "string"

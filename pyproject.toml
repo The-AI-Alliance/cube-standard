@@ -12,7 +12,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
-    "numpydoc>=1.8.0",
+    "docstring_parser>=0.16",
     "pillow>=9.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.8.0",

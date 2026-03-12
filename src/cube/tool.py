@@ -1,7 +1,7 @@
 """
 Tool configuration for CUBE benchmarks.
 
-This module defines AbstractTool, Tool, ToolConfig, and the @tool_action decorator
+This module defines AbstractTool, Tool, AsyncTool, ToolConfig, and the @tool_action decorator
 for implementing and configuring agent action interfaces. ToolConfig allows researchers
 to swap tool implementations for experimentation, enabling research on different tool
 sets and configurations without modifying benchmark code.
@@ -10,14 +10,18 @@ Abstract classes:
     AbstractTool — subclasses must implement:
         - execute_action(action: Action) -> Observation | StepError
         - action_set (property) -> list[ActionSchema]
+    AbstractAsyncTool — same contract but fully async:
+        - async execute_action(action: Action) -> Observation | StepError
+        - action_set (property) -> list[ActionSchema]
     Tool is a concrete subclass of AbstractTool that implements both automatically
     via the @tool_action decorator — subclass Tool instead of AbstractTool directly.
+    AsyncTool is a concrete subclass of AbstractAsyncTool — all @tool_action methods
+    must be async def. A TypeError is raised at class definition time otherwise.
 
     ToolConfig — subclasses must implement:
-        - make(container) -> AbstractTool    instantiate the tool from serialized config data,
-                                             connecting to the container if one was launched
+        - make(container) -> AbstractTool | AbstractAsyncTool
 
-Example — defining a custom tool and its config:
+Example — defining a custom sync tool and its config:
 
     from cube.tool import Tool, ToolConfig, tool_action
     from cube.container import Container
@@ -42,13 +46,21 @@ Example — defining a custom tool and its config:
             url = container.get_url(port=9222) if container else self.base_url
             return BrowserTool(base_url=url)
 
+Example — defining an async tool:
+
+    class AsyncBrowserTool(AsyncTool):
+        @tool_action
+        async def navigate(self, url: str) -> str:
+            '''Navigate to a URL and return the page title.'''
+            ...
+
 The BrowserToolConfig can then be passed to a Task or Benchmark, letting
 harness users swap browser backends without touching benchmark logic.
 """
 
+import inspect
 import logging
 from abc import ABC, abstractmethod
-from functools import wraps
 from typing import Any, Callable, List
 
 from cube.container import Container
@@ -112,6 +124,34 @@ class AbstractTool(ABC):
         pass
 
 
+class AbstractAsyncTool(ABC):
+    """
+    Async variant of AbstractTool. All execution is async.
+
+    Subclass AsyncTool (not this class directly) to get automatic action
+    discovery via @tool_action. All @tool_action methods must be async def.
+    """
+
+    async def reset(self) -> None:
+        """Optional: reset the tool to its initial state."""
+        pass
+
+    async def close(self) -> None:
+        """Optional: clean up tool resources (connections, processes, files, etc.)."""
+        pass
+
+    @abstractmethod
+    async def execute_action(self, action: Action) -> Any:
+        """Execute a single action and return the result."""
+        pass
+
+    @property
+    @abstractmethod
+    def action_set(self) -> List[ActionSchema]:
+        """Returns list of actions supported by that tool (same format as AbstractTool)."""
+        pass
+
+
 class ToolConfig(TypedBaseModel, ABC):
     """
     Configuration for creating task-specific tools.
@@ -123,7 +163,7 @@ class ToolConfig(TypedBaseModel, ABC):
     """
 
     @abstractmethod
-    def make(self, container: Container | None = None) -> AbstractTool:
+    def make(self, container: Container | None = None) -> AbstractTool | AbstractAsyncTool:
         """
         Instantiate Tool from configuration data.
 
@@ -133,17 +173,20 @@ class ToolConfig(TypedBaseModel, ABC):
                        tool's endpoint. None if the task needs no container.
 
         Returns:
-            AbstractTool instance
+            AbstractTool or AbstractAsyncTool instance
         """
         pass
 
 
 def tool_action(func: Callable) -> Callable:
     """
-    Decorator to mark a method as an action in a Tool.
+    Decorator to mark a method as an action in a Tool or AsyncTool.
 
     This decorator automatically registers methods as actions that will be
-    discovered by the Tool's action_set property.
+    discovered by the tool's action_set property.
+
+    For AsyncTool subclasses, the decorated method must be async def —
+    a TypeError is raised at class definition time otherwise.
 
     Usage:
         class MyTool(Tool):
@@ -151,56 +194,22 @@ def tool_action(func: Callable) -> Callable:
             def my_action(self, param: str) -> str:
                 '''Action description.'''
                 return f"Result: {param}"
-    """
 
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
-
-    # Mark the function as an action
-    setattr(wrapper, "_is_action", True)
-    return wrapper
-
-
-class Tool(AbstractTool):
-    """
-    Base class for tools with automatic action discovery via decorators.
-
-    Tool subclasses should mark their action methods with the @tool_action decorator.
-    The action_set property will automatically discover and expose these methods.
-
-    Example:
-        ```python
-        from cube.tool import Tool, tool_action, Action
-
-        class CalculatorTool(Tool):
-            '''Calculator tool with basic arithmetic operations.'''
-
+        class MyAsyncTool(AsyncTool):
             @tool_action
-            def add(self, a: float, b: float) -> str:
-                '''Add two numbers together.'''
-                return f"Result: {a + b}"
+            async def my_action(self, param: str) -> str:
+                '''Action description.'''
+                return f"Result: {param}"
+    """
+    func._is_action = True  # type: ignore[attr-defined]
+    return func
 
-        # Usage
-        calc = CalculatorTool()
 
-        # Automatic discovery of actions
-        print("Available actions:")
-        for action_schema in calc.action_set:
-            print(f"  - {action_schema.name}: {action_schema.description}")
-        # Output: - add: Add two numbers together.
+class _ToolActionsMixin:
+    """
+    Shared action discovery and dispatch logic for Tool and AsyncTool.
 
-        # Execute an action
-        action = Action(name="add", arguments={"a": 5.0, "b": 3.0})
-        result = calc.execute_action(action)
-        print(result.contents[0].data)  # "Result: 8.0"
-        ```
-
-    Benefits:
-        - Zero boilerplate: Just add @tool_action decorator
-        - Single source of truth: Method signature and docstring define the action
-        - No duplication: Each function defined exactly once
-        - Clear intent: Obvious which methods are actions
+    Not intended to be subclassed directly.
     """
 
     def get_action_method(self, action: Action) -> Callable:
@@ -227,28 +236,6 @@ class Tool(AbstractTool):
                 f"Action {action.name} exists in {self.__class__.__name__} but is not decorated with @tool_action. Add @tool_action to expose it as an action."
             )
         return method
-
-    def execute_action(self, action: Action) -> Observation | StepError:
-        """Execute an action by name."""
-        method = self.get_action_method(action)
-        try:
-            action_result = method(**action.arguments) or "Success"
-        except Exception as e:
-            action_result = f"Error executing action {action.name}: {e}"
-            logger.exception(action_result)
-            return StepError.from_exception(e)
-        return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
-
-    async def async_execute_action(self, action: Action) -> Observation | StepError:
-        """Async version of execute_action for tools whose action methods are coroutines."""
-        method = self.get_action_method(action)
-        try:
-            action_result = (await method(**action.arguments)) or "Success"
-        except Exception as e:
-            action_result = f"Error executing action {action.name}: {e}"
-            logger.exception(action_result)
-            return StepError.from_exception(e)
-        return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
     @property
     def action_set(self) -> List[ActionSchema]:
@@ -291,3 +278,103 @@ class Tool(AbstractTool):
                 actions.append(ActionSchema.from_function(attr))
 
         return actions
+
+
+class Tool(_ToolActionsMixin, AbstractTool):
+    """
+    Base class for sync tools with automatic action discovery via decorators.
+
+    Tool subclasses should mark their action methods with the @tool_action decorator.
+    The action_set property will automatically discover and expose these methods.
+
+    Example:
+        ```python
+        from cube.tool import Tool, tool_action, Action
+
+        class CalculatorTool(Tool):
+            '''Calculator tool with basic arithmetic operations.'''
+
+            @tool_action
+            def add(self, a: float, b: float) -> str:
+                '''Add two numbers together.'''
+                return f"Result: {a + b}"
+
+        # Usage
+        calc = CalculatorTool()
+
+        # Automatic discovery of actions
+        print("Available actions:")
+        for action_schema in calc.action_set:
+            print(f"  - {action_schema.name}: {action_schema.description}")
+        # Output: - add: Add two numbers together.
+
+        # Execute an action
+        action = Action(name="add", arguments={"a": 5.0, "b": 3.0})
+        result = calc.execute_action(action)
+        print(result.contents[0].data)  # "Result: 8.0"
+        ```
+
+    Benefits:
+        - Zero boilerplate: Just add @tool_action decorator
+        - Single source of truth: Method signature and docstring define the action
+        - No duplication: Each function defined exactly once
+        - Clear intent: Obvious which methods are actions
+    """
+
+    def execute_action(self, action: Action) -> Observation | StepError:
+        """Execute an action by name."""
+        method = self.get_action_method(action)
+        try:
+            action_result = method(**action.arguments) or "Success"
+        except Exception as e:
+            action_result = f"Error executing action {action.name}: {e}"
+            logger.exception(action_result)
+            return StepError.from_exception(e)
+        return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
+
+
+class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
+    """
+    Base class for async tools with automatic action discovery via decorators.
+
+    All @tool_action methods must be async def. A TypeError is raised at class
+    definition time if a sync method is decorated with @tool_action.
+
+    Example:
+        ```python
+        from cube.tool import AsyncTool, tool_action, Action
+
+        class AsyncCalculatorTool(AsyncTool):
+            '''Async calculator tool.'''
+
+            @tool_action
+            async def add(self, a: float, b: float) -> str:
+                '''Add two numbers together.'''
+                return f"Result: {a + b}"
+
+        # Usage
+        calc = AsyncCalculatorTool()
+        action = Action(name="add", arguments={"a": 5.0, "b": 3.0})
+        result = await calc.execute_action(action)
+        ```
+    """
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        for name, attr in cls.__dict__.items():
+            if getattr(attr, "_is_action", False) and not inspect.iscoroutinefunction(attr):
+                raise TypeError(
+                    f"{cls.__name__}.{name} is decorated with @tool_action but is not async. "
+                    f"AsyncTool requires all @tool_action methods to be 'async def'."
+                )
+
+    async def execute_action(self, action: Action) -> Observation | StepError:
+        """Execute an async action by name."""
+        method = self.get_action_method(action)
+        try:
+            action_result = (await method(**action.arguments)) or "Success"
+        except Exception as e:
+            action_result = f"Error executing action {action.name}: {e}"
+            logger.exception(action_result)
+            return StepError.from_exception(e)
+        return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])

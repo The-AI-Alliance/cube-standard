@@ -7,7 +7,7 @@
 import inspect
 from ast import literal_eval
 
-from numpydoc.docscrape import NumpyDocString
+import docstring_parser
 
 
 def _json_schema_type(python_type_name: str):
@@ -37,13 +37,13 @@ def _json_schema_type(python_type_name: str):
 
 
 def function_to_dict(input_function) -> dict:  # noqa: C901
-    """Using type hints and numpy-styled docstring,
+    """Using type hints and numpy- or Google-style docstring,
     produce a dictionary usable for OpenAI function calling
 
     Parameters
     ----------
     input_function : function
-        A function with a numpy-style docstring
+        A function with a numpy- or Google-style docstring
 
     Returns
     -------
@@ -53,8 +53,8 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
     # Get function name and docstring
     name = input_function.__name__
     docstring = inspect.getdoc(input_function)
-    numpydoc = NumpyDocString(docstring)
-    description = "\n".join([s.strip() for s in numpydoc["Summary"]])
+    parsed = docstring_parser.parse(docstring)
+    description = parsed.short_description or ""
 
     # Get function parameters and their types from annotations and docstring
     parameters = {}
@@ -62,30 +62,19 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
     param_info = inspect.signature(input_function).parameters
 
     for param_name, param in param_info.items():
-        annotation = param.annotation
-        if annotation is inspect.Parameter.empty:
-            param_type = None
-        elif isinstance(annotation, str):
-            param_type = _json_schema_type(annotation)
-        elif hasattr(annotation, "__name__"):
-            param_type = _json_schema_type(annotation.__name__)
+        if hasattr(param, "annotation") and param.annotation is not inspect.Parameter.empty:
+            param_type = _json_schema_type(param.annotation.__name__)
         else:
-            # Handle Union types (e.g., list | None, str | None)
-            args = getattr(annotation, "__args__", None)
-            if args:
-                first = next((a for a in args if a is not type(None)), None)
-                param_type = _json_schema_type(first.__name__) if first and hasattr(first, "__name__") else None
-            else:
-                param_type = None
+            param_type = None
         param_description = None
         param_enum = None
 
-        # Try to extract param description from docstring using numpydoc
-        for param_data in numpydoc["Parameters"]:
-            if param_data.name == param_name:
-                if hasattr(param_data, "type"):
+        # Try to extract param description from docstring
+        for param_data in parsed.params:
+            if param_data.arg_name == param_name:
+                if param_data.type_name:
                     # replace type from docstring rather than annotation
-                    param_type = param_data.type
+                    param_type = param_data.type_name
                     if "optional" in param_type:
                         param_type = param_type.split(",")[0]
                     elif "{" in param_type:
@@ -97,7 +86,7 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
                         except Exception:
                             pass
                     param_type = _json_schema_type(param_type)
-                param_description = "\n".join([s.strip() for s in param_data.desc])
+                param_description = param_data.description
 
         param_dict = {
             "type": param_type,
