@@ -4,6 +4,11 @@
 # - function_to_dict
 # ==================================================================
 
+import inspect
+from ast import literal_eval
+
+from numpydoc.docscrape import NumpyDocString
+
 
 def _json_schema_type(python_type_name: str):
     """Converts standard python types to json schema types
@@ -46,14 +51,6 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
         A dictionnary to add to the list passed to `functions` parameter of `litellm.completion`
     """
     # Get function name and docstring
-    try:
-        import inspect
-        from ast import literal_eval
-
-        from numpydoc.docscrape import NumpyDocString
-    except Exception as e:
-        raise e
-
     name = input_function.__name__
     docstring = inspect.getdoc(input_function)
     numpydoc = NumpyDocString(docstring)
@@ -108,7 +105,10 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
             "enum": param_enum,
         }
 
-        parameters[param_name] = dict([(k, v) for k, v in param_dict.items() if isinstance(v, str)])
+        param_entry = {k: v for k, v in param_dict.items() if isinstance(v, str)}
+        if param_type == "array":
+            param_entry["items"] = {}
+        parameters[param_name] = param_entry
 
         # Check if the parameter has no default value (i.e., it's required)
         if param.default == param.empty:
