@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import PrivateAttr
 
-from cube.benchmark import RuntimeContext  # noqa: F401 – required for Task Pydantic resolution
+from cube.benchmark import Benchmark, BenchmarkMetadata
 from cube.container import Container
 from cube.core import Action, Observation
 from cube.task import STOP_ACTION, Task, TaskConfig, TaskMetadata
@@ -70,6 +70,21 @@ class FailTaskConfig(TaskConfig):
         return FailOnResetTask(metadata=TaskMetadata(id=self.task_id), tool_config=NoopToolConfig())
 
 
+class DoneBenchmark(Benchmark):
+    benchmark_metadata = BenchmarkMetadata(name="test-bench", version="0.1", description="test")
+    task_metadata = {}
+    task_config_class = DoneTaskConfig
+
+    _setup_calls: int = PrivateAttr(default=0)
+    _close_calls: int = PrivateAttr(default=0)
+
+    def _setup(self) -> None:
+        self._setup_calls += 1
+
+    def close(self) -> None:
+        self._close_calls += 1
+
+
 def stop_agent(obs, action_set):
     return Action(name=STOP_ACTION.name, arguments={})
 
@@ -78,30 +93,17 @@ def noop_agent(obs, action_set):
     return Action(name="noop", arguments={})
 
 
-def _make_module(task_ids=("t1",), *, with_setup=False, with_teardown=False, fail=False):
-    """Return (module, call_log). Tasks complete immediately unless fail=True."""
+def _make_module(task_ids=("t1",), *, fail=False):
+    """Return (module, benchmark). Tasks complete immediately unless fail=True."""
     mod = ModuleType("fake_debug")
-    call_log: list[str] = []
 
+    benchmark = DoneBenchmark()
     config_cls = FailTaskConfig if fail else DoneTaskConfig
+    mod.setup_benchmark = lambda: benchmark
     mod.get_debug_task_configs = lambda: [config_cls(task_id=tid) for tid in task_ids]
     mod.make_debug_agent = lambda tid: stop_agent
 
-    if with_setup:
-
-        def _setup():
-            call_log.append("setup")
-
-        mod.setup_debug_suite = _setup
-
-    if with_teardown:
-
-        def _teardown():
-            call_log.append("teardown")
-
-        mod.teardown_debug_suite = _teardown
-
-    return mod, call_log
+    return mod, benchmark
 
 
 # ── run_debug_episode — report structure ──────────────────────────────────────
@@ -179,27 +181,22 @@ def test_suite_reports_contain_task_ids():
     assert {r["task_id"] for r in results} == {"alpha", "beta"}
 
 
-# ── run_debug_suite — setup / teardown hooks ─────────────────────────────────
+# ── run_debug_suite — benchmark lifecycle ────────────────────────────────────
 
 
-def test_suite_no_error_without_hooks():
-    mod, calls = _make_module()
+def test_suite_benchmark_setup_and_close_called():
+    mod, benchmark = _make_module()
     run_debug_suite("bench", mod)
-    assert calls == []
+    assert benchmark._setup_calls == 1
+    assert benchmark._close_calls == 1
 
 
-def test_suite_both_hooks_called_in_order():
-    mod, calls = _make_module(with_setup=True, with_teardown=True)
-    run_debug_suite("bench", mod)
-    assert calls == ["setup", "teardown"]
-
-
-def test_suite_teardown_called_even_when_get_configs_raises():
-    mod, calls = _make_module(with_teardown=True)
+def test_suite_benchmark_closed_even_when_get_configs_raises():
+    mod, benchmark = _make_module()
     mod.get_debug_task_configs = lambda: (_ for _ in ()).throw(RuntimeError("config error"))
     with pytest.raises(RuntimeError, match="config error"):
         run_debug_suite("bench", mod)
-    assert "teardown" in calls
+    assert benchmark._close_calls == 1
 
 
 # ── assert_debug_tasks_reward_one ────────────────────────────────────────────

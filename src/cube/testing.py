@@ -7,9 +7,13 @@ run_debug_episode(task, agent, *, max_steps)  →  dict
 run_debug_suite(benchmark_name, module, *, max_steps)  →  list[dict]
 assert_debug_tasks_reward_one(module, *, max_steps)  →  None
 
-Module protocol (for assert_debug_tasks_reward_one)
+Module protocol (for assert_debug_tasks_reward_one and run_debug_suite)
 ----------------------------------------------------------------------
-The ``module`` argument must expose two callables:
+The ``module`` argument must expose three callables:
+
+    setup_benchmark() -> Benchmark
+        Called once before any debug episodes run. Returns a Benchmark instance.
+        This is needed to call benchmark.install() and benchmark.setup() before each debug suite run.
 
     get_debug_task_configs() -> list[TaskConfig]
         Return one TaskConfig per debug task. Each config must have a
@@ -17,14 +21,6 @@ The ``module`` argument must expose two callables:
 
     make_debug_agent(task_id: str) -> Callable[[Observation, list[ActionSchema]], Action]
         Return a deterministic agent for the given task_id.
-
-Optionally, the module may also expose:
-
-    setup_debug_suite() -> None
-        Called once before any debug episodes run (e.g. start a local server).
-
-    teardown_debug_suite() -> None
-        Called once after all debug episodes finish, even if they fail.
 
 Example usage in a test file::
 
@@ -160,14 +156,15 @@ def run_debug_suite(
         List of per-episode report dicts (same schema as ``run_debug_episode``).
         The caller is responsible for exit-code handling.
     """
-    setup = getattr(module, "setup_debug_suite", None)
-    teardown = getattr(module, "teardown_debug_suite", None)
-
-    if setup is not None:
-        logger.info(f"[run_debug_suite] benchmark={benchmark_name!r}  calling setup_debug_suite()")
-        setup()
-
+    benchmark = None
     try:
+        # Step 1: create and install the benchmark.
+        logger.info(f"[run_debug_suite] benchmark={benchmark_name!r}  calling setup_benchmark()")
+        benchmark = module.setup_benchmark()
+        benchmark.install()
+        benchmark.setup()
+
+        # Step 2: get task configs and run episodes.
         task_configs = {tc.task_id: tc for tc in module.get_debug_task_configs()}
         logger.info(
             f"[run_debug_suite] benchmark={benchmark_name!r}  running {len(task_configs)} task(s): {list(task_configs)}"
@@ -175,7 +172,9 @@ def run_debug_suite(
         results = []
         for tid, tc in task_configs.items():
             try:
-                task = tc.make()
+                task = tc.make(
+                    runtime_context=benchmark._runtime_context, container_backend=benchmark.container_backend
+                )
             except ImportError as exc:
                 raise ImportError(
                     f"{exc}\n\n"
@@ -184,9 +183,10 @@ def run_debug_suite(
                 ) from exc
             results.append(run_debug_episode(task, module.make_debug_agent(tid), max_steps=max_steps))
     finally:
-        if teardown is not None:
-            logger.info(f"[run_debug_suite] benchmark={benchmark_name!r}  calling teardown_debug_suite()")
-            teardown()
+        # Step 3: close the benchmark to free resources.
+        if benchmark is not None:
+            logger.info(f"[run_debug_suite] benchmark={benchmark_name!r}  calling close()")
+            benchmark.close()
 
     output = {"benchmark": benchmark_name, "debug_episodes": results}
     print(json.dumps(output, indent=2))
