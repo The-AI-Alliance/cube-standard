@@ -1,5 +1,7 @@
 """Tests for cube.utils - function_to_dict and helpers."""
 
+from typing import Optional
+
 from cube.utils import _json_schema_type, function_to_dict
 
 # --- _json_schema_type ---
@@ -193,3 +195,102 @@ def test_all_type_annotations():
     assert props["c"]["type"] == "boolean"
     assert props["d"]["type"] == "array"
     assert props["e"]["type"] == "object"
+
+
+def func_with_optional_str(x: str | None) -> None:
+    """A function with an optional string.
+
+    Parameters
+    ----------
+    x : str, optional
+        An optional string.
+    """
+
+
+def test_union_type_annotation_resolves_to_base_type() -> None:
+    result = function_to_dict(func_with_optional_str)
+    props = result["parameters"]["properties"]
+    assert props["x"]["type"] == "string"
+
+
+def func_with_list_param(items: list) -> None:
+    """A function with a list parameter.
+
+    Parameters
+    ----------
+    items : list
+        A list of items.
+    """
+
+
+def test_list_param_has_items_key() -> None:
+    result = function_to_dict(func_with_list_param)
+    props = result["parameters"]["properties"]
+    assert props["items"]["type"] == "array"
+    assert "items" in props["items"]
+    assert props["items"]["items"] == {}
+
+
+def func_with_optional_list(x: list | None) -> None:
+    """A function with an optional list.
+
+    Parameters
+    ----------
+    x : list, optional
+        An optional list.
+    """
+
+
+def test_union_list_none_resolves_to_array_with_items() -> None:
+    result = function_to_dict(func_with_optional_list)
+    props = result["parameters"]["properties"]
+    assert props["x"]["type"] == "array"
+    assert props["x"].get("items") == {}
+
+
+def func_with_optional_int(n: int | None) -> None:
+    """A function with an optional int.
+
+    Parameters
+    ----------
+    n : int, optional
+        An optional integer.
+    """
+
+
+def test_union_int_none_resolves_to_integer() -> None:
+    result = function_to_dict(func_with_optional_int)
+    props = result["parameters"]["properties"]
+    assert props["n"]["type"] == "integer"
+
+
+def func_with_typing_optional(s: Optional[str]) -> None:
+    """A function with typing.Optional.
+
+    Parameters
+    ----------
+    s : str, optional
+        An optional string via typing.Optional.
+    """
+
+
+def test_typing_optional_resolves_to_string() -> None:
+    result = function_to_dict(func_with_typing_optional)
+    props = result["parameters"]["properties"]
+    assert props["s"]["type"] == "string"
+
+
+def func_with_generic_list(tags: list[str]) -> None:
+    """A function with a generic list.
+
+    Parameters
+    ----------
+    tags : list
+        A list of string tags.
+    """
+
+
+def test_generic_list_annotation_resolves_to_array() -> None:
+    result = function_to_dict(func_with_generic_list)
+    props = result["parameters"]["properties"]
+    assert props["tags"]["type"] == "array"
