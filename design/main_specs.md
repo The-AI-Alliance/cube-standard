@@ -437,7 +437,7 @@ class Task(TypedBaseModel, ABC):
             Tuple of (reward, info dict with evaluation details)
         """
 
-    def get_priviledged_info(self) -> Content:
+    def get_privileged_info(self) -> Content:
         """
         Return privileged information for evaluation judges.
 
@@ -759,7 +759,7 @@ Mapping between the CUBE position paper's RPC endpoints and the Python API/RPC i
 | `cube/evaluation` | `task.evaluate()` | `POST /cube/evaluate` | Evaluate observation |
 | `cube/close` | `task.close()` | `POST /cube/close` | Cleanup task resources |
 | `cube/status` | `task.get_status()` | `GET /cube/status` | Get task status |
-| `cube/privilege_info` | `task.get_priviledged_info()` | `GET /cube/priviledged_info` | Privileged info for judges |
+| `cube/privilege_info` | `task.get_privileged_info()` | `GET /cube/privileged_info` | Privileged info for judges |
 | `tools/list` | `task.action_set` | `GET /tools/list` | Tool definitions (litellm format) |
 | `tools/call` | `task.tool.execute_action()` | `POST /tools/call` | Execute a single tool action |
 | `resources/list` | Not yet implemented | `GET /resources/list` | List available resources |
@@ -834,7 +834,7 @@ classDiagram
         +evaluate(obs) Tuple~float,dict~
         +filter_actions(actions) List~ActionSchema~
         +obs_postprocess(obs) Observation
-        +get_priviledged_info() Content
+        +get_privileged_info() Content
         +get_status() str
         +finished(obs) bool
         +close() void

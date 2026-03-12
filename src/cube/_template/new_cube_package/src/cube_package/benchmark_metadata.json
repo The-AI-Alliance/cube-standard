@@ -1,0 +1,11 @@
+{
+  "name": "new-cube-package",
+  "version": "0.1.0",
+  "description": "TODO: describe what this benchmark tests",
+  "authors": [],
+  "license": "",
+  "requirements": {},
+  "num_tasks": 1,
+  "tags": [],
+  "extra_info": {}
+}

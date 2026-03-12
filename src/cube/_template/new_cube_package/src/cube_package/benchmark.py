@@ -1,0 +1,91 @@
+"""Benchmark for cube_package.
+
+Benchmark is the top-level registry: it holds ClassVar metadata and vends
+TaskConfig objects to the episode runner.
+
+Metadata — choose ONE of these two approaches and delete the other:
+-------------------------------------------------------------------
+
+OPTION A — inline ClassVars (default, used below)
+    Define benchmark_metadata and task_metadata directly in the class body.
+    Good for small benchmarks where all metadata fits comfortably in Python.
+
+OPTION B — auto-load from CSV / JSON files
+    Delete (or don't define) benchmark_metadata and task_metadata from the
+    class body.  The framework will automatically load them from files placed
+    next to THIS file (benchmark.py):
+
+        src/cube_package/benchmark_metadata.json   ← or .csv
+        src/cube_package/task_metadata.json         ← or .csv
+
+    Both files are included in this template — just fill them in and remove
+    the inline ClassVar definitions below.
+
+    See cube.benchmark.Benchmark for full format details.
+
+_setup() / close() are abstract in the base class and MUST be implemented.
+They are the right place to start/stop shared infrastructure (Docker daemons,
+database servers, etc.).  Leave them as no-ops if your tasks are self-contained.
+
+install() / uninstall() are optional hooks for one-time setup such as
+downloading datasets or pulling Docker images.  Override them only if your
+benchmark needs installation steps; the base class provides no-op defaults.
+"""
+
+from typing import ClassVar
+
+from cube.benchmark import Benchmark, BenchmarkMetadata
+from cube.task import TaskConfig, TaskMetadata
+from cube_package.task import CubeTaskConfig
+
+
+class CubeBenchmark(Benchmark):
+    """Registry of cube_package tasks."""
+
+    # ── OPTION A: inline metadata (delete these two ClassVars to switch to Option B) ──
+
+    benchmark_metadata: ClassVar[BenchmarkMetadata] = BenchmarkMetadata(
+        name="new-cube-package",
+        version="0.1.0",
+        description="TODO: describe what this benchmark tests",
+        authors=[],  # e.g. ["Your Name"]
+        license="",  # e.g. "Apache-2.0"
+        requirements={},  # e.g. {"docker": True}
+        num_tasks=1,  # update when you add more tasks
+        tags=[],  # e.g. ["web", "navigation"]
+        extra_info={},
+    )
+
+    task_metadata: ClassVar[dict[str, TaskMetadata]] = {
+        # TODO: add one TaskMetadata per task.
+        # Keys must match TaskMetadata.id exactly.
+        "example-task": TaskMetadata(
+            id="example-task",
+            split="test",  # "train", "val", or "test"
+            abstract_description="TODO: one-sentence description of what this task tests",
+            recommended_max_steps=10,
+            container_config=None,  # set if task needs a container
+            extra_info={
+                # Arbitrary per-task parameters; read in Task / TaskConfig via
+                # metadata.extra_info["key"].
+                # "target": 42,
+                # "tool_config": {"enable_some_action": True},
+            },
+        ),
+    }
+
+    # ── Always required ───────────────────────────────────────────────────────────
+
+    task_config_class: ClassVar[type[TaskConfig]] = CubeTaskConfig
+
+    def _setup(self) -> None:
+        """Start shared infrastructure (containers, servers, etc.).
+
+        Populate self._runtime_context with URLs / handles that tasks need.
+        No-op if tasks are fully self-contained.
+        """
+        pass
+
+    def close(self) -> None:
+        """Stop any infrastructure started in _setup()."""
+        pass

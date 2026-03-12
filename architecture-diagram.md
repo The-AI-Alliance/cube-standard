@@ -207,7 +207,7 @@ classDiagram
         +obs_postprocess(obs) Observation
         +close() None
         +get_status() str
-        +get_priviledged_info() Content
+        +get_privileged_info() Content
         +action_set List~ActionSchema~
     }
 
@@ -382,7 +382,7 @@ class CounterTool(Tool):
 Server exposes REST endpoints, not MCP protocol:
 
 - **Benchmark endpoints**: `/cube/info`, `/cube/tasks`, `/cube/spawn`, `/cube/shutdown`
-- **Task endpoints**: `/tools/list`, `/tools/call`, `/cube/step`, `/cube/reset`, `/cube/close`, `/cube/status`, `/cube/priviledged_info`
+- **Task endpoints**: `/tools/list`, `/tools/call`, `/cube/step`, `/cube/reset`, `/cube/close`, `/cube/status`, `/cube/privileged_info`
 - **Resources**: `/resources/list`, `/resources/read` (not yet implemented)
 - **Benefits**: Standard HTTP, easy to test, compatible with any HTTP client
 

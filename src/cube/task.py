@@ -96,7 +96,7 @@ class Task(TypedBaseModel, ABC):
         - filter_actions(actions) -> actions       optional whitelist of tool actions
         - obs_postprocess(obs) -> obs              optional observation post-processing
         - finished(obs) -> bool                    optional early-termination check
-        - get_priviledged_info() -> Content        optional privileged task info
+        - get_privileged_info() -> Content        optional privileged task info
 
     2. gym-like environment dynamics:
         + reset() -> (Observation, dict)           abstract — set up initial state, return first obs
@@ -261,7 +261,7 @@ class Task(TypedBaseModel, ABC):
         """Validate the current state of the task and return (reward, info)."""
         pass
 
-    def get_priviledged_info(self) -> Content:
+    def get_privileged_info(self) -> Content:
         """
         (Optional) Return privileged information about the task such as:
         - solution: list[Action] = Solve the task using a pre-defined solution.
