@@ -1,5 +1,5 @@
 [project]
-name = "cube-browser-tool"
+name = "cube-browser-playwright"
 version = "0.1.0"
 description = "Concrete browser session implementations for cube-standard"
 requires-python = ">=3.12"

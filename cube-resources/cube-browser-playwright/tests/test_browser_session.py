@@ -1,6 +1,7 @@
 """Tests for browser session abstractions and PlaywrightSession implementation."""
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +19,11 @@ class TestReadCdpUrl:
         with pytest.raises(RuntimeError, match="DevToolsActivePort"):
             _read_cdp_url(str(tmp_path))  # file never written
 
+    def test_raises_on_malformed_port_file(self, tmp_path: Path) -> None:
+        (tmp_path / "DevToolsActivePort").write_text("not-a-number\n")
+        with pytest.raises(RuntimeError, match="malformed DevToolsActivePort"):
+            _read_cdp_url(str(tmp_path))
+
 
 class TestBrowserSession:
     def test_cannot_instantiate_directly(self) -> None:
@@ -31,8 +37,8 @@ class TestBrowserConfig:
             BrowserConfig()  # type: ignore[abstract]
 
 
-def _make_session(**kwargs: MagicMock) -> PlaywrightSession:
-    defaults: dict = {
+def _make_session(**kwargs: Any) -> PlaywrightSession:
+    defaults: dict[str, Any] = {
         "playwright": MagicMock(),
         "page": MagicMock(),
         "context": MagicMock(),
@@ -141,3 +147,91 @@ class TestPlaywrightSessionConfig:
         ):
             PlaywrightSessionConfig(headless=False).make()
         assert mock_pw.chromium.launch_persistent_context.call_args[1]["headless"] is False
+
+    def test_make_timeout_sets_default_timeout(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_sp = self._make_sync_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.playwright_session.sync_playwright", mock_sp),
+            patch("cube_browser_playwright.playwright_session._read_cdp_url", return_value="http://localhost:1234"),
+        ):
+            PlaywrightSessionConfig(timeout=5000).make()
+        mock_pw.chromium.launch_persistent_context.return_value.set_default_timeout.assert_called_once_with(5000)
+
+    def test_make_timeout_none_does_not_set_default_timeout(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_sp = self._make_sync_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.playwright_session.sync_playwright", mock_sp),
+            patch("cube_browser_playwright.playwright_session._read_cdp_url", return_value="http://localhost:1234"),
+        ):
+            PlaywrightSessionConfig(timeout=None).make()
+        mock_pw.chromium.launch_persistent_context.return_value.set_default_timeout.assert_not_called()
+
+    def test_make_new_page_when_context_has_no_pages(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_pw.chromium.launch_persistent_context.return_value.pages = []
+        mock_sp = self._make_sync_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.playwright_session.sync_playwright", mock_sp),
+            patch("cube_browser_playwright.playwright_session._read_cdp_url", return_value="http://localhost:1234"),
+        ):
+            PlaywrightSessionConfig().make()
+        mock_pw.chromium.launch_persistent_context.return_value.new_page.assert_called_once()
+
+    def test_make_resizeable_window_injects_window_size_arg_and_no_viewport(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_sp = self._make_sync_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.playwright_session.sync_playwright", mock_sp),
+            patch("cube_browser_playwright.playwright_session._read_cdp_url", return_value="http://localhost:1234"),
+        ):
+            PlaywrightSessionConfig(resizeable_window=True).make()
+        call_kwargs = mock_pw.chromium.launch_persistent_context.call_args[1]
+        assert any("--window-size=" in arg for arg in call_kwargs["args"])
+        assert call_kwargs.get("no_viewport") is True
+        assert "viewport" not in call_kwargs
+
+    def test_make_record_video_size_not_set_when_no_video_dir(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_sp = self._make_sync_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.playwright_session.sync_playwright", mock_sp),
+            patch("cube_browser_playwright.playwright_session._read_cdp_url", return_value="http://localhost:1234"),
+        ):
+            PlaywrightSessionConfig().make()
+        call_kwargs = mock_pw.chromium.launch_persistent_context.call_args[1]
+        assert "record_video_size" not in call_kwargs
+
+    def test_make_cleanup_pw_stop_called_when_context_close_raises(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_context = mock_pw.chromium.launch_persistent_context.return_value
+        mock_context.close.side_effect = RuntimeError("context close error")
+        mock_sp = self._make_sync_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.playwright_session.sync_playwright", mock_sp),
+            patch(
+                "cube_browser_playwright.playwright_session._read_cdp_url",
+                side_effect=RuntimeError("chrome did not start"),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="chrome did not start"):
+                PlaywrightSessionConfig().make()
+        mock_pw.stop.assert_called_once()
+
+    def test_make_cleanup_removes_temp_dir_on_failure(self, tmp_path: Path) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_sp = self._make_sync_playwright_mock(mock_pw)
+        profile_dir = tmp_path / "cube_harness_test"
+        profile_dir.mkdir()
+        with (
+            patch("cube_browser_playwright.playwright_session.sync_playwright", mock_sp),
+            patch("tempfile.mkdtemp", return_value=str(profile_dir)),
+            patch(
+                "cube_browser_playwright.playwright_session._read_cdp_url",
+                side_effect=RuntimeError("chrome did not start"),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="chrome did not start"):
+                PlaywrightSessionConfig().make()
+        assert not profile_dir.exists()

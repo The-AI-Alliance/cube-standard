@@ -9,7 +9,7 @@ three use cases:
 
   2. Cross-backend: The task sets up the environment via Playwright (e.g. WorkArena's
      setup(page)), while the tool acts via a different protocol (Puppeteer, raw CDP).
-     PlaywrightSession.cdp_url is the shared reference — any backend can attach to it:
+     The cdp_url is the shared reference — any backend can attach to it:
          pw.chromium.connect_over_cdp(session.cdp_url)       # Playwright
          connect(browserURL=session.cdp_url)                  # Puppeteer/Pyppeteer
 
@@ -24,12 +24,8 @@ BrowserConfig is the serializable factory for creating a BrowserSession.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
 
 from cube.core import TypedBaseModel
-
-if TYPE_CHECKING:
-    from playwright.sync_api import BrowserContext, Page
 
 
 class BrowserConfig(TypedBaseModel, ABC):
@@ -56,25 +52,18 @@ class BrowserSession(ABC):
     backends. See the module docstring for the three design goals this abstraction serves.
 
     Implementations own the live browser resources and must implement stop().
-
-    All sessions must implement get_playwright_session() — Playwright is the standard
-    interface for browser interaction in this codebase. Non-Playwright backends (e.g.
-    CUASession) connect lazily via CDP: pw.chromium.connect_over_cdp(self.cdp_url).
+    The cdp_url property is the cross-backend connection point — any Playwright-compatible
+    or CDP-capable client can attach via pw.chromium.connect_over_cdp(session.cdp_url).
 
     Subclasses:
     - PlaywrightSession: owns Playwright objects directly; cdp_url always set (cube-resources)
-    # Future: CUASession — identified via OS process PID and/or Display env var;
-    #   get_playwright_session() connects via pw.chromium.connect_over_cdp(cdp_url)
+    # Future: CUASession — identified via OS process PID and/or Display env var
     """
 
+    @property
     @abstractmethod
-    def get_playwright_session(self) -> tuple[Page, BrowserContext]:
-        """Return a live Playwright (page, context) for this browser.
-
-        For Playwright-native sessions this returns the live objects directly.
-        For other backends (e.g. CUASession) this connects via CDP lazily:
-            pw.chromium.connect_over_cdp(self.cdp_url)
-        """
+    def cdp_url(self) -> str | None:
+        """The Chrome DevTools Protocol URL for this browser, or None if not available."""
         ...
 
     @abstractmethod

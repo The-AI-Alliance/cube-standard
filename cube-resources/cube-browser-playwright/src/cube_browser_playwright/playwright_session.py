@@ -12,12 +12,20 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 from cube.resources.browser_session import BrowserConfig, BrowserSession
 from playwright.sync_api import BrowserContext, Page, Playwright, sync_playwright
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+
+class Viewport(BaseModel):
+    """Browser viewport dimensions."""
+
+    width: int
+    height: int
 
 
 def _read_cdp_url(user_data_dir: str) -> str:
@@ -33,7 +41,13 @@ def _read_cdp_url(user_data_dir: str) -> str:
         if time.monotonic() > deadline:
             raise RuntimeError(f"Chrome did not write DevToolsActivePort to {user_data_dir!r}")
         time.sleep(0.05)
-    port = int(port_file.read_text().splitlines()[0])
+    content = port_file.read_text()
+    try:
+        port = int(content.splitlines()[0])
+    except (IndexError, ValueError) as e:
+        raise RuntimeError(
+            f"Chrome wrote malformed DevToolsActivePort to {str(port_file)!r}; content={content!r}"
+        ) from e
     return f"http://localhost:{port}"
 
 
@@ -46,7 +60,7 @@ class PlaywrightSessionConfig(BrowserConfig):
     """
 
     headless: bool = True
-    viewport: dict[str, int] = Field(default_factory=lambda: {"width": 1280, "height": 720})
+    viewport: Viewport = Field(default_factory=lambda: Viewport(width=1280, height=720))
     slow_mo: int | None = None
     timeout: int | None = None
     locale: str | None = None
@@ -54,8 +68,7 @@ class PlaywrightSessionConfig(BrowserConfig):
 
     # Advanced Playwright options (rarely needed)
     resizeable_window: bool = False
-    pw_chromium_kwargs: dict = Field(default_factory=dict)
-    pw_context_kwargs: dict = Field(default_factory=dict)
+    pw_extra_kwargs: dict[str, Any] = Field(default_factory=dict)
     record_video_dir: str | None = None
 
     def make(self) -> "PlaywrightSession":
@@ -65,26 +78,34 @@ class PlaywrightSessionConfig(BrowserConfig):
         user_data_dir = tempfile.mkdtemp(prefix="cube_harness_")
         try:
             args = [
-                f"--window-size={self.viewport['width']},{self.viewport['height']}" if self.resizeable_window else None,
+                f"--window-size={self.viewport.width},{self.viewport.height}" if self.resizeable_window else None,
                 "--disable-features=OverlayScrollbars,ExtendedOverlayScrollbars",
                 "--remote-debugging-port=0",
             ]
-            # Explicit params take precedence over pw_chromium_kwargs / pw_context_kwargs.
+            viewport_dict = {"width": self.viewport.width, "height": self.viewport.height}
+            # Explicit params take precedence over pw_extra_kwargs.
             # Extra kwargs are merged first so that any key collision is won by the explicit value.
-            extra_kwargs = {**self.pw_chromium_kwargs, **self.pw_context_kwargs}
-            explicit_kwargs: dict = {
+            explicit_kwargs: dict[str, Any] = {
                 "headless": self.headless,
-                "slow_mo": self.slow_mo,
                 "args": [arg for arg in args if arg is not None],
                 "ignore_default_args": ["--hide-scrollbars"],
-                "no_viewport": True if self.resizeable_window else None,
-                "viewport": self.viewport if not self.resizeable_window else None,
-                "record_video_dir": Path(self.record_video_dir) / "task_video" if self.record_video_dir else None,
-                "record_video_size": self.viewport,
-                "locale": self.locale,
-                "timezone_id": self.timezone_id,
             }
-            context = pw.chromium.launch_persistent_context(user_data_dir, **{**extra_kwargs, **explicit_kwargs})
+            if self.slow_mo is not None:
+                explicit_kwargs["slow_mo"] = self.slow_mo
+            if self.resizeable_window:
+                explicit_kwargs["no_viewport"] = True
+            else:
+                explicit_kwargs["viewport"] = viewport_dict
+            if self.locale is not None:
+                explicit_kwargs["locale"] = self.locale
+            if self.timezone_id is not None:
+                explicit_kwargs["timezone_id"] = self.timezone_id
+            if self.record_video_dir is not None:
+                explicit_kwargs["record_video_dir"] = Path(self.record_video_dir) / "task_video"
+                explicit_kwargs["record_video_size"] = viewport_dict
+            context = pw.chromium.launch_persistent_context(
+                user_data_dir, **{**self.pw_extra_kwargs, **explicit_kwargs}
+            )
             if self.timeout is not None:
                 context.set_default_timeout(self.timeout)
             page = context.pages[0] if context.pages else context.new_page()
@@ -96,13 +117,18 @@ class PlaywrightSessionConfig(BrowserConfig):
             if context is not None:
                 try:
                     context.close()
-                except Exception:
-                    logger.warning("Failed to close browser context during make() cleanup")
+                except Exception as e:
+                    logger.error(
+                        "Failed to close browser context during make() cleanup; resources may be leaked: %s", e
+                    )
             try:
                 pw.stop()
-            except Exception:
-                logger.warning("Failed to stop playwright during make() cleanup")
-            shutil.rmtree(user_data_dir, ignore_errors=True)
+            except Exception as e:
+                logger.error("Failed to stop playwright during make() cleanup; resources may be leaked: %s", e)
+            try:
+                shutil.rmtree(user_data_dir)
+            except OSError as e:
+                logger.warning("Failed to remove temp profile dir %r during make() cleanup: %s", user_data_dir, e)
             raise
 
 
@@ -119,8 +145,12 @@ class PlaywrightSession(BrowserSession):
         self._playwright: Playwright = playwright
         self._page: Page = page
         self._context: BrowserContext = context
-        self.cdp_url: str = cdp_url
+        self._cdp_url: str = cdp_url
         self._user_data_dir: str = user_data_dir
+
+    @property
+    def cdp_url(self) -> str:
+        return self._cdp_url
 
     def get_playwright_session(self) -> tuple[Page, BrowserContext]:
         """Return the live (page, context)."""
@@ -131,9 +161,12 @@ class PlaywrightSession(BrowserSession):
         try:
             self._context.close()
         except Exception as e:
-            logger.warning(f"Error closing browser context: {e}")
+            logger.error("Error closing browser context; resources may be leaked: %s", e)
         try:
             self._playwright.stop()
         except Exception as e:
-            logger.warning(f"Error stopping playwright: {e}")
-        shutil.rmtree(self._user_data_dir, ignore_errors=True)
+            logger.error("Error stopping playwright; process may be leaked: %s", e)
+        try:
+            shutil.rmtree(self._user_data_dir)
+        except OSError as e:
+            logger.warning("Failed to remove temp profile dir %r: %s", self._user_data_dir, e)
