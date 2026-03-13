@@ -3,8 +3,8 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from cube.resources.browser_session import BrowserConfig, BrowserSession
+
 from cube_browser_playwright.playwright_session import PlaywrightSession, PlaywrightSessionConfig
 
 
@@ -22,32 +22,42 @@ class TestBrowserConfig:
 
 class TestPlaywrightSession:
     def test_cdp_url_is_stored(self) -> None:
-        session = PlaywrightSession(playwright=MagicMock(), page=MagicMock(), context=MagicMock(), cdp_url="http://localhost:1234")
+        session = PlaywrightSession(
+            playwright=MagicMock(), page=MagicMock(), context=MagicMock(), cdp_url="http://localhost:1234"
+        )
         assert session.cdp_url == "http://localhost:1234"
 
     def test_get_playwright_session_returns_page_and_context(self) -> None:
         mock_page = MagicMock()
         mock_context = MagicMock()
-        session = PlaywrightSession(playwright=MagicMock(), page=mock_page, context=mock_context, cdp_url="http://localhost:1234")
+        session = PlaywrightSession(
+            playwright=MagicMock(), page=mock_page, context=mock_context, cdp_url="http://localhost:1234"
+        )
         page, context = session.get_playwright_session()
         assert page is mock_page
         assert context is mock_context
 
     def test_stop_closes_context(self) -> None:
         mock_context = MagicMock()
-        session = PlaywrightSession(playwright=MagicMock(), page=MagicMock(), context=mock_context, cdp_url="http://localhost:1234")
+        session = PlaywrightSession(
+            playwright=MagicMock(), page=MagicMock(), context=mock_context, cdp_url="http://localhost:1234"
+        )
         session.stop()
         mock_context.close.assert_called_once()
 
     def test_stop_logs_warning_on_context_close_error(self) -> None:
         mock_context = MagicMock()
         mock_context.close.side_effect = RuntimeError("context close error")
-        session = PlaywrightSession(playwright=MagicMock(), page=MagicMock(), context=mock_context, cdp_url="http://localhost:1234")
+        session = PlaywrightSession(
+            playwright=MagicMock(), page=MagicMock(), context=mock_context, cdp_url="http://localhost:1234"
+        )
         session.stop()  # should not raise
 
     def test_stop_stops_playwright(self) -> None:
         mock_pw = MagicMock()
-        session = PlaywrightSession(playwright=mock_pw, page=MagicMock(), context=MagicMock(), cdp_url="http://localhost:1234")
+        session = PlaywrightSession(
+            playwright=mock_pw, page=MagicMock(), context=MagicMock(), cdp_url="http://localhost:1234"
+        )
         session.stop()
         mock_pw.stop.assert_called_once()
 
