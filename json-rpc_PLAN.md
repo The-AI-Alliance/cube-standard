@@ -259,3 +259,105 @@ developers.  Contains:
 
 5. **Test dependencies**: no new deps.  `test_server.py` defines a minimal
    inline cube (benchmark + task + tool) to avoid depending on `counter-cube`.
+
+---
+
+## Session checkpoint — resume from here
+
+### What is done
+
+- [x] `src/cube/server.py` — fully rewritten.
+  - Old REST functions (`make_benchmark_fastapi_app`, `make_task_fastapi_app`) replaced
+    by `make_benchmark_jsonrpc_app` and `make_task_jsonrpc_app`.
+  - Single `POST /` endpoint with JSON-RPC 2.0 dispatch in each.
+  - Methods use slash naming: `cube/info`, `cube/tasks`, `cube/spawn`, `cube/shutdown`,
+    `tools/list`, `tools/call`, `cube/reset`, `cube/step`, `cube/evaluate`, `cube/close`,
+    `cube/status`, `cube/privileged_info`.
+  - Serialization via `model_dump(mode="json")` (linter replaced `jsonable_encoder` calls).
+  - `_find_free_port()` helper with TOCTOU docstring.
+  - `_ok()` / `_err()` helpers with docstrings.
+  - `make_benchmark_rpc_server` / `make_task_rpc_server` kept, now wrap the new apps.
+
+### What remains
+
+- [ ] **`src/cube/benchmark.py`** — update `spawn()`:
+  - Change return type from `str` to `tuple[Task, FastAPI]`.
+  - Remove `from cube.server import make_task_rpc_server` inside the method.
+  - New body: `task = task_config.make(...); app = make_task_jsonrpc_app(task); return task, app`
+  - Import `make_task_jsonrpc_app` from `cube.server` (lazy import inside the method to
+    avoid circular imports, same pattern as the current code).
+  - Update docstring accordingly.
+
+- [ ] **`tests/test_benchmark_server.py`** — update existing test:
+  - Change import: `make_benchmark_fastapi_app` → `make_benchmark_jsonrpc_app`
+  - Replace REST endpoint calls (`GET /cube/info`, etc.) with JSON-RPC POST calls.
+  - Keep the same `MinimalBenchmark` / `MinimalTask` / `MinimalTool` fixtures (reuse or
+    move to conftest if `test_server.py` also needs them).
+
+- [ ] **`tests/test_server.py`** — write new comprehensive test file:
+  - Define a minimal inline cube (no counter-cube dependency).
+    The existing `MinimalBenchmark` from `test_benchmark_server.py` is a good starting
+    point — move shared fixtures to a conftest or duplicate if test files stay separate.
+  - Test benchmark server: `cube/info`, `cube/tasks` (with offset/limit), `cube/shutdown`.
+  - Test `benchmark.spawn()` returning `(task, app)` and use `TestClient(app)` directly.
+  - Test task server: `tools/list`, `cube/reset`, `cube/step` (full episode to done),
+    `cube/evaluate`, `cube/close`, `cube/status`, `cube/privileged_info`.
+  - Test JSON-RPC error envelope:
+    - Unknown method → `{"error": {"code": -32601}}`
+    - Missing required param → `{"error": {"code": -32602}}`
+    - Invalid JSON body → `{"error": {"code": -32700}}`
+    - Missing `jsonrpc` field → `{"error": {"code": -32600}}`
+
+- [ ] **`examples/counter-cube-remote/`** — new example:
+  - `server.py` — imports `CounterBenchmark`, calls `make_benchmark_rpc_server()`,
+    prints the URL, then joins the process (blocks).
+  - `client.py` — pure HTTP JSON-RPC (uses only `httpx`, no cube imports).
+    Calls `cube/info`, `cube/tasks`, `cube/spawn` to get a task URL, then
+    `tools/list`, `cube/reset`, `cube/step` in a loop until done, prints final reward.
+  - `pyproject.toml` — depends on `cube-standard` and `counter-cube` (via path).
+  - Short `README.md` showing how to run (`python server.py` in one terminal,
+    `python client.py` in another).
+
+### Key context for next session
+
+- `benchmark.spawn()` currently (old code) does:
+
+  ```python
+  from cube.server import make_task_rpc_server
+  task = task_config.make(...)
+  _app, _process, url = make_task_rpc_server(task)
+  return url
+  ```
+
+  It needs to become:
+
+  ```python
+  from cube.server import make_task_jsonrpc_app
+  task = task_config.make(...)
+  app = make_task_jsonrpc_app(task)
+  return task, app
+  ```
+
+- `test_benchmark_server.py` currently uses:
+
+  ```python
+  from cube.server import make_benchmark_fastapi_app
+  app = make_benchmark_fastapi_app(benchmark)
+  client.get("/cube/info")        # → REST
+  client.get("/cube/tasks")       # → REST
+  client.post("/cube/shutdown")   # → REST
+  ```
+
+  Needs to become:
+
+  ```python
+  from cube.server import make_benchmark_jsonrpc_app
+  app = make_benchmark_jsonrpc_app(benchmark)
+  client.post("/", json={"jsonrpc":"2.0","method":"cube/info","id":1})
+  client.post("/", json={"jsonrpc":"2.0","method":"cube/tasks","id":2})
+  client.post("/", json={"jsonrpc":"2.0","method":"cube/shutdown","id":3})
+  ```
+
+- `counter-cube` example lives in `examples/counter-cube/` and is a working reference
+  for how a benchmark is structured.  `counter-cube-remote` should `import CounterBenchmark`
+  from it.
