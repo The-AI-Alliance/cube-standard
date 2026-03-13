@@ -63,7 +63,8 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
 
     for param_name, param in param_info.items():
         if hasattr(param, "annotation") and param.annotation is not inspect.Parameter.empty:
-            param_type = _json_schema_type(param.annotation.__name__)
+            annotation = param.annotation
+            param_type = _json_schema_type(annotation.__name__) if hasattr(annotation, "__name__") else None
         else:
             param_type = None
         param_description = None
