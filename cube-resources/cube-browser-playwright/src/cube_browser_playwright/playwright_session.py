@@ -1,13 +1,14 @@
 """Playwright browser session implementation.
 
 Provides PlaywrightSessionConfig and PlaywrightSession, the concrete implementation
-of the BrowserConfig / BrowserSession abstractions defined in cube.tools.browser_session.
+of the BrowserConfig / BrowserSession abstractions defined in cube.resources.browser_session.
 
 Chromium is always launched with --remote-debugging-port=0 so cdp_url is always
 available for cross-backend access (Puppeteer, raw CDP, etc.).
 """
 
 import logging
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -60,32 +61,49 @@ class PlaywrightSessionConfig(BrowserConfig):
     def make(self) -> "PlaywrightSession":
         """Launch a Chromium browser and return a live PlaywrightSession."""
         pw = sync_playwright().start()
-
+        context = None
         user_data_dir = tempfile.mkdtemp(prefix="cube_harness_")
-        args = [
-            f"--window-size={self.viewport['width']},{self.viewport['height']}" if self.resizeable_window else None,
-            "--disable-features=OverlayScrollbars,ExtendedOverlayScrollbars",
-            "--remote-debugging-port=0",
-        ]
-        context = pw.chromium.launch_persistent_context(
-            user_data_dir,
-            headless=self.headless,
-            slow_mo=self.slow_mo,
-            args=[arg for arg in args if arg is not None],
-            ignore_default_args=["--hide-scrollbars"],
-            no_viewport=True if self.resizeable_window else None,
-            viewport=self.viewport if not self.resizeable_window else None,
-            record_video_dir=Path(self.record_video_dir) / "task_video" if self.record_video_dir else None,
-            record_video_size=self.viewport,
-            locale=self.locale,
-            timezone_id=self.timezone_id,
-            **{**self.pw_chromium_kwargs, **self.pw_context_kwargs},
-        )
-        if self.timeout is not None:
-            context.set_default_timeout(self.timeout)
-        page = context.pages[0] if context.pages else context.new_page()
-        cdp_url = _read_cdp_url(user_data_dir)
-        return PlaywrightSession(playwright=pw, page=page, context=context, cdp_url=cdp_url)
+        try:
+            args = [
+                f"--window-size={self.viewport['width']},{self.viewport['height']}" if self.resizeable_window else None,
+                "--disable-features=OverlayScrollbars,ExtendedOverlayScrollbars",
+                "--remote-debugging-port=0",
+            ]
+            # Explicit params take precedence over pw_chromium_kwargs / pw_context_kwargs.
+            # Extra kwargs are merged first so that any key collision is won by the explicit value.
+            extra_kwargs = {**self.pw_chromium_kwargs, **self.pw_context_kwargs}
+            explicit_kwargs: dict = {
+                "headless": self.headless,
+                "slow_mo": self.slow_mo,
+                "args": [arg for arg in args if arg is not None],
+                "ignore_default_args": ["--hide-scrollbars"],
+                "no_viewport": True if self.resizeable_window else None,
+                "viewport": self.viewport if not self.resizeable_window else None,
+                "record_video_dir": Path(self.record_video_dir) / "task_video" if self.record_video_dir else None,
+                "record_video_size": self.viewport,
+                "locale": self.locale,
+                "timezone_id": self.timezone_id,
+            }
+            context = pw.chromium.launch_persistent_context(user_data_dir, **{**extra_kwargs, **explicit_kwargs})
+            if self.timeout is not None:
+                context.set_default_timeout(self.timeout)
+            page = context.pages[0] if context.pages else context.new_page()
+            cdp_url = _read_cdp_url(user_data_dir)
+            return PlaywrightSession(
+                playwright=pw, page=page, context=context, cdp_url=cdp_url, user_data_dir=user_data_dir
+            )
+        except Exception:
+            if context is not None:
+                try:
+                    context.close()
+                except Exception:
+                    logger.warning("Failed to close browser context during make() cleanup")
+            try:
+                pw.stop()
+            except Exception:
+                logger.warning("Failed to stop playwright during make() cleanup")
+            shutil.rmtree(user_data_dir, ignore_errors=True)
+            raise
 
 
 class PlaywrightSession(BrowserSession):
@@ -95,18 +113,21 @@ class PlaywrightSession(BrowserSession):
     Always exposes a cdp_url for cross-backend access.
     """
 
-    def __init__(self, playwright: Playwright, page: Page, context: BrowserContext, cdp_url: str) -> None:
+    def __init__(
+        self, playwright: Playwright, page: Page, context: BrowserContext, cdp_url: str, user_data_dir: str
+    ) -> None:
         self._playwright: Playwright = playwright
         self._page: Page = page
         self._context: BrowserContext = context
         self.cdp_url: str = cdp_url
+        self._user_data_dir: str = user_data_dir
 
     def get_playwright_session(self) -> tuple[Page, BrowserContext]:
         """Return the live (page, context)."""
         return self._page, self._context
 
     def stop(self) -> None:
-        """Close the context and release all Playwright resources."""
+        """Close the context, release all Playwright resources, and remove the temp profile dir."""
         try:
             self._context.close()
         except Exception as e:
@@ -115,3 +136,4 @@ class PlaywrightSession(BrowserSession):
             self._playwright.stop()
         except Exception as e:
             logger.warning(f"Error stopping playwright: {e}")
+        shutil.rmtree(self._user_data_dir, ignore_errors=True)
