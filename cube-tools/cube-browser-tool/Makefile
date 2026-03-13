@@ -9,7 +9,6 @@ install:
 
 update:
 	uv sync --all-extras --upgrade
-	uv pip install -e . --upgrade
 	uv run playwright install chromium --with-deps
 
 
