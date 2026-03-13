@@ -1,7 +1,7 @@
 """Abstract browser tool protocols for web-based benchmark tasks.
 
 cube-standard declares the contracts; concrete implementations live in
-cube-tools/cube-browser-tool/ (or any compatible harness, e.g. AgentLab2).
+cube-tools/cube-browser-tool/ (or any compatible harness, e.g. cube-harness).
 
 Two protocols are provided — one sync, one async — mirroring the Playwright
 sync/async API split:
@@ -36,7 +36,7 @@ class AbstractBrowserTool(Protocol):
     Defines the contract that any sync browser tool must satisfy to be used
     with web benchmarks (MiniWob, WorkArena, WebArena, …). Concrete
     implementations live in cube-tools/cube-browser-tool/ or can be provided
-    by any compatible harness (e.g. AgentLab2).
+    by any compatible harness (e.g. cube-harness).
 
     Two groups of methods:
 

@@ -8,7 +8,6 @@ help:
 
 install:
 	uv sync --all-extras
-	uv pip install -e .
 
 lint:
 	uv run ruff check --fix .
