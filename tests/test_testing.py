@@ -104,8 +104,10 @@ def _make_module(task_ids=("t1",), *, fail=False):
 
     benchmark = DoneBenchmark()
     config_cls = FailTaskConfig if fail else DoneTaskConfig
-    mod.get_benchmark = lambda: benchmark  # type: ignore[attr-defined]
-    mod.get_debug_task_configs = lambda: [config_cls(task_id=tid) for tid in task_ids]  # type: ignore[attr-defined]
+    task_meta = {tid: TaskMetadata(id=tid) for tid in task_ids}
+    object.__setattr__(benchmark, "task_metadata", task_meta)
+    object.__setattr__(benchmark, "task_config_class", config_cls)
+    mod.get_debug_benchmark = lambda: benchmark  # type: ignore[attr-defined]
     mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
 
     return mod, benchmark
@@ -197,9 +199,27 @@ def test_suite_benchmark_setup_and_close_called():
     assert benchmark._close_calls == 1
 
 
-def test_suite_benchmark_closed_even_when_get_configs_raises():
-    mod, benchmark = _make_module()
-    mod.get_debug_task_configs = lambda: (_ for _ in ()).throw(RuntimeError("config error"))
+def test_suite_benchmark_closed_even_when_get_task_configs_raises():
+    class FailingTaskConfigsBenchmark(Benchmark):
+        benchmark_metadata = BenchmarkMetadata(name="test-bench", version="0.1", description="test")
+        task_metadata = {}
+        task_config_class = DoneTaskConfig
+        _close_calls: int = PrivateAttr(default=0)
+
+        def _setup(self) -> None:
+            pass
+
+        def close(self) -> None:
+            self._close_calls += 1
+
+        def get_task_configs(self):
+            raise RuntimeError("config error")
+
+    mod = ModuleType("fake_debug")
+    benchmark = FailingTaskConfigsBenchmark()
+    mod.get_debug_benchmark = lambda: benchmark  # type: ignore[attr-defined]
+    mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
+
     with pytest.raises(RuntimeError, match="config error"):
         run_debug_suite("bench", mod)
     assert benchmark._close_calls == 1

@@ -83,7 +83,7 @@ The debug module must expose two callables:
 
 | symbol | signature |
 |---|---|
-| `get_debug_task_configs()` | `() → list[TaskConfig]` |
+| `get_debug_benchmark()` | `() → Benchmark` |
 | `make_debug_agent(task_id)` | `(str) → agent callable` |
 
 See `debug.py` for the full template.

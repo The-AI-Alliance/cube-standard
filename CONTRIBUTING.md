@@ -41,7 +41,7 @@ Read the module docstrings — they are the authoritative spec:
 | **Tool** | [`tool.py`](src/cube/tool.py) | Subclass `Tool`, decorate actions with `@tool_action`, implement `ToolConfig.make()` |
 | **Task** | [`task.py`](src/cube/task.py) | `reset()` and `evaluate()` are the two abstract methods; `finished()` / `filter_actions()` are optional hooks |
 | **Benchmark** | [`benchmark.py`](src/cube/benchmark.py) | Define three `ClassVar`s (`benchmark_metadata`, `task_metadata`, `task_config_class`); implement `_setup()` / `close()` |
-| **Debug** | [`testing.py`](src/cube/testing.py) | Add a `debug.py` that exposes `get_debug_task_configs()` and `make_debug_agent()` |
+| **Debug** | [`testing.py`](src/cube/testing.py) | Add a `debug.py` that exposes `get_debug_benchmark()` and `make_debug_agent()` |
 
 ## Writing a new cube package
 

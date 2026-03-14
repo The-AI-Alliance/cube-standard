@@ -1,7 +1,7 @@
 """Public re-exports for cube_package."""
 
 from cube_package.benchmark import CubeBenchmark
-from cube_package.debug import DebugAgent, get_debug_task_configs, make_debug_agent
+from cube_package.debug import DebugAgent, get_debug_benchmark, make_debug_agent
 from cube_package.task import CubeTask, CubeTaskConfig
 from cube_package.tool import CubeTool, CubeToolConfig
 
@@ -12,6 +12,6 @@ __all__ = [
     "CubeTool",
     "CubeToolConfig",
     "DebugAgent",
-    "get_debug_task_configs",
+    "get_debug_benchmark",
     "make_debug_agent",
 ]
