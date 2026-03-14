@@ -15,12 +15,11 @@ import time
 from enum import Enum
 from io import BytesIO
 
-from PIL import Image
-
 from cube.container import Container
 from cube.core import Action, Content, ImageContent, Observation, StepError, TextContent
 from cube.tool import Tool, ToolConfig, tool_action
 from cube.vm import VM
+from PIL import Image
 
 from cube_computer_tool.guest_agent import GuestAgent
 from cube_computer_tool.pyautogui_utils import fix_pyautogui_less_than_bug

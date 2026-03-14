@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Literal
 
 from cube.vm import VM, VMBackend, VMConfig
+
 from cube_vm_backend.qemu_manager import QEMUConfig, QEMUManager, ensure_base_image
 
 logger = logging.getLogger(__name__)

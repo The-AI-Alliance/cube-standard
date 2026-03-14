@@ -17,6 +17,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# fmt: off
 _KEYBOARD_KEYS = [
     "\t", "\n", "\r", " ", "!", '"', "#", "$", "%", "&", "'", "(", ")", "*",
     "+", ",", "-", ".", "/", "0", "1", "2", "3", "4", "5", "6", "7", "8",
@@ -42,6 +43,7 @@ _KEYBOARD_KEYS = [
     "winleft", "winright", "yen", "command", "option", "optionleft",
     "optionright",
 ]
+# fmt: on
 
 _PYAUTOGUI_PREFIX = "import pyautogui; import time; pyautogui.FAILSAFE = False; {command}"
 
@@ -167,7 +169,12 @@ class GuestAgent:
                 )
                 if resp.status_code == 200:
                     return resp.json()
-                return {"status": "error", "message": "Request failed", "output": None, "error": resp.json().get("error")}
+                return {
+                    "status": "error",
+                    "message": "Request failed",
+                    "output": None,
+                    "error": resp.json().get("error"),
+                }
             except requests.exceptions.ReadTimeout:
                 break
             except Exception:
@@ -208,17 +215,24 @@ class GuestAgent:
         action_type: str = action["action_type"]
         parameters: dict = action.get("parameters") or {k: v for k, v in action.items() if k != "action_type"}
 
-        move_mode = random.choice([
-            "pyautogui.easeInQuad", "pyautogui.easeOutQuad", "pyautogui.easeInOutQuad",
-            "pyautogui.easeInBounce", "pyautogui.easeInElastic",
-        ])
+        move_mode = random.choice(
+            [
+                "pyautogui.easeInQuad",
+                "pyautogui.easeOutQuad",
+                "pyautogui.easeInOutQuad",
+                "pyautogui.easeInBounce",
+                "pyautogui.easeInElastic",
+            ]
+        )
         duration = random.uniform(0.5, 1)
 
         if action_type == "MOVE_TO":
             if not parameters:
                 self.execute_python_command("pyautogui.moveTo()")
             elif "x" in parameters and "y" in parameters:
-                self.execute_python_command(f"pyautogui.moveTo({parameters['x']}, {parameters['y']}, {duration}, {move_mode})")
+                self.execute_python_command(
+                    f"pyautogui.moveTo({parameters['x']}, {parameters['y']}, {duration}, {move_mode})"
+                )
             else:
                 raise ValueError(f"Unknown MOVE_TO parameters: {parameters}")
 
