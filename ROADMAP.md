@@ -10,7 +10,7 @@ Goal: stable core protocol, first wave of cubes, compliance tooling.
 - [x] `cube init` / `cube test` CLI
 - [x] Reference implementation: `counter-cube`
 - [x] Container backends (Docker, Modal, Daytona)
-- [ ] First cubes landing:
+- [x] First cubes landing:
   - *Web agents:* MiniWob ✅, WebArena ✅, WorkArena ✅
   - *Computer use (CUA):* OSWorld ✅
   - *SWE:* SWE-bench Verified + Live ✅, TerminalBench 2 ✅, LiveCodeBench ✅

@@ -10,7 +10,9 @@
 [Published Documentation](https://the-ai-alliance.github.io/cube-standard/)
 -->
 
-This repo contains the code and documentation for the **AI Alliance: CUBE Standard** project, which meets a common necessity, to standardize benchmark wrapping so the community can wrap various otherwise-incompatible benchmarks uniformly and use them everywhere.
+This repo contains the code and documentation for the **AI Alliance: CUBE Standard** project, which standardizes benchmark wrapping so the community can wrap otherwise-incompatible benchmarks uniformly and use them everywhere.
+
+**CUBE Standard** defines the protocol — the `Tool`, `Task`, `Benchmark`, `Observation`, and `Action` interfaces that any benchmark must implement. **[cube-harness](https://github.com/The-AI-Alliance/cube-harness)** is the evaluation runtime that runs agents against CUBE-compatible benchmarks.
 
 Principal developer: [ServiceNow AI Research](https://servicenow.com/research).
 
@@ -59,7 +61,16 @@ uv sync --extra dev
 
 ## For benchmark contributors
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Quick reference:
+**Fast path** — copy the reference implementation, rename, and iterate:
+
+```sh
+cp -r examples/counter-cube my-bench
+cd my-bench && uv sync
+# Edit reset() and evaluate() in src/*/task.py, then:
+cube test my-bench
+```
+
+Or scaffold from the template:
 
 ```sh
 cube init my-bench    # scaffold a new benchmark package from the template
