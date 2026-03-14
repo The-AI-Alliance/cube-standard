@@ -9,7 +9,8 @@ def test_all_debug_tasks_reward_one():
 
 def test_run_debug_episode_report_schema():
     """run_debug_episode returns a dict with the expected keys and correct values."""
-    task_configs = {tc.task_id: tc for tc in debug_mod.get_debug_task_configs()}
+    benchmark = debug_mod.get_debug_benchmark()
+    task_configs = {tc.task_id: tc for tc in benchmark.get_task_configs()}
     task = task_configs["count-to-3"].make()
     agent = debug_mod.make_debug_agent("count-to-3")
 
