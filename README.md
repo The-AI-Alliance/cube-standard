@@ -1,6 +1,10 @@
 <img width="3168" height="1344" alt="Untitled" src="https://github.com/user-attachments/assets/68e50a4d-fe15-4d08-b52e-38dae3122493" />
 
-# README for CUBE Standard
+# CUBE Standard
+
+> [!NOTE]
+> **CUBE is in active development (alpha).** Interfaces may change. We welcome early adopters and contributors who want to shape the standard, not just use it.
+> See our [Roadmap](ROADMAP.md) and [Contributing Guide](CONTRIBUTING.md). Serious contributors can [apply here](https://forms.gle/JFiBi4ynfVLMghAH8) to become part of the team.
 
 <!--
 [Published Documentation](https://the-ai-alliance.github.io/cube-standard/)
@@ -68,9 +72,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the five-layer architecture and imple
 
 ## Getting Involved
 
-We welcome contributions as PRs. Please see our [Alliance community repo](https://github.com/The-AI-Alliance/community/) for general information about contributing to any of our projects. This section provides some specific details you need to know.
+All contributions are welcome — open an issue, submit a PR, or wrap a new benchmark. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development guide and RFC process.
 
-In particular, see the AI Alliance [CONTRIBUTING](https://github.com/The-AI-Alliance/community/blob/main/CONTRIBUTING.md) instructions. You will need to agree with the AI Alliance [Code of Conduct](https://github.com/The-AI-Alliance/community/blob/main/CODE_OF_CONDUCT.md).
+Want deeper involvement? Join the core team, shape the roadmap, and get credit for what you build. [Apply here](https://forms.gle/JFiBi4ynfVLMghAH8).
+
+For general AI Alliance contribution guidelines, see the [community repo](https://github.com/The-AI-Alliance/community/) and [Code of Conduct](https://github.com/The-AI-Alliance/community/blob/main/CODE_OF_CONDUCT.md).
 
 All _code_ contributions are licensed under the [Apache 2.0 LICENSE](https://github.com/The-AI-Alliance/community/blob/main/LICENSE.Apache-2.0) (which is also in this repo, [LICENSE.Apache-2.0](LICENSE.Apache-2.0)).
 
