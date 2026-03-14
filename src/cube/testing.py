@@ -24,7 +24,7 @@ Example usage in a test file::
 
     def test_debug_tasks():
         from cube.testing import assert_debug_tasks_reward_one
-        import osworld_cube.debug_agent as _mod
+        import osworld_cube.debug as _mod
         assert_debug_tasks_reward_one(_mod)
 """
 
@@ -206,7 +206,7 @@ def assert_debug_tasks_reward_one(
     Intended for use in a single catch-all test function::
 
         def test_debug_tasks():
-            import osworld_cube.debug_agent as mod
+            import osworld_cube.debug as mod
             from cube.testing import assert_debug_tasks_reward_one
             assert_debug_tasks_reward_one(mod)
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 
 from cube.core import Action, ActionSchema, Observation
-from counter_cube.benchmark import CounterBenchmark
+from counter_cube.benchmark import Benchmark, CounterBenchmark
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ class DebugAgent:
 # ---------------------------------------------------------------------------
 
 
-def get_debug_benchmark() -> CounterBenchmark:
+def get_debug_benchmark() -> Benchmark:
     """Return a CounterBenchmark instance scoped to the debug tasks.
 
     Called once by cube.testing before any debug episodes run.
@@ -110,7 +110,7 @@ def get_debug_benchmark() -> CounterBenchmark:
     returned instance, iterate benchmark.get_task_configs() to discover tasks,
     and call benchmark.close() at the end to free resources.
     """
-    return CounterBenchmark()
+    return CounterBenchmark().subset_from_list(list(_TASK_ACTIONS.keys()))
 
 
 def make_debug_agent(task_id: str) -> DebugAgent:

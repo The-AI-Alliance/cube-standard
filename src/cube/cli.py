@@ -325,8 +325,8 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         err_console.print(
             Panel(
                 "No debug tasks were run.\n"
-                "Make sure [file]debug.py[/file] has entries in [cmd]_TASK_ACTIONS[/cmd] "
-                "and [cmd]get_debug_benchmark()[/cmd] returns a benchmark with at least one task.",
+                "Make sure [cmd]get_debug_benchmark()[/cmd] returns a benchmark whose "
+                "[cmd]get_task_configs()[/cmd] yields at least one config.",
                 title="[warning]No tasks found[/warning]",
                 border_style="yellow",
                 padding=(0, 1),
