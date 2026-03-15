@@ -66,7 +66,10 @@ uv sync --extra dev
 ```sh
 cp -r examples/counter-cube my-bench
 cd my-bench && uv sync
-# Edit reset() and evaluate() in src/*/task.py, then:
+# Edit @tool_action decorated methods in src/*/tool.py
+# Edit reset() and evaluate() in src/*/task.py
+# Edit benchmark_metadata, task_metadata, task_config_class, _setup() and close() in src/*/benchmark.py
+# expose get_debug_benchmark and get_debug_agent in src/*/debug.py
 cube test my-bench
 ```
 
