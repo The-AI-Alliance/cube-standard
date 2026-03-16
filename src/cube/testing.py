@@ -38,8 +38,10 @@ import types
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from cube.benchmark import BenchmarkMetadata
 from cube.core import Action, ActionSchema, Observation
 from cube.task import Task
+from cube.utils import validate_action_schema
 
 logger = logging.getLogger(__name__)
 
@@ -56,20 +58,23 @@ def _validate_action_set(action_set: list) -> tuple[bool, str]:
     """
     Validate action_set per stress_test_specs.md tools_list check (Option A).
 
-    Returns (True, "") if non-empty and each schema has name, description, parameters.
-    Does not require parameter-level descriptions.
+    Uses cube.utils.validate_action_schema; does not require parameter-level
+    descriptions. Returns (True, "") if non-empty and each schema is valid.
     """
     if not action_set or not isinstance(action_set, list):
         return False, "action_set is empty or not a list"
     for i, item in enumerate(action_set):
-        if not hasattr(item, "name") or not isinstance(getattr(item, "name", None), str):
-            return False, f"action_set[{i}] missing or invalid 'name'"
-        if not (getattr(item, "name", "") or "").strip():
-            return False, f"action_set[{i}] has empty 'name'"
-        if not hasattr(item, "description") or not isinstance(getattr(item, "description", None), str):
-            return False, f"action_set[{i}] missing or invalid 'description'"
-        if not hasattr(item, "parameters") or not isinstance(getattr(item, "parameters", None), dict):
-            return False, f"action_set[{i}] missing or invalid 'parameters'"
+        name = getattr(item, "name", None)
+        description = getattr(item, "description", None)
+        parameters = getattr(item, "parameters", None)
+        ok, msg = validate_action_schema(
+            name=name or "",
+            description=description if isinstance(description, str) else None,
+            parameters=parameters if isinstance(parameters, dict) else None,
+            require_param_descriptions=False,
+        )
+        if not ok:
+            return False, f"action_set[{i}] {msg}"
     return True, ""
 
 
@@ -190,53 +195,63 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str]:
     """
     Same seed → identical first observation (stress_test_specs.md).
     Uses first task config only: make() twice, reset() each, compare first obs.
+    Calls benchmark.install() and .setup() before get_task_configs(), and
+    .close() when done, so the benchmark is in a consistent state.
     """
-    bench = getattr(module, "get_debug_benchmark", None)
-    if not callable(bench):
+    bench_fn = getattr(module, "get_debug_benchmark", None)
+    if not callable(bench_fn):
         return False, "no get_debug_benchmark"
-    configs = list(bench().get_task_configs())
-    if not configs:
-        return False, "no debug task configs"
-    tc = configs[0]
-    t1 = t2 = None
+    benchmark = bench_fn()
     try:
-        t1 = tc.make()
-        t2 = tc.make()
-        obs1, _ = t1.reset()
-        obs2, _ = t2.reset()
-        dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else str(obs1)
-        dump2 = obs2.model_dump() if hasattr(obs2, "model_dump") else str(obs2)
-        ok = dump1 == dump2
-    except Exception as e:
-        return False, str(e)
+        benchmark.install()
+        benchmark.setup()
+        configs = list(benchmark.get_task_configs())
+        if not configs:
+            return False, "no debug task configs"
+        tc = configs[0]
+        t1 = t2 = None
+        try:
+            t1 = tc.make(
+                runtime_context=getattr(benchmark, "_runtime_context", None),
+                container_backend=getattr(benchmark, "container_backend", None),
+            )
+            t2 = tc.make(
+                runtime_context=getattr(benchmark, "_runtime_context", None),
+                container_backend=getattr(benchmark, "container_backend", None),
+            )
+            obs1, _ = t1.reset()
+            obs2, _ = t2.reset()
+            dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else str(obs1)
+            dump2 = obs2.model_dump() if hasattr(obs2, "model_dump") else str(obs2)
+            ok = dump1 == dump2
+        except Exception as e:
+            return False, str(e)
+        finally:
+            for t in (t1, t2):
+                if t is not None:
+                    try:
+                        t.close()
+                    except Exception:
+                        pass
+        return ok, "" if ok else "first observation differed between two resets"
     finally:
-        for t in (t1, t2):
-            if t is not None:
-                try:
-                    t.close()
-                except Exception:
-                    pass
-    return ok, "" if ok else "first observation differed between two resets"
+        try:
+            benchmark.close()
+        except Exception:
+            pass
 
 
 def check_benchmark_metadata(module: types.ModuleType) -> tuple[bool, str]:
     """
-    benchmark.metadata has non-empty name, version (stress_test_specs.md).
-    Module may expose get_benchmark_metadata() or benchmark_metadata.
+    Benchmark has non-empty name and version (stress_test_specs.md).
+    Module should expose benchmark_metadata (BenchmarkMetadata), e.g. from the
+    benchmark class: benchmark_metadata = MyBenchmark.benchmark_metadata.
     """
-    meta = getattr(module, "get_benchmark_metadata", None)
-    if callable(meta):
-        meta = meta()
-    else:
-        meta = getattr(module, "benchmark_metadata", None)
+    meta = getattr(module, "benchmark_metadata", None)
     if meta is None:
-        return False, "no benchmark_metadata or get_benchmark_metadata"
-    name = getattr(meta, "name", None) or (meta.get("name") if isinstance(meta, dict) else None)
-    version = getattr(meta, "version", None) or (meta.get("version") if isinstance(meta, dict) else None)
-    if not name or not str(name).strip():
-        return False, "metadata name empty"
-    if not version or not str(version).strip():
-        return False, "metadata version empty"
+        return False, "no benchmark_metadata"
+    if not isinstance(meta, BenchmarkMetadata):
+        return False, f"benchmark_metadata must be BenchmarkMetadata, got {type(meta).__name__}"
     return True, ""
 
 

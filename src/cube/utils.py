@@ -118,3 +118,37 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
         result["parameters"]["required"] = required_params
 
     return result
+
+
+def validate_action_schema(
+    name: str,
+    description: str | None,
+    parameters: dict | None,
+    *,
+    require_param_descriptions: bool = False,
+) -> tuple[bool, str]:
+    """Validate action schema fields (name, description, parameters).
+
+    Shared by cube.testing (stress-test tools_list check) and
+    tests/test_tool.assert_tool_docstrings_valid. When require_param_descriptions
+    is False, only action-level name/description/parameters are checked (Option A).
+    When True, each parameter (except 'self') must have a non-empty description.
+    """
+    if not name or not isinstance(name, str) or not str(name).strip():
+        return False, "missing or empty 'name'"
+    if not isinstance(description, str) or not description.strip():
+        return False, "missing or invalid 'description'"
+    if not isinstance(parameters, dict):
+        return False, "missing or invalid 'parameters'"
+    if require_param_descriptions:
+        props = parameters.get("properties", parameters)
+        if isinstance(props, dict):
+            for param_name, param_info in props.items():
+                if param_name == "self":
+                    continue
+                if not isinstance(param_info, dict):
+                    return False, f"parameter '{param_name}' invalid"
+                desc = param_info.get("description")
+                if not desc or not str(desc).strip():
+                    return False, f"parameter '{param_name}' missing description"
+    return True, ""
