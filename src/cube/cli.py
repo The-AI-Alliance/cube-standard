@@ -32,6 +32,8 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
+from cube import __version__
+
 # ── Console setup ─────────────────────────────────────────────────────────────
 
 _THEME = Theme(
@@ -54,7 +56,6 @@ err_console = Console(stderr=True, theme=_THEME)
 
 _TEMPLATE_DIR = Path(__file__).parent / "_template" / "new_cube_package"
 _DEFAULT_NAME = "my-benchmark"
-_VERSION = "0.1.0rc1"
 
 
 # ── Commands ───────────────────────────────────────────────────────────────────
@@ -432,7 +433,7 @@ def _print_help() -> None:
     console.print(
         Panel(
             table,
-            title=f"[brand]cube[/brand] [dim]v{_VERSION}[/dim]",
+            title=f"[brand]cube[/brand] [dim]v{__version__}[/dim]",
             subtitle="[dim]Common Unified Benchmark Environments[/dim]",
             border_style="blue",
             padding=(0, 1),
