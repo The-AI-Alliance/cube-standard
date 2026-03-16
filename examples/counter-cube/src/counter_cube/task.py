@@ -62,9 +62,8 @@ class CounterTaskConfig(TaskConfig):
           2. per-task tool_config in metadata.extra_info["tool_config"]
           3. CounterToolConfig defaults
         """
-        # Import here to avoid circular import (benchmark imports task)
-        from counter_cube.benchmark import CounterBenchmark
-        # TODO: find a proper solution for this circular import issue.
+        # Deferred import to avoid circular dependency (benchmark imports task).
+        from counter_cube.benchmark import CounterBenchmark  # noqa: PLC0415
 
         task_metadata: TaskMetadata = CounterBenchmark.task_metadata[self.task_id]
         tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
