@@ -1,4 +1,4 @@
-<img width="3168" height="1344" alt="Untitled" src="https://github.com/user-attachments/assets/68e50a4d-fe15-4d08-b52e-38dae3122493" />
+<img alt="CUBE Standard banner" src="docs/assets/images/cube_standard_banner.png" />
 
 # CUBE Standard
 
