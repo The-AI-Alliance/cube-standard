@@ -5,8 +5,8 @@ Used to validate the CUBE task loop in CI or local development.
 
 Public API
 ----------
+get_debug_benchmark()        → CubeBenchmark
 make_debug_agent(task_id)    → DebugAgent
-get_debug_task_configs()     → list[CubeTaskConfig]
 
 Usage::
 
@@ -20,7 +20,6 @@ import logging
 
 from cube.core import Action, ActionSchema, Observation
 from cube_package.benchmark import CubeBenchmark
-from cube_package.task import CubeTaskConfig
 
 logger = logging.getLogger(__name__)
 
@@ -97,15 +96,24 @@ class DebugAgent:
 # ---------------------------------------------------------------------------
 
 
+def get_debug_benchmark() -> CubeBenchmark:
+    """Return a CubeBenchmark instance scoped to the debug tasks.
+
+    Called once by cube.testing before any debug episodes run.
+    The harness will call benchmark.install() and benchmark.setup() on the
+    returned instance, iterate benchmark.get_task_configs() to discover tasks,
+    and call benchmark.close() at the end to free resources.
+
+    If only a subset of tasks has debug sequences, use subset_from_list::
+
+        return CubeBenchmark().subset_from_list(list(_TASK_ACTIONS))
+    """
+    return CubeBenchmark()
+
+
 def make_debug_agent(task_id: str) -> DebugAgent:
     """Return a fresh DebugAgent for the given task_id."""
     return DebugAgent(task_id)
-
-
-def get_debug_task_configs() -> list[CubeTaskConfig]:
-    """Return CubeTaskConfig objects for all registered debug tasks."""
-    task_metadata = CubeBenchmark.task_metadata
-    return [CubeTaskConfig(task_id=tid) for tid in _TASK_ACTIONS if tid in task_metadata]
 
 
 # ---------------------------------------------------------------------------

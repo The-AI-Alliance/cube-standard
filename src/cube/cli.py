@@ -292,7 +292,7 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
             Panel(
                 f"[error]Cannot import[/error] [file]{resolved}[/file]: {exc}\n"
                 "Make sure the package is installed (e.g. [cmd]uv sync[/cmd]) and "
-                "that the module exposes [cmd]get_debug_task_configs()[/cmd] and "
+                "that the module exposes [cmd]get_debug_benchmark()[/cmd] and "
                 "[cmd]make_debug_agent()[/cmd].",
                 title="[error]Import Error[/error]",
                 border_style="red",
@@ -301,7 +301,7 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         )
         sys.exit(1)
 
-    for required in ("get_debug_task_configs", "make_debug_agent"):
+    for required in ("get_debug_benchmark", "make_debug_agent"):
         if not callable(getattr(module, required, None)):
             err_console.print(
                 Panel(
@@ -325,8 +325,8 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         err_console.print(
             Panel(
                 "No debug tasks were run.\n"
-                "Make sure [file]debug.py[/file] has entries in [cmd]_TASK_ACTIONS[/cmd] "
-                "and [cmd]get_debug_task_configs()[/cmd] returns at least one config.",
+                "Make sure [cmd]get_debug_benchmark()[/cmd] returns a benchmark whose "
+                "[cmd]get_task_configs()[/cmd] yields at least one config.",
                 title="[warning]No tasks found[/warning]",
                 border_style="yellow",
                 padding=(0, 1),
