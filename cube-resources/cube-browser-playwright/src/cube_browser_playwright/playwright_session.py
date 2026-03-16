@@ -151,7 +151,7 @@ class PlaywrightSession(BrowserSession):
     @property
     def cdp_url(self) -> str:
         return self._cdp_url
-    
+
     @property
     def page(self) -> Page:
         return self._page
@@ -159,7 +159,7 @@ class PlaywrightSession(BrowserSession):
     @property
     def context(self) -> BrowserContext:
         return self._context
-    
+
     @property
     def playwright(self) -> Playwright:
         return self._playwright

@@ -5,6 +5,7 @@ description = "Concrete browser tool implementations for cube-standard benchmark
 requires-python = ">=3.12"
 dependencies = [
     "cube-standard",
+    "cube-browser-playwright",
     "playwright",
     "pillow>=9.0",
     "beautifulsoup4",
