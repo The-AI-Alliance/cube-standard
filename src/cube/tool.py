@@ -381,7 +381,7 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
 
-class BrowserTool(AbstractTool):
+class BrowserTool(Tool):
     """Abstract base for browser tools used by web-based tasks (setup, validation, observation)."""
 
     @property

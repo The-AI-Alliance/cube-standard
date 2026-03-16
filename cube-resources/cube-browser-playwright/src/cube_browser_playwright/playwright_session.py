@@ -151,10 +151,18 @@ class PlaywrightSession(BrowserSession):
     @property
     def cdp_url(self) -> str:
         return self._cdp_url
+    
+    @property
+    def page(self) -> Page:
+        return self._page
 
-    def get_playwright_session(self) -> tuple[Page, BrowserContext]:
-        """Return the live (page, context)."""
-        return self._page, self._context
+    @property
+    def context(self) -> BrowserContext:
+        return self._context
+    
+    @property
+    def playwright(self) -> Playwright:
+        return self._playwright
 
     def stop(self) -> None:
         """Close the context, release all Playwright resources, and remove the temp profile dir."""

@@ -53,13 +53,12 @@ class TestPlaywrightSession:
         session = _make_session(cdp_url="http://localhost:1234")
         assert session.cdp_url == "http://localhost:1234"
 
-    def test_get_playwright_session_returns_page_and_context(self) -> None:
+    def test_page_and_context_properties(self) -> None:
         mock_page = MagicMock()
         mock_context = MagicMock()
         session = _make_session(page=mock_page, context=mock_context)
-        page, context = session.get_playwright_session()
-        assert page is mock_page
-        assert context is mock_context
+        assert session.page is mock_page
+        assert session.context is mock_context
 
     def test_stop_closes_context(self) -> None:
         mock_context = MagicMock()
