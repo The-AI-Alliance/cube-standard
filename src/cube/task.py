@@ -265,7 +265,7 @@ class Task(TypedBaseModel, ABC):
         """
         (Optional) Return privileged information about the task such as:
         - solution: list[Action] = Solve the task using a pre-defined solution.
-        - evaluation_function_soruce_code: str
+        - evaluation_function_source_code: str
         - environment internal state summaries
         """
         return StructuredContent(data={})  # empty content by default, override to provide something else

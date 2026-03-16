@@ -58,7 +58,7 @@ Work through the `TODO` comments in this order:
 3. [`benchmark.py`](src/cube/_template/new_cube_package/src/cube_package/benchmark.py) — fill metadata (inline or via CSV/JSON)
 4. [`debug.py`](src/cube/_template/new_cube_package/src/cube_package/debug.py) — write deterministic action sequences for each task
 
-The counter-cube example covers all four layers concretely:
+The counter-cube example covers all five layers concretely:
 - Tool with conditional `action_set` filtering → [`examples/counter-cube/src/counter_cube/tool.py`](examples/counter-cube/src/counter_cube/tool.py)
 - Partial-progress reward and early termination → [`examples/counter-cube/src/counter_cube/task.py`](examples/counter-cube/src/counter_cube/task.py)
 - Hardcoded debug sequences → [`examples/counter-cube/src/counter_cube/debug.py`](examples/counter-cube/src/counter_cube/debug.py)

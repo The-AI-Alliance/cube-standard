@@ -9,7 +9,7 @@ authors = [
     { name = "Aman Jaiswal", email = "amanjaiswal73892@gmail.com" },
     { name = "Alexandre Lacoste", email = "alexandre.lacoste@servicenow.com" },
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115.0",
     "docstring_parser>=0.16",
