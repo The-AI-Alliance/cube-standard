@@ -6,6 +6,7 @@ import pytest
 
 from cube.core import Action, Observation, StepError, TextContent
 from cube.tool import AsyncTool, Tool, tool_action
+from cube.utils import function_to_dict, validate_action_schema
 
 
 def assert_tool_docstrings_valid(tool_cls: type) -> None:
@@ -17,8 +18,6 @@ def assert_tool_docstrings_valid(tool_cls: type) -> None:
 
     Raises AssertionError with a descriptive message on the first failure.
     """
-    from cube.utils import function_to_dict, validate_action_schema
-
     actions = [
         (name, func)
         for name, func in inspect.getmembers(tool_cls, predicate=callable)
