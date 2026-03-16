@@ -95,8 +95,8 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
 
     def reset(self) -> None:
         """Close the current page and open a fresh one (clears cookies and state)."""
-        self.page.close()
-        self.page = self._session.context.new_page()
+        self._session.stop()
+        self._session = self.config.browser.make()
 
     def close(self) -> None:
         """Release all Playwright resources via the session."""
