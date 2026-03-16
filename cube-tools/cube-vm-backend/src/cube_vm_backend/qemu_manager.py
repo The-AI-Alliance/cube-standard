@@ -150,10 +150,10 @@ class QEMUManager:
         """Allocate ports, create overlay, launch QEMU, and wait for VM readiness."""
         self.config.overlay_dir.mkdir(parents=True, exist_ok=True)
 
-        self._server_port = _get_free_port(5000)
-        self._chromium_port = _get_free_port(9222)
-        self._vnc_port = _get_free_port(8006)
-        self._vlc_port = _get_free_port(8080)
+        self._server_port = _reserve_free_port(5000)
+        self._chromium_port = _reserve_free_port(9222)
+        self._vnc_port = _reserve_free_port(8006)
+        self._vlc_port = _reserve_free_port(8080)
 
         self._overlay_path = self.config.overlay_dir / f"overlay_{self._server_port}.qcow2"
         self._qmp_socket = Path(tempfile.gettempdir()) / f"qemu_qmp_{self._server_port}.sock"
@@ -179,16 +179,15 @@ class QEMUManager:
     def stop(self) -> None:
         """Shut down the VM and clean up overlay and socket files."""
         self._stop_qemu()
-        if self._overlay_path and self._overlay_path.exists():
-            try:
-                self._overlay_path.unlink()
-            except OSError:
-                pass
-        if self._qmp_socket and self._qmp_socket.exists():
-            try:
-                self._qmp_socket.unlink()
-            except OSError:
-                pass
+        for path in (self._overlay_path, self._qmp_socket, self._pid_file):
+            if path and path.exists():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        # Release port reservations so other workers can reuse these ports
+        for port in (self._server_port, self._chromium_port, self._vnc_port, self._vlc_port):
+            _release_port_reservation(port)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -196,6 +195,9 @@ class QEMUManager:
 
     def _create_overlay(self) -> None:
         """Create a fresh qcow2 overlay on top of the read-only base image."""
+        if self._overlay_path.exists():
+            logger.warning("Stale overlay found at %s — removing before recreating", self._overlay_path)
+            self._overlay_path.unlink()
         cmd = [
             "qemu-img",
             "create",
@@ -208,10 +210,19 @@ class QEMUManager:
             str(self._overlay_path),
         ]
         logger.info("Creating overlay: %s", " ".join(cmd))
-        subprocess.run(cmd, check=True, capture_output=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"qemu-img create failed (exit {result.returncode}):\n{result.stderr}"
+            )
 
     def _launch_qemu(self) -> None:
         """Build QEMU command and launch as a background subprocess."""
+        for path in (self._qmp_socket, self._pid_file):
+            if path and path.exists():
+                logger.warning("Removing stale file before launch: %s", path)
+                path.unlink()
+
         qemu_cmd = ["qemu-system-x86_64"]
 
         # KVM hardware acceleration
@@ -292,12 +303,6 @@ class QEMUManager:
         elif self._pid_file and self._pid_file.exists():
             self._kill_by_pid()
 
-        # Wait briefly for process to exit
-        for _ in range(20):
-            if self._pid_file and not self._pid_file.exists():
-                break
-            time.sleep(0.5)
-
     def _kill_by_pid(self) -> None:
         """Terminate the QEMU process via the PID file."""
         if not self._pid_file or not self._pid_file.exists():
@@ -306,6 +311,15 @@ class QEMUManager:
             pid = int(self._pid_file.read_text().strip())
             os.kill(pid, 15)  # SIGTERM
             logger.info("Sent SIGTERM to QEMU pid %d", pid)
+            # Wait up to 5s for clean exit, then SIGKILL
+            for _ in range(10):
+                time.sleep(0.5)
+                try:
+                    os.kill(pid, 0)  # check if still alive
+                except ProcessLookupError:
+                    return  # process exited cleanly
+            os.kill(pid, 9)  # SIGKILL
+            logger.warning("QEMU pid %d did not exit after SIGTERM — sent SIGKILL", pid)
         except Exception as exc:
             logger.warning("Failed to kill QEMU by pid: %s", exc)
 
@@ -357,17 +371,43 @@ def _qmp_recv(sock: socket.socket) -> dict:
 # ------------------------------------------------------------------
 
 
-def _get_free_port(start: int = 5000) -> int:
-    """Return the first free TCP port at or above ``start``."""
+def _reserve_free_port(start: int = 5000) -> int:
+    """Atomically find and reserve a free TCP port at or above ``start``.
+
+    Uses O_EXCL flag to create a reservation file — this is race-free even
+    across multiple processes (e.g. parallel Ray workers), unlike bind+release.
+    Call _release_port_reservation() when the port is no longer needed.
+    """
+    tmp = Path(tempfile.gettempdir())
     for port in range(start, 65354):
+        reservation = tmp / f"qemu_port_{port}.reserved"
+        try:
+            # Atomically create reservation — fails if another process beat us to it
+            fd = os.open(str(reservation), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            os.close(fd)
+        except FileExistsError:
+            continue  # Another worker reserved this port
+        # Verify the port is actually free on the network
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind(("localhost", port))
-                return port
+                return port  # Reserved and free
             except OSError:
+                reservation.unlink()  # Port in use — release reservation and try next
                 continue
     raise RuntimeError(f"No free port found starting from {start}")
+
+
+def _release_port_reservation(port: Optional[int]) -> None:
+    """Remove the reservation file for a port allocated by _reserve_free_port."""
+    if port is None:
+        return
+    reservation = Path(tempfile.gettempdir()) / f"qemu_port_{port}.reserved"
+    try:
+        reservation.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 # ------------------------------------------------------------------
