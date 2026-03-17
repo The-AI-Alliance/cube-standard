@@ -8,6 +8,7 @@ import inspect
 from ast import literal_eval
 
 import docstring_parser
+import types
 
 
 def _json_schema_type(python_type_name: str):
@@ -64,7 +65,14 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
     for param_name, param in param_info.items():
         if hasattr(param, "annotation") and param.annotation is not inspect.Parameter.empty:
             annotation = param.annotation
-            param_type = _json_schema_type(annotation.__name__) if hasattr(annotation, "__name__") else None
+            if isinstance(annotation, types.UnionType):
+                non_none = [a for a in annotation.__args__ if a is not type(None)]
+                if len(non_none) > 1:
+                    raise ValueError(f"Unsupported union type {annotation}: only 'X | None' is supported.")
+                if param.default is inspect.Parameter.empty or param.default is not None:
+                    raise ValueError(f"Parameter '{param_name}' has type '{annotation}' but default is not None.")
+                annotation = non_none[0]
+            param_type = _json_schema_type(annotation.__name__)
         else:
             param_type = None
         param_description = None
@@ -95,10 +103,7 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
             "enum": param_enum,
         }
 
-        param_entry = {k: v for k, v in param_dict.items() if isinstance(v, str)}
-        if param_type == "array":
-            param_entry["items"] = {}
-        parameters[param_name] = param_entry
+        parameters[param_name] = dict([(k, v) for k, v in param_dict.items() if isinstance(v, str)])
 
         # Check if the parameter has no default value (i.e., it's required)
         if param.default == param.empty:

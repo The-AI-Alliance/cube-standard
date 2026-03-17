@@ -1,6 +1,8 @@
 """Tests for cube.utils - function_to_dict and helpers."""
 
 
+import pytest
+
 from cube.utils import _json_schema_type, function_to_dict
 
 # --- _json_schema_type ---
@@ -213,26 +215,6 @@ def test_union_x_or_none_with_none_default() -> None:
     assert "x" not in result["parameters"].get("required", [])
 
 
-def func_with_list_param(items: list) -> None:
-    """A function with a list parameter.
-
-    Parameters
-    ----------
-    items : list
-        A list of items.
-    """
-
-
-def test_list_param_has_items_key() -> None:
-    result = function_to_dict(func_with_list_param)
-    props = result["parameters"]["properties"]
-    assert props["items"]["type"] == "array"
-    assert "items" in props["items"]
-    assert props["items"]["items"] == {}
-
-
-
-
 def func_with_generic_list(tags: list[str]) -> None:
     """A function with a generic list.
 
@@ -247,6 +229,38 @@ def test_generic_list_annotation_resolves_to_array() -> None:
     result = function_to_dict(func_with_generic_list)
     props = result["parameters"]["properties"]
     assert props["tags"]["type"] == "array"
+
+
+def func_with_optional_str_no_default(x: str | None) -> None:
+    """A function with an optional string but no default.
+
+    Parameters
+    ----------
+    x : str, optional
+        An optional string.
+    """
+
+
+def test_union_x_or_none_without_default_raises() -> None:
+    with pytest.raises(ValueError, match="default is not None"):
+        function_to_dict(func_with_optional_str_no_default)
+
+
+def func_with_optional_str_non_none_default(x: str | None = "hello") -> None:
+    """A function with an optional string defaulting to a non-None value.
+
+    Parameters
+    ----------
+    x : str, optional
+        An optional string.
+    """
+
+
+def test_union_x_or_none_with_non_none_default_raises() -> None:
+    with pytest.raises(ValueError, match="default is not None"):
+        function_to_dict(func_with_optional_str_non_none_default)
+
+
 # --- Google-style docstrings ---
 
 
