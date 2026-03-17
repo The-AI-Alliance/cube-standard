@@ -65,6 +65,7 @@ from typing import Any, Callable, List
 
 from cube.container import Container
 from cube.core import Action, ActionSchema, Content, Observation, StepError, TypedBaseModel
+from cube.resources.browser_session import BrowserSession
 
 logger = logging.getLogger(__name__)
 
@@ -378,3 +379,17 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
             logger.exception(action_result)
             return StepError.from_exception(e)
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
+
+
+class BrowserTool(Tool):
+    """Abstract base for browser tools used by web-based tasks (setup, validation, observation)."""
+
+    @property
+    @abstractmethod
+    def session(self) -> BrowserSession: ...
+
+    @abstractmethod
+    def noop(self) -> None: ...
+
+    @abstractmethod
+    def page_obs(self) -> Observation: ...

@@ -1,0 +1,403 @@
+#,Benchmark,Super Category,Category,First Published,Source,URL,Tasks,Seed Diversity,Quality,Multi_Step,Seeds,Goals,Flags,Notes
+1,MiniWoB++,Computer Use,Web / UI,2017-08-06,ICML 2017,https://proceedings.mlr.press/v70/shi17a.html,125,low,8,yes,1,125,,
+2,WebShop,Computer Use,Web / UI,2022-07-04,arXiv 2207.01206,https://arxiv.org/abs/2207.01206,12087,low,8,yes,1,12087,,
+3,WebArena,Computer Use,Web / UI,2023-07-25,arXiv 2307.13854,https://arxiv.org/abs/2307.13854,812,none,9,yes,1,812,,
+4,VisualWebArena,Computer Use,Web / UI,2024-01-24,arXiv 2401.13649,https://arxiv.org/abs/2401.13649,910,none,8,yes,1,910,,
+5,WebVoyager,Computer Use,Web / UI,2024-01-25,arXiv 2401.13919,https://arxiv.org/abs/2401.13919,643,none,7,yes,1,643,,
+6,WebCanvas,Computer Use,Web / UI,2024-06-18,arXiv 2406.12373,https://arxiv.org/abs/2406.12373,542,none,7,yes,1,542,,
+7,WorkArena,Computer Use,Web / UI,2024-03-12,arXiv 2403.07718,https://arxiv.org/abs/2403.07718,33,high,8,yes,5,165,WRONG_TASK_COUNT,33 is task types; actual instances are far more
+8,WorkArena++,Computer Use,Web / UI,2024-07-07,arXiv 2407.05291,https://arxiv.org/abs/2407.05291,682,high,8,yes,5,3410,,
+9,AssistantBench,Computer Use,Web / UI,2024-07-22,arXiv 2407.15711,https://arxiv.org/abs/2407.15711,214,none,7,yes,1,214,,
+10,ST-WebAgentBench,Computer Use,Web / UI,2024-10-09,arXiv 2410.06703,https://arxiv.org/abs/2410.06703,222,none,7,yes,1,222,,
+11,WebChoreArena,Computer Use,Web / UI,2025-02-24,arXiv 2502.16804,https://arxiv.org/abs/2502.16804,532,none,7,yes,1,532,,
+12,OSWorld,Computer Use,Desktop,2024-04-11,arXiv 2404.07972,https://arxiv.org/abs/2404.07972,369,none,9,yes,1,369,,
+13,Windows Agent Arena,Computer Use,Desktop,2024-09-12,arXiv 2409.08264,https://arxiv.org/abs/2409.08264,154,none,7,yes,1,154,,
+14,macOSWorld,Computer Use,Desktop,2025-06-04,arXiv 2506.04135,https://arxiv.org/abs/2506.04135,202,none,7,yes,1,202,,
+15,OSUniverse,Computer Use,Desktop,2025-05-06,arXiv 2505.03570,https://arxiv.org/abs/2505.03570,160,medium,6,yes,3,480,,
+16,WorldGUI,Computer Use,Desktop,2025-02-12,arXiv 2502.08047,https://arxiv.org/abs/2502.08047,611,medium,7,yes,3,1833,,
+17,CRAB,Computer Use,Desktop,2024-07-01,arXiv 2407.01511,https://arxiv.org/abs/2407.01511,120,medium,7,yes,3,360,,
+18,TheAgentCompany,Computer Use,Desktop,2024-12-18,arXiv 2412.14161,https://arxiv.org/abs/2412.14161,175,none,8,yes,1,175,,
+19,Terminal-bench,Computer Use,Desktop,2026-01-17,arXiv 2601.11868,https://arxiv.org/abs/2601.11868,89,none,6,yes,1,89,,
+20,AndroidEnv,Computer Use,Mobile,2021-05-27,arXiv 2105.13231,https://arxiv.org/abs/2105.13231,116,high,7,yes,5,580,OPEN_ENV,General Android interaction environment; no fixed task set
+21,Mobile-Env,Computer Use,Mobile,2023-05-14,arXiv 2305.08144,https://arxiv.org/abs/2305.08144,224,medium,6,yes,3,672,,
+22,AndroidWorld,Computer Use,Mobile,2024-05-23,arXiv 2405.14573,https://arxiv.org/abs/2405.14573,116,high,8,yes,5,580,,
+23,AndroidLab,Computer Use,Mobile,2024-10-31,arXiv 2410.24024,https://arxiv.org/abs/2410.24024,138,medium,7,yes,3,414,WRONG_TASK_COUNT,94 in CSV; 138 is the correct task count
+24,AndroidArena,Computer Use,Mobile,2024-02-09,arXiv 2402.06596,https://arxiv.org/abs/2402.06596,221,none,7,yes,1,221,,
+25,MobileAgentBench,Computer Use,Mobile,2024-06-12,arXiv 2406.08184,https://arxiv.org/abs/2406.08184,100,none,6,yes,1,100,,
+26,A3,Computer Use,Mobile,2025-01-02,arXiv 2501.01149,https://arxiv.org/abs/2501.01149,201,none,6,yes,1,201,,
+27,SPA-Bench,Computer Use,Mobile,2024-10-19,arXiv 2410.15164,https://arxiv.org/abs/2410.15164,340,none,7,yes,1,340,,
+28,LlamaTouch,Computer Use,Mobile,2024-04-12,arXiv 2404.16054,https://arxiv.org/abs/2404.16054,496,none,6,yes,1,496,,
+29,ALFRED,Embodied AI,Embodied 3D,2019-12-03,arXiv 1912.01734,https://arxiv.org/abs/1912.01734,8055,low,8,yes,1,8055,,
+30,ALFWorld,Embodied AI,Embodied 3D,2020-10-08,arXiv 2010.03768,https://arxiv.org/abs/2010.03768,3553,medium,8,yes,3,10659,,
+31,RoboTHOR,Embodied AI,Embodied 3D,2020-04-14,arXiv 2004.06799,https://arxiv.org/abs/2004.06799,89,medium,7,yes,3,267,,
+32,ManipulaTHOR,Embodied AI,Embodied 3D,2021-04-22,arXiv 2104.11213,https://arxiv.org/abs/2104.11213,30,medium,6,yes,3,90,,
+33,ProcTHOR,Embodied AI,Embodied 3D,2022-06-28,arXiv 2206.13695,https://arxiv.org/abs/2206.13695,10000,high,7,yes,5,50000,OPEN_ENV,Procedurally generated environments; no fixed task list
+34,iGibson 2.0,Embodied AI,Embodied 3D,2021-08-06,arXiv 2108.03272,https://arxiv.org/abs/2108.03272,500,high,7,yes,5,2500,,
+35,BEHAVIOR-100,Embodied AI,Embodied 3D,2021-08-06,arXiv 2108.03332,https://arxiv.org/abs/2108.03332,100,low,7,yes,1,100,,
+36,BEHAVIOR-1K,Embodied AI,Embodied 3D,2022-09-10,CoRL 2022,https://proceedings.mlr.press/v205/,1000,medium,8,yes,3,3000,,
+37,Habitat 2.0,Embodied AI,Embodied 3D,2021-06-28,arXiv 2106.14405,https://arxiv.org/abs/2106.14405,2000,high,8,yes,5,10000,,
+38,Habitat 3.0,Embodied AI,Embodied 3D,2023-10-19,arXiv 2310.13724,https://arxiv.org/abs/2310.13724,3000,high,8,yes,5,15000,,
+39,PARTNR,Embodied AI,Embodied 3D,2024-10-31,arXiv 2411.00081,https://arxiv.org/abs/2411.00081,4000,high,8,yes,5,20000,WRONG_TASK_COUNT,4000 used in eval vs 100K+ total generated tasks
+40,TEACh,Embodied AI,Embodied 3D,2021-10-01,arXiv 2110.00534,https://arxiv.org/abs/2110.00534,3047,low,7,yes,1,3047,,
+41,ThreeDWorld,Embodied AI,Embodied 3D,2020-07-09,arXiv 2007.04954,https://arxiv.org/abs/2007.04954,200,medium,6,yes,3,600,,
+42,ARNOLD,Embodied AI,Embodied 3D,2023-04-09,arXiv 2304.04321,https://arxiv.org/abs/2304.04321,8,medium,5,yes,3,24,LOW_TASKS,Only 8 manipulation tasks
+43,MineDojo,Embodied AI,Embodied 3D,2022-06-17,arXiv 2206.08853,https://arxiv.org/abs/2206.08853,3000,high,7,yes,5,15000,OPEN_ENV,Open-world Minecraft; many procedurally defined tasks
+44,EmbodiedBench,Embodied AI,Embodied 3D,2025-02-13,arXiv 2502.09560,https://arxiv.org/abs/2502.09560,1128,low,7,yes,1,1128,,
+45,RoboCasa,Embodied AI,Embodied 3D,2024-06-04,arXiv 2406.02523,https://arxiv.org/abs/2406.02523,2200,medium,7,yes,3,6600,WRONG_TASK_COUNT,"2200 are demo trajectories, not task definitions"
+46,EmbodiedCity,Embodied AI,Embodied 3D,2024-10-12,arXiv 2410.09604,https://arxiv.org/abs/2410.09604,500,medium,6,yes,3,1500,,
+47,VLN-CE,Embodied AI,Navigation,2020-04-06,arXiv 2004.02857,https://arxiv.org/abs/2004.02857,4500,low,7,yes,1,4500,,
+48,SoundSpaces,Embodied AI,Navigation,2019-12-24,arXiv 1912.11474,https://arxiv.org/abs/1912.11474,1000,high,6,yes,5,5000,,
+49,ObjectNav,Embodied AI,Navigation,2020-06-23,arXiv 2006.13171,https://arxiv.org/abs/2006.13171,2000,high,6,yes,5,10000,OPEN_ENV,Procedurally generated object-navigation; no fixed task list
+50,MultiON,Embodied AI,Navigation,2020-12-07,arXiv 2012.03912,https://arxiv.org/abs/2012.03912,100,medium,6,yes,3,300,,
+51,HA-VLN,Embodied AI,Navigation,2024-05-21,arXiv 2406.19236,https://arxiv.org/abs/2406.19236,500,low,4,yes,1,500,HALLUCINATION_RISK;LOW_QUALITY,Limited verifiable information about this benchmark
+52,RLBench,Embodied AI,Robotics,2019-09-26,arXiv 1909.12271,https://arxiv.org/abs/1909.12271,100,low,7,yes,1,100,,
+53,Meta-World,Embodied AI,Robotics,2019-10-24,arXiv 1910.10897,https://arxiv.org/abs/1910.10897,50,low,7,yes,1,50,,
+54,robosuite,Embodied AI,Robotics,2020-09-25,arXiv 2009.12293,https://arxiv.org/abs/2009.12293,17,low,6,yes,1,17,,
+55,SAPIEN,Embodied AI,Robotics,2020-03-19,arXiv 2003.08515,https://arxiv.org/abs/2003.08515,100,medium,6,yes,3,300,WRONG_TASK_COUNT,Task count covers articulated-object scenarios; verify distinct tasks
+56,SoftGym,Embodied AI,Robotics,2020-11-14,arXiv 2011.07215,https://arxiv.org/abs/2011.07215,10,low,5,yes,1,10,LOW_TASKS,Only 10 cloth/fluid manipulation tasks
+57,ManiSkill,Embodied AI,Robotics,2021-07-30,arXiv 2107.14483,https://arxiv.org/abs/2107.14483,20,low,7,yes,1,20,,
+58,CALVIN,Embodied AI,Robotics,2021-12-06,arXiv 2112.03227,https://arxiv.org/abs/2112.03227,34,medium,6,yes,3,102,,
+59,FurnitureBench,Embodied AI,Robotics,2023-05-05,arXiv 2305.12821,https://arxiv.org/abs/2305.12821,5,low,4,yes,1,5,LOW_TASKS;LOW_QUALITY,Only 5 furniture assembly tasks
+60,LIBERO,Embodied AI,Robotics,2023-06-06,arXiv 2306.03355,https://arxiv.org/abs/2306.03355,130,low,7,yes,1,130,,
+61,HumanoidBench,Embodied AI,Robotics,2024-03-15,arXiv 2403.10506,https://arxiv.org/abs/2403.10506,27,low,6,yes,1,27,,
+62,BEDI,Embodied AI,Robotics,2025-05-23,arXiv 2505.18229,https://arxiv.org/abs/2505.18229,200,low,4,yes,1,200,HALLUCINATION_RISK;LOW_QUALITY,Limited external verification available
+63,AirCopBench,Embodied AI,Robotics,2025-11-14,arXiv 2511.11025,https://arxiv.org/abs/2511.11025,200,low,4,yes,1,200,HALLUCINATION_RISK;LOW_QUALITY,Limited external verification available
+64,SWE-bench,Software,Code / SWE,2023-10-10,arXiv 2310.06770,https://arxiv.org/abs/2310.06770,2294,none,9,yes,1,2294,,
+65,InterCode,Software,Code / SWE,2023-06-26,arXiv 2306.14898,https://arxiv.org/abs/2306.14898,400,none,7,yes,1,400,,
+66,MLAgentBench,Software,Code / SWE,2023-10-05,arXiv 2310.03302,https://arxiv.org/abs/2310.03302,13,none,6,yes,1,13,LOW_TASKS,Only 13 ML engineering tasks
+67,Commit0,Software,Code / SWE,2024-12-02,arXiv 2412.01769,https://arxiv.org/abs/2412.01769,54,none,7,yes,1,54,,
+68,MLE-bench,Software,Code / SWE,2024-10-09,arXiv 2410.07095,https://arxiv.org/abs/2410.07095,75,none,8,yes,1,75,,
+69,PaperBench,Software,Code / SWE,2025-04-02,arXiv 2504.01848,https://arxiv.org/abs/2504.01848,20,none,7,yes,1,20,,
+70,FeatureBench,Software,Code / SWE,2026-02-11,arXiv 2602.10975,https://arxiv.org/abs/2602.10975,200,none,6,yes,1,200,,
+71,AgentBench,Software,Tool Use / API,2023-08-07,arXiv 2308.03688,https://arxiv.org/abs/2308.03688,1360,none,8,yes,1,1360,,
+72,ToolBench,Software,Tool Use / API,2023-07-31,arXiv 2307.16789,https://arxiv.org/abs/2307.16789,1200,none,7,yes,1,1200,WRONG_TASK_COUNT,16000 is API count; ~1200 are actual eval dialogues
+73,API-Bank,Software,Tool Use / API,2023-04-14,arXiv 2304.08244,https://arxiv.org/abs/2304.08244,314,none,6,yes,1,314,WRONG_TASK_COUNT,2138 is API count; 314 are eval dialogues
+74,MINT,Software,Tool Use / API,2023-09-19,arXiv 2309.10691,https://arxiv.org/abs/2309.10691,586,none,6,yes,1,586,,
+75,BFCL,Software,Tool Use / API,2024-02-26,Gorilla Blog (live leaderboard),https://gorilla.cs.berkeley.edu/leaderboard.html,3000,none,8,partial,1,3000,,Many subtasks are single function calls; multi-turn subset qualifies
+76,AppWorld,Software,Tool Use / API,2024-07-26,arXiv 2407.18901,https://arxiv.org/abs/2407.18901,750,none,8,yes,1,750,,
+77,ToolSandbox,Software,Tool Use / API,2024-08-08,arXiv 2408.04682,https://arxiv.org/abs/2408.04682,3000,none,7,yes,1,3000,,
+78,GTA,Software,Tool Use / API,2024-07-11,arXiv 2407.08713,https://arxiv.org/abs/2407.08713,229,none,6,yes,1,229,,
+79,MCP-Universe,Software,Tool Use / API,2025-08-20,arXiv 2508.14704,https://arxiv.org/abs/2508.14704,200,none,6,yes,1,200,,
+80,ScienceWorld,Science,Scientific Discovery,2022-03-14,arXiv 2203.07540,https://arxiv.org/abs/2203.07540,30,low,7,yes,1,30,WRONG_TASK_COUNT,230 is task variations; 30 are core task types
+81,ScienceAgentBench,Science,Scientific Discovery,2024-10-07,arXiv 2410.05080,https://arxiv.org/abs/2410.05080,102,none,7,yes,1,102,,
+82,SciCode,Science,Scientific Discovery,2024-07-18,arXiv 2407.13168,https://arxiv.org/abs/2407.13168,338,none,7,yes,1,338,,
+83,DiscoveryWorld,Science,Scientific Discovery,2024-06-10,arXiv 2406.06769,https://arxiv.org/abs/2406.06769,120,high,7,yes,5,600,WRONG_TASK_COUNT,2000 is generated variations; 120 core tasks
+84,CORE-Bench,Science,Scientific Discovery,2024-09-17,arXiv 2409.11363,https://arxiv.org/abs/2409.11363,270,none,7,yes,1,270,,
+85,BLADE,Science,Scientific Discovery,2024-08-19,arXiv 2408.09667,https://arxiv.org/abs/2408.09667,12,none,5,yes,1,12,WRONG_TASK_COUNT;LOW_TASKS,1000 was sub-operations; 12 are actual datasets to analyze
+86,GenoTEX,Science,Scientific Discovery,2024-06-21,arXiv 2406.15341,https://arxiv.org/abs/2406.15341,132,none,6,yes,1,132,WRONG_TASK_COUNT,200 in CSV; 132 are actual eval tasks
+87,MedAgentBench,Science,Healthcare,2025-01-24,arXiv 2501.14654,https://arxiv.org/abs/2501.14654,300,none,6,yes,1,300,POTENTIAL_DUPLICATE:MedAgentsBench,Similar to MedAgentsBench (arXiv 2503.07459); verify if distinct
+88,AI Hospital,Science,Healthcare,2024-02-15,arXiv 2402.09742,https://arxiv.org/abs/2402.09742,506,high,7,yes,5,2530,,
+89,AgentClinic,Science,Healthcare,2024-05-13,arXiv 2405.07960,https://arxiv.org/abs/2405.07960,318,none,7,yes,1,318,,
+90,DrVD-Bench,Science,Healthcare,2025-05-30,arXiv 2505.24173,https://arxiv.org/abs/2505.24173,7789,none,3,no,1,7789,NOT_MULTISTEP;LOW_QUALITY,VLM image-QA for driving; single answer per image
+91,Spider 2.0,Science,Data Science,2024-11-12,arXiv 2411.07763,https://arxiv.org/abs/2411.07763,632,none,8,yes,1,632,,
+92,DSBench,Science,Data Science,2024-09-12,arXiv 2409.07703,https://arxiv.org/abs/2409.07703,540,none,7,yes,1,540,,
+93,Cybench,Security,Cybersecurity,2024-08-15,arXiv 2408.08926,https://arxiv.org/abs/2408.08926,40,none,8,yes,1,40,,
+94,NYU CTF Bench,Security,Cybersecurity,2024-06-08,arXiv 2406.05590,https://arxiv.org/abs/2406.05590,200,none,7,yes,1,200,,
+95,BountyBench,Security,Cybersecurity,2025-04-12,arXiv 2505.15216,https://arxiv.org/abs/2505.15216,120,none,7,yes,1,120,,
+96,RedCode,Security,Cybersecurity,2024-11-12,arXiv 2411.07781,https://arxiv.org/abs/2411.07781,4166,none,7,yes,1,4166,,
+97,WASP,Security,Cybersecurity,2025-04-22,arXiv 2504.18575,https://arxiv.org/abs/2504.18575,84,medium,6,yes,3,252,,
+98,DoomArena,Security,Cybersecurity,2025-04-18,arXiv 2504.14064,https://arxiv.org/abs/2504.14064,100,none,4,yes,1,100,HALLUCINATION_RISK;LOW_QUALITY,Limited external verification; may not exist as claimed
+99,NetHack,Simulation,Game / RL,2020-06-24,arXiv 2006.13760,https://arxiv.org/abs/2006.13760,500,high,7,yes,5,2500,OPEN_ENV;WRONG_TASK_COUNT,1 in CSV; 500 representative episodes for standard eval
+100,Jericho,Simulation,Game / RL,2019-09-11,arXiv 1909.05398,https://arxiv.org/abs/1909.05398,55,low,6,yes,1,55,WRONG_TASK_COUNT,57→55 active text adventure games
+101,MiniHack,Simulation,Game / RL,2021-09-27,arXiv 2109.13202,https://arxiv.org/abs/2109.13202,70,medium,6,yes,3,210,,
+102,Crafter,Simulation,Game / RL,2021-09-14,arXiv 2109.06780,https://arxiv.org/abs/2109.06780,100,high,6,yes,5,500,OPEN_ENV;WRONG_TASK_COUNT,1 in CSV; eval uses 100 episodes per seed
+103,MineRL,Simulation,Game / RL,2019-07-29,arXiv 1907.13440,https://arxiv.org/abs/1907.13440,5,medium,6,yes,3,15,LOW_TASKS,Only 5 task types
+104,MCU,Simulation,Game / RL,2023-10-12,arXiv 2310.08367,https://arxiv.org/abs/2310.08367,3452,high,6,yes,5,17260,,
+105,SmartPlay,Simulation,Game / RL,2023-10-02,arXiv 2310.01557,https://arxiv.org/abs/2310.01557,6,high,5,yes,5,30,LOW_TASKS,6 game environments
+106,BALROG,Simulation,Game / RL,2024-11-20,arXiv 2411.13543,https://arxiv.org/abs/2411.13543,6,high,6,yes,5,30,LOW_TASKS,6 game environments (many episodes each)
+107,Craftax,Simulation,Game / RL,2024-02-26,arXiv 2402.16801,https://arxiv.org/abs/2402.16801,65,high,6,yes,5,325,,
+108,Baba Is AI,Simulation,Game / RL,2024-07-18,arXiv 2407.13729,https://arxiv.org/abs/2407.13729,40,low,6,yes,1,40,,
+109,lmgame-Bench,Simulation,Game / RL,2025-05-21,arXiv 2505.15146,https://arxiv.org/abs/2505.15146,6,high,5,yes,5,30,LOW_TASKS,6 game environments
+110,TALES,Simulation,Game / RL,2025-04-19,arXiv 2504.14128,https://arxiv.org/abs/2504.14128,122,medium,6,yes,3,366,,
+111,GAMEBoT,Simulation,Game / RL,2024-12-18,arXiv 2412.13602,https://arxiv.org/abs/2412.13602,8,low,5,yes,1,8,LOW_TASKS,8 game tasks
+112,Robotouille,Simulation,Game / RL,2025-02-06,arXiv 2502.05227,https://arxiv.org/abs/2502.05227,30,medium,6,yes,3,90,,
+113,SMAC,Simulation,Multi-Agent,2019-02-11,arXiv 1902.04043,https://arxiv.org/abs/1902.04043,14,low,6,yes,1,14,,
+114,PettingZoo,Simulation,Multi-Agent,2020-09-30,arXiv 2009.14471,https://arxiv.org/abs/2009.14471,70,medium,6,yes,3,210,,
+115,Melting Pot,Simulation,Multi-Agent,2021-07-14,arXiv 2107.06857,https://arxiv.org/abs/2107.06857,800,low,7,yes,1,800,,
+116,Hanabi,Simulation,Multi-Agent,2019-02-01,arXiv 1902.00506,https://arxiv.org/abs/1902.00506,3,low,5,yes,1,3,LOW_TASKS,3 rule variants; primarily episodic game
+117,Overcooked-AI,Simulation,Multi-Agent,2019-10-13,arXiv 1910.05789,https://arxiv.org/abs/1910.05789,10,low,6,yes,1,10,,
+118,Diplomacy,Simulation,Multi-Agent,2022-10-11,arXiv 2210.05492,https://arxiv.org/abs/2210.05492,200,low,7,yes,1,200,,
+119,Google Football,Simulation,Multi-Agent,2019-07-25,arXiv 1907.11180,https://arxiv.org/abs/1907.11180,14,high,6,yes,5,70,,
+120,OpenSpiel,Simulation,Multi-Agent,2019-08-26,arXiv 1908.09453,https://arxiv.org/abs/1908.09453,80,low,6,yes,1,80,,
+121,JaxMARL,Simulation,Multi-Agent,2023-11-16,arXiv 2311.10090,https://arxiv.org/abs/2311.10090,8,low,5,yes,1,8,LOW_TASKS,8 environments; designed as training framework
+122,MultiAgentBench,Simulation,Multi-Agent,2025-03-03,arXiv 2503.01935,https://arxiv.org/abs/2503.01935,600,low,7,yes,1,600,,
+123,BattleAgentBench,Simulation,Multi-Agent,2024-08-28,arXiv 2408.15971,https://arxiv.org/abs/2408.15971,21,low,5,yes,1,21,,
+124,MAgIC,Simulation,Multi-Agent,2023-11-14,arXiv 2311.08562,https://arxiv.org/abs/2311.08562,5,low,4,yes,1,5,LOW_TASKS;LOW_QUALITY,Only 5 game tasks
+125,HLSMAC,Simulation,Multi-Agent,2025-09-16,arXiv 2509.12927,https://arxiv.org/abs/2509.12927,12,low,5,yes,1,12,LOW_TASKS,12 scenarios
+126,Generative Agents,Simulation,Social Simulation,2023-04-07,arXiv 2304.03442,https://arxiv.org/abs/2304.03442,1,high,4,partial,5,5,NOT_MULTISTEP;LOW_TASKS;LOW_QUALITY,Open-ended social simulation; no discrete measurable tasks
+127,SOTOPIA,Simulation,Social Simulation,2023-10-18,arXiv 2310.11667,https://arxiv.org/abs/2310.11667,11000,high,8,yes,5,55000,,
+128,AgentSims,Simulation,Social Simulation,2023-08-08,arXiv 2308.04026,https://arxiv.org/abs/2308.04026,8,low,4,yes,1,8,LOW_TASKS;LOW_QUALITY,8 simulated tasks
+129,AgentVerse,Simulation,Social Simulation,2023-08-21,arXiv 2308.10848,https://arxiv.org/abs/2308.10848,7,low,4,yes,1,7,LOW_TASKS;LOW_QUALITY,7 tasks
+130,ChatArena,Simulation,Social Simulation,2023-03-06,GitHub (no arXiv),https://github.com/chatarena/chatarena,7,low,4,yes,1,7,LOW_TASKS;LOW_QUALITY,7 tasks
+131,AvalonBench,Simulation,Social Simulation,2023-10-08,arXiv 2310.05036,https://arxiv.org/abs/2310.05036,30,low,6,yes,1,30,,
+132,Werewolf,Simulation,Social Simulation,2023-09-09,arXiv 2309.04658,https://arxiv.org/abs/2309.04658,1,low,4,yes,1,1,OPEN_ENV;LOW_TASKS;LOW_QUALITY,1 game environment; no fixed task set
+133,AmongAgents,Simulation,Social Simulation,2024-07-23,arXiv 2407.16521,https://arxiv.org/abs/2407.16521,80,low,5,yes,1,80,,
+134,Clembench,Simulation,Social Simulation,2023-05-22,arXiv 2305.13455,https://arxiv.org/abs/2305.13455,250,low,7,yes,1,250,,
+135,LLMsPark,Simulation,Social Simulation,2025-09-20,arXiv 2509.16610,https://arxiv.org/abs/2509.16610,5,low,4,yes,1,5,LOW_TASKS;LOW_QUALITY,5 social scenarios
+136,τ-bench,Agentic,Workflow,2024-06-17,arXiv 2406.12045,https://arxiv.org/abs/2406.12045,115,high,8,yes,5,575,,
+137,CRMArena,Agentic,Workflow,2024-11-04,arXiv 2411.02305,https://arxiv.org/abs/2411.02305,336,high,7,yes,5,1680,,
+138,APEX-Agents,Agentic,Workflow,2026-01-20,arXiv 2601.14242,https://arxiv.org/abs/2601.14242,480,none,6,yes,1,480,,
+139,GAIA,Agentic,Planning,2023-11-21,arXiv 2311.12983,https://arxiv.org/abs/2311.12983,450,none,9,yes,1,450,,
+140,TravelPlanner,Agentic,Planning,2024-02-02,arXiv 2402.01622,https://arxiv.org/abs/2402.01622,1225,none,8,yes,1,1225,,
+141,AgentBoard,Agentic,Planning,2024-01-24,arXiv 2401.13178,https://arxiv.org/abs/2401.13178,1013,none,7,yes,1,1013,,
+142,FutureX,Agentic,Planning,2025-08-16,arXiv 2508.11987,https://arxiv.org/abs/2508.11987,500,medium,6,yes,3,1500,,
+143,CARLA,Domain,Autonomous Driving,2017-11-10,arXiv 1711.03938,https://arxiv.org/abs/1711.03938,100,high,7,yes,5,500,,
+144,nuPlan,Domain,Autonomous Driving,2021-06-22,arXiv 2106.11810,https://arxiv.org/abs/2106.11810,1400,medium,7,yes,3,4200,,
+145,MetaDrive,Domain,Autonomous Driving,2021-09-26,arXiv 2109.12674,https://arxiv.org/abs/2109.12674,1,high,6,yes,5,5,OPEN_ENV;LOW_TASKS,1 environment; procedurally generated scenarios
+146,AI-Trader,Domain,Finance,2025-12-01,arXiv 2512.10971,https://arxiv.org/abs/2512.10971,1,high,3,partial,5,5,OPEN_ENV;TRADING_SIM;LOW_TASKS;LOW_QUALITY,Trading simulation; no discrete task evaluation
+147,FAB,Domain,Finance,2025-05-20,arXiv 2508.00828,https://arxiv.org/abs/2508.00828,537,none,6,yes,1,537,,
+148,AgentsCourt,Domain,Legal,2024-03-05,arXiv 2403.02959,https://arxiv.org/abs/2403.02959,420,none,6,yes,1,420,,
+149,ToolEmu,Agentic,Agent Safety,2023-09-25,arXiv 2309.15817,https://arxiv.org/abs/2309.15817,144,none,7,yes,1,144,,
+150,R-Judge,Agentic,Agent Safety,2024-01-18,arXiv 2401.10019,https://arxiv.org/abs/2401.10019,569,none,5,no,1,569,NOT_MULTISTEP,Safety judgment eval; not sequential agent task
+151,AgentHarm,Agentic,Agent Safety,2024-10-11,arXiv 2410.09024,https://arxiv.org/abs/2410.09024,440,none,7,yes,1,440,,
+152,LLF-Bench,Agentic,RL / Multi-Turn,2023-12-11,arXiv 2312.06853,https://arxiv.org/abs/2312.06853,50,low,6,yes,1,50,,
+153,LMRL-Gym,Agentic,RL / Multi-Turn,2023-11-30,arXiv 2311.18232,https://arxiv.org/abs/2311.18232,7,medium,4,yes,3,21,LOW_TASKS;LOW_QUALITY,7 RL environments
+154,SpatiaLQA,Domain,Niche,2026-02-24,arXiv 2602.20901,https://arxiv.org/abs/2602.20901,9605,none,3,no,1,9605,NOT_MULTISTEP;LOW_QUALITY,"Spatial QA pairs; single answers, not agent trajectories"
+155,EgoLife,Domain,Niche,2025-03-05,arXiv 2503.03803,https://arxiv.org/abs/2503.03803,3000,high,3,no,5,15000,NOT_MULTISTEP;LOW_QUALITY,Egocentric video MCQ; not sequential agent decisions
+156,ExAct,Domain,Niche,2025-06-06,arXiv 2506.06277,https://arxiv.org/abs/2506.06277,3521,none,3,no,1,3521,NOT_MULTISTEP;LOW_QUALITY,Video QA pairs; not agent trajectories
+157,HumbleBench,Domain,Niche,2025-09-11,arXiv 2509.09658,https://arxiv.org/abs/2509.09658,22831,none,3,no,1,22831,NOT_MULTISTEP;LOW_QUALITY,MCQ hallucination benchmark; not sequential agent evaluation
+158,Online-Mind2Web,Computer Use,Web / UI,2025-04-02,arXiv 2504.01382,https://arxiv.org/abs/2504.01382,300,none,7,yes,1,300,,
+159,BrowseComp,Computer Use,Web / UI,2025-04-16,arXiv 2504.12516,https://arxiv.org/abs/2504.12516,1266,none,7,yes,1,1266,,
+160,RealWebAssist,Computer Use,Web / UI,2025-04-14,arXiv 2504.10445,https://arxiv.org/abs/2504.10445,107,none,7,yes,1,107,,
+161,SafeArena,Computer Use,Web / UI,2025-03-06,arXiv 2503.04957,https://arxiv.org/abs/2503.04957,500,none,7,yes,1,500,,
+162,Mind2Web 2,Computer Use,Web / UI,2025-06-26,arXiv 2506.21506,https://arxiv.org/abs/2506.21506,130,none,7,yes,1,130,,
+163,DeepShop,Computer Use,Web / UI,2025-06-03,arXiv 2506.02839,https://arxiv.org/abs/2506.02839,150,none,6,yes,1,150,,
+164,ShoppingBench,Computer Use,Web / UI,2025-08-06,arXiv 2508.04266,https://arxiv.org/abs/2508.04266,3310,medium,7,yes,3,9930,,
+165,WebMall,Computer Use,Web / UI,2025-08-18,arXiv 2508.13024,https://arxiv.org/abs/2508.13024,91,none,6,yes,1,91,,
+166,EcomBench,Computer Use,Web / UI,2025-12-09,arXiv 2512.08868,https://arxiv.org/abs/2512.08868,500,none,6,yes,1,500,,
+167,AgenticShop,Computer Use,Web / UI,2026-02-12,arXiv 2602.12315,https://arxiv.org/abs/2602.12315,100,medium,6,yes,3,300,,
+168,MM-BrowseComp,Computer Use,Web / UI,2025-08-14,arXiv 2508.13186,https://arxiv.org/abs/2508.13186,224,none,6,yes,1,224,,
+169,WideSearch,Computer Use,Web / UI,2025-08-11,arXiv 2508.07999,https://arxiv.org/abs/2508.07999,200,none,6,yes,1,200,,
+170,SecureWebArena,Computer Use,Web / UI,2025-10-11,arXiv 2510.10073,https://arxiv.org/abs/2510.10073,330,none,7,yes,1,330,,
+171,LiveResearchBench,Computer Use,Web / UI,2025-10-16,arXiv 2510.14240,https://arxiv.org/abs/2510.14240,100,high,6,yes,5,500,,
+172,Gaia2,Computer Use,Web / UI,2026-02-12,arXiv 2602.11964,https://arxiv.org/abs/2602.11964,1120,medium,8,yes,3,3360,,
+173,ScreenSpot-Pro,Computer Use,Desktop,2025-04-10,arXiv 2504.07981,https://arxiv.org/abs/2504.07981,1580,none,4,no,1,1580,NOT_MULTISTEP;LOW_QUALITY,GUI grounding (single-click localization); not multi-step
+174,OSWorld-G,Computer Use,Desktop,2025-05-19,arXiv 2505.13227,https://arxiv.org/abs/2505.13227,564,none,4,no,1,564,NOT_MULTISTEP;LOW_QUALITY,GUI grounding tasks; single-step element localization
+175,GUI-360,Computer Use,Desktop,2025-11-07,arXiv 2511.04307,https://arxiv.org/abs/2511.04307,2400,low,7,yes,1,2400,,
+176,MMBench-GUI,Computer Use,Desktop,2025-07-25,arXiv 2507.19478,https://arxiv.org/abs/2507.19478,8123,none,7,yes,1,8123,,
+177,AgencyBench,Computer Use,Desktop,2026-01-19,arXiv 2601.11044,https://arxiv.org/abs/2601.11044,138,none,6,yes,1,138,,
+178,FedMABench,Computer Use,Mobile,2025-03-07,arXiv 2503.05143,https://arxiv.org/abs/2503.05143,200,none,6,yes,1,200,,
+179,Mobile-Bench-v2,Computer Use,Mobile,2025-05-19,arXiv 2505.11891,https://arxiv.org/abs/2505.11891,800,none,7,yes,1,800,,
+180,MVISU-Bench,Computer Use,Mobile,2025-08-12,arXiv 2508.09057,https://arxiv.org/abs/2508.09057,404,none,6,yes,1,404,,
+181,MemGUI-Bench,Computer Use,Mobile,2026-02-09,arXiv 2602.06075,https://arxiv.org/abs/2602.06075,128,low,6,yes,1,128,,
+182,AmbiBench,Computer Use,Mobile,2026-02-17,arXiv 2602.11750,https://arxiv.org/abs/2602.11750,240,high,6,yes,5,1200,,
+183,LiveAgentBench,Computer Use,Mobile,2026-03-04,arXiv 2603.02586,https://arxiv.org/abs/2603.02586,374,high,6,yes,5,1870,,
+184,EmbodiedEval,Embodied AI,Embodied 3D,2025-01-21,arXiv 2501.11858,https://arxiv.org/abs/2501.11858,328,low,6,yes,1,328,WRONG_TASK_COUNT,1000 was total instances; 328 unique eval tasks
+185,RoboVerse,Embodied AI,Embodied 3D,2025-04-25,arXiv 2504.18904,https://arxiv.org/abs/2504.18904,1000,high,7,yes,5,5000,WRONG_TASK_COUNT,5000 was total episodes; ~1000 distinct tasks
+186,RoboTwin,Embodied AI,Embodied 3D,2025-04-17,arXiv 2504.13059,https://arxiv.org/abs/2504.13059,100,medium,6,yes,3,300,,
+187,HomeSafeBench,Embodied AI,Embodied 3D,2025-09-24,arXiv 2509.23690,https://arxiv.org/abs/2509.23690,500,low,6,yes,1,500,,
+188,IndustryEQA,Embodied AI,Embodied 3D,2025-05-27,arXiv 2505.20640,https://arxiv.org/abs/2505.20640,500,low,6,yes,1,500,,
+189,RoboBench,Embodied AI,Embodied 3D,2025-10-20,arXiv 2510.17801,https://arxiv.org/abs/2510.17801,6092,low,7,yes,1,6092,,
+190,RoboTwin 2.0,Embodied AI,Robotics,2025-06-23,arXiv 2506.18088,https://arxiv.org/abs/2506.18088,200,high,6,yes,5,1000,,
+191,RoboCerebra,Embodied AI,Robotics,2025-06-09,arXiv 2506.06677,https://arxiv.org/abs/2506.06677,300,medium,6,yes,3,900,,
+192,RoboArena,Embodied AI,Robotics,2025-06-23,arXiv 2506.18123,https://arxiv.org/abs/2506.18123,500,medium,6,yes,3,1500,,
+193,REALM,Embodied AI,Robotics,2025-12-22,arXiv 2512.19562,https://arxiv.org/abs/2512.19562,3500,low,6,yes,1,3500,,
+194,PolaRiS,Embodied AI,Robotics,2025-12-18,arXiv 2512.16881,https://arxiv.org/abs/2512.16881,200,medium,6,yes,3,600,,
+195,NavBench,Embodied AI,Navigation,2025-06-02,arXiv 2506.01031,https://arxiv.org/abs/2506.01031,500,medium,6,yes,3,1500,,
+196,OpenFly,Embodied AI,Navigation,2025-02-25,arXiv 2502.18041,https://arxiv.org/abs/2502.18041,3000,low,6,yes,1,3000,WRONG_TASK_COUNT,100000 total paths; 3000 distinct drone eval tasks
+197,UAV-ON,Embodied AI,Navigation,2025-08-01,arXiv 2508.00288,https://arxiv.org/abs/2508.00288,500,medium,6,yes,3,1500,,
+198,UAVBench,Embodied AI,Navigation,2025-11-14,arXiv 2511.11252,https://arxiv.org/abs/2511.11252,3000,low,3,no,1,3000,NOT_MULTISTEP;WRONG_TASK_COUNT;LOW_QUALITY,"50000 was MCQ count; LLM-generated flight MCQ, not agent tasks"
+199,AirNav,Embodied AI,Navigation,2026-01-07,arXiv 2601.03707,https://arxiv.org/abs/2601.03707,300,medium,6,yes,3,900,,
+200,OctoNav,Embodied AI,Navigation,2025-06-11,arXiv 2506.09839,https://arxiv.org/abs/2506.09839,500,medium,6,yes,3,1500,,
+201,SAGE-Bench,Embodied AI,Navigation,2025-10-25,arXiv 2510.21307,https://arxiv.org/abs/2510.21307,300,low,4,yes,1,300,HALLUCINATION_RISK;LOW_QUALITY,Limited verifiable information about this benchmark
+202,SWE-Gym,Software,Code / SWE,2024-12-30,arXiv 2412.21139,https://arxiv.org/abs/2412.21139,2438,none,8,yes,1,2438,,
+203,Multi-SWE-bench,Software,Code / SWE,2025-04-03,arXiv 2504.02605,https://arxiv.org/abs/2504.02605,1632,none,8,yes,1,1632,WRONG_TASK_COUNT,300 was Mini subset; full benchmark has 1632 tasks
+204,R2E-Gym,Software,Code / SWE,2025-04-09,arXiv 2504.07164,https://arxiv.org/abs/2504.07164,246,none,7,yes,1,246,,
+205,SWE-PolyBench,Software,Code / SWE,2025-04-11,arXiv 2504.08703,https://arxiv.org/abs/2504.08703,2110,none,7,yes,1,2110,,
+206,SWE-rebench,Software,Code / SWE,2025-05-04,arXiv 2505.20411,https://arxiv.org/abs/2505.20411,21000,high,7,yes,5,105000,,
+207,SWE-bench Live,Software,Code / SWE,2025-05-29,arXiv 2505.23419,https://arxiv.org/abs/2505.23419,1890,high,8,yes,5,9450,WRONG_TASK_COUNT,500 was launch count; now 1890+ active tasks
+208,SWE-bench Pro,Software,Code / SWE,2025-09-14,arXiv 2509.16941,https://arxiv.org/abs/2509.16941,1865,none,7,yes,1,1865,,
+209,SWE-bench++,Software,Code / SWE,2025-12-19,arXiv 2512.17419,https://arxiv.org/abs/2512.17419,11133,none,7,yes,1,11133,,
+210,LoCoBench-Agent,Software,Code / SWE,2025-11-17,arXiv 2511.13998,https://arxiv.org/abs/2511.13998,8000,none,7,yes,1,8000,,
+211,ComplexFuncBench,Software,Tool Use / API,2025-01-17,arXiv 2501.10132,https://arxiv.org/abs/2501.10132,1000,none,7,yes,1,1000,,
+212,MCPVerse,Software,Tool Use / API,2025-08-22,arXiv 2508.16260,https://arxiv.org/abs/2508.16260,300,none,6,yes,1,300,,
+213,MCP-AgentBench,Software,Tool Use / API,2025-09-15,arXiv 2509.09734,https://arxiv.org/abs/2509.09734,600,none,6,yes,1,600,POTENTIAL_DUPLICATE:MCPAgentBench,Similar to MCPAgentBench; verify if same paper
+214,TPS-Bench,Software,Tool Use / API,2025-11-03,arXiv 2511.01527,https://arxiv.org/abs/2511.01527,200,none,6,yes,1,200,,
+215,MCPAgentBench,Software,Tool Use / API,2025-12-31,arXiv 2512.24565,https://arxiv.org/abs/2512.24565,178,none,6,yes,1,178,POTENTIAL_DUPLICATE:MCP-AgentBench,Similar to MCP-AgentBench; verify if same paper
+216,MLR-Bench,Science,Scientific Discovery,2025-05-26,arXiv 2505.19955,https://arxiv.org/abs/2505.19955,201,none,7,yes,1,201,,
+217,DeepResearch Bench,Science,Scientific Discovery,2025-06-11,arXiv 2506.11763,https://arxiv.org/abs/2506.11763,100,none,7,yes,1,100,,
+218,BixBench,Science,Scientific Discovery,2025-03-01,arXiv 2503.00096,https://arxiv.org/abs/2503.00096,300,none,6,yes,1,300,,
+219,BioProBench,Science,Scientific Discovery,2025-05-11,arXiv 2505.07889,https://arxiv.org/abs/2505.07889,5000,none,6,yes,1,5000,WRONG_TASK_COUNT,550000 includes training data; ~5000 eval tasks
+220,Genome-Bench,Science,Scientific Discovery,2025-05-26,arXiv 2505.19501,https://arxiv.org/abs/2505.19501,500,none,3,no,1,500,NOT_MULTISTEP;LOW_QUALITY,"Genomics QA pairs; single-answer MCQ, not agent trajectories"
+221,MatTools,Science,Scientific Discovery,2025-05-16,arXiv 2505.10852,https://arxiv.org/abs/2505.10852,49,none,5,yes,1,49,WRONG_TASK_COUNT,69225 was materials DB size; 49 are actual agent eval tasks
+222,BioAgentBench,Science,Scientific Discovery,2026-01-29,arXiv 2601.21800,https://arxiv.org/abs/2601.21800,100,none,6,yes,1,100,,
+223,ScholarGym,Science,Scientific Discovery,2026-01-29,arXiv 2601.21654,https://arxiv.org/abs/2601.21654,2536,high,7,yes,5,12680,,
+224,SciNetBench,Science,Scientific Discovery,2026-01-07,arXiv 2601.03260,https://arxiv.org/abs/2601.03260,500,none,6,yes,1,500,,
+225,MedXpertQA,Science,Healthcare,2025-01-30,arXiv 2501.18362,https://arxiv.org/abs/2501.18362,4460,none,3,no,1,4460,NOT_MULTISTEP;LOW_QUALITY,Expert-level medical QA; not sequential agent decisions
+226,HealthBench,Science,Healthcare,2025-05-13,arXiv 2505.08775,https://arxiv.org/abs/2505.08775,5000,none,5,partial,1,5000,NOT_MULTISTEP,Primarily medical QA + instruction following; limited agent eval
+227,MedAgentsBench,Science,Healthcare,2025-03-10,arXiv 2503.07459,https://arxiv.org/abs/2503.07459,100,none,4,partial,1,100,NOT_MULTISTEP;LOW_QUALITY,Primarily medical QA; limited multi-step agent decisions
+228,MedInsightBench,Science,Healthcare,2025-12-15,arXiv 2512.13297,https://arxiv.org/abs/2512.13297,332,none,6,yes,1,332,,
+229,DataSciBench,Science,Data Science,2025-02-19,arXiv 2502.13897,https://arxiv.org/abs/2502.13897,222,none,7,yes,1,222,,
+230,BIRD-INTERACT,Science,Data Science,2025-10-07,arXiv 2510.05318,https://arxiv.org/abs/2510.05318,600,none,7,yes,1,600,WRONG_TASK_COUNT,1534 total; 600 are interactive multi-turn DB eval instances
+231,FDABench,Science,Data Science,2025-09-02,arXiv 2509.02473,https://arxiv.org/abs/2509.02473,2007,none,6,yes,1,2007,,
+232,SWE-SQL,Science,Data Science,2025-06-23,arXiv 2506.18951,https://arxiv.org/abs/2506.18951,1100,none,7,yes,1,1100,,
+233,KramaBench,Science,Data Science,2025-06-06,arXiv 2506.06541,https://arxiv.org/abs/2506.06541,104,none,6,yes,1,104,,
+234,DSAEval,Science,Data Science,2026-01-23,arXiv 2601.13591,https://arxiv.org/abs/2601.13591,641,none,6,yes,1,641,,
+235,CVE-Bench,Security,Cybersecurity,2025-03-21,arXiv 2503.17332,https://arxiv.org/abs/2503.17332,40,none,7,yes,1,40,WRONG_TASK_COUNT,219 CVEs considered; 40 have verified working exploits
+236,PACEbench,Security,Cybersecurity,2025-10-13,arXiv 2510.11688,https://arxiv.org/abs/2510.11688,32,none,6,yes,1,32,WRONG_TASK_COUNT,500 was challenge pool; 32 are curated eval tasks
+237,CAIBench,Security,Cybersecurity,2025-10-28,arXiv 2510.24317,https://arxiv.org/abs/2510.24317,10000,none,7,partial,1,10000,,Some tasks are multi-step agent scenarios
+238,CyberSOCEval,Security,Cybersecurity,2025-09-25,arXiv 2509.20166,https://arxiv.org/abs/2509.20166,500,none,3,no,1,500,NOT_MULTISTEP;LOW_QUALITY,SOC knowledge/reasoning eval; not sequential agent decisions
+239,TextArena,Simulation,Game / RL,2025-04-15,arXiv 2504.11442,https://arxiv.org/abs/2504.11442,57,medium,7,yes,3,171,,
+240,RPGBench,Simulation,Game / RL,2025-02-01,arXiv 2502.00595,https://arxiv.org/abs/2502.00595,100,medium,6,yes,3,300,,
+241,MineAnyBuild,Simulation,Game / RL,2025-05-26,arXiv 2505.20148,https://arxiv.org/abs/2505.20148,4000,high,6,yes,5,20000,,
+242,Orak,Simulation,Game / RL,2025-06-04,arXiv 2506.03610,https://arxiv.org/abs/2506.03610,12,high,5,yes,5,60,LOW_TASKS,12 game scenarios
+243,GVGAI-LLM,Simulation,Game / RL,2025-08-11,arXiv 2508.08501,https://arxiv.org/abs/2508.08501,118,high,6,yes,5,590,,
+244,Generals.io AGI,Simulation,Game / RL,2025-07-09,arXiv 2507.06825,https://arxiv.org/abs/2507.06825,1,high,4,yes,5,5,OPEN_ENV;LOW_TASKS;LOW_QUALITY,Single game environment
+245,EcoGym,Simulation,Game / RL,2026-02-10,arXiv 2602.09514,https://arxiv.org/abs/2602.09514,3,medium,4,yes,3,9,LOW_TASKS;LOW_QUALITY,Only 3 game scenarios
+246,AgentsNet,Simulation,Multi-Agent,2025-07-11,arXiv 2507.08616,https://arxiv.org/abs/2507.08616,5,high,4,yes,5,25,LOW_TASKS;LOW_QUALITY,5 network tasks
+247,PillagerBench,Simulation,Multi-Agent,2025-09-07,arXiv 2509.06235,https://arxiv.org/abs/2509.06235,2,low,3,yes,1,2,LOW_TASKS;LOW_QUALITY,Only 2 Minecraft tasks
+248,CAMAR,Simulation,Multi-Agent,2025-08-18,arXiv 2508.12845,https://arxiv.org/abs/2508.12845,100,medium,6,yes,3,300,,
+249,CooperBench,Simulation,Multi-Agent,2026-01-19,arXiv 2601.13295,https://arxiv.org/abs/2601.13295,652,low,6,yes,1,652,,
+250,EmCoop,Simulation,Multi-Agent,2026-02-27,arXiv 2603.00349,https://arxiv.org/abs/2603.00349,2,medium,3,yes,3,6,LOW_TASKS;LOW_QUALITY,Only 2 tasks
+251,The Traitors,Simulation,Multi-Agent,2025-05-19,arXiv 2505.12923,https://arxiv.org/abs/2505.12923,10,low,5,yes,1,10,LOW_TASKS,10 game episodes
+252,AgentSociety,Simulation,Social Simulation,2025-02-12,arXiv 2502.08691,https://arxiv.org/abs/2502.08691,1000,high,7,yes,5,5000,,
+253,SocioVerse,Simulation,Social Simulation,2025-04-14,arXiv 2504.10157,https://arxiv.org/abs/2504.10157,5000,high,3,no,5,25000,NOT_MULTISTEP;LOW_QUALITY,Survey/prediction instances; not sequential agent decisions
+254,LIFELONG-SOTOPIA,Simulation,Social Simulation,2025-06-14,arXiv 2506.12666,https://arxiv.org/abs/2506.12666,205,medium,6,yes,3,615,POTENTIAL_DUPLICATE:SOTOPIA,Extension of SOTOPIA with long-horizon memory; verify overlap
+255,EconEvals,Simulation,Social Simulation,2025-03-24,arXiv 2503.18825,https://arxiv.org/abs/2503.18825,108,medium,6,yes,3,324,,
+256,BargainArena,Simulation,Social Simulation,2025-05-29,arXiv 2505.22998,https://arxiv.org/abs/2505.22998,6,low,4,yes,1,6,LOW_TASKS;LOW_QUALITY,6 bargaining scenarios
+257,DEBATE,Simulation,Social Simulation,2025-10-29,arXiv 2510.25110,https://arxiv.org/abs/2510.25110,708,low,6,yes,1,708,,
+258,SoMe,Simulation,Social Simulation,2025-12-09,arXiv 2512.14720,https://arxiv.org/abs/2512.14720,17869,low,6,yes,1,17869,,
+259,LiveCultureBench,Simulation,Social Simulation,2026-03-02,arXiv 2603.01952,https://arxiv.org/abs/2603.01952,1000,medium,6,yes,3,3000,,
+260,OdysseyBench,Agentic,Workflow,2025-08-12,arXiv 2508.09124,https://arxiv.org/abs/2508.09124,602,none,6,yes,1,602,,
+261,HeroBench,Agentic,Planning,2025-08-18,arXiv 2508.12782,https://arxiv.org/abs/2508.12782,844,none,6,yes,1,844,,
+262,UltraHorizon,Agentic,Planning,2025-09-26,arXiv 2509.21766,https://arxiv.org/abs/2509.21766,200,none,6,yes,1,200,,
+263,DeepPlanning,Agentic,Planning,2026-01-28,arXiv 2601.18137,https://arxiv.org/abs/2601.18137,500,medium,6,yes,3,1500,,
+264,DriveAction,Domain,Autonomous Driving,2025-06-06,arXiv 2506.05667,https://arxiv.org/abs/2506.05667,16185,none,3,no,1,16185,NOT_MULTISTEP;LOW_QUALITY,Tree-structured VQA for driving; single answer per scenario
+265,StockBench,Domain,Finance,2025-10-03,arXiv 2510.02209,https://arxiv.org/abs/2510.02209,1,high,3,partial,5,5,TRADING_SIM;LOW_TASKS;LOW_QUALITY,Single stock market simulation environment
+266,LiveTradeBench,Domain,Finance,2025-11-06,arXiv 2511.03628,https://arxiv.org/abs/2511.03628,1,high,3,partial,5,5,TRADING_SIM;LOW_TASKS;LOW_QUALITY,Single live trading simulation environment
+267,FinAgentBench,Domain,Finance,2025-08-19,arXiv 2508.14052,https://arxiv.org/abs/2508.14052,26000,none,5,yes,1,26000,WRONG_TASK_COUNT,26000 likely includes micro-transactions; verify actual task count
+268,When Agents Trade,Domain,Finance,2025-10-15,arXiv 2510.11695,https://arxiv.org/abs/2510.11695,1,high,3,partial,5,5,TRADING_SIM;LOW_TASKS;LOW_QUALITY,Single trading game environment
+269,Ready Jurist One,Domain,Legal,2025-07-05,arXiv 2507.04037,https://arxiv.org/abs/2507.04037,508,none,6,yes,1,508,,
+270,MASLegalBench,Domain,Legal,2025-09-30,arXiv 2509.24922,https://arxiv.org/abs/2509.24922,950,none,6,yes,1,950,,
+271,LegalAgentBench,Domain,Legal,2025-01-01,ACL 2025,https://aclanthology.org/,300,none,6,yes,1,300,,
+272,OpenAgentSafety,Agentic,Agent Safety,2025-07-08,arXiv 2507.06134,https://arxiv.org/abs/2507.06134,500,none,6,yes,1,500,,
+273,EU-Agent-Bench,Agentic,Agent Safety,2025-10-24,arXiv 2510.21524,https://arxiv.org/abs/2510.21524,200,none,6,yes,1,200,,
+274,Agent-SafetyBench,Agentic,Agent Safety,2024-12-19,arXiv 2412.14470,https://arxiv.org/abs/2412.14470,2000,none,7,yes,1,2000,,
+275,BrowserArena,Computer Use,Web / UI,2025-10-02,arXiv 2510.02418,https://arxiv.org/abs/2510.02418,500,high,7,yes,5,2500,,
+276,WARC-Bench,Computer Use,Web / UI,2025-10-10,arXiv 2510.09872,https://arxiv.org/abs/2510.09872,438,none,6,yes,1,438,,
+277,OSWorld-MCP,Computer Use,Desktop,2025-10-28,arXiv 2510.24563,https://arxiv.org/abs/2510.24563,361,none,6,yes,1,361,POTENTIAL_DUPLICATE:OSWorld,Uses OSWorld tasks with MCP layer; verify if independent
+278,UI-CUBE,Computer Use,Desktop,2025-11-21,arXiv 2511.17131,https://arxiv.org/abs/2511.17131,226,none,6,yes,1,226,,
+279,ColorBench,Computer Use,Mobile,2025-10-16,arXiv 2510.14621,https://arxiv.org/abs/2510.14621,175,none,5,yes,1,175,,
+280,D-GARA,Computer Use,Mobile,2025-11-20,arXiv 2511.16590,https://arxiv.org/abs/2511.16590,152,none,5,yes,1,152,,
+281,ProBench,Computer Use,Mobile,2025-11-12,arXiv 2511.09157,https://arxiv.org/abs/2511.09157,200,none,6,yes,1,200,,
+282,MobileWorld-MCP,Computer Use,Mobile,2025-12-22,arXiv 2512.19432,https://arxiv.org/abs/2512.19432,201,none,6,yes,1,201,POTENTIAL_DUPLICATE:AndroidWorld,Harder variant of AndroidWorld with MCP; verify independence
+283,MobileBench-OL,Computer Use,Mobile,2026-01-28,arXiv 2601.20335,https://arxiv.org/abs/2601.20335,1080,none,6,yes,1,1080,,
+284,GUITestBench,Computer Use,Mobile,2026-01-08,arXiv 2601.04500,https://arxiv.org/abs/2601.04500,143,none,6,yes,1,143,,
+285,FeatBench,Software,Code / SWE,2025-09-26,arXiv 2509.22237,https://arxiv.org/abs/2509.22237,157,none,6,yes,1,157,,
+286,SWE-Compass,Software,Code / SWE,2025-11-07,arXiv 2511.05459,https://arxiv.org/abs/2511.05459,2000,none,7,yes,1,2000,,
+287,SWE-fficiency,Software,Code / SWE,2025-11-08,arXiv 2511.06090,https://arxiv.org/abs/2511.06090,498,none,6,yes,1,498,,
+288,SWE-Sharp-Bench,Software,Code / SWE,2025-11-18,arXiv 2511.02352,https://arxiv.org/abs/2511.02352,150,none,6,yes,1,150,,
+289,NL2Repo-Bench,Software,Code / SWE,2025-12-14,arXiv 2512.12730,https://arxiv.org/abs/2512.12730,104,none,6,yes,1,104,,
+290,SWE-EVO,Software,Code / SWE,2025-12-23,arXiv 2512.18470,https://arxiv.org/abs/2512.18470,48,none,6,yes,1,48,,
+291,ABC-Bench,Software,Code / SWE,2026-01-16,arXiv 2601.11077,https://arxiv.org/abs/2601.11077,224,none,6,yes,1,224,,
+292,IDE-Bench,Software,Code / SWE,2026-01-28,arXiv 2601.20886,https://arxiv.org/abs/2601.20886,80,none,6,yes,1,80,,
+293,VLABench,Embodied AI,Robotics,2024-12-24,arXiv 2412.18194,https://arxiv.org/abs/2412.18194,2000,low,7,yes,1,2000,,
+294,RobotArena,Embodied AI,Robotics,2025-10-27,arXiv 2510.23571,https://arxiv.org/abs/2510.23571,100,medium,6,yes,3,300,,
+295,ResponsibleRobotBench,Embodied AI,Robotics,2025-12-03,arXiv 2512.04308,https://arxiv.org/abs/2512.04308,23,low,5,yes,1,23,LOW_TASKS,23 safety evaluation tasks
+296,RMBench,Embodied AI,Robotics,2026-03-01,arXiv 2603.01229,https://arxiv.org/abs/2603.01229,9,low,4,yes,1,9,LOW_TASKS;LOW_QUALITY,Only 9 manipulation tasks
+297,MarketGen,Embodied AI,Embodied 3D,2025-11-26,arXiv 2511.21161,https://arxiv.org/abs/2511.21161,1100,high,6,yes,5,5500,,
+298,TongSIM,Embodied AI,Embodied 3D,2025-12-23,arXiv 2512.20206,https://arxiv.org/abs/2512.20206,100,high,6,yes,5,500,,
+299,IndustryNav,Embodied AI,Navigation,2025-11-21,arXiv 2511.17384,https://arxiv.org/abs/2511.17384,12,medium,5,yes,3,36,LOW_TASKS,12 industrial navigation tasks
+300,CostNav,Embodied AI,Navigation,2025-11-25,arXiv 2511.20216,https://arxiv.org/abs/2511.20216,100,low,5,yes,1,100,,
+301,VLNVerse,Embodied AI,Navigation,2025-12-22,arXiv 2512.19021,https://arxiv.org/abs/2512.19021,263,medium,6,yes,3,789,,
+302,IndoorUAV,Embodied AI,Navigation,2025-12-22,arXiv 2512.19024,https://arxiv.org/abs/2512.19024,16000,low,6,yes,1,16000,,
+303,CapNav,Embodied AI,Navigation,2026-02-25,arXiv 2602.18424,https://arxiv.org/abs/2602.18424,473,low,6,yes,1,473,,
+304,LLM-Hanabi,Simulation,Multi-Agent,2025-10-06,arXiv 2510.04980,https://arxiv.org/abs/2510.04980,100,high,5,yes,5,500,,
+305,NegotiationGym,Simulation,Multi-Agent,2025-10-05,arXiv 2510.04368,https://arxiv.org/abs/2510.04368,100,high,5,yes,5,500,,
+306,TAMAS,Simulation,Multi-Agent,2025-11-07,arXiv 2511.05269,https://arxiv.org/abs/2511.05269,200,low,5,yes,1,200,,
+307,WereBench,Simulation,Social Simulation,2025-10-13,arXiv 2510.11389,https://arxiv.org/abs/2510.11389,1000,low,6,yes,1,1000,,
+308,FlockVote,Simulation,Social Simulation,2025-12-05,arXiv 2512.05982,https://arxiv.org/abs/2512.05982,7,high,4,yes,5,35,LOW_TASKS;LOW_QUALITY,7 voting scenarios
+309,WOLF,Simulation,Game / RL,2025-12-09,arXiv 2512.09187,https://arxiv.org/abs/2512.09187,100,low,5,yes,1,100,,
+310,BotzoneBench,Simulation,Game / RL,2026-01-22,arXiv 2602.13214,https://arxiv.org/abs/2602.13214,8,low,4,yes,1,8,WRONG_TASK_COUNT;LOW_TASKS;LOW_QUALITY,177047 was total moves; 8 distinct game types
+311,NewtonBench,Science,Scientific Discovery,2025-10-08,arXiv 2510.07172,https://arxiv.org/abs/2510.07172,324,none,6,yes,1,324,,
+312,AstaBench,Science,Scientific Discovery,2025-10-24,arXiv 2510.21652,https://arxiv.org/abs/2510.21652,2400,none,6,yes,1,2400,,
+313,HeurekaBench,Science,Scientific Discovery,2026-01-04,arXiv 2601.01678,https://arxiv.org/abs/2601.01678,41,none,5,yes,1,41,,
+314,AIRS-Bench,Science,Scientific Discovery,2026-02-06,arXiv 2602.06855,https://arxiv.org/abs/2602.06855,20,none,4,yes,1,20,LOW_TASKS;LOW_QUALITY,20 cybersecurity reasoning tasks
+315,HackWorld,Security,Cybersecurity,2025-10-14,arXiv 2510.12200,https://arxiv.org/abs/2510.12200,36,none,6,yes,1,36,,
+316,PentestEval,Security,Cybersecurity,2025-12-16,arXiv 2512.14233,https://arxiv.org/abs/2512.14233,346,none,7,yes,1,346,,
+317,CyberExplorer,Security,Cybersecurity,2026-02-08,arXiv 2602.08023,https://arxiv.org/abs/2602.08023,40,none,6,yes,1,40,,
+318,DARE-bench,Science,Data Science,2026-02-27,arXiv 2602.24288,https://arxiv.org/abs/2602.24288,6300,none,6,yes,1,6300,,
+319,DRBench,Agentic,Workflow,2025-09-30,arXiv 2510.00172,https://arxiv.org/abs/2510.00172,15,none,6,yes,1,15,LOW_TASKS,15 complex multi-step deep-research tasks in enterprise settings
+320,EnterpriseBench,Agentic,Workflow,2025-10-31,arXiv 2510.27287,https://arxiv.org/abs/2510.27287,500,none,6,yes,1,500,,
+321,AgentChangeBench,Agentic,Workflow,2025-10-20,arXiv 2510.18170,https://arxiv.org/abs/2510.18170,2835,high,6,yes,5,14175,,
+322,IDRBench,Agentic,Planning,2026-01-10,arXiv 2601.06676,https://arxiv.org/abs/2601.06676,100,medium,5,yes,3,300,,
+323,TravelBench,Agentic,Planning,2025-12-27,arXiv 2512.22673,https://arxiv.org/abs/2512.22673,1100,medium,6,yes,3,3300,WRONG_TASK_COUNT,300 was subset; full benchmark has ~1100 tasks
+324,MobilityBench,Agentic,Planning,2026-02-26,arXiv 2602.22638,https://arxiv.org/abs/2602.22638,100000,none,7,yes,1,100000,,
+325,CryptoBench,Domain,Finance,2025-11-29,arXiv 2512.00417,https://arxiv.org/abs/2512.00417,50,high,5,yes,5,250,,
+326,AgentDrive,Domain,Autonomous Driving,2026-01-23,arXiv 2601.16964,https://arxiv.org/abs/2601.16964,100000,none,6,yes,1,100000,WRONG_TASK_COUNT,300000 total; ~100000 MCQ eval tasks
+327,AutoDriDM,Domain,Autonomous Driving,2026-01-21,arXiv 2601.14702,https://arxiv.org/abs/2601.14702,6650,none,6,yes,1,6650,,
+328,Breaking Agent Backbones,Agentic,Agent Safety,2025-10-26,arXiv 2510.22620,https://arxiv.org/abs/2510.22620,194331,none,5,yes,1,194331,WRONG_TASK_COUNT,"194331 is adversarial attack configs, not independent tasks"
+329,AgentDyn,Agentic,Agent Safety,2026-02-03,arXiv 2602.03117,https://arxiv.org/abs/2602.03117,620,none,6,yes,1,620,,
+330,SafePro,Agentic,Agent Safety,2026-01-10,arXiv 2601.06663,https://arxiv.org/abs/2601.06663,275,none,6,yes,1,275,,
+331,ReliabilityBench,Agentic,RL / Multi-Turn,2026-01-03,arXiv 2601.06112,https://arxiv.org/abs/2601.06112,1280,high,6,yes,5,6400,,
+332,GEM,Agentic,RL / Multi-Turn,2025-10-01,arXiv 2510.01051,https://arxiv.org/abs/2510.01051,24,high,4,yes,5,120,LOW_TASKS;LOW_QUALITY,24 evaluation instances
+333,MILE,Domain,Legal,2025-02-08,arXiv 2502.06882,https://arxiv.org/abs/2502.06882,100,none,5,yes,1,100,,
+334,WildAgtEval,Software,Tool Use / API,2026-01-01,arXiv 2601.00268,https://arxiv.org/abs/2601.00268,32000,none,5,yes,1,32000,WRONG_TASK_COUNT,32000 likely includes augmented variants; verify unique tasks
+335,JourneyBench,Agentic,Workflow,2026-01-02,arXiv 2601.00596,https://arxiv.org/abs/2601.00596,703,none,6,yes,1,703,,
+336,LongDA,Science,Data Science,2026-01-05,arXiv 2601.02598,https://arxiv.org/abs/2601.02598,505,none,6,yes,1,505,,
+337,SastBench,Security,Cybersecurity,2026-01-06,arXiv 2601.02941,https://arxiv.org/abs/2601.02941,100,medium,5,yes,3,300,,
+338,AgentLongBench,Agentic,RL / Multi-Turn,2026-01-28,arXiv 2601.20730,https://arxiv.org/abs/2601.20730,100,high,6,yes,5,500,,
+339,EmboCoach-Bench,Embodied AI,Robotics,2026-01-29,arXiv 2601.21570,https://arxiv.org/abs/2601.21570,32,high,5,yes,5,160,LOW_TASKS,32 coaching tasks
+340,ProjDevBench,Software,Code / SWE,2026-02-02,arXiv 2602.01655,https://arxiv.org/abs/2602.01655,20,none,5,yes,1,20,LOW_TASKS,20 project development tasks
+341,ContextBench,Software,Code / SWE,2026-02-05,arXiv 2602.05892,https://arxiv.org/abs/2602.05892,1136,none,6,yes,1,1136,,
+342,LOCA-bench,Agentic,RL / Multi-Turn,2026-02-08,arXiv 2602.07962,https://arxiv.org/abs/2602.07962,50,high,5,yes,5,250,,
+343,SWE-AGI,Software,Code / SWE,2026-02-10,arXiv 2602.09447,https://arxiv.org/abs/2602.09447,22,none,5,yes,1,22,LOW_TASKS,22 complex tasks
+344,GameDevBench,Software,Code / SWE,2026-02-11,arXiv 2602.11103,https://arxiv.org/abs/2602.11103,132,none,6,yes,1,132,,
+345,Agent-Diff,Software,Tool Use / API,2026-02-11,arXiv 2602.11224,https://arxiv.org/abs/2602.11224,224,none,6,yes,1,224,,
+346,Corecraft,Agentic,Workflow,2026-02-18,arXiv 2602.16179,https://arxiv.org/abs/2602.16179,100,high,6,yes,5,500,,
+347,AgentVista,Software,Tool Use / API,2026-02-26,arXiv 2602.23166,https://arxiv.org/abs/2602.23166,209,none,6,yes,1,209,,
+348,ZeroDayBench,Security,Cybersecurity,2026-03-02,arXiv 2603.02297,https://arxiv.org/abs/2603.02297,22,none,6,yes,1,22,LOW_TASKS,22 zero-day vulnerability tasks
+349,R2R,Embodied AI,Navigation,2017-11-20,arXiv 1711.07280,https://arxiv.org/abs/1711.07280,7189,none,9,yes,1,7189,,
+350,EQA,Embodied AI,Embodied 3D,2017-11-30,arXiv 1711.11543,https://arxiv.org/abs/1711.11543,5000,high,8,yes,5,25000,,
+351,BabyAI,Simulation,Game / RL,2018-10-22,arXiv 1810.08272,https://arxiv.org/abs/1810.08272,19,high,6,yes,5,95,LOW_TASKS,19 task types; primarily a training framework
+352,TextWorld,Simulation,Game / RL,2018-06-29,arXiv 1806.11532,https://arxiv.org/abs/1806.11532,20,high,6,yes,5,100,LOW_TASKS,20 game templates; generation framework
+353,VirtualHome,Embodied AI,Embodied 3D,2018-06-18,arXiv 1806.07011,https://arxiv.org/abs/1806.07011,1000,low,7,yes,1,1000,,
+354,DeepMind Lab,Simulation,Game / RL,2016-12-13,arXiv 1612.03801,https://arxiv.org/abs/1612.03801,30,high,6,yes,5,150,OPEN_ENV,30 game levels; primarily a training environment
+355,ViZDoom,Simulation,Game / RL,2016-05-06,arXiv 1605.02097,https://arxiv.org/abs/1605.02097,8,high,5,yes,5,40,OPEN_ENV;LOW_TASKS,8 scenarios; primarily a training environment
+356,Procgen,Simulation,Game / RL,2019-12-04,arXiv 1912.01588,https://arxiv.org/abs/1912.01588,16,high,6,yes,5,80,OPEN_ENV,16 procedurally generated games; training framework
+357,TOUCHDOWN,Embodied AI,Navigation,2018-11-29,arXiv 1811.12354,https://arxiv.org/abs/1811.12354,9326,none,7,yes,1,9326,,
+358,REVERIE,Embodied AI,Navigation,2019-04-22,arXiv 1904.10151,https://arxiv.org/abs/1904.10151,6292,none,7,yes,1,6292,WRONG_TASK_COUNT,21702 total; 6292 are test split instructions
+359,CVDN,Embodied AI,Navigation,2019-07-10,arXiv 1907.04957,https://arxiv.org/abs/1907.04957,7000,none,7,yes,1,7000,,
+360,Habitat 1.0,Embodied AI,Navigation,2019-04-03,arXiv 1904.01201,https://arxiv.org/abs/1904.01201,5000,high,7,yes,5,25000,OPEN_ENV,Training platform; eval episodes procedurally generated
+361,LIGHT,Simulation,Social Simulation,2018-11-02,arXiv 1811.00893,https://arxiv.org/abs/1811.00893,663,low,6,yes,1,663,,
+362,Flatland-RL,Simulation,Multi-Agent,2020-12-10,arXiv 2012.05893,https://arxiv.org/abs/2012.05893,5,high,4,yes,5,25,LOW_TASKS;LOW_QUALITY,5 environment configurations
+363,Mind2Web,Computer Use,Web / UI,2023-06-09,arXiv 2306.06070,https://arxiv.org/abs/2306.06070,2350,none,8,yes,1,2350,,
+364,BrowseComp-ZH,Computer Use,Web / UI,2025-04-28,arXiv 2504.19314,https://arxiv.org/abs/2504.19314,289,none,3,no,1,289,NOT_MULTISTEP;LOW_QUALITY,Multi-hop QA single answer; not sequential agent decisions
+365,Mobile-Bench,Computer Use,Mobile,2024-07-01,arXiv 2407.00993,https://arxiv.org/abs/2407.00993,832,none,5,yes,1,832,POTENTIAL_DUPLICATE:Mobile-Bench-v2,V1 superseded by Mobile-Bench-v2; consider removing
+366,VisualAgentBench,Computer Use,Desktop,2024-08-12,arXiv 2408.06327,https://arxiv.org/abs/2408.06327,5,medium,4,yes,3,15,LOW_TASKS;LOW_QUALITY,Only 5 visual agent tasks
+367,T-Eval,Software,Tool Use / API,2023-12-21,arXiv 2312.14033,https://arxiv.org/abs/2312.14033,100,none,6,yes,1,100,,
+368,ToolTalk,Software,Tool Use / API,2023-11-15,arXiv 2311.10775,https://arxiv.org/abs/2311.10775,78,none,6,yes,1,78,,
+369,TaskBench,Software,Tool Use / API,2023-11-30,arXiv 2311.18760,https://arxiv.org/abs/2311.18760,300,none,6,yes,1,300,,
+370,C3-Bench,Software,Tool Use / API,2025-05-24,arXiv 2505.18746,https://arxiv.org/abs/2505.18746,256,none,6,yes,1,256,,
+371,AgentIF,Software,Tool Use / API,2025-05-22,arXiv 2505.16944,https://arxiv.org/abs/2505.16944,707,none,6,yes,1,707,,
+372,GitTaskBench,Software,Code / SWE,2025-08-01,arXiv 2508.18993,https://arxiv.org/abs/2508.18993,54,none,6,yes,1,54,WRONG_TASK_COUNT,500 was issue references; 54 are distinct agent tasks
+373,DA-Code,Science,Data Science,2024-10-09,arXiv 2410.07331,https://arxiv.org/abs/2410.07331,500,none,6,yes,1,500,,
+374,CIBench,Science,Data Science,2024-07-15,arXiv 2407.10499,https://arxiv.org/abs/2407.10499,200,none,6,yes,1,200,,
+375,Spider2-V,Science,Data Science,2024-07-15,arXiv 2407.10956,https://arxiv.org/abs/2407.10956,494,none,7,yes,1,494,,
+376,AgentDojo,Agentic,Agent Safety,2024-06-19,arXiv 2406.13352,https://arxiv.org/abs/2406.13352,97,medium,8,yes,3,291,,
+377,SafeAgentBench,Agentic,Agent Safety,2024-12-17,arXiv 2412.13178,https://arxiv.org/abs/2412.13178,750,none,6,yes,1,750,,
+378,CyberGym,Security,Cybersecurity,2025-06-03,arXiv 2506.02548,https://arxiv.org/abs/2506.02548,1507,none,7,yes,1,1507,,
+379,ResearchArena,Science,Scientific Discovery,2024-06-14,arXiv 2406.10291,https://arxiv.org/abs/2406.10291,100,none,6,yes,1,100,,
+380,LAB-Bench,Science,Scientific Discovery,2024-07-14,arXiv 2407.10362,https://arxiv.org/abs/2407.10362,2400,none,4,partial,1,2400,NOT_MULTISTEP;LOW_QUALITY,Mostly MCQ; limited sequential agent decisions
+381,MLGym,Science,Scientific Discovery,2025-02-20,arXiv 2502.14499,https://arxiv.org/abs/2502.14499,13,none,5,yes,1,13,LOW_TASKS,13 ML engineering tasks
+382,PaperArena,Science,Scientific Discovery,2025-10-01,arXiv 2510.10909,https://arxiv.org/abs/2510.10909,784,none,6,yes,1,784,WRONG_TASK_COUNT,50 was initial estimate; 784 actual tasks
+383,DO Challenge,Science,Scientific Discovery,2025-04-28,arXiv 2504.19912,https://arxiv.org/abs/2504.19912,50,none,5,yes,1,50,,
+384,CheMatAgent,Science,Scientific Discovery,2025-06-07,arXiv 2506.07551,https://arxiv.org/abs/2506.07551,100,none,6,yes,1,100,,
+385,FHIR-AgentBench,Science,Healthcare,2025-09-01,arXiv 2509.19319,https://arxiv.org/abs/2509.19319,2931,none,6,yes,1,2931,WRONG_TASK_COUNT,200 was pilot; 2931 are actual FHIR eval tasks
+386,AgentEHR,Science,Healthcare,2026-01-23,arXiv 2601.13918,https://arxiv.org/abs/2601.13918,100,none,6,yes,1,100,,
+387,CARE-Bench,Science,Healthcare,2025-11-13,arXiv 2511.09407,https://arxiv.org/abs/2511.09407,300,none,6,yes,1,300,,
+388,MathTutorBench,Domain,Education,2025-02-26,arXiv 2502.18940,https://arxiv.org/abs/2502.18940,1000,none,6,yes,1,1000,,
+389,TutorBench,Domain,Education,2025-10-04,arXiv 2510.02663,https://arxiv.org/abs/2510.02663,500,none,6,yes,1,500,,
+390,FlowBench,Agentic,Workflow,2024-06-21,arXiv 2406.14884,https://arxiv.org/abs/2406.14884,51,none,6,yes,1,51,,
+391,WorfBench,Agentic,Workflow,2024-10-10,arXiv 2410.07869,https://arxiv.org/abs/2410.07869,2146,none,7,yes,1,2146,WRONG_TASK_COUNT,100 was sample; full benchmark has 2146 workflow tasks
+392,tau2-bench,Agentic,Workflow,2025-06-09,arXiv 2506.07982,https://arxiv.org/abs/2506.07982,300,high,7,yes,5,1500,,
+393,DevOps-Gym,Agentic,Workflow,2026-01-28,arXiv 2601.20882,https://arxiv.org/abs/2601.20882,700,medium,7,yes,3,2100,WRONG_TASK_COUNT,100 was pilot; 700+ actual DevOps tasks
+394,ChinaTravel,Agentic,Planning,2024-12-18,arXiv 2412.13682,https://arxiv.org/abs/2412.13682,1154,none,5,yes,1,1154,POTENTIAL_DUPLICATE:TravelPlanner,Similar travel planning benchmark; overlaps with TravelPlanner
+395,FinGAIA,Domain,Finance,2025-07-24,arXiv 2507.17186,https://arxiv.org/abs/2507.17186,407,none,6,yes,1,407,,
+396,FinSearchComp,Domain,Finance,2025-09-11,arXiv 2509.13160,https://arxiv.org/abs/2509.13160,100,none,3,no,1,100,NOT_MULTISTEP;LOW_QUALITY,Financial search QA single answers; not agent trajectory
+397,FinDeepResearch,Domain,Finance,2025-10-14,arXiv 2510.13936,https://arxiv.org/abs/2510.13936,100,none,6,yes,1,100,,
+398,NIKA,Domain,Network,2024-12-18,arXiv 2512.16381,https://arxiv.org/abs/2512.16381,500,none,6,yes,1,500,,
+399,NetPress,Domain,Network,2025-06-03,arXiv 2506.03231,https://arxiv.org/abs/2506.03231,100,none,5,yes,1,100,,
+400,UNO Arena,Simulation,Game / RL,2024-06-24,arXiv 2406.16382,https://arxiv.org/abs/2406.16382,100,high,5,yes,5,500,,
+401,SWE-bench Verified,Software,Code / SWE,2024-08-13,OpenAI / swebench.com,https://www.swebench.com/verified.html,500,none,9,yes,1,500,,500-instance human-verified subset of SWE-bench (OpenAI + Princeton); de facto standard for coding agent evaluation
+402,Terminal-Bench 2.0,Software,Code / SWE,2025-11-07,tbench.ai,https://www.tbench.ai/,89,none,8,yes,1,89,,"Hard CLI tasks: build Linux from source, ML training, binary reverse engineering; <65% for frontier models"

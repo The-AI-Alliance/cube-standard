@@ -9,15 +9,13 @@ assert_debug_tasks_reward_one(module, *, max_steps)  →  None
 
 Module protocol (for assert_debug_tasks_reward_one and run_debug_suite)
 ----------------------------------------------------------------------
-The ``module`` argument must expose three callables:
+The ``module`` argument must expose two callables:
 
-    get_benchmark() -> Benchmark
-        Called once before any debug episodes run. Returns a Benchmark instance.
-        This is needed to call benchmark.install() and benchmark.setup() before each debug suite run.
-
-    get_debug_task_configs() -> list[TaskConfig]
-        Return one TaskConfig per debug task. Each config must have a
-        ``.task_id`` attribute and a ``.make()`` method that returns a Task.
+    get_debug_benchmark() -> Benchmark
+        Called once before any debug episodes run. Returns a Benchmark instance
+        (optionally pre-filtered to the debug subset via ``subset_from_list``).
+        The harness calls ``install()``, ``setup()``, and ``close()`` on it and
+        iterates ``get_task_configs()`` to discover which tasks to run.
 
     make_debug_agent(task_id: str) -> Callable[[Observation, list[ActionSchema]], Action]
         Return a deterministic agent for the given task_id.
@@ -26,7 +24,7 @@ Example usage in a test file::
 
     def test_debug_tasks():
         from cube.testing import assert_debug_tasks_reward_one
-        import osworld_cube.debug_agent as _mod
+        import osworld_cube.debug as _mod
         assert_debug_tasks_reward_one(_mod)
 """
 
@@ -148,8 +146,7 @@ def run_debug_suite(
 
     Args:
         benchmark_name: Label used in the JSON output (e.g. ``"osworld-cube"``).
-        module:         A module exposing ``get_benchmark()``,
-                        ``get_debug_task_configs()``, and
+        module:         A module exposing ``get_debug_benchmark()`` and
                         ``make_debug_agent(task_id)``.
         max_steps:      Safety cap passed to ``run_debug_episode`` (default 20).
 
@@ -161,17 +158,18 @@ def run_debug_suite(
     results = []
     try:
         # Step 1: create and install the benchmark.
-        logger.info(f"[run_debug_suite] benchmark={benchmark_name!r}  calling get_benchmark()")
-        benchmark = module.get_benchmark()
+        logger.info(f"[run_debug_suite] benchmark={benchmark_name!r}  calling get_debug_benchmark()")
+        benchmark = module.get_debug_benchmark()
         benchmark.install()
         benchmark.setup()
 
-        # Step 2: get task configs and run episodes.
-        task_configs = {tc.task_id: tc for tc in module.get_debug_task_configs()}
+        # Step 2: iterate task configs from the benchmark and run episodes.
+        task_configs = list(benchmark.get_task_configs())
         logger.info(
-            f"[run_debug_suite] benchmark={benchmark_name!r}  running {len(task_configs)} task(s): {list(task_configs)}"
+            f"[run_debug_suite] benchmark={benchmark_name!r}  running {len(task_configs)} task(s): "
+            f"{[tc.task_id for tc in task_configs]}"
         )
-        for tid, tc in task_configs.items():
+        for tc in task_configs:
             try:
                 task = tc.make(
                     runtime_context=benchmark._runtime_context, container_backend=benchmark.container_backend
@@ -182,7 +180,7 @@ def run_debug_suite(
                     f"Hint: '{benchmark_name}' may require an optional tool package that is not installed.\n"
                     f"Check the benchmark's optional extras in its pyproject.toml"
                 ) from exc
-            results.append(run_debug_episode(task, module.make_debug_agent(tid), max_steps=max_steps))
+            results.append(run_debug_episode(task, module.make_debug_agent(tc.task_id), max_steps=max_steps))
     finally:
         # Step 3: close the benchmark to free resources.
         if benchmark is not None:
@@ -208,13 +206,12 @@ def assert_debug_tasks_reward_one(
     Intended for use in a single catch-all test function::
 
         def test_debug_tasks():
-            import osworld_cube.debug_agent as mod
+            import osworld_cube.debug as mod
             from cube.testing import assert_debug_tasks_reward_one
             assert_debug_tasks_reward_one(mod)
 
     Args:
-        module:    A module exposing ``get_benchmark()``,
-                   ``get_debug_task_configs()``, and
+        module:    A module exposing ``get_debug_benchmark()`` and
                    ``make_debug_agent(task_id)``.
         max_steps: Safety cap passed to ``run_debug_episode`` (default 20).
 
