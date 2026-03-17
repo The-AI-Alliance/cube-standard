@@ -6,12 +6,14 @@
 
 import inspect
 import types
+import typing
 from ast import literal_eval
+from collections.abc import Callable
 
 import docstring_parser
 
 
-def _json_schema_type(python_type_name: str):
+def _json_schema_type(python_type_name: str) -> str:
     """Converts standard python types to json schema types
 
     Parameters
@@ -37,7 +39,16 @@ def _json_schema_type(python_type_name: str):
     return python_to_json_schema_types.get(python_type_name, "string")
 
 
-def function_to_dict(input_function) -> dict:  # noqa: C901
+def _get_type_name(annotation: type) -> str:
+    """Returns the base type name for an annotation, handling generic aliases like list[str]."""
+    if hasattr(annotation, "__name__"):
+        return annotation.__name__
+    if hasattr(annotation, "__origin__"):
+        return annotation.__origin__.__name__
+    return str(annotation)
+
+
+def function_to_dict(input_function: Callable) -> dict:  # noqa: C901
     """Using type hints and numpy- or Google-style docstring,
     produce a dictionary usable for OpenAI function calling
 
@@ -65,14 +76,21 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
     for param_name, param in param_info.items():
         if hasattr(param, "annotation") and param.annotation is not inspect.Parameter.empty:
             annotation = param.annotation
-            if isinstance(annotation, types.UnionType):
+            is_union = isinstance(annotation, types.UnionType) or getattr(annotation, "__origin__", None) is typing.Union
+            if is_union:
                 non_none = [a for a in annotation.__args__ if a is not type(None)]
-                if len(non_none) > 1:
+                if len(non_none) != 1:
                     raise ValueError(f"Unsupported union type {annotation}: only 'X | None' is supported.")
-                if param.default is inspect.Parameter.empty or param.default is not None:
-                    raise ValueError(f"Parameter '{param_name}' has type '{annotation}' but default is not None.")
+                if param.default is inspect.Parameter.empty:
+                    raise ValueError(
+                        f"Parameter '{param_name}' has type '{annotation}' but has no default value. 'X | None' parameters must default to None."
+                    )
+                if param.default is not None:
+                    raise ValueError(
+                        f"Parameter '{param_name}' has type '{annotation}' but default is {param.default!r}, not None."
+                    )
                 annotation = non_none[0]
-            param_type = _json_schema_type(annotation.__name__)
+            param_type = _json_schema_type(_get_type_name(annotation))
         else:
             param_type = None
         param_description = None

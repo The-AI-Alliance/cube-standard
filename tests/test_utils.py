@@ -1,5 +1,7 @@
 """Tests for cube.utils - function_to_dict and helpers."""
 
+import typing
+
 import pytest
 
 from cube.utils import _json_schema_type, function_to_dict
@@ -241,7 +243,7 @@ def func_with_optional_str_no_default(x: str | None) -> None:
 
 
 def test_union_x_or_none_without_default_raises() -> None:
-    with pytest.raises(ValueError, match="default is not None"):
+    with pytest.raises(ValueError, match="no default value"):
         function_to_dict(func_with_optional_str_no_default)
 
 
@@ -256,8 +258,73 @@ def func_with_optional_str_non_none_default(x: str | None = "hello") -> None:
 
 
 def test_union_x_or_none_with_non_none_default_raises() -> None:
-    with pytest.raises(ValueError, match="default is not None"):
+    with pytest.raises(ValueError, match="not None"):
         function_to_dict(func_with_optional_str_non_none_default)
+
+
+def func_with_optional_list(tags: list[str] | None = None) -> None:
+    """A function with an optional list of tags.
+
+    Parameters
+    ----------
+    tags : list
+        A list of string tags.
+    """
+
+
+def test_union_with_generic_inner_type() -> None:
+    result = function_to_dict(func_with_optional_list)
+    props = result["parameters"]["properties"]
+    assert props["tags"]["type"] == "array"
+    assert "tags" not in result["parameters"].get("required", [])
+
+
+def func_with_typing_optional(x: typing.Optional[str] = None) -> None:
+    """A function using typing.Optional.
+
+    Parameters
+    ----------
+    x : str, optional
+        An optional string.
+    """
+
+
+def test_typing_optional_resolves_to_string() -> None:
+    result = function_to_dict(func_with_typing_optional)
+    props = result["parameters"]["properties"]
+    assert props["x"]["type"] == "string"
+    assert "x" not in result["parameters"].get("required", [])
+
+
+def func_with_none_first(x: None | str = None) -> None:
+    """A function with None listed first in the union.
+
+    Parameters
+    ----------
+    x : str, optional
+        An optional string.
+    """
+
+
+def test_union_none_first_resolves_correctly() -> None:
+    result = function_to_dict(func_with_none_first)
+    props = result["parameters"]["properties"]
+    assert props["x"]["type"] == "string"
+
+
+def func_with_multi_union(x: str | int | None = None) -> None:
+    """A function with multiple non-None types in union.
+
+    Parameters
+    ----------
+    x : str
+        A value.
+    """
+
+
+def test_union_with_multiple_non_none_types_raises() -> None:
+    with pytest.raises(ValueError, match="only 'X | None' is supported"):
+        function_to_dict(func_with_multi_union)
 
 
 # --- Google-style docstrings ---
