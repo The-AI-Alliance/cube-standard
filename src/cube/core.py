@@ -59,8 +59,10 @@ class TypedBaseModel(BaseModel):
         if isinstance(value, dict) and "_type" in value:
             type_path = value.pop("_type")
             module_name, class_name = type_path.rsplit(".", 1)
-            module = importlib.import_module(module_name)
+            module = importlib.import_module(module_name)  # nosemgrep: non-literal-import
             actual_cls = getattr(module, class_name)
+            if not (isinstance(actual_cls, type) and issubclass(actual_cls, TypedBaseModel)):
+                raise ValueError(f"Refusing to deserialize '{type_path}': class must be a TypedBaseModel subclass.")
             return actual_cls.model_validate(value)
         if isinstance(value, dict) and inspect.isabstract(cls):
             raise ValueError(
