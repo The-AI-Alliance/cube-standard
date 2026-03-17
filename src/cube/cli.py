@@ -395,7 +395,16 @@ def cmd_test(
     else:
         p50_s = p95_s = p99_s = 0.0
 
-    def _latency_bar(sec: float, max_sec: float = 0.2, width: int = 24) -> str:
+    # Constrain width so panel is narrower and taller (pic2-like h/w aspect ratio)
+    try:
+        _term_width = console.size.width
+    except Exception:
+        _term_width = 80
+    # Narrow layout: compress table columns (short headers + compact values) so it fits
+    _display_width = min(_term_width, 62)
+    _bar_width = min(26, max(12, _display_width - 42))
+
+    def _latency_bar(sec: float, max_sec: float = 0.2, width: int = _bar_width) -> str:
         if max_sec <= 0:
             return "░" * width
         filled = min(int((sec / max_sec) * width), width)
@@ -430,10 +439,17 @@ def cmd_test(
     )
     compliance_checks_table.add_column("check", style="dim", no_wrap=True)
     compliance_checks_table.add_column("status", no_wrap=True)
-    for name, status in compliance_checks:
-        compliance_checks_table.add_row(name, status)
+    compliance_checks_table.add_column("check2", style="dim", no_wrap=True)
+    compliance_checks_table.add_column("status2", no_wrap=True)
+    for i in range(0, len(compliance_checks), 2):
+        name1, status1 = compliance_checks[i]
+        if i + 1 < len(compliance_checks):
+            name2, status2 = compliance_checks[i + 1]
+            compliance_checks_table.add_row(name1, status1, name2, status2)
+        else:
+            compliance_checks_table.add_row(name1, status1, "", "")
 
-    # Task-level results table (per-episode)
+    # Task-level results table (per-episode); compressed headers/values for narrow width
     task_results_table = Table(
         show_header=True,
         box=box.SIMPLE,
@@ -441,24 +457,24 @@ def cmd_test(
         show_edge=False,
         header_style="bold",
     )
-    task_results_table.add_column("task_id", style="file", no_wrap=True)
+    task_results_table.add_column("task", style="file", no_wrap=True)
     task_results_table.add_column("done", justify="center")
-    task_results_table.add_column("reward", justify="right")
-    task_results_table.add_column("steps", justify="right")
-    task_results_table.add_column("time (s)", justify="right")
-    task_results_table.add_column("error", style="error")
+    task_results_table.add_column("rwd", justify="right")
+    task_results_table.add_column("st", justify="right")
+    task_results_table.add_column("t(s)", justify="right")
+    task_results_table.add_column("err", style="error")
 
     for r in results:
         done_str = "[success]✓[/success]" if r["done"] else "[error]✗[/error]"
         reward_str = (
-            f"[success]{r['reward']:.3f}[/success]" if r["reward"] == 1.0 else f"[error]{r['reward']:.3f}[/error]"
+            f"[success]{r['reward']:.1f}[/success]" if r["reward"] == 1.0 else f"[error]{r['reward']:.1f}[/error]"
         )
         task_results_table.add_row(
             r["task_id"],
             done_str,
             reward_str,
             str(r["steps"]),
-            str(r["episode_time_s"]),
+            f"{r['episode_time_s']:.2f}",
             r["error"] or "",
         )
 
@@ -494,23 +510,23 @@ def cmd_test(
         else f"[error]{len(failures)} / {len(results)} task(s) failed[/error]"
     )
 
-    console.print(
-        Panel(
-            Group(
-                Text.from_markup("\n".join(header_lines)),
-                "",
-                compliance_header,
-                compliance_checks_table,
-                "",
-                task_results_table,
-                "",
-                Text.from_markup("\n".join(latency_lines)),
-            ),
-            title=f"[bold]CUBE Stress Test[/bold]  [file]{module_name}[/file]  —  {status_text}",
-            border_style=border,
-            padding=(0, 1),
-        )
+    stress_panel = Panel(
+        Group(
+            Text.from_markup("\n".join(header_lines)),
+            "",
+            compliance_header,
+            compliance_checks_table,
+            "",
+            task_results_table,
+            "",
+            Text.from_markup("\n".join(latency_lines)),
+        ),
+        title=f"[bold]CUBE Stress Test[/bold]  [file]{module_name}[/file]  —  {status_text}",
+        border_style=border,
+        padding=(0, 1),
     )
+    # Render at fixed narrow width so output shape matches pic2 (taller than wide)
+    Console(theme=_THEME, width=_display_width).print(stress_panel)
 
     if failures:
         console.print(
