@@ -287,7 +287,9 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         )
 
     try:
-        module = importlib.import_module(resolved)
+        module = importlib.import_module(
+            resolved
+        )  # nosemgrep: non-literal-import  # trusted: module path from CLI user who already has local shell access
     except ModuleNotFoundError as exc:
         err_console.print(
             Panel(
