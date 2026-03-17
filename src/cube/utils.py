@@ -5,10 +5,10 @@
 # ==================================================================
 
 import inspect
+import types
 from ast import literal_eval
 
 import docstring_parser
-import types
 
 
 def _json_schema_type(python_type_name: str):

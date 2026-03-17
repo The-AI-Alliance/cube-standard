@@ -1,6 +1,5 @@
 """Tests for cube.utils - function_to_dict and helpers."""
 
-
 import pytest
 
 from cube.utils import _json_schema_type, function_to_dict
