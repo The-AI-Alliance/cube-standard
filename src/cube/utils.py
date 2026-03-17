@@ -76,7 +76,9 @@ def function_to_dict(input_function: Callable) -> dict:  # noqa: C901
     for param_name, param in param_info.items():
         if hasattr(param, "annotation") and param.annotation is not inspect.Parameter.empty:
             annotation = param.annotation
-            is_union = isinstance(annotation, types.UnionType) or getattr(annotation, "__origin__", None) is typing.Union
+            is_union = (
+                isinstance(annotation, types.UnionType) or getattr(annotation, "__origin__", None) is typing.Union
+            )
             if is_union:
                 non_none = [a for a in annotation.__args__ if a is not type(None)]
                 if len(non_none) != 1:
