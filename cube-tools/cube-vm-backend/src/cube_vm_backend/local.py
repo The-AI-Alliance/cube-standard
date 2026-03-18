@@ -3,9 +3,10 @@
 Uses a read-only base qcow2 image + per-task copy-on-write overlays.
 Reset strategy: delete overlay + reboot (ResetIsolation.RESTART, ~30s).
 
-Image download:
-    ensure_resource() downloads the qcow2 from HuggingFace on first use (~4 GB).
-    Subsequent calls are no-ops (cached image detected by filename).
+Image:
+    path_to_vm must point to an existing qcow2 base image.
+    Benchmarks that need auto-download (e.g. OSWorld) subclass this backend
+    and override ensure_resource() to fetch the image before launch.
 
 Port forwarding:
     SLIRP user-mode networking — no root or bridge required.
@@ -19,7 +20,7 @@ from pathlib import Path
 
 from cube.vm import VM, VMBackend, VMConfig
 
-from cube_vm_backend.qemu_manager import QEMUConfig, QEMUManager, ensure_base_image
+from cube_vm_backend.qemu_manager import QEMUConfig, QEMUManager
 
 logger = logging.getLogger(__name__)
 
@@ -97,16 +98,17 @@ class LocalQEMUVMBackend(VMBackend):
     cpus: int = 4
 
     def ensure_resource(self, config: VMConfig) -> None:
-        """Download the base qcow2 image if not already present.
+        """Validate or prepare the base qcow2 image before launch.
 
-        Idempotent — subsequent calls are no-ops once the image exists.
+        Override in subclasses to add auto-download behaviour (e.g. OSWorld).
+        Default implementation raises if path_to_vm is not set.
         """
-        if self.path_to_vm is not None:
-            logger.info("Using explicit VM image: %s", self.path_to_vm)
-            return
-        vm_dir = Path(self.cache_dir)
-        base_image = ensure_base_image(vm_dir, config.os_type)
-        logger.info("Base image ready: %s", base_image)
+        if self.path_to_vm is None:
+            raise ValueError(
+                "path_to_vm must be set on LocalQEMUVMBackend. "
+                "Provide a path to an existing qcow2 image, or use a subclass "
+                "that handles image acquisition (e.g. OSWorldQEMUVMBackend)."
+            )
 
     def launch(self, config: VMConfig) -> LocalQEMUVM:
         """Ensure image exists, then start a QEMU VM and return a live handle.
@@ -116,10 +118,7 @@ class LocalQEMUVMBackend(VMBackend):
         self.ensure_resource(config)
 
         vm_dir = Path(self.cache_dir)
-        if self.path_to_vm is not None:
-            base_image = Path(self.path_to_vm)
-        else:
-            base_image = ensure_base_image(vm_dir, config.os_type)
+        base_image = Path(self.path_to_vm)  # type: ignore[arg-type]
 
         qemu_config = QEMUConfig(
             base_image=base_image,

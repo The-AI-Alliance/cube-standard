@@ -1,12 +1,9 @@
-"""QEMU/KVM VM lifecycle manager for OSWorld.
+"""QEMU/KVM VM lifecycle manager.
 
-Replaces desktop_env's Docker provider with a bare QEMU/KVM approach:
-- Uses SLIRP user-mode networking with port forwarding (no root / bridge required)
-- Snapshot strategy: read-only base qcow2 + per-instance copy-on-write overlay
-  (reset = stop QEMU, delete overlay, create new overlay, start QEMU)
-- Communicates with running QEMU via QMP Unix socket for clean shutdown
-
-VM image download logic is ported from desktop_env's DockerVMManager.
+Uses SLIRP user-mode networking with port forwarding (no root / bridge required).
+Snapshot strategy: read-only base qcow2 + per-instance copy-on-write overlay
+(reset = stop QEMU, delete overlay, create new overlay, start QEMU).
+Communicates with running QEMU via QMP Unix socket for clean shutdown.
 """
 
 import json
@@ -16,19 +13,12 @@ import socket
 import subprocess
 import tempfile
 import time
-import zipfile
 from pathlib import Path
-from time import sleep
 from typing import Optional
 
 import requests
-from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
-
-# HuggingFace image URLs (same as desktop_env/providers/docker/manager.py)
-UBUNTU_X86_URL = "https://huggingface.co/datasets/xlangai/ubuntu_osworld/resolve/main/Ubuntu.qcow2.zip"
-WINDOWS_X86_URL = "https://huggingface.co/datasets/xlangai/windows_osworld/resolve/main/Windows-10-x64.qcow2.zip"
 
 _VM_READY_TIMEOUT = 300  # seconds to wait for VM screenshot endpoint
 _VM_READY_POLL_INTERVAL = 2  # seconds between readiness polls
@@ -407,96 +397,3 @@ def _release_port_reservation(port: Optional[int]) -> None:
     except OSError:
         pass
 
-
-# ------------------------------------------------------------------
-# VM image download (ported from desktop_env DockerVMManager)
-# ------------------------------------------------------------------
-
-
-def ensure_base_image(vm_dir: Path, os_type: str = "Ubuntu") -> Path:
-    """Download and extract the OSWorld base qcow2 image if not already present.
-
-    Parameters
-    ----------
-    vm_dir : Path
-        Directory where the qcow2 image should be stored.
-    os_type : str
-        ``"Ubuntu"`` or ``"Windows"``.
-
-    Returns
-    -------
-    Path
-        Path to the extracted qcow2 file.
-    """
-    vm_dir = Path(vm_dir)
-    vm_dir.mkdir(parents=True, exist_ok=True)
-
-    if os_type == "Ubuntu":
-        url = UBUNTU_X86_URL
-    elif os_type == "Windows":
-        url = WINDOWS_X86_URL
-    else:
-        raise ValueError(f"Unknown os_type: {os_type!r}")
-
-    hf_endpoint = os.environ.get("HF_ENDPOINT", "")
-    if "hf-mirror.com" in hf_endpoint:
-        url = url.replace("huggingface.co", "hf-mirror.com")
-        logger.info("Using HF mirror: %s", url)
-
-    zip_name = url.split("/")[-1]
-    qcow2_name = zip_name[:-4] if zip_name.endswith(".zip") else zip_name
-    qcow2_path = vm_dir / qcow2_name
-
-    if qcow2_path.exists():
-        logger.info("Base image already present: %s", qcow2_path)
-        return qcow2_path
-
-    zip_path = vm_dir / zip_name
-    _download_file(url, zip_path)
-
-    if zip_name.endswith(".zip"):
-        logger.info("Extracting %s ...", zip_path)
-        with zipfile.ZipFile(zip_path, "r") as z:
-            z.extractall(vm_dir)
-        logger.info("Extracted to %s", vm_dir)
-
-    return qcow2_path
-
-
-def _download_file(url: str, dest: Path) -> None:
-    """Download a file with resumable support and a progress bar."""
-    downloaded_size = 0
-    while True:
-        headers: dict = {}
-        if dest.exists():
-            downloaded_size = dest.stat().st_size
-            headers["Range"] = f"bytes={downloaded_size}-"
-
-        with requests.get(url, headers=headers, stream=True) as resp:
-            if resp.status_code == 416:
-                logger.info("File already fully downloaded: %s", dest)
-                return
-
-            resp.raise_for_status()
-            total = int(resp.headers.get("content-length", 0))
-
-            with (
-                open(dest, "ab") as fp,
-                tqdm(
-                    desc=dest.name,
-                    total=total,
-                    unit="iB",
-                    unit_scale=True,
-                    unit_divisor=1024,
-                    initial=downloaded_size,
-                    ascii=True,
-                ) as bar,
-            ):
-                try:
-                    for chunk in resp.iter_content(chunk_size=1024):
-                        size = fp.write(chunk)
-                        bar.update(size)
-                    return  # success
-                except (requests.RequestException, IOError) as exc:
-                    logger.error("Download interrupted: %s — retrying", exc)
-                    sleep(5)
