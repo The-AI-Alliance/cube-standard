@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
 from cube.container import Container, ContainerBackend
 from cube.core import Observation
-from cube.server import make_benchmark_fastapi_app
+from cube.server import make_benchmark_jsonrpc_app
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
 
@@ -90,7 +90,7 @@ def test_create_server_app():
     benchmark.setup()
 
     # Create the FastAPI app (without spawning a server process)
-    app = make_benchmark_fastapi_app(benchmark)
+    app = make_benchmark_jsonrpc_app(benchmark)
 
     # Verify the app was created
     assert isinstance(app, FastAPI)
@@ -98,29 +98,29 @@ def test_create_server_app():
 
     # Use TestClient to test the endpoints (without actually spawning a server process)
     with TestClient(app) as client:
-        # Test /cube/info endpoint
-        response = client.get("/cube/info")
+        # Test cube/info method
+        response = client.post("/", json={"jsonrpc": "2.0", "method": "cube/info", "params": {}, "id": 1})
         assert response.status_code == 200
-        info = response.json()
+        info = response.json()["result"]
         assert info["name"] == "TestBenchmark"
         assert info["version"] == "1.0.0"
         assert info["num_tasks"] == 2
-        print(f"✓ /cube/info returned: {info['name']}")
+        print(f"✓ cube/info returned: {info['name']}")
 
-        # Test /cube/tasks endpoint
-        response = client.get("/cube/tasks")
+        # Test cube/tasks method
+        response = client.post("/", json={"jsonrpc": "2.0", "method": "cube/tasks", "params": {}, "id": 2})
         assert response.status_code == 200
-        tasks = response.json()
+        tasks = response.json()["result"]
         assert len(tasks) == 2
         assert tasks[0]["id"] == "task-1"
         assert tasks[1]["id"] == "task-2"
-        print(f"✓ /cube/tasks returned {len(tasks)} tasks")
+        print(f"✓ cube/tasks returned {len(tasks)} tasks")
 
-        # Note: Testing /cube/spawn (which creates task RPC servers) is out of scope for this test
+        # Note: Testing cube/spawn (which creates task RPC servers) is out of scope for this test
 
-        # Test /cube/shutdown endpoint (this calls benchmark.close())
-        response = client.post("/cube/shutdown")
+        # Test cube/shutdown method (this calls benchmark.close())
+        response = client.post("/", json={"jsonrpc": "2.0", "method": "cube/shutdown", "params": {}, "id": 3})
         assert response.status_code == 200
-        print("✓ /cube/shutdown succeeded")
+        print("✓ cube/shutdown succeeded")
 
     print("✓ Benchmark server test passed!")
