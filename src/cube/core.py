@@ -85,6 +85,26 @@ class ActionSchema(TypedBaseModel):
     description: str
     parameters: dict = Field(default_factory=dict)
 
+    @field_validator("name", "description")
+    @classmethod
+    def _must_be_non_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must be a non-empty string")
+        return v
+
+    def validate_param_descriptions(self) -> tuple[bool, str]:
+        """Check that every parameter (except 'self') has a non-empty description."""
+        props = self.parameters.get("properties", {})
+        for param_name, param_info in props.items():
+            if param_name == "self":
+                continue
+            if not isinstance(param_info, dict):
+                return False, f"parameter '{param_name}' invalid"
+            desc = param_info.get("description")
+            if not desc or not str(desc).strip():
+                return False, f"parameter '{param_name}' missing description"
+        return True, ""
+
     @classmethod
     def from_function(cls, func: Callable) -> Self:
         """Create tool object from python function."""

@@ -41,7 +41,6 @@ from datetime import datetime, timezone
 from cube import __version__  # report.cube_version and .save()
 from cube.core import Action, ActionSchema, Observation
 from cube.task import Task
-from cube.utils import validate_action_schema
 
 logger = logging.getLogger(__name__)
 
@@ -50,21 +49,14 @@ def _validate_action_set(action_set: list) -> tuple[bool, str]:
     """
     Validate action_set per stress_test_specs.md tools_list check (Option A).
 
-    Uses cube.utils.validate_action_schema; does not require parameter-level
-    descriptions. Returns (True, "") if non-empty and each schema is valid.
+    Each item must be a valid ActionSchema (Pydantic enforces non-empty name/description).
+    Returns (True, "") if non-empty and all items are ActionSchema instances.
     """
     if not action_set or not isinstance(action_set, list):
         return False, "action_set is empty or not a list"
     for i, item in enumerate(action_set):
-        assert isinstance(item, ActionSchema)  # name and description required, parameters optional (default {})
-        ok, msg = validate_action_schema(
-            name=item.name,
-            description=item.description,
-            parameters=item.parameters,
-            require_param_descriptions=False,
-        )
-        if not ok:
-            return False, f"action_set[{i}] {msg}"
+        if not isinstance(item, ActionSchema):
+            return False, f"action_set[{i}] is not an ActionSchema"
     return True, ""
 
 

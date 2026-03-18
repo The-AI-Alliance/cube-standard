@@ -3,18 +3,17 @@
 import inspect
 
 import pytest
+from pydantic import ValidationError
 
-from cube.core import Action, Observation, StepError, TextContent
+from cube.core import Action, ActionSchema, Observation, StepError, TextContent
 from cube.tool import AsyncTool, Tool, tool_action
-from cube.utils import function_to_dict, validate_action_schema
 
 
 def assert_tool_docstrings_valid(tool_cls: type) -> None:
     """Validate that all @tool_action methods on a Tool class have parsable docstrings.
 
     Checks that every action has a non-empty description and that every
-    parameter (excluding 'self') has a non-empty description. Uses
-    cube.utils.validate_action_schema for the shared validation logic.
+    parameter (excluding 'self') has a non-empty description.
 
     Raises AssertionError with a descriptive message on the first failure.
     """
@@ -27,13 +26,8 @@ def assert_tool_docstrings_valid(tool_cls: type) -> None:
     assert actions, f"{tool_cls.__name__} has no @tool_action methods"
 
     for name, func in actions:
-        result = function_to_dict(func)
-        ok, msg = validate_action_schema(
-            name=result["name"],
-            description=result["description"],
-            parameters=result["parameters"],
-            require_param_descriptions=True,
-        )
+        schema = ActionSchema.from_function(func)
+        ok, msg = schema.validate_param_descriptions()
         assert ok, f"{tool_cls.__name__}.{name}: {msg}"
 
 
@@ -255,5 +249,5 @@ def test_assert_tool_docstrings_valid_catches_missing_param_description():
 
 
 def test_assert_tool_docstrings_valid_catches_missing_function_description():
-    with pytest.raises(AssertionError, match="missing or invalid 'description'"):
+    with pytest.raises(ValidationError, match="must be a non-empty string"):
         assert_tool_docstrings_valid(MissingFunctionDescriptionTool)
