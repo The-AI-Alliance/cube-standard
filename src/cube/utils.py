@@ -137,7 +137,9 @@ def validate_action_schema(
     if not isinstance(parameters, dict):
         return False, "missing or invalid 'parameters'"
     if require_param_descriptions:
-        props = parameters.get("properties", parameters)
+        # Support both shapes: OpenAI/function_to_dict use parameters["properties"];
+        # stress-test (ActionSchema.parameters) may be that or a flat {param_name: param_spec}.
+        props = parameters.get("properties") if isinstance(parameters.get("properties"), dict) else parameters
         if isinstance(props, dict):
             for param_name, param_info in props.items():
                 if param_name == "self":

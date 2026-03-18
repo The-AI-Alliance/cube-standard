@@ -21,9 +21,6 @@ import logging
 from cube.core import Action, ActionSchema, Observation
 from counter_cube.benchmark import CounterBenchmark
 
-# Expose benchmark metadata for stress-test compliance (check_benchmark_metadata).
-benchmark_metadata = CounterBenchmark.benchmark_metadata
-
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------

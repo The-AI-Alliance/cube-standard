@@ -38,20 +38,12 @@ import types
 from collections.abc import Callable
 from datetime import datetime, timezone
 
-from cube.benchmark import BenchmarkMetadata
+from cube import __version__  # report.cube_version and .save()
 from cube.core import Action, ActionSchema, Observation
 from cube.task import Task
 from cube.utils import validate_action_schema
 
 logger = logging.getLogger(__name__)
-
-# Used for report.cube_version and .save()
-try:
-    import importlib.metadata
-
-    _CUBE_VERSION = importlib.metadata.version("cube-standard")
-except Exception:
-    _CUBE_VERSION = "0.1.0rc1"
 
 
 def _validate_action_set(action_set: list) -> tuple[bool, str]:
@@ -64,13 +56,11 @@ def _validate_action_set(action_set: list) -> tuple[bool, str]:
     if not action_set or not isinstance(action_set, list):
         return False, "action_set is empty or not a list"
     for i, item in enumerate(action_set):
-        name = getattr(item, "name", None)
-        description = getattr(item, "description", None)
-        parameters = getattr(item, "parameters", None)
+        assert isinstance(item, ActionSchema)  # name and description required, parameters optional (default {})
         ok, msg = validate_action_schema(
-            name=name or "",
-            description=description if isinstance(description, str) else None,
-            parameters=parameters if isinstance(parameters, dict) else None,
+            name=item.name,
+            description=item.description,
+            parameters=item.parameters,
             require_param_descriptions=False,
         )
         if not ok:
@@ -244,14 +234,15 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str]:
 def check_benchmark_metadata(module: types.ModuleType) -> tuple[bool, str]:
     """
     Benchmark has non-empty name and version (stress_test_specs.md).
-    Module should expose benchmark_metadata (BenchmarkMetadata), e.g. from the
-    benchmark class: benchmark_metadata = MyBenchmark.benchmark_metadata.
+    Get metadata from the benchmark instance returned by get_debug_benchmark().
     """
-    meta = getattr(module, "benchmark_metadata", None)
+    bench_fn = getattr(module, "get_debug_benchmark", None)
+    if not callable(bench_fn):
+        return False, "no get_debug_benchmark"
+    benchmark = bench_fn()
+    meta = benchmark.benchmark_metadata
     if meta is None:
         return False, "no benchmark_metadata"
-    if not isinstance(meta, BenchmarkMetadata):
-        return False, f"benchmark_metadata must be BenchmarkMetadata, got {type(meta).__name__}"
     return True, ""
 
 
@@ -361,7 +352,7 @@ def build_stress_test_report(
     episode_time_s = sum(episode_times) / len(episode_times) if episode_times else 0.0
     profiling = aggregate_profiling(results)
     return StressTestReport(
-        cube_version=_CUBE_VERSION,
+        cube_version=__version__,
         benchmark=benchmark_name,
         timestamp=datetime.now(timezone.utc).isoformat(),
         hardware={
