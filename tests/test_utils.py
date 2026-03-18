@@ -196,6 +196,7 @@ def test_all_type_annotations():
     assert props["b"]["type"] == "number"
     assert props["c"]["type"] == "boolean"
     assert props["d"]["type"] == "array"
+    assert "items" in props["d"]
     assert props["e"]["type"] == "object"
 
 
@@ -230,6 +231,7 @@ def test_generic_list_annotation_resolves_to_array() -> None:
     result = function_to_dict(func_with_generic_list)
     props = result["parameters"]["properties"]
     assert props["tags"]["type"] == "array"
+    assert "items" in props["tags"]
 
 
 def func_with_optional_str_no_default(x: str | None) -> None:
@@ -276,6 +278,7 @@ def test_union_with_generic_inner_type() -> None:
     result = function_to_dict(func_with_optional_list)
     props = result["parameters"]["properties"]
     assert props["tags"]["type"] == "array"
+    assert "items" in props["tags"]
     assert "tags" not in result["parameters"].get("required", [])
 
 

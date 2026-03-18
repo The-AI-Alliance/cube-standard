@@ -123,7 +123,10 @@ def function_to_dict(input_function: Callable) -> dict:  # noqa: C901
             "enum": param_enum,
         }
 
-        parameters[param_name] = dict([(k, v) for k, v in param_dict.items() if isinstance(v, str)])
+        param_schema = {k: v for k, v in param_dict.items() if v is not None}
+        if param_type == "array":
+            param_schema["items"] = {}
+        parameters[param_name] = param_schema
 
         # Check if the parameter has no default value (i.e., it's required)
         if param.default == param.empty:
