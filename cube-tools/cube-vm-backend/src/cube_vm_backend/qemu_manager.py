@@ -212,9 +212,7 @@ class QEMUManager:
         logger.info("Creating overlay: %s", " ".join(cmd))
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(
-                f"qemu-img create failed (exit {result.returncode}):\n{result.stderr}"
-            )
+            raise RuntimeError(f"qemu-img create failed (exit {result.returncode}):\n{result.stderr}")
 
     def _launch_qemu(self) -> None:
         """Build QEMU command and launch as a background subprocess."""
