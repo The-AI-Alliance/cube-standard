@@ -14,6 +14,7 @@ import logging
 import time
 from enum import Enum
 from io import BytesIO
+from urllib.parse import urlparse
 
 from cube.container import Container
 from cube.core import Action, Content, ImageContent, Observation, StepError, TextContent
@@ -112,11 +113,9 @@ class ComputerBase(Tool):
 
     def _connect_guest(self, vm: VM) -> None:
         """Parse the VM endpoint and create the GuestAgent HTTP client."""
-        # endpoint is "http://host:port" — extract host and port
-        endpoint = vm.endpoint.rstrip("/")
-        parts = endpoint.split(":")
-        host = parts[1].lstrip("/")
-        port = int(parts[2]) if len(parts) > 2 else 5000
+        parsed = urlparse(vm.endpoint)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 5000
         self._guest = GuestAgent(host=host, port=port)
 
     def execute_action(self, action: Action) -> Observation | StepError:
