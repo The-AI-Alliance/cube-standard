@@ -194,6 +194,49 @@ def test_suite_reports_contain_task_ids():
 # ── run_debug_suite — benchmark lifecycle ────────────────────────────────────
 
 
+def test_double_setup_metadata_preserved():
+    """Multiple setup() calls must not overwrite task_metadata; subset_from_list still works."""
+    task_ids = ("t1", "t2")
+
+    class DoubleSetupBenchmark(Benchmark):
+        benchmark_metadata = BenchmarkMetadata(name="double-setup-bench", version="0.1", description="test")
+        task_metadata = {}
+        task_config_class = DoneTaskConfig
+        _setup_calls: int = PrivateAttr(default=0)
+
+        def _setup(self) -> None:
+            self._setup_calls += 1
+            # Idempotent:Only populate if not already set (correct pattern for multiple setup() calls)
+            if not self.task_metadata:
+                object.__setattr__(
+                    self,
+                    "task_metadata",
+                    {tid: TaskMetadata(id=tid) for tid in task_ids},
+                )
+
+        def close(self) -> None:
+            pass
+
+    benchmark = DoubleSetupBenchmark()
+    benchmark.install()
+    benchmark.setup()
+    configs_first = list(benchmark.get_task_configs())
+    assert len(configs_first) == 2
+    assert {c.task_id for c in configs_first} == set(task_ids)
+
+    benchmark.setup()  # second call must not overwrite
+    configs_second = list(benchmark.get_task_configs())
+    assert len(configs_second) == 2
+    assert {c.task_id for c in configs_second} == set(task_ids)
+    assert benchmark._setup_calls == 2
+
+    # subset_from_list must still work after double setup
+    subset = benchmark.subset_from_list(["t1"])
+    subset_configs = list(subset.get_task_configs())
+    assert len(subset_configs) == 1
+    assert subset_configs[0].task_id == "t1"
+
+
 def test_suite_benchmark_setup_and_close_called():
     mod, benchmark = _make_module()
     run_debug_suite("bench", mod)
