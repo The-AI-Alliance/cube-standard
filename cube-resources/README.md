@@ -24,8 +24,9 @@ This separation enables three use cases:
 ## Packages
 
 | Package | PyPI name | Description |
-|---|---|---|
+| --- | --- | --- |
 | [`cube-browser-playwright/`](cube-browser-playwright/) | `cube-browser-playwright` | Chromium browser session via Playwright |
+| [`cube-vm-backend/`](cube-vm-backend/) | `cube-vm-backend` | QEMU/KVM VM backend for desktop-automation benchmarks |
 
 ## Usage
 
@@ -47,9 +48,28 @@ session.page.goto("https://example.com")
 session.stop()
 ```
 
+### Launching a QEMU/KVM VM
+
+```python
+from cube_vm_backend import LocalQEMUVMBackend
+from cube.vm import VMConfig
+
+backend = LocalQEMUVMBackend(path_to_vm="/path/to/base.qcow2", headless=True)
+vm = backend.launch(VMConfig(screen_size=(1920, 1080)))
+
+# vm.endpoint gives the base URL of the in-VM HTTP agent
+print(vm.endpoint)  # e.g. http://localhost:5000
+
+# Restore VM to its initial state (overlay reset, ~30s)
+vm.restore_snapshot("initial")
+
+# Stop the VM and clean up
+vm.stop()
+```
+
 ## Adding a new resource package
 
 1. Create a new subdirectory here (e.g. `cube-browser-cua/`).
 2. Add a `pyproject.toml` with `cube-standard` as a dependency.
-3. Implement the relevant abstract contract from `cube-standard` (`BrowserConfig` / `BrowserSession` for browser resources) in your package.
+3. Implement the relevant abstract contract from `cube-standard` (`BrowserConfig` / `BrowserSession` for browser resources, `VMBackend` / `VM` for VM resources) in your package.
 4. Add a row to the table above.
