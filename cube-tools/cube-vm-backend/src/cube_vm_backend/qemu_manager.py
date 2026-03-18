@@ -396,4 +396,3 @@ def _release_port_reservation(port: Optional[int]) -> None:
         reservation.unlink(missing_ok=True)
     except OSError:
         pass
-
