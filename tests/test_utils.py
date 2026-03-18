@@ -134,6 +134,13 @@ def test_enum_param_has_enum_key():
     assert "enum" in props["color"]
 
 
+def test_enum_param_is_list_not_string() -> None:
+    result = function_to_dict(func_with_enum)
+    enum_val = result["parameters"]["properties"]["color"]["enum"]
+    assert isinstance(enum_val, list)
+    assert set(enum_val) == {"red", "green", "blue"}
+
+
 def func_no_annotation(x, y) -> None:
     """A function without type annotations.
 

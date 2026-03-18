@@ -110,7 +110,7 @@ def function_to_dict(input_function: Callable) -> dict:  # noqa: C901
                         # may represent a set of acceptable values
                         # translating as enum for function calling
                         try:
-                            param_enum = str(list(literal_eval(param_type)))
+                            param_enum = list(literal_eval(param_type))
                             param_type = "string"
                         except Exception:
                             pass
