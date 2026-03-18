@@ -5,13 +5,13 @@ Used to validate the CUBE task loop in CI or local development.
 
 Public API
 ----------
+get_debug_benchmark()           → CounterBenchmark
 make_debug_agent(task_id)       → DebugAgent
-get_debug_task_configs()        → list[CounterTaskConfig]
 
 Usage::
 
     # Run all debug tasks and print a JSON report
-    python -m counter_cube.debug_agent
+    python -m counter_cube.debug
 """
 
 from __future__ import annotations
@@ -19,8 +19,7 @@ from __future__ import annotations
 import logging
 
 from cube.core import Action, ActionSchema, Observation
-from counter_cube.benchmark import CounterBenchmark
-from counter_cube.task import CounterTaskConfig
+from counter_cube.benchmark import Benchmark, CounterBenchmark
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,6 @@ _TASK_ACTIONS: dict[str, list[Action]] = {
         Action(name="increment", arguments={}),
         Action(name="increment", arguments={}),
         Action(name="decrement", arguments={}),  # go back to 1 to show decrement works
-        Action(name="increment", arguments={}),
         Action(name="increment", arguments={}),
         Action(name="increment", arguments={}),
     ],
@@ -104,15 +102,20 @@ class DebugAgent:
 # ---------------------------------------------------------------------------
 
 
+def get_debug_benchmark() -> Benchmark:
+    """Return a CounterBenchmark instance scoped to the debug tasks.
+
+    Called once by cube.testing before any debug episodes run.
+    The harness will call benchmark.install() and benchmark.setup() on the
+    returned instance, iterate benchmark.get_task_configs() to discover tasks,
+    and call benchmark.close() at the end to free resources.
+    """
+    return CounterBenchmark().subset_from_list(list(_TASK_ACTIONS.keys()))
+
+
 def make_debug_agent(task_id: str) -> DebugAgent:
     """Return a fresh DebugAgent for the given task_id."""
     return DebugAgent(task_id)
-
-
-def get_debug_task_configs() -> list[CounterTaskConfig]:
-    """Return CounterTaskConfig objects for all registered debug tasks."""
-    task_metadata = CounterBenchmark.task_metadata
-    return [CounterTaskConfig(task_id=tid) for tid in _TASK_ACTIONS if tid in task_metadata]
 
 
 # ---------------------------------------------------------------------------
