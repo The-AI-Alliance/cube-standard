@@ -136,9 +136,18 @@ def test_enum_param_has_enum_key():
 
 def test_enum_param_is_list_not_string() -> None:
     result = function_to_dict(func_with_enum)
-    enum_val = result["parameters"]["properties"]["color"]["enum"]
-    assert isinstance(enum_val, list)
-    assert set(enum_val) == {"red", "green", "blue"}
+    result["parameters"]["properties"]["color"]["enum"].sort()
+    assert result == {
+        "name": "func_with_enum",
+        "description": "Pick a color.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "color": {"type": "string", "description": "The color to pick.", "enum": ["blue", "green", "red"]},
+            },
+            "required": ["color"],
+        },
+    }
 
 
 def func_no_annotation(x, y) -> None:
@@ -218,10 +227,16 @@ def func_with_optional_str_default(x: str | None = None) -> None:
 
 
 def test_union_x_or_none_with_none_default() -> None:
-    result = function_to_dict(func_with_optional_str_default)
-    props = result["parameters"]["properties"]
-    assert props["x"]["type"] == "string"
-    assert "x" not in result["parameters"].get("required", [])
+    assert function_to_dict(func_with_optional_str_default) == {
+        "name": "func_with_optional_str_default",
+        "description": "A function with an optional string defaulting to None.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "string", "description": "An optional string."},
+            },
+        },
+    }
 
 
 def func_with_generic_list(tags: list[str]) -> None:
@@ -235,10 +250,17 @@ def func_with_generic_list(tags: list[str]) -> None:
 
 
 def test_generic_list_annotation_resolves_to_array() -> None:
-    result = function_to_dict(func_with_generic_list)
-    props = result["parameters"]["properties"]
-    assert props["tags"]["type"] == "array"
-    assert "items" in props["tags"]
+    assert function_to_dict(func_with_generic_list) == {
+        "name": "func_with_generic_list",
+        "description": "A function with a generic list.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tags": {"type": "array", "description": "A list of string tags.", "items": {}},
+            },
+            "required": ["tags"],
+        },
+    }
 
 
 def func_with_optional_str_no_default(x: str | None) -> None:
@@ -282,11 +304,16 @@ def func_with_optional_list(tags: list[str] | None = None) -> None:
 
 
 def test_union_with_generic_inner_type() -> None:
-    result = function_to_dict(func_with_optional_list)
-    props = result["parameters"]["properties"]
-    assert props["tags"]["type"] == "array"
-    assert "items" in props["tags"]
-    assert "tags" not in result["parameters"].get("required", [])
+    assert function_to_dict(func_with_optional_list) == {
+        "name": "func_with_optional_list",
+        "description": "A function with an optional list of tags.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tags": {"type": "array", "description": "A list of string tags.", "items": {}},
+            },
+        },
+    }
 
 
 def func_with_typing_optional(x: typing.Optional[str] = None) -> None:
@@ -300,10 +327,16 @@ def func_with_typing_optional(x: typing.Optional[str] = None) -> None:
 
 
 def test_typing_optional_resolves_to_string() -> None:
-    result = function_to_dict(func_with_typing_optional)
-    props = result["parameters"]["properties"]
-    assert props["x"]["type"] == "string"
-    assert "x" not in result["parameters"].get("required", [])
+    assert function_to_dict(func_with_typing_optional) == {
+        "name": "func_with_typing_optional",
+        "description": "A function using typing.Optional.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "string", "description": "An optional string."},
+            },
+        },
+    }
 
 
 def func_with_none_first(x: None | str = None) -> None:
@@ -317,9 +350,16 @@ def func_with_none_first(x: None | str = None) -> None:
 
 
 def test_union_none_first_resolves_correctly() -> None:
-    result = function_to_dict(func_with_none_first)
-    props = result["parameters"]["properties"]
-    assert props["x"]["type"] == "string"
+    assert function_to_dict(func_with_none_first) == {
+        "name": "func_with_none_first",
+        "description": "A function with None listed first in the union.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "string", "description": "An optional string."},
+            },
+        },
+    }
 
 
 def func_with_multi_union(x: str | int | None = None) -> None:

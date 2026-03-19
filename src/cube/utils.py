@@ -61,6 +61,16 @@ def function_to_dict(input_function: Callable) -> dict:  # noqa: C901
     -------
     dictionnary
         A dictionnary to add to the list passed to `functions` parameter of `litellm.completion`
+
+    Raises
+    ------
+    ValueError
+        If the function has no docstring.
+        If a union annotation is not of the form ``X | None``.
+        If a ``X | None`` parameter has no default value.
+        If a ``X | None`` parameter has a non-None default. LLMs only support
+        a single type per parameter; the only meaningful optional union is
+        ``X | None = None``.
     """
     # Get function name and docstring
     name = input_function.__name__
@@ -133,7 +143,7 @@ def function_to_dict(input_function: Callable) -> dict:  # noqa: C901
         parameters[param_name] = param_schema
 
         # Check if the parameter has no default value (i.e., it's required)
-        if param.default == param.empty:
+        if param.default is inspect.Parameter.empty:
             required_params.append(param_name)
 
     # Create the dictionary
