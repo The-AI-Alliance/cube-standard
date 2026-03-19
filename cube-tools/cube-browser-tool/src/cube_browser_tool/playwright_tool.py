@@ -16,6 +16,7 @@ from cube.core import Action, Content, Observation, StepError
 from cube.tool import BrowserTool, ToolConfig
 from cube_browser_playwright import PlaywrightSession, PlaywrightSessionConfig
 from PIL import Image
+from playwright.sync_api import Error
 from playwright.sync_api import Page as SyncPage
 from pydantic import Field, field_validator
 
@@ -143,12 +144,26 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
         logger.debug("JS result: %s", result)
         return result
 
+    def _wait_dom_loaded(self) -> None:
+        for page in self.session.context.pages:
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=3000)
+            except Error:
+                pass
+            for frame in page.frames:
+                try:
+                    frame.wait_for_load_state("domcontentloaded", timeout=3000)
+                except Error:
+                    pass
+
     def page_obs(self) -> Observation:
         """Capture the current page state as an Observation.
 
         Content included depends on the config flags ``use_html``,
         ``use_axtree``, and ``use_screenshot``.
         """
+        self._wait_dom_loaded()
+
         contents = []
         if self.config.use_html:
             html = self.page_html()
