@@ -3,7 +3,6 @@
 import inspect
 
 import pytest
-from pydantic import ValidationError
 
 from cube.core import Action, ActionSchema, Observation, StepError, TextContent
 from cube.tool import AsyncTool, Tool, tool_action
@@ -249,5 +248,5 @@ def test_assert_tool_docstrings_valid_catches_missing_param_description():
 
 
 def test_assert_tool_docstrings_valid_catches_missing_function_description():
-    with pytest.raises(ValidationError, match="must be a non-empty string"):
+    with pytest.raises(ValueError, match="A docstring is required to extract parameter information"):
         assert_tool_docstrings_valid(MissingFunctionDescriptionTool)
