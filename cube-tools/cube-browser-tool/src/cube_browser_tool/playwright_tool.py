@@ -7,15 +7,20 @@ implementation of the ``BrowserTool`` protocol defined in
 ``AsyncPlaywrightTool`` will be added in Phase 2.
 """
 
+import asyncio
 import logging
 import time
 from io import BytesIO
 from typing import Any, Literal
 
 from cube.core import Action, Content, Observation, StepError
-from cube.tool import BrowserTool, ToolConfig
+from cube.tool import AsyncTool, BrowserTool, ToolConfig
 from cube_browser_playwright import PlaywrightSession, PlaywrightSessionConfig
 from PIL import Image
+from playwright.async_api import Error as AsyncError
+from playwright.async_api import Page as AsyncPage
+from playwright.async_api import async_playwright
+from playwright.sync_api import Error as SyncError
 from playwright.sync_api import Page as SyncPage
 from pydantic import Field, field_validator
 
@@ -143,12 +148,26 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
         logger.debug("JS result: %s", result)
         return result
 
+    def _wait_dom_loaded(self) -> None:
+        for page in self.session.context.pages:
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=3000)
+            except SyncError as e:
+                logger.debug("page.wait_dom_loaded failed: %s", e)
+            for frame in page.frames:
+                try:
+                    frame.wait_for_load_state("domcontentloaded", timeout=3000)
+                except SyncError as e:
+                    logger.debug("frame.wait_dom_loaded failed: %s", e)
+
     def page_obs(self) -> Observation:
         """Capture the current page state as an Observation.
 
         Content included depends on the config flags ``use_html``,
         ``use_axtree``, and ``use_screenshot``.
         """
+        self._wait_dom_loaded()
+
         contents = []
         if self.config.use_html:
             html = self.page_html()
@@ -309,3 +328,131 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
     def noop(self) -> None:
         """No-op: take no action and return the current page state."""
         pass
+
+
+class AsyncPlaywrightTool(AsyncTool, BrowserActionSpace):
+    """Fully asynchronous Playwright tool using playwright.async_api."""
+
+    def __init__(self, config: PlaywrightConfig) -> None:
+        super().__init__()
+        self.config = config
+        self._apw = None
+        self._abrowser = None
+        self._page: AsyncPage = None  # type: ignore
+
+    async def initialize(self):
+        self._apw = await async_playwright().start()
+        self._abrowser = await self._apw.chromium.launch(chromium_sandbox=True, **self.config.browser.pw_extra_kwargs)
+        self._page = await self._abrowser.new_page()
+
+    async def execute_action(self, action: Action) -> Observation | StepError:
+        result = await super().execute_action(action)
+        if isinstance(result, StepError):
+            return result
+        try:
+            result += await self.page_obs()
+        except Exception as e:
+            return StepError.from_exception(e)
+        return result
+
+    async def browser_press_key(self, key: str):
+        """Press a key on the keyboard."""
+        await self._page.keyboard.press(key)
+
+    async def browser_type(self, selector: str, text: str):
+        """Type text into the focused element."""
+        await self._page.type(selector, text)
+
+    async def browser_click(self, selector: str):
+        """Click on a selector."""
+        await self._page.click(selector, timeout=3000, strict=True)
+
+    async def browser_drag(self, from_selector: str, to_selector: str):
+        """Drag and drop from one selector to another."""
+        from_elem = self._page.locator(from_selector)
+        await from_elem.hover(timeout=500)
+        await self._page.mouse.down()
+
+        to_elem = self._page.locator(to_selector)
+        await to_elem.hover(timeout=500)
+        await self._page.mouse.up()
+
+    async def browser_hover(self, selector: str):
+        """Hover over a given element."""
+        await self._page.hover(selector, timeout=3000, strict=True)
+
+    async def browser_select_option(self, selector: str, value: str):
+        """Select an option from a given element."""
+        await self._page.select_option(selector, value)
+
+    async def browser_mouse_click_xy(self, x: int, y: int):
+        """Click at a given x, y coordinate using the mouse."""
+        await self._page.mouse.click(x, y, delay=100)
+
+    async def browser_wait(self, seconds: int):
+        """Wait for a given number of seconds, up to max_wait."""
+        await asyncio.sleep(min(seconds, self.config.max_wait))
+
+    async def browser_back(self):
+        """Navigate back in browser history."""
+        await self._page.go_back()
+
+    async def browser_forward(self):
+        """Navigate forward in browser history."""
+        await self._page.go_forward()
+
+    async def noop(self):
+        """No operation action."""
+        pass
+
+    async def evaluate_js(self, js: str):
+        js_result = await self._page.evaluate(js)
+        logger.info(f"JS result: {js_result}")
+        return js_result
+
+    async def goto(self, url: str):
+        await self._page.goto(url)
+
+    async def page_html(self) -> str:
+        return await self._page.content()
+
+    async def page_screenshot(self) -> Image.Image:
+        scr_bytes = await self._page.screenshot()
+        return Image.open(BytesIO(scr_bytes))
+
+    async def page_axtree(self) -> str:
+        axtree = await self._page.accessibility.snapshot()
+        return flatten_axtree(axtree)
+
+    async def _wait_dom_loaded(self) -> None:
+        for context in self._abrowser.contexts:  # type: ignore
+            for page in context.pages:
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=3000)
+                except AsyncError as e:
+                    logger.debug("page.wait_dom_loaded failed: %s", e)
+                for frame in page.frames:
+                    try:
+                        await frame.wait_for_load_state("domcontentloaded", timeout=3000)
+                    except AsyncError as e:
+                        logger.debug("frame.wait_dom_loaded failed: %s", e)
+
+    async def page_obs(self) -> Observation:
+        await self._wait_dom_loaded()
+        obs = Observation()
+        if self.config.use_html:
+            html = await self.page_html()
+            if self.config.prune_html:
+                obs.contents.append(Content.from_data(prune_html(html), name="pruned_html"))
+            else:
+                obs.contents.append(Content.from_data(html, name="html"))
+        if self.config.use_axtree:
+            obs.contents.append(Content.from_data(await self.page_axtree(), name="axtree_txt"))
+        if self.config.use_screenshot:
+            obs.contents.append(Content.from_data(await self.page_screenshot(), name="screenshot"))
+        return obs
+
+    async def close(self):
+        await self._page.close()
+        await self._abrowser.close()  # type: ignore
+        await self._apw.stop()  # type: ignore
