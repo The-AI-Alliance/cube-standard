@@ -4,6 +4,11 @@
 # - function_to_dict
 # ==================================================================
 
+import inspect
+from ast import literal_eval
+
+import docstring_parser
+
 
 def _json_schema_type(python_type_name: str):
     """Converts standard python types to json schema types
@@ -45,15 +50,6 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
     dictionnary
         A dictionnary to add to the list passed to `functions` parameter of `litellm.completion`
     """
-    # Get function name and docstring
-    try:
-        import inspect
-        from ast import literal_eval
-
-        import docstring_parser
-    except Exception as e:
-        raise e
-
     name = input_function.__name__
     docstring = inspect.getdoc(input_function)
     parsed = docstring_parser.parse(docstring)
