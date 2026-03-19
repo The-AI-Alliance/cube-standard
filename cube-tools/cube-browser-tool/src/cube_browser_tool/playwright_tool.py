@@ -67,6 +67,9 @@ class PlaywrightConfig(ToolConfig):
         session = self.browser.make()
         return SyncPlaywrightTool(config=self, session=session)
 
+    def make_async(self, container=None) -> "AsyncPlaywrightTool":
+        return AsyncPlaywrightTool(config=self)
+
 
 class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
     """Synchronous Playwright browser tool.
@@ -388,6 +391,20 @@ class AsyncPlaywrightTool(AsyncTool, BrowserActionSpace):
     async def browser_mouse_click_xy(self, x: int, y: int):
         """Click at a given x, y coordinate using the mouse."""
         await self._page.mouse.click(x, y, delay=100)
+
+    async def browser_scroll(self, selector: str, direction: Literal["up", "down", "left", "right"], amount: int):
+        """Scroll an element in the specified direction."""
+        elem = self._page.locator(selector).first
+        await elem.scroll_into_view_if_needed()
+        box = await elem.bounding_box()
+        if box is None:
+            raise ValueError(
+                f"browser_scroll: element '{selector}' has no bounding box (it may be hidden or have zero dimensions)."
+            )
+        await self._page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        delta_x = {"left": -amount, "right": amount}.get(direction, 0)
+        delta_y = {"up": -amount, "down": amount}.get(direction, 0)
+        await self._page.mouse.wheel(delta_x, delta_y)
 
     async def browser_wait(self, seconds: int):
         """Wait for a given number of seconds, up to max_wait."""
