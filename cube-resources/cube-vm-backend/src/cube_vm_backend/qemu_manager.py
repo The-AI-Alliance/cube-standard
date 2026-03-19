@@ -217,7 +217,7 @@ class QEMUManager:
         if self.config.enable_kvm and os.path.exists("/dev/kvm"):
             logger.info("KVM acceleration enabled")
             return ["-enable-kvm"]
-        if sys.platform == "darwin" and _hvf_available():
+        if sys.platform == "darwin" and _hvf_available(self.config.arch):
             logger.info("HVF acceleration enabled (macOS)")
             return ["-accel", "hvf"]
         logger.warning("No hardware acceleration available — running without (slow)")
@@ -230,7 +230,7 @@ class QEMUManager:
                 logger.warning("Removing stale file before launch: %s", path)
                 path.unlink()
 
-        qemu_cmd = ["qemu-system-x86_64"]
+        qemu_cmd = [f"qemu-system-{self.config.arch}"]
 
         # Hardware acceleration — resolved once in start(), reused on every relaunch
         if self._accel_flags:
@@ -375,10 +375,10 @@ def _qmp_recv(sock: socket.socket) -> dict:
 # ------------------------------------------------------------------
 
 
-def _hvf_available() -> bool:
-    """Return True if qemu-system-x86_64 supports HVF acceleration on this machine."""
+def _hvf_available(arch: str = "x86_64") -> bool:
+    """Return True if qemu-system-<arch> supports HVF acceleration on this machine."""
     result = subprocess.run(
-        ["qemu-system-x86_64", "-accel", "help"],
+        [f"qemu-system-{arch}", "-accel", "help"],
         capture_output=True,
         text=True,
     )
