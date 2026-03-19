@@ -14,6 +14,8 @@ This repo contains the code and documentation for the **AI Alliance: CUBE Standa
 
 **CUBE Standard** defines the protocol — the `Tool`, `Task`, `Benchmark`, `Observation`, and `Action` interfaces that any benchmark must implement. **[cube-harness](https://github.com/The-AI-Alliance/cube-harness)** is the evaluation runtime that runs agents against CUBE-compatible benchmarks.
 
+**Paper:** [arXiv:2603.15798](https://arxiv.org/abs/2603.15798)
+
 Principal developer: [ServiceNow AI Research](https://servicenow.com/research).
 
 ## Installation
