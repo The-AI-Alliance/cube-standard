@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 from rich import box
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -264,9 +264,20 @@ def _resolve_debug_module(name: str) -> str:
     return f"{package_root}.debug"
 
 
-def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
+def cmd_test(
+    module_name: str,
+    *,
+    max_steps: int = 20,
+    output_path: str | None = None,
+) -> None:
     """Import *module_name* (or resolve an entry-point name) and run the debug compliance suite."""
-    from cube.testing import run_debug_suite
+    from cube.testing import (
+        aggregate_profiling,
+        build_stress_test_report,
+        check_benchmark_metadata,
+        check_reset_reproducibility,
+        run_debug_suite,
+    )
 
     resolved = _resolve_debug_module(module_name)
     if resolved != module_name:
@@ -322,7 +333,7 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         f"[info]Running debug suite for[/info] [file]{resolved}[/file]…",
         spinner="dots",
     ):
-        results = run_debug_suite(resolved, module, max_steps=max_steps)
+        results = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False)
 
     if not results:
         err_console.print(
@@ -337,39 +348,163 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         )
         sys.exit(1)
 
-    # ── Results table ──────────────────────────────────────────────────────────
-    table = Table(
-        show_header=True,
-        box=box.SIMPLE,
-        padding=(0, 1),
-        show_edge=False,
-        header_style="bold",
-    )
-    table.add_column("task_id", style="file", no_wrap=True)
-    table.add_column("done", justify="center")
-    table.add_column("reward", justify="right")
-    table.add_column("steps", justify="right")
-    table.add_column("time (s)", justify="right")
-    table.add_column("error", style="error")
-
     failures: list[dict] = []
     for r in results:
         passed = not r["error"] and r["done"] and r["reward"] == 1.0
         if not passed:
             failures.append(r)
 
+    # ── Extra compliance checks (stress_test_specs.md) ─────────────────────────────
+    reset_ok, _ = check_reset_reproducibility(module)
+    meta_ok, _ = check_benchmark_metadata(module)
+    close_idempotent_ok = all(r.get("close_idempotent_ok", False) for r in results)
+    tools_list_ok = all(r.get("tools_list_ok", False) for r in results)
+    compliance_passed = []
+    compliance_failed = []
+    if results:
+        compliance_passed.append("test_debug_tasks_exist")
+        compliance_passed.append("test_debug_agent_exists")
+    if not failures:
+        compliance_passed.append("test_full_episode")
+    else:
+        compliance_failed.append("test_full_episode")
+    if reset_ok:
+        compliance_passed.append("test_reset_reproducibility")
+    else:
+        compliance_failed.append("test_reset_reproducibility")
+    if tools_list_ok:
+        compliance_passed.append("test_tools_list")
+    else:
+        compliance_failed.append("test_tools_list")
+    if close_idempotent_ok:
+        compliance_passed.append("test_close_idempotent")
+    else:
+        compliance_failed.append("test_close_idempotent")
+    if meta_ok:
+        compliance_passed.append("test_benchmark_metadata")
+    else:
+        compliance_failed.append("test_benchmark_metadata")
+
+    # ── Latency: p50, p95, p99 from step_times_s across all episodes ────────────
+    all_step_times: list[float] = []
+    for r in results:
+        all_step_times.extend(r.get("step_times_s") or [])
+    if all_step_times:
+        sorted_times = sorted(all_step_times)
+        n = len(sorted_times)
+        p50_s = sorted_times[int(0.50 * (n - 1))] if n else 0.0
+        p95_s = sorted_times[int(0.95 * (n - 1))] if n else 0.0
+        p99_s = sorted_times[int(0.99 * (n - 1))] if n else 0.0
+    else:
+        p50_s = p95_s = p99_s = 0.0
+
+    # Constrain width so panel is narrower and taller (pic2-like h/w aspect ratio)
+    try:
+        _term_width = console.size.width
+    except Exception:
+        _term_width = 80
+    # Narrow layout: compress table columns (short headers + compact values) so it fits
+    _display_width = min(_term_width, 62)
+    _bar_width = min(26, max(12, _display_width - 42))
+
+    def _latency_bar(sec: float, max_sec: float = 0.2, width: int = _bar_width) -> str:
+        if max_sec <= 0:
+            return "░" * width
+        filled = min(int((sec / max_sec) * width), width)
+        return "█" * filled + "░" * (width - filled)
+
+    # ── Stress-test style layout: CUBE Stress Test + COMPLIANCE + LATENCY ────────
+    status_str = "Passed" if not failures else "Failed"
+    progress_str = f"{len(results) - len(failures)}/{len(results)}"
+    header_lines = [
+        "[bold]CUBE Stress Test[/bold]",
+        "",
+        f"Benchmark: [file]{resolved}[/file]    Status: [{'success' if not failures else 'error'}]{status_str}[/]    Progress: {progress_str}",
+    ]
+
+    # COMPLIANCE: named checks from stress_test_specs.md
+    full_episode_status = "[success]✓[/success]" if not failures else "[error]✗[/error]"
+    compliance_checks = [
+        ("debug_tasks_exist", "[success]✓[/success]" if results else "[dim]NULL[/dim]"),
+        ("debug_agent_exists", "[success]✓[/success]" if results else "[dim]NULL[/dim]"),
+        ("full_episode", full_episode_status),
+        ("reset_reproducibility", "[success]✓[/success]" if reset_ok else "[error]✗[/error]"),
+        ("tools_list", "[success]✓[/success]" if tools_list_ok else "[error]✗[/error]"),
+        ("close_idempotent", "[success]✓[/success]" if close_idempotent_ok else "[error]✗[/error]"),
+        ("benchmark_metadata", "[success]✓[/success]" if meta_ok else "[error]✗[/error]"),
+    ]
+    compliance_header = Text.from_markup("[bold]COMPLIANCE[/bold]")
+    compliance_checks_table = Table(
+        show_header=False,
+        box=box.SIMPLE,
+        padding=(0, 1),
+        show_edge=False,
+    )
+    compliance_checks_table.add_column("check", style="dim", no_wrap=True)
+    compliance_checks_table.add_column("status", no_wrap=True)
+    compliance_checks_table.add_column("check2", style="dim", no_wrap=True)
+    compliance_checks_table.add_column("status2", no_wrap=True)
+    for i in range(0, len(compliance_checks), 2):
+        name1, status1 = compliance_checks[i]
+        if i + 1 < len(compliance_checks):
+            name2, status2 = compliance_checks[i + 1]
+            compliance_checks_table.add_row(name1, status1, name2, status2)
+        else:
+            compliance_checks_table.add_row(name1, status1, "", "")
+
+    # Task-level results table (per-episode); compressed headers/values for narrow width
+    task_results_table = Table(
+        show_header=True,
+        box=box.SIMPLE,
+        padding=(0, 1),
+        show_edge=False,
+        header_style="bold",
+    )
+    task_results_table.add_column("task", style="file", no_wrap=True)
+    task_results_table.add_column("done", justify="center")
+    task_results_table.add_column("rwd", justify="right")
+    task_results_table.add_column("st", justify="right")
+    task_results_table.add_column("t(s)", justify="right")
+    task_results_table.add_column("err", style="error")
+
+    for r in results:
         done_str = "[success]✓[/success]" if r["done"] else "[error]✗[/error]"
         reward_str = (
-            f"[success]{r['reward']:.3f}[/success]" if r["reward"] == 1.0 else f"[error]{r['reward']:.3f}[/error]"
+            f"[success]{r['reward']:.1f}[/success]" if r["reward"] == 1.0 else f"[error]{r['reward']:.1f}[/error]"
         )
-        table.add_row(
+        task_results_table.add_row(
             r["task_id"],
             done_str,
             reward_str,
             str(r["steps"]),
-            str(r["episode_time_s"]),
+            f"{r['episode_time_s']:.2f}",
             r["error"] or "",
         )
+
+    max_lat = max(p50_s, p95_s, p99_s, 0.001)
+    latency_lines = [
+        "[bold]LATENCY (seconds)[/bold]",
+        f"  p50 │{_latency_bar(p50_s, max_lat)}│ [dim]{p50_s:.3f}s[/dim]",
+        f"  p95 │{_latency_bar(p95_s, max_lat)}│ [dim]{p95_s:.3f}s[/dim]",
+        f"  p99 │{_latency_bar(p99_s, max_lat)}│ [dim]{p99_s:.3f}s[/dim]",
+    ]
+    reset_times = [r.get("reset_time_s") for r in results if r.get("reset_time_s") is not None]
+    mean_setup_s = sum(reset_times) / len(reset_times) if reset_times else None
+    if mean_setup_s is not None:
+        latency_lines.append("")
+        latency_lines.append(f"[bold]Task setup (mean)[/bold]: [dim]{mean_setup_s:.4f}s[/dim]")
+    profiling_agg = aggregate_profiling(results)
+    if profiling_agg:
+        latency_lines.append("")
+        latency_lines.append("[bold]Profiling[/bold]")
+        for op_name, dur_s in profiling_agg.items():
+            latency_lines.append(f"  {op_name}: [dim]{dur_s:.4f}s[/dim]")
+
+    # Build and optionally save stress-test report
+    report = build_stress_test_report(resolved, results, compliance_passed, compliance_failed)
+    if output_path:
+        report.save(output_path)
+        console.print(f"[dim]Baseline saved to [file]{output_path}[/file][/dim]")
 
     border = "green" if not failures else "red"
     status_text = (
@@ -377,14 +512,24 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         if not failures
         else f"[error]{len(failures)} / {len(results)} task(s) failed[/error]"
     )
-    console.print(
-        Panel(
-            table,
-            title=f"[brand]cube test[/brand]  [file]{module_name}[/file]  —  {status_text}",
-            border_style=border,
-            padding=(0, 1),
-        )
+
+    stress_panel = Panel(
+        Group(
+            Text.from_markup("\n".join(header_lines)),
+            "",
+            compliance_header,
+            compliance_checks_table,
+            "",
+            task_results_table,
+            "",
+            Text.from_markup("\n".join(latency_lines)),
+        ),
+        title=f"[bold]CUBE Stress Test[/bold]  [file]{module_name}[/file]  —  {status_text}",
+        border_style=border,
+        padding=(0, 1),
     )
+    # Render at fixed narrow width so output shape matches pic2 (taller than wide)
+    Console(theme=_THEME, width=_display_width).print(stress_panel)
 
     if failures:
         console.print(
@@ -470,10 +615,16 @@ def main() -> None:
             )
             sys.exit(1)
         max_steps = 20
+        output_path = None
         remaining = args[2:]
-        if remaining and remaining[0].startswith("--max-steps="):
-            max_steps = int(remaining[0].split("=", 1)[1])
-        cmd_test(args[1], max_steps=max_steps)
+        for opt in remaining:
+            if opt.startswith("--max-steps="):
+                max_steps = int(opt.split("=", 1)[1])
+            elif opt.startswith("--output="):
+                output_path = opt.split("=", 1)[1]
+            elif opt == "--save-baseline":
+                output_path = "cube_stress_test_baseline.json"
+        cmd_test(args[1], max_steps=max_steps, output_path=output_path)
     else:
         err_console.print(f"[error]Unknown command:[/error] [cmd]{command}[/cmd]")
         _print_help()

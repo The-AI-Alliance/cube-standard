@@ -65,6 +65,10 @@ def function_to_dict(input_function: Callable) -> dict:  # noqa: C901
     # Get function name and docstring
     name = input_function.__name__
     docstring = inspect.getdoc(input_function)
+    if not docstring:
+        raise ValueError(
+            f"Function '{name}' has no docstring. A docstring is required to extract parameter information."
+        )
     parsed = docstring_parser.parse(docstring)
     description = parsed.short_description or ""
 
