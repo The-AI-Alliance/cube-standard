@@ -256,10 +256,7 @@ class DockerManager:
             time.sleep(0.5)
         else:
             self._stop_container()
-            raise RuntimeError(
-                f"Container did not reach 'running' state within 30s "
-                f"(status: {self._container.status})"
-            )
+            raise RuntimeError(f"Container did not reach 'running' state within 30s (status: {self._container.status})")
         logger.info(
             "Container '%s' launched (server_port=%d, kvm=%s)",
             name,
