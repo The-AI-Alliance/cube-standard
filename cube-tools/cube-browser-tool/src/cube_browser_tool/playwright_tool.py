@@ -148,13 +148,13 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
         for page in self.session.context.pages:
             try:
                 page.wait_for_load_state("domcontentloaded", timeout=3000)
-            except Error:
-                pass
+            except Error as e:
+                logger.debug("page.wait_dom_loaded timed out: %s", e)
             for frame in page.frames:
                 try:
                     frame.wait_for_load_state("domcontentloaded", timeout=3000)
-                except Error:
-                    pass
+                except Error as e:
+                    logger.debug("frame.wait_dom_loaded timed out: %s", e)
 
     def page_obs(self) -> Observation:
         """Capture the current page state as an Observation.
