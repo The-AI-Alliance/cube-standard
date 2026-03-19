@@ -11,6 +11,7 @@ import logging
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -98,6 +99,7 @@ class QEMUManager:
         self._pid_file: Optional[Path] = None
         self._overlay_path: Optional[Path] = None
         self._qmp_socket: Optional[Path] = None
+        self._accel_flags: Optional[list[str]] = None  # resolved once in start(), reused on reset
 
         self._server_port: Optional[int] = None
         self._chromium_port: Optional[int] = None
@@ -149,6 +151,7 @@ class QEMUManager:
         self._qmp_socket = Path(tempfile.gettempdir()) / f"qemu_qmp_{self._server_port}.sock"
         self._pid_file = Path(tempfile.gettempdir()) / f"qemu_{self._server_port}.pid"
 
+        self._accel_flags = self._resolve_accel()
         self._create_overlay()
         self._launch_qemu()
         self._wait_for_ready()
@@ -204,6 +207,20 @@ class QEMUManager:
         if result.returncode != 0:
             raise RuntimeError(f"qemu-img create failed (exit {result.returncode}):\n{result.stderr}")
 
+    def _resolve_accel(self) -> list[str]:
+        """Detect available hardware acceleration and return the QEMU flags for it.
+
+        Logs the result once so subsequent relaunches (reset) stay silent.
+        """
+        if self.config.enable_kvm and os.path.exists("/dev/kvm"):
+            logger.info("KVM acceleration enabled")
+            return ["-enable-kvm"]
+        if sys.platform == "darwin" and _hvf_available():
+            logger.info("HVF acceleration enabled (macOS)")
+            return ["-accel", "hvf"]
+        logger.warning("No hardware acceleration available — running without (slow)")
+        return []
+
     def _launch_qemu(self) -> None:
         """Build QEMU command and launch as a background subprocess."""
         for path in (self._qmp_socket, self._pid_file):
@@ -213,12 +230,9 @@ class QEMUManager:
 
         qemu_cmd = ["qemu-system-x86_64"]
 
-        # KVM hardware acceleration
-        if self.config.enable_kvm and os.path.exists("/dev/kvm"):
-            qemu_cmd += ["-enable-kvm"]
-            logger.info("KVM acceleration enabled")
-        else:
-            logger.warning("KVM not available — running without hardware acceleration (slow)")
+        # Hardware acceleration — resolved once in start(), reused on every relaunch
+        if self._accel_flags:
+            qemu_cmd += self._accel_flags
 
         # Machine resources
         qemu_cmd += ["-m", self.config.memory, "-smp", str(self.config.cpus)]
@@ -357,6 +371,16 @@ def _qmp_recv(sock: socket.socket) -> dict:
 # ------------------------------------------------------------------
 # Port allocation
 # ------------------------------------------------------------------
+
+
+def _hvf_available() -> bool:
+    """Return True if qemu-system-x86_64 supports HVF acceleration on this machine."""
+    result = subprocess.run(
+        ["qemu-system-x86_64", "-accel", "help"],
+        capture_output=True,
+        text=True,
+    )
+    return "hvf" in result.stdout.lower() or "hvf" in result.stderr.lower()
 
 
 def _reserve_free_port(start: int = 5000) -> int:
