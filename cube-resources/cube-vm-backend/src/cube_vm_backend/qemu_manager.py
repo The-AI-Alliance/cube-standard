@@ -59,6 +59,7 @@ class QEMUConfig:
         screen_width: int = 1920,
         screen_height: int = 1080,
         enable_kvm: bool = True,
+        arch: str = "x86_64",
     ) -> None:
         self.base_image = Path(base_image)
         self.overlay_dir = Path(overlay_dir)
@@ -68,6 +69,7 @@ class QEMUConfig:
         self.screen_width = screen_width
         self.screen_height = screen_height
         self.enable_kvm = enable_kvm
+        self.arch = arch
 
 
 class QEMUManager:
