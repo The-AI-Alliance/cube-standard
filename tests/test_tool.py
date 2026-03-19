@@ -3,7 +3,6 @@
 import inspect
 
 import pytest
-from pydantic import ValidationError
 
 from cube.core import Action, ActionSchema, Observation, StepError, TextContent
 from cube.tool import AsyncTool, Tool, tool_action
@@ -26,7 +25,10 @@ def assert_tool_docstrings_valid(tool_cls: type) -> None:
     assert actions, f"{tool_cls.__name__} has no @tool_action methods"
 
     for name, func in actions:
-        schema = ActionSchema.from_function(func)
+        try:
+            schema = ActionSchema.from_function(func)
+        except ValueError as e:
+            raise AssertionError(f"{tool_cls.__name__}.{name}: {e}") from e
         ok, msg = schema.validate_param_descriptions()
         assert ok, f"{tool_cls.__name__}.{name}: {msg}"
 
@@ -249,5 +251,5 @@ def test_assert_tool_docstrings_valid_catches_missing_param_description():
 
 
 def test_assert_tool_docstrings_valid_catches_missing_function_description():
-    with pytest.raises(ValidationError, match="must be a non-empty string"):
+    with pytest.raises(AssertionError, match="A docstring is required to extract parameter information"):
         assert_tool_docstrings_valid(MissingFunctionDescriptionTool)
