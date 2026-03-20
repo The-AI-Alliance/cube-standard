@@ -54,4 +54,5 @@ Have an idea that changes the core protocol? Open a GitHub Discussion or file a 
 - Comment on existing [GitHub Issues](https://github.com/The-AI-Alliance/cube-standard/issues) or open a new one
 - Start a [GitHub Discussion](https://github.com/The-AI-Alliance/cube-standard/discussions)
 - Submit an RFC draft in `design/` via PR
+- [Propose a benchmark for wrapping](https://docs.google.com/forms/d/e/1FAIpQLSddMFyRXZJPpD0I2K27OEmIPUpj57w--u2NuMscrjNlkqy8rQ/viewform) — flag a benchmark you'd like to see as a CUBE, or contribute one yourself
 - [Apply as a core contributor](https://forms.gle/JFiBi4ynfVLMghAH8) to help shape priorities directly

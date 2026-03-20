@@ -88,6 +88,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the five-layer architecture and imple
 
 All contributions are welcome — open an issue, submit a PR, or wrap a new benchmark. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development guide and RFC process.
 
+**Want to contribute a benchmark?** Whether you're an original author or just a frequent user, [fill out this short form](https://docs.google.com/forms/d/e/1FAIpQLSddMFyRXZJPpD0I2K27OEmIPUpj57w--u2NuMscrjNlkqy8rQ/viewform) to let us know. No commitment required — we'll follow up based on your interest and the benchmark's fit.
+
 Want deeper involvement? Join the core team, shape the roadmap, and get credit for what you build. [Apply here](https://forms.gle/JFiBi4ynfVLMghAH8).
 
 For general AI Alliance contribution guidelines, see the [community repo](https://github.com/The-AI-Alliance/community/) and [Code of Conduct](https://github.com/The-AI-Alliance/community/blob/main/CODE_OF_CONDUCT.md).
