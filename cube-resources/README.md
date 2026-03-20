@@ -48,7 +48,16 @@ session.page.goto("https://example.com")
 session.stop()
 ```
 
-### Launching a QEMU/KVM VM
+### Launching a VM
+
+`cube-vm-backend` provides two backends. Pick the one that matches your platform:
+
+| Backend | Class | Platform | Notes |
+|---------|-------|----------|-------|
+| QEMU | `LocalQEMUVMBackend` | Linux (KVM) | Runs the VM natively; fastest on Linux. |
+| Docker | `LocalDockerVMBackend` | Linux | Runs QEMU inside `happysixd/osworld-docker`. Reset strategy: stop + remove container, start fresh (~30–60s). |
+
+#### QEMU/KVM (Linux)
 
 ```python
 from cube_vm_backend import LocalQEMUVMBackend
@@ -66,6 +75,31 @@ vm.restore_snapshot("initial")
 # Stop the VM and clean up
 vm.stop()
 ```
+
+#### Docker
+
+```python
+from cube_vm_backend import LocalDockerVMBackend
+from cube.vm import VMConfig
+
+backend = LocalDockerVMBackend(
+    path_to_vm="/path/to/base.qcow2",
+    memory="4G",
+    cpus=4,
+)
+vm = backend.launch(VMConfig(screen_size=(1920, 1080)))
+
+# vm.endpoint gives the base URL of the in-VM HTTP agent
+print(vm.endpoint)  # e.g. http://localhost:5000
+
+# Reset: stops + removes the container, starts fresh (~30-60s)
+vm.restore_snapshot("initial")
+
+# Stop the container and release port reservations
+vm.stop()
+```
+
+Benchmarks that need the base qcow2 image auto-downloaded (e.g. OSWorld) subclass `LocalDockerVMBackend` and override `ensure_resource()` instead of requiring `path_to_vm` to be set manually.
 
 ## Adding a new resource package
 
