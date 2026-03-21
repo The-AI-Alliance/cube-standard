@@ -96,6 +96,7 @@ class LocalQEMUVMBackend(VMBackend):
     headless: bool = True
     memory: str = "4G"
     cpus: int = 4
+    arch: str = "x86_64"
 
     def ensure_resource(self, config: VMConfig) -> None:
         """Validate or prepare the base qcow2 image before launch.
@@ -128,6 +129,7 @@ class LocalQEMUVMBackend(VMBackend):
             headless=self.headless,
             screen_width=config.screen_size[0],
             screen_height=config.screen_size[1],
+            arch=self.arch,
         )
         manager = QEMUManager(qemu_config)
         manager.start()
