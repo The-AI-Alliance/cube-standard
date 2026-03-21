@@ -51,6 +51,7 @@ class PlaywrightConfig(ToolConfig):
     use_axtree: bool = False
     use_screenshot: bool = True
     prune_html: bool = True
+    obs_max_retries: int = 3
 
     @field_validator("max_wait")
     @classmethod
@@ -111,7 +112,10 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
         result = super().execute_action(action)
         if isinstance(result, StepError):
             return result
-        return result + self.page_obs()
+        try:
+            return result + self.page_obs()
+        except Exception as e:
+            return StepError.from_exception(e)
 
     # ------------------------------------------------------------------
     # Task-internal methods (not agent-facing actions)
@@ -156,14 +160,7 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
                 except Error as e:
                     logger.debug("frame.wait_dom_loaded failed: %s", e)
 
-    def page_obs(self) -> Observation:
-        """Capture the current page state as an Observation.
-
-        Content included depends on the config flags ``use_html``,
-        ``use_axtree``, and ``use_screenshot``.
-        """
-        self._wait_dom_loaded()
-
+    def _page_obs(self) -> Observation:
         contents = []
         if self.config.use_html:
             html = self.page_html()
@@ -175,6 +172,27 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
         if self.config.use_screenshot:
             contents.append(Content.from_data(self.page_screenshot(), name="screenshot"))
         return Observation(contents=contents)
+
+    def page_obs(self) -> Observation:
+        """Capture the current page state as an Observation.
+
+        Content included depends on the config flags ``use_html``,
+        ``use_axtree``, and ``use_screenshot``.
+        """
+        for attempt in range(1, self.config.obs_max_retries + 1):
+            self._wait_dom_loaded()
+            try:
+                return self._page_obs()
+            except Error as e:
+                if attempt == self.config.obs_max_retries:
+                    raise e
+                logger.warning(
+                    "Observation extraction failed (attempt %s/%s): %s",
+                    attempt,
+                    self.config.obs_max_retries,
+                    e,
+                )
+                time.sleep(0.5)
 
     def page_html(self) -> str:
         """Return the raw HTML of the current page."""
