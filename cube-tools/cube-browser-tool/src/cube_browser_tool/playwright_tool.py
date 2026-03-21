@@ -155,6 +155,8 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
             except Error as e:
                 logger.debug("page.wait_dom_loaded failed: %s", e)
             for frame in page.frames:
+                if frame == page.main_frame:
+                    continue
                 try:
                     frame.wait_for_load_state("domcontentloaded", timeout=3000)
                 except Error as e:
