@@ -7,6 +7,8 @@ has_children: false
 
 **Common Unified Benchmark Environments** — a protocol standard that eliminates the integration tax of agentic benchmarks by providing a universal interface between benchmarks and evaluation frameworks.
 
+**[ArXiv Paper](https://arxiv.org/abs/2603.15798){:target="arxiv"}** — Read the paper detailing the vision for this project.
+
 [About CUBE]({{site.baseurl}}/about) — learn more about the project, the problem it solves, and who it's for.
 
 ## Get Started

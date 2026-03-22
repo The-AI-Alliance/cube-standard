@@ -1,21 +1,21 @@
 [project]
-name = "cube-browser-tool"
-version = "0.1.0"
-description = "Concrete browser tool implementations for cube-standard benchmarks"
+name = "cube-vm-backend"
+version = "0.2.0"
+description = "VM backend implementations for CUBE desktop-automation benchmarks"
 requires-python = ">=3.12"
 dependencies = [
     "cube-standard",
-    "cube-browser-playwright",
-    "playwright",
-    "pillow>=9.0",
-    "beautifulsoup4",
+    "requests>=2.28",
+    "tqdm>=4.60",
 ]
 
 [project.optional-dependencies]
-bgym = ["browsergym-core"]
+docker = [
+    "docker>=7.1.0",
+    "tenacity>=8.0",
+]
 dev = [
     "pytest>=8.0.0",
-    "pytest-asyncio>=0.24.0",
 ]
 
 [build-system]
@@ -23,7 +23,7 @@ requires = ["uv_build>=0.6.0,<0.7.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "cube_browser_tool"
+module-name = "cube_vm_backend"
 
 [tool.ruff]
 fix = true
@@ -38,8 +38,3 @@ line-ending = "auto"
 
 [tool.ruff.lint]
 extend-select = ["I"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-rs"
-markers = ["integration: requires a live Playwright/Chromium install"]

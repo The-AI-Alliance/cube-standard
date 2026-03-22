@@ -1,4 +1,4 @@
-<img width="3168" height="1344" alt="Untitled" src="https://github.com/user-attachments/assets/68e50a4d-fe15-4d08-b52e-38dae3122493" />
+<img alt="CUBE Standard banner" src="docs/assets/images/cube_standard_banner.png" />
 
 # CUBE Standard
 
@@ -13,6 +13,8 @@
 This repo contains the code and documentation for the **AI Alliance: CUBE Standard** project, which standardizes benchmark wrapping so the community can wrap otherwise-incompatible benchmarks uniformly and use them everywhere.
 
 **CUBE Standard** defines the protocol — the `Tool`, `Task`, `Benchmark`, `Observation`, and `Action` interfaces that any benchmark must implement. **[cube-harness](https://github.com/The-AI-Alliance/cube-harness)** is the evaluation runtime that runs agents against CUBE-compatible benchmarks.
+
+**Paper:** [arXiv:2603.15798](https://arxiv.org/abs/2603.15798)
 
 Principal developer: [ServiceNow AI Research](https://servicenow.com/research).
 

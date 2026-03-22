@@ -11,7 +11,7 @@ Goal: stable core protocol, first wave of cubes, compliance tooling.
 - [x] Reference implementation: `counter-cube`
 - [x] Container backends (Docker, Modal, Daytona)
 - [x] First cubes landing:
-  - *Web agents:* MiniWob ✅, WebArena ✅, WorkArena ✅
+  - *Web agents:* MiniWob ✅, WebArena-Verified ✅ ([cube-harness#214](https://github.com/The-AI-Alliance/cube-harness/pull/214)), WorkArena ✅
   - *Computer use (CUA):* OSWorld ✅
   - *SWE:* SWE-bench Verified + Live ✅, TerminalBench 2 ✅, LiveCodeBench ✅
 - [ ] **Benchmark metadata schema — `BenchmarkMetadata` fields: homepage, citation, license, task count, modality ([`benchmark.py`](src/cube/benchmark.py))

@@ -19,8 +19,8 @@ lint:
 	uv run ruff format .
 
 lint-check:
-	uvx ruff check --diff .
-	uvx ruff format --diff .
+	uv run ruff check --diff .
+	uv run ruff format --diff .
 
 test:
 	uv run pytest tests/
