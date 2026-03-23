@@ -361,6 +361,9 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
     """
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
+        """
+        Validate that all @tool_action methods in AsyncTool subclasses are async def.
+        """
         super().__init_subclass__(**kwargs)
         for name, attr in cls.__dict__.items():
             if getattr(attr, "_is_action", False) and not inspect.iscoroutinefunction(attr):
@@ -379,6 +382,83 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
             logger.exception(action_result)
             return StepError.from_exception(e)
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
+
+
+class _ToolboxMixin:
+    """Shared state and action discovery for Toolbox and AsyncToolbox."""
+
+    def __init__(self, tools: list[AbstractTool | AbstractAsyncTool]):
+        self.tools = tools
+        self._action_name_to_tool = {action.name: tool for tool in tools for action in tool.action_set}
+
+    @property
+    def action_set(self) -> list[ActionSchema]:
+        """Returns the union of all action sets across contained tools."""
+        return [action for tool in self.tools for action in tool.action_set]
+
+    def find_tool(self, tool_cls: type) -> AbstractTool | AbstractAsyncTool | None:
+        """Find a tool of the given class in the toolbox."""
+        for tool in self.tools:
+            if isinstance(tool, tool_cls):
+                return tool
+        return None
+
+
+class Toolbox(_ToolboxMixin, Tool):
+    """Composite sync tool that delegates to a list of AbstractTool instances."""
+
+    def reset(self) -> None:
+        for tool in self.tools:
+            tool.reset()
+
+    def execute_action(self, action: Action) -> Observation | StepError:
+        if action.name not in self._action_name_to_tool:
+            raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
+        tool = self._action_name_to_tool[action.name]
+        assert isinstance(tool, AbstractTool)
+        return tool.execute_action(action)
+
+    def close(self) -> None:
+        for tool in self.tools:
+            tool.close()
+
+
+class AsyncToolbox(_ToolboxMixin, AsyncTool):
+    """Composite async tool that delegates to AbstractTool or AbstractAsyncTool instances."""
+
+    async def reset(self) -> None:
+        for tool in self.tools:
+            if isinstance(tool, AbstractAsyncTool):
+                await tool.reset()
+            else:
+                tool.reset()
+
+    async def execute_action(self, action: Action) -> Observation | StepError:
+        if action.name not in self._action_name_to_tool:
+            raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
+        tool = self._action_name_to_tool[action.name]
+        if isinstance(tool, AbstractAsyncTool):
+            return await tool.execute_action(action)
+        return tool.execute_action(action)
+
+    async def close(self) -> None:
+        for tool in self.tools:
+            if isinstance(tool, AbstractAsyncTool):
+                await tool.close()
+            else:
+                tool.close()
+
+
+class ToolboxConfig(ToolConfig):
+    """Configuration for a list of tools. Produces AsyncToolbox if any tool is async."""
+
+    tool_configs: list[ToolConfig] = []
+
+    def make(self, container=None) -> "Toolbox | AsyncToolbox":
+        tools = [tc.make(container) for tc in self.tool_configs]
+        if any(isinstance(t, AbstractAsyncTool) for t in tools):
+            return AsyncToolbox(tools=tools)
+        return Toolbox(tools=tools)
 
 
 class BrowserTool(Tool):
