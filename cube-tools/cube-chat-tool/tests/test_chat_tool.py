@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 from cube.core import Action, Observation, StepError
 from cube_chat import BasicChatConfig
+
 from cube_chat_tool import ChatTool, ChatToolConfig
 
 

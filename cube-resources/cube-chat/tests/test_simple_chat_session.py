@@ -4,8 +4,8 @@ import threading
 import time
 
 import pytest
-
 from cube.resources.chat_session import ChatConfig, ChatSession
+
 from cube_chat import BasicChatConfig, BasicChatSession
 
 
@@ -73,6 +73,7 @@ def test_add_message_invalid_role_raises() -> None:
 
 def test_send_message_appends_assistant_message() -> None:
     session = BasicChatSession()
+
     # Drain queue in background so send_message doesn't need a consumer
     def drain() -> None:
         session._queue.get()
