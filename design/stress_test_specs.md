@@ -114,26 +114,26 @@ The stress test provides a minimal evaluation harness so CUBE-Developers don't n
 def run_debug_episode(benchmark, task_config, debug_agent):
     """Run one full episode of a debug task."""
     task = task_config.make(metadata=..., runtime_context=benchmark.runtime_context)
-    
+
     obs, info = task.setup()
     steps = 0
     profiling = []
-    
+
     while steps < 20:  # Safety limit
         action = debug_agent.get_action(obs)
         result = task.step(action)
         obs = result.obs
-        
+
         if "profiling" in result.info:
             profiling.append(result.info["profiling"])
-        
+
         if result.done:
             break
         steps += 1
-    
+
     reward, eval_info = task.evaluate(obs)
     task.close()
-    
+
     return {
         "done": result.done,
         "reward": reward,
@@ -149,7 +149,7 @@ def run_debug_episode(benchmark, task_config, debug_agent):
 | `test_debug_tasks_exist` | `get_debug_task_configs()` returns ≥ 1 task |
 | `test_debug_agent_exists` | `make_debug_agent(task_id)` succeeds |
 | `test_full_episode` | Debug agent reaches `done=True` with `reward > 0` |
-| `test_reset_reproducibility` | Same seed → identical first observation |
+| `test_reset_reproducibility` | Same seed → equivalent first observation (text/JSON fuzzy match; image MAE on downscaled grayscale; optional `reset_reproducibility_config` on benchmark) |
 | `test_tools_list` | `task.action_set` is non-empty after `setup()` |
 | `test_close_idempotent` | `task.close()` twice does not raise |
 | `test_benchmark_metadata` | `benchmark.metadata` has non-empty `name`, `version` |

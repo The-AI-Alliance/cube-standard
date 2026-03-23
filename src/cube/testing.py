@@ -36,13 +36,139 @@ import platform
 import time
 import types
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
+
+from PIL import Image, ImageChops
 
 from cube import __version__  # report.cube_version and .save()
-from cube.core import Action, ActionSchema, Observation
+from cube.core import (
+    Action,
+    ActionSchema,
+    AudioContent,
+    Content,
+    ImageContent,
+    Observation,
+    StructuredContent,
+    TextContent,
+    VideoContent,
+)
 from cube.task import Task
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ResetReproducibilityConfig:
+    """
+    Tolerance for ``check_reset_reproducibility`` when byte-identical observations
+    are unrealistic (timestamps, AXTree ids, screenshot clocks).
+
+    Attach to a benchmark instance as ``benchmark.reset_reproducibility_config`` to override defaults.
+    """
+
+    text_similarity_min: float = 0.97
+    """Minimum ``difflib.SequenceMatcher`` ratio for text and JSON-serialised structured data."""
+
+    image_max_mae: float = 0.12
+    """Mean absolute error between resized grayscale pixels, normalised to ``[0, 1]`` (divide by 255)."""
+
+    image_compare_size: tuple[int, int] = (64, 64)
+    """Both images are resized to this (width, height) before MAE."""
+
+
+def _text_similarity(a: str, b: str) -> float:
+    if a == b:
+        return 1.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _structured_to_json(data: object) -> str:
+    return json.dumps(data, sort_keys=True, default=str, separators=(",", ":"))
+
+
+def _image_mae_normalized(a: Image.Image, b: Image.Image, size: tuple[int, int]) -> float:
+    ga = a.convert("L").resize(size, Image.Resampling.BILINEAR)
+    gb = b.convert("L").resize(size, Image.Resampling.BILINEAR)
+    diff = ImageChops.difference(ga, gb)
+    hist = diff.histogram()
+    n = sum(hist)
+    if n == 0:
+        return 0.0
+    mean_abs = sum(i * c for i, c in enumerate(hist)) / n
+    return mean_abs / 255.0
+
+
+def _contents_equivalent_for_reset(
+    c1: Content,
+    c2: Content,
+    cfg: ResetReproducibilityConfig,
+) -> tuple[bool, str]:
+    if type(c1) is not type(c2):
+        return False, f"type mismatch: {type(c1).__name__} vs {type(c2).__name__}"
+    if c1.tool_call_id != c2.tool_call_id or c1.name != c2.name:
+        return False, "content metadata (tool_call_id / name) differs"
+
+    if isinstance(c1, TextContent) and isinstance(c2, TextContent):
+        r = _text_similarity(c1.data, c2.data)
+        if r >= cfg.text_similarity_min:
+            return True, ""
+        return False, f"text similarity {r:.4f} < {cfg.text_similarity_min}"
+
+    if isinstance(c1, StructuredContent) and isinstance(c2, StructuredContent):
+        j1, j2 = _structured_to_json(c1.data), _structured_to_json(c2.data)
+        r = _text_similarity(j1, j2)
+        if r >= cfg.text_similarity_min:
+            return True, ""
+        return False, f"structured JSON similarity {r:.4f} < {cfg.text_similarity_min}"
+
+    if isinstance(c1, ImageContent) and isinstance(c2, ImageContent):
+        mae = _image_mae_normalized(c1.data, c2.data, cfg.image_compare_size)
+        if mae <= cfg.image_max_mae:
+            return True, ""
+        return False, f"image MAE {mae:.4f} > {cfg.image_max_mae}"
+
+    if isinstance(c1, AudioContent) and isinstance(c2, AudioContent):
+        if c1.data == c2.data and c1.duration_seconds == c2.duration_seconds:
+            return True, ""
+        return False, "audio content differs"
+
+    if isinstance(c1, VideoContent) and isinstance(c2, VideoContent):
+        if c1.data == c2.data and c1.duration_seconds == c2.duration_seconds:
+            return True, ""
+        return False, "video content differs"
+
+    d1, d2 = c1.model_dump(), c2.model_dump()
+    if d1 == d2:
+        return True, ""
+    return False, f"content type {type(c1).__name__} not similar (strict dump mismatch)"
+
+
+def _observations_equivalent_for_reset(
+    obs1: Observation,
+    obs2: Observation,
+    cfg: ResetReproducibilityConfig,
+) -> tuple[bool, str]:
+    a, b = obs1.contents, obs2.contents
+    if len(a) != len(b):
+        return False, f"content count differs: {len(a)} vs {len(b)}"
+    for i, (x, y) in enumerate(zip(a, b, strict=True)):
+        ok, msg = _contents_equivalent_for_reset(x, y, cfg)
+        if not ok:
+            return False, f"contents[{i}]: {msg}"
+    return True, ""
+
+
+def _resolve_reset_reproducibility_config(benchmark: object) -> ResetReproducibilityConfig:
+    raw = getattr(benchmark, "reset_reproducibility_config", None)
+    if raw is None:
+        return ResetReproducibilityConfig()
+    if isinstance(raw, ResetReproducibilityConfig):
+        return raw
+    raise TypeError(
+        f"reset_reproducibility_config must be None or ResetReproducibilityConfig, got {type(raw).__name__}"
+    )
 
 
 def _validate_action_set(action_set: list) -> tuple[bool, str]:
@@ -175,16 +301,27 @@ def run_debug_episode(
 
 def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str]:
     """
-    Same seed → identical first observation (stress_test_specs.md).
-    Uses first task config only: make() twice, reset() each, compare first obs.
-    Calls benchmark.install() and .setup() before get_task_configs(), and
-    .close() when done, so the benchmark is in a consistent state.
+    Same seed → equivalent first observation after reset (stress_test_specs.md).
+
+    Uses first task config only: ``make()`` twice, ``reset()`` each, then compare
+    first observations with modality-aware tolerance (text / structured JSON fuzzy
+    match, downscaled image MAE). Byte-identical ``model_dump()`` is not required.
+
+    Optional: set ``benchmark.reset_reproducibility_config`` to a
+    :class:`ResetReproducibilityConfig` instance to tune thresholds per benchmark.
+
+    Calls ``benchmark.install()`` and ``.setup()`` before ``get_task_configs()``,
+    and ``.close()`` when done.
     """
     bench_fn = getattr(module, "get_debug_benchmark", None)
     if not callable(bench_fn):
         return False, "no get_debug_benchmark"
     benchmark = bench_fn()
     try:
+        try:
+            cfg = _resolve_reset_reproducibility_config(benchmark)
+        except TypeError as e:
+            return False, str(e)
         benchmark.install()
         benchmark.setup()
         configs = list(benchmark.get_task_configs())
@@ -203,9 +340,25 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str]:
             )
             obs1, _ = t1.reset()
             obs2, _ = t2.reset()
-            dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else str(obs1)
-            dump2 = obs2.model_dump() if hasattr(obs2, "model_dump") else str(obs2)
-            ok = dump1 == dump2
+            if isinstance(obs1, Observation) and isinstance(obs2, Observation):
+                ok, detail = _observations_equivalent_for_reset(obs1, obs2, cfg)
+            else:
+
+                def _fallback_str(o: object) -> str:
+                    if isinstance(o, str):
+                        return o
+                    if hasattr(o, "model_dump"):
+                        return json.dumps(o.model_dump(), sort_keys=True, default=str)
+                    return str(o)
+
+                fs1, fs2 = _fallback_str(obs1), _fallback_str(obs2)
+                if fs1 == fs2:
+                    ok, detail = True, ""
+                else:
+                    r = _text_similarity(fs1, fs2)
+                    ok = r >= cfg.text_similarity_min
+                    detail = "" if ok else f"fallback string similarity {r:.4f} < {cfg.text_similarity_min}"
+            msg = "" if ok else (detail or "first observation differed between two resets")
         except Exception as e:
             return False, str(e)
         finally:
@@ -215,7 +368,7 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str]:
                         t.close()
                     except Exception:
                         pass
-        return ok, "" if ok else "first observation differed between two resets"
+        return ok, msg
     finally:
         try:
             benchmark.close()

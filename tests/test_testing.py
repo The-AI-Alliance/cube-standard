@@ -4,13 +4,20 @@ from types import ModuleType
 from unittest.mock import patch
 
 import pytest
+from PIL import Image as PILImage
 from pydantic import PrivateAttr
 
 from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext  # noqa: F401
 from cube.container import Container
-from cube.core import Action, Observation
+from cube.core import Action, ImageContent, Observation, TextContent
 from cube.task import STOP_ACTION, Task, TaskConfig, TaskMetadata
-from cube.testing import assert_debug_tasks_reward_one, run_debug_episode, run_debug_suite
+from cube.testing import (
+    ResetReproducibilityConfig,
+    assert_debug_tasks_reward_one,
+    check_reset_reproducibility,
+    run_debug_episode,
+    run_debug_suite,
+)
 from cube.tool import Tool, ToolConfig, tool_action
 
 # ── Shared test infrastructure ────────────────────────────────────────────────
@@ -315,3 +322,153 @@ def test_assert_raises_when_not_done():
     with patch("cube.testing.run_debug_suite", return_value=[report]):
         with pytest.raises(AssertionError, match="did not complete"):
             assert_debug_tasks_reward_one(mod)
+
+
+# ── check_reset_reproducibility ───────────────────────────────────────────────
+
+_nonce_seq = 0
+
+
+class MinorDriftTextTask(Task):
+    """Two instances produce long common prefix with a short differing suffix (simulates volatile ids)."""
+
+    _close_calls: int = PrivateAttr(default=0)
+
+    def reset(self):
+        global _nonce_seq
+        _nonce_seq += 1
+        return Observation.from_text(f"{'y' * 100} id={_nonce_seq:04d}"), {}
+
+    def evaluate(self, obs: Observation):
+        return 1.0, {}
+
+    def close(self):
+        self._close_calls += 1
+        super().close()
+
+
+class MinorDriftTaskConfig(TaskConfig):
+    def make(self, runtime_context=None, container_backend=None) -> MinorDriftTextTask:
+        return MinorDriftTextTask(metadata=TaskMetadata(id=self.task_id), tool_config=NoopToolConfig())
+
+
+_conflict_flip = 0
+
+
+class ConflictingTextTask(Task):
+    _close_calls: int = PrivateAttr(default=0)
+
+    def reset(self):
+        global _conflict_flip
+        _conflict_flip += 1
+        text = "alpha instruction" if _conflict_flip % 2 else "beta different"
+        return Observation.from_text(text), {}
+
+    def evaluate(self, obs: Observation):
+        return 1.0, {}
+
+    def close(self):
+        self._close_calls += 1
+        super().close()
+
+
+class ConflictingTaskConfig(TaskConfig):
+    def make(self, runtime_context=None, container_backend=None) -> ConflictingTextTask:
+        return ConflictingTextTask(metadata=TaskMetadata(id=self.task_id), tool_config=NoopToolConfig())
+
+
+_img_seq = 0
+
+
+class SlightlyDifferentImageTask(Task):
+    _close_calls: int = PrivateAttr(default=0)
+
+    def reset(self):
+        global _img_seq
+        _img_seq += 1
+        img = PILImage.new("RGB", (80, 80), (200, 200, 200))
+        img.putpixel((20 + _img_seq, 30), (10, 10, 10))
+        return Observation(contents=[ImageContent(data=img)]), {}
+
+    def evaluate(self, obs: Observation):
+        return 1.0, {}
+
+    def close(self):
+        self._close_calls += 1
+        super().close()
+
+
+class SlightlyDifferentImageTaskConfig(TaskConfig):
+    def make(self, runtime_context=None, container_backend=None) -> SlightlyDifferentImageTask:
+        return SlightlyDifferentImageTask(metadata=TaskMetadata(id=self.task_id), tool_config=NoopToolConfig())
+
+
+def _module_with_task_config(task_config_cls, **benchmark_attrs):
+    mod = ModuleType("fake_reset_repro")
+    benchmark = DoneBenchmark()
+    object.__setattr__(benchmark, "task_metadata", {"t1": TaskMetadata(id="t1")})
+    object.__setattr__(benchmark, "task_config_class", task_config_cls)
+    for k, v in benchmark_attrs.items():
+        object.__setattr__(benchmark, k, v)
+    mod.get_debug_benchmark = lambda: benchmark  # type: ignore[attr-defined]
+    mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
+    return mod
+
+
+def test_check_reset_reproducibility_passes_identical_text():
+    ok, msg = check_reset_reproducibility(_make_module()[0])
+    assert ok is True
+    assert msg == ""
+
+
+def test_check_reset_reproducibility_passes_minor_text_drift():
+    global _nonce_seq
+    _nonce_seq = 0
+    mod = _module_with_task_config(MinorDriftTaskConfig)
+    ok, msg = check_reset_reproducibility(mod)
+    assert ok is True, msg
+
+
+def test_check_reset_reproducibility_fails_conflicting_text():
+    global _conflict_flip
+    _conflict_flip = 0
+    mod = _module_with_task_config(ConflictingTaskConfig)
+    ok, msg = check_reset_reproducibility(mod)
+    assert ok is False
+    assert msg
+
+
+def test_check_reset_reproducibility_passes_similar_images():
+    global _img_seq
+    _img_seq = 0
+    mod = _module_with_task_config(SlightlyDifferentImageTaskConfig)
+    ok, msg = check_reset_reproducibility(mod)
+    assert ok is True, msg
+
+
+def test_check_reset_reproducibility_invalid_config_type():
+    mod = _module_with_task_config(DoneTaskConfig, reset_reproducibility_config="bad")
+    ok, msg = check_reset_reproducibility(mod)
+    assert ok is False
+    assert "ResetReproducibilityConfig" in msg
+
+
+def test_check_reset_reproducibility_custom_config_strict_image_fails():
+    global _img_seq
+    _img_seq = 0
+    mod = _module_with_task_config(
+        SlightlyDifferentImageTaskConfig,
+        reset_reproducibility_config=ResetReproducibilityConfig(image_max_mae=0.0),
+    )
+    ok, _ = check_reset_reproducibility(mod)
+    assert ok is False
+
+
+def test_observation_content_count_mismatch_fails():
+    from cube.testing import _observations_equivalent_for_reset
+
+    a = Observation(contents=[TextContent(data="hi")])
+    b = Observation(contents=[TextContent(data="hi"), TextContent(data="there")])
+    ok, msg = _observations_equivalent_for_reset(a, b, ResetReproducibilityConfig())
+    assert ok is False
+    assert "content count" in msg
