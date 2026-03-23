@@ -10,7 +10,7 @@ import datetime
 from cube.core import Action, Content, Observation, StepError
 from cube.resources.chat_session import ChatRole, ChatSession
 from cube.tool import Tool, ToolConfig, tool_action
-from cube_chat import SimpleChatConfig
+from cube_chat import BasicChatConfig
 from pydantic import Field
 
 
@@ -19,11 +19,11 @@ class ChatToolConfig(ToolConfig):
 
     Parameters
     ----------
-    chat : SimpleChatConfig
-        Chat session configuration. Defaults to an in-memory SimpleChatConfig.
+    chat : BasicChatConfig
+        Chat session configuration. Defaults to an in-memory BasicChatConfig.
     """
 
-    chat: SimpleChatConfig = Field(default_factory=SimpleChatConfig)
+    chat: BasicChatConfig = Field(default_factory=BasicChatConfig)
 
     def make(self, container=None) -> "ChatTool":
         """Create a ChatTool from this configuration."""

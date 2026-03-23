@@ -9,18 +9,18 @@ _STORED_ROLES = {"user", "assistant", "infeasible"}
 _VALID_ROLES = {"user", "assistant", "info", "infeasible"}
 
 
-class SimpleChatConfig(ChatConfig):
-    """Configuration for an in-memory SimpleChatSession.
+class BasicChatConfig(ChatConfig):
+    """Configuration for an in-memory BasicChatSession.
 
     No configuration fields are needed for the in-memory implementation.
     """
 
-    def make(self) -> "SimpleChatSession":
-        """Create and return a new SimpleChatSession."""
-        return SimpleChatSession()
+    def make(self) -> "BasicChatSession":
+        """Create and return a new BasicChatSession."""
+        return BasicChatSession()
 
 
-class SimpleChatSession(ChatSession):
+class BasicChatSession(ChatSession):
     """In-memory chat session backed by a queue.
 
     Messages posted with add_message() for roles "user", "assistant", and

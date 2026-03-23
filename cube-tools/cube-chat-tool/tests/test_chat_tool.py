@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock
 
 from cube.core import Action, Observation, StepError
-from cube_chat import SimpleChatConfig
+from cube_chat import BasicChatConfig
 from cube_chat_tool import ChatTool, ChatToolConfig
 
 
@@ -22,7 +22,7 @@ def test_config_serialization_round_trip() -> None:
     restored = ChatToolConfig.model_validate(data)
     # Both round-trips should produce a valid ChatToolConfig with the same chat type
     assert type(restored) is ChatToolConfig
-    assert type(restored.chat) is SimpleChatConfig
+    assert type(restored.chat) is BasicChatConfig
 
 
 def test_action_set_contains_only_send_message() -> None:

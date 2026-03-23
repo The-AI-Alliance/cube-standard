@@ -24,7 +24,7 @@ class ChatConfig(TypedBaseModel, ABC):
     needed to reproduce the session and must be fully serializable.
 
     Subclasses:
-    - SimpleChatConfig: In-memory queue-based session (in cube-resources)
+    - BasicChatConfig: In-memory queue-based session (in cube-resources)
     """
 
     @abstractmethod
@@ -41,7 +41,7 @@ class ChatSession(ABC):
     block until the agent responds. Agents call send_message() to respond.
 
     Subclasses:
-    - SimpleChatSession: In-memory queue implementation (in cube-resources)
+    - BasicChatSession: In-memory queue implementation (in cube-resources)
     """
 
     @property

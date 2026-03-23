@@ -1,4 +1,4 @@
-"""Unit tests for SimpleChatConfig and SimpleChatSession."""
+"""Unit tests for BasicChatConfig and BasicChatSession."""
 
 import threading
 import time
@@ -6,7 +6,7 @@ import time
 import pytest
 
 from cube.resources.chat_session import ChatConfig, ChatSession
-from cube_chat import SimpleChatConfig, SimpleChatSession
+from cube_chat import BasicChatConfig, BasicChatSession
 
 
 def test_chat_config_is_abstract() -> None:
@@ -20,12 +20,12 @@ def test_chat_session_is_abstract() -> None:
 
 
 def test_messages_starts_empty() -> None:
-    session = SimpleChatSession()
+    session = BasicChatSession()
     assert session.messages == []
 
 
 def test_messages_returns_copy() -> None:
-    session = SimpleChatSession()
+    session = BasicChatSession()
     session.add_message("user", "hello")
     msgs = session.messages
     msgs.append({"role": "hack"})
@@ -33,7 +33,7 @@ def test_messages_returns_copy() -> None:
 
 
 def test_add_message_user_stored() -> None:
-    session = SimpleChatSession()
+    session = BasicChatSession()
     session.add_message("user", "hello")
     msgs = session.messages
     assert len(msgs) == 1
@@ -43,7 +43,7 @@ def test_add_message_user_stored() -> None:
 
 
 def test_add_message_assistant_stored() -> None:
-    session = SimpleChatSession()
+    session = BasicChatSession()
     session.add_message("assistant", "hi there")
     msgs = session.messages
     assert len(msgs) == 1
@@ -52,7 +52,7 @@ def test_add_message_assistant_stored() -> None:
 
 
 def test_add_message_infeasible_stored() -> None:
-    session = SimpleChatSession()
+    session = BasicChatSession()
     session.add_message("infeasible", "cannot do this")
     msgs = session.messages
     assert len(msgs) == 1
@@ -60,19 +60,19 @@ def test_add_message_infeasible_stored() -> None:
 
 
 def test_add_message_info_not_stored() -> None:
-    session = SimpleChatSession()
+    session = BasicChatSession()
     session.add_message("info", "this is background info")
     assert session.messages == []
 
 
 def test_add_message_invalid_role_raises() -> None:
-    session = SimpleChatSession()
+    session = BasicChatSession()
     with pytest.raises(ValueError, match="Invalid role"):
         session.add_message("system", "bad role")  # type: ignore[arg-type]
 
 
 def test_send_message_appends_assistant_message() -> None:
-    session = SimpleChatSession()
+    session = BasicChatSession()
     # Drain queue in background so send_message doesn't need a consumer
     def drain() -> None:
         session._queue.get()
@@ -88,7 +88,7 @@ def test_send_message_appends_assistant_message() -> None:
 
 
 def test_send_message_unblocks_wait_for_user_message() -> None:
-    session = SimpleChatSession()
+    session = BasicChatSession()
     result: list[str] = []
 
     def waiter() -> None:
@@ -103,7 +103,7 @@ def test_send_message_unblocks_wait_for_user_message() -> None:
 
 
 def test_wait_for_user_message_blocks_until_send() -> None:
-    session = SimpleChatSession()
+    session = BasicChatSession()
     received: list[str] = []
 
     def waiter() -> None:
@@ -118,14 +118,14 @@ def test_wait_for_user_message_blocks_until_send() -> None:
 
 
 def test_stop_is_noop() -> None:
-    session = SimpleChatSession()
+    session = BasicChatSession()
     session.add_message("user", "hello")
     session.stop()  # should not raise
     assert len(session.messages) == 1
 
 
-def test_simple_chat_config_make() -> None:
-    config = SimpleChatConfig()
+def test_basic_chat_config_make() -> None:
+    config = BasicChatConfig()
     session = config.make()
-    assert isinstance(session, SimpleChatSession)
+    assert isinstance(session, BasicChatSession)
     assert session.messages == []
