@@ -14,7 +14,8 @@ from io import BytesIO
 from typing import Any, Literal
 
 from cube.core import Action, Content, Observation, StepError
-from cube.tool import AsyncTool, BrowserTool, ToolConfig
+from cube.tool import ToolConfig
+from cube.tools.browser import AsyncBrowserTool, BrowserTool
 from cube_browser_playwright import PlaywrightSession, PlaywrightSessionConfig
 from PIL import Image
 from playwright.async_api import Error as AsyncError
@@ -67,7 +68,6 @@ class PlaywrightConfig(ToolConfig):
     def make(self, container=None) -> "SyncPlaywrightTool":
         session = self.browser.make()
         return SyncPlaywrightTool(config=self, session=session)
-
 
 
 class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
@@ -398,7 +398,7 @@ class AsyncPlaywrightConfig(ToolConfig):
         return AsyncPlaywrightTool(config=self)
 
 
-class AsyncPlaywrightTool(AsyncTool, BrowserActionSpace):
+class AsyncPlaywrightTool(AsyncBrowserTool, BrowserActionSpace):
     """Fully asynchronous Playwright tool using playwright.async_api."""
 
     def __init__(self, config: AsyncPlaywrightConfig) -> None:
@@ -407,6 +407,11 @@ class AsyncPlaywrightTool(AsyncTool, BrowserActionSpace):
         self._apw = None
         self._abrowser = None
         self._page: AsyncPage = None  # type: ignore
+
+    @property
+    def session(self) -> None:  # type: ignore[override]
+        """No session abstraction for the async tool; resources are managed internally."""
+        return None
 
     async def initialize(self):
         self._apw = await async_playwright().start()

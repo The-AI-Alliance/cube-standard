@@ -2,7 +2,7 @@
 
 Sync Playwright:
     PlaywrightConfig    — serializable config; call .make() to get a SyncPlaywrightTool
-    SyncPlaywrightTool  — synchronous Playwright tool satisfying AbstractBrowserTool
+    SyncPlaywrightTool  — synchronous Playwright tool satisfying BrowserTool
 
 Async Playwright:
     AsyncPlaywrightConfig — serializable config; call .make() to get an AsyncPlaywrightTool
@@ -18,7 +18,12 @@ Action space ABCs (for implementing custom tools):
 """
 
 from cube_browser_tool.action_spaces import BidBrowserActionSpace, BrowserActionSpace
-from cube_browser_tool.playwright_tool import AsyncPlaywrightConfig, AsyncPlaywrightTool, PlaywrightConfig, SyncPlaywrightTool
+from cube_browser_tool.playwright_tool import (
+    AsyncPlaywrightConfig,
+    AsyncPlaywrightTool,
+    PlaywrightConfig,
+    SyncPlaywrightTool,
+)
 
 __all__ = [
     "PlaywrightConfig",

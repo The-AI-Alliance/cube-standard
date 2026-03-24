@@ -9,7 +9,7 @@ Run them explicitly with: ``pytest -m integration``
 import pytest
 import pytest_asyncio
 from cube.core import Action, Observation, StepError
-from cube.tool import BrowserTool
+from cube.tools.browser import BrowserTool
 from cube_browser_playwright import PlaywrightSessionConfig, Viewport
 
 from cube_browser_tool import BidBrowserActionSpace, BrowserActionSpace, PlaywrightConfig
@@ -82,10 +82,10 @@ def test_sync_playwright_tool_is_browser_tool() -> None:
     assert issubclass(SyncPlaywrightTool, BrowserTool)
 
 
-def test_async_playwright_tool_is_async_tool() -> None:
-    from cube.tool import AsyncTool
+def test_async_playwright_tool_is_async_browser_tool() -> None:
+    from cube.tools.browser import AsyncBrowserTool
 
-    assert issubclass(AsyncPlaywrightTool, AsyncTool)
+    assert issubclass(AsyncPlaywrightTool, AsyncBrowserTool)
 
 
 def test_make_async_returns_async_playwright_tool() -> None:
