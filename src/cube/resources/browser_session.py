@@ -1,7 +1,7 @@
-"""Abstract browser session contract for cube-standard tools.
+"""Abstract browser session contracts for cube-standard tools.
 
-A BrowserSession is a handle to a running browser instance, designed to support
-three use cases:
+A BrowserSession / AsyncBrowserSession is a handle to a running browser instance,
+designed to support three use cases:
 
   1. Cross-process (same computer): Pass the session to a Ray worker or subprocess.
      TODO: Implement __getstate__/__setstate__ to drop live objects and reconnect
@@ -18,7 +18,7 @@ three use cases:
      browser window at the OS level instead.
      TODO: CUASession — store PID and/or DISPLAY env var (Linux) / window handle (macOS).
 
-BrowserConfig is the serializable factory for creating a BrowserSession.
+BrowserConfig / AsyncBrowserConfig are the serializable factories for creating sessions.
 """
 
 from __future__ import annotations
@@ -68,5 +68,43 @@ class BrowserSession(ABC):
 
     @abstractmethod
     def stop(self) -> None:
+        """Close the browser and release all resources."""
+        ...
+
+
+class AsyncBrowserConfig(TypedBaseModel, ABC):
+    """Abstract serializable config for an async browser session.
+
+    Call make() to launch a browser and get a live AsyncBrowserSession. The config holds
+    all parameters needed to reproduce the launch and must be fully serializable.
+
+    Subclasses:
+    # Future: AsyncPlaywrightSessionConfig — Chromium via async Playwright
+    """
+
+    @abstractmethod
+    async def make(self) -> "AsyncBrowserSession":
+        """Launch a browser and return a live AsyncBrowserSession."""
+        ...
+
+
+class AsyncBrowserSession(ABC):
+    """Abstract live async browser session handle.
+
+    Same design goals as BrowserSession but all lifecycle methods are coroutines,
+    matching the async Playwright API for high-throughput parallel data collection.
+
+    Subclasses:
+    # Future: AsyncPlaywrightSession — owns async Playwright objects directly
+    """
+
+    @property
+    @abstractmethod
+    def cdp_url(self) -> str | None:
+        """The Chrome DevTools Protocol URL for this browser, or None if not available."""
+        ...
+
+    @abstractmethod
+    async def stop(self) -> None:
         """Close the browser and release all resources."""
         ...

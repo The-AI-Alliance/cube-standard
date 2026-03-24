@@ -17,7 +17,7 @@ from abc import abstractmethod
 from typing import Any
 
 from cube.core import Observation
-from cube.resources.browser_session import BrowserSession
+from cube.resources.browser_session import AsyncBrowserSession, BrowserSession
 from cube.tool import AsyncTool, Tool
 
 
@@ -46,7 +46,7 @@ class AsyncBrowserTool(AsyncTool):
 
     @property
     @abstractmethod
-    def session(self) -> BrowserSession: ...
+    def session(self) -> AsyncBrowserSession: ...
 
     @abstractmethod
     async def noop(self) -> None: ...

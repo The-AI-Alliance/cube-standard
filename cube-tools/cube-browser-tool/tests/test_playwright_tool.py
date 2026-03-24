@@ -6,14 +6,17 @@ Integration tests (require Playwright + Chromium) are marked with
 Run them explicitly with: ``pytest -m integration``
 """
 
+import inspect
+import time
+
 import pytest
 import pytest_asyncio
 from cube.core import Action, Observation, StepError
-from cube.tools.browser import BrowserTool
+from cube.tools.browser import AsyncBrowserTool, BrowserTool
 from cube_browser_playwright import PlaywrightSessionConfig, Viewport
 
 from cube_browser_tool import BidBrowserActionSpace, BrowserActionSpace, PlaywrightConfig
-from cube_browser_tool.playwright_tool import AsyncPlaywrightTool, SyncPlaywrightTool
+from cube_browser_tool.playwright_tool import AsyncPlaywrightConfig, AsyncPlaywrightTool, SyncPlaywrightTool
 
 # ---------------------------------------------------------------------------
 # Unit tests — no browser required
@@ -83,16 +86,11 @@ def test_sync_playwright_tool_is_browser_tool() -> None:
 
 
 def test_async_playwright_tool_is_async_browser_tool() -> None:
-    from cube.tools.browser import AsyncBrowserTool
-
     assert issubclass(AsyncPlaywrightTool, AsyncBrowserTool)
 
 
-def test_make_async_returns_async_playwright_tool() -> None:
-    config = PlaywrightConfig()
-    tool = config.make_async()
-    assert isinstance(tool, AsyncPlaywrightTool)
-    assert tool.config is config
+def test_async_playwright_config_make_is_coroutine() -> None:
+    assert inspect.iscoroutinefunction(AsyncPlaywrightConfig().make)
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +241,6 @@ def test_browser_select_option() -> None:
 
 @pytest.mark.integration
 def test_browser_wait_is_capped_at_max_wait() -> None:
-    import time
 
     pytest.importorskip("playwright", reason="playwright not installed")
     tool = PlaywrightConfig(
@@ -285,10 +282,7 @@ def test_page_property_exposes_raw_page() -> None:
 @pytest_asyncio.fixture
 async def async_tool():
     pytest.importorskip("playwright", reason="playwright not installed")
-    tool = PlaywrightConfig(
-        browser=PlaywrightSessionConfig(headless=True), use_html=True, use_screenshot=False, use_axtree=False
-    ).make_async()
-    await tool.initialize()
+    tool = await AsyncPlaywrightConfig(use_html=True, use_screenshot=False, use_axtree=False).make()
     yield tool
     await tool.close()
 
@@ -347,10 +341,7 @@ async def test_async_evaluate_js(async_tool) -> None:
 @pytest.mark.asyncio
 async def test_async_browser_select_option() -> None:
     pytest.importorskip("playwright", reason="playwright not installed")
-    tool = PlaywrightConfig(
-        browser=PlaywrightSessionConfig(headless=True), use_html=True, use_screenshot=False, use_axtree=False
-    ).make_async()
-    await tool.initialize()
+    tool = await AsyncPlaywrightConfig(use_html=True, use_screenshot=False, use_axtree=False).make()
     try:
         await tool.goto(SELECT_PAGE)
         result = await tool.execute_action(
@@ -366,17 +357,9 @@ async def test_async_browser_select_option() -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_async_browser_wait_is_capped_at_max_wait() -> None:
-    import time
 
     pytest.importorskip("playwright", reason="playwright not installed")
-    tool = PlaywrightConfig(
-        browser=PlaywrightSessionConfig(headless=True),
-        use_html=False,
-        use_screenshot=False,
-        use_axtree=False,
-        max_wait=1,
-    ).make_async()
-    await tool.initialize()
+    tool = await AsyncPlaywrightConfig(use_html=False, use_screenshot=False, use_axtree=False, max_wait=1).make()
     try:
         start = time.monotonic()
         await tool.execute_action(Action(name="browser_wait", arguments={"seconds": 9999}))

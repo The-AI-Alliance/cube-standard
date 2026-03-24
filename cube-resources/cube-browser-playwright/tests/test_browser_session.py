@@ -2,11 +2,18 @@
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from cube.resources.browser_session import BrowserConfig, BrowserSession
+from cube.resources.browser_session import AsyncBrowserConfig, AsyncBrowserSession, BrowserConfig, BrowserSession
 
+from cube_browser_playwright.async_playwright_session import (
+    AsyncPlaywrightSession,
+    AsyncPlaywrightSessionConfig,
+)
+from cube_browser_playwright.async_playwright_session import (
+    _read_cdp_url as _async_read_cdp_url,
+)
 from cube_browser_playwright.playwright_session import PlaywrightSession, PlaywrightSessionConfig, _read_cdp_url
 
 
@@ -233,4 +240,258 @@ class TestPlaywrightSessionConfig:
         ):
             with pytest.raises(RuntimeError, match="chrome did not start"):
                 PlaywrightSessionConfig().make()
+        assert not profile_dir.exists()
+
+
+# ---------------------------------------------------------------------------
+# Async tests
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncReadCdpUrl:
+    async def test_returns_url_from_port_file(self, tmp_path: Path) -> None:
+        (tmp_path / "DevToolsActivePort").write_text("9222\n/devtools/browser/abc\n")
+        assert await _async_read_cdp_url(str(tmp_path)) == "http://localhost:9222"
+
+    async def test_raises_on_timeout(self, tmp_path: Path) -> None:
+        with pytest.raises(RuntimeError, match="DevToolsActivePort"):
+            await _async_read_cdp_url(str(tmp_path))  # file never written
+
+    async def test_raises_on_malformed_port_file(self, tmp_path: Path) -> None:
+        (tmp_path / "DevToolsActivePort").write_text("not-a-number\n")
+        with pytest.raises(RuntimeError, match="malformed DevToolsActivePort"):
+            await _async_read_cdp_url(str(tmp_path))
+
+
+class TestAsyncBrowserSession:
+    def test_cannot_instantiate_directly(self) -> None:
+        with pytest.raises(TypeError):
+            AsyncBrowserSession()  # type: ignore[abstract]
+
+
+class TestAsyncBrowserConfig:
+    def test_cannot_instantiate_directly(self) -> None:
+        with pytest.raises(TypeError):
+            AsyncBrowserConfig()  # type: ignore[abstract]
+
+
+def _make_async_session(**kwargs: Any) -> AsyncPlaywrightSession:
+    defaults: dict[str, Any] = {
+        "playwright": MagicMock(),
+        "page": MagicMock(),
+        "context": MagicMock(),
+        "cdp_url": "http://localhost:1234",
+        "user_data_dir": "/tmp/fake_dir",
+    }
+    return AsyncPlaywrightSession(**{**defaults, **kwargs})
+
+
+class TestAsyncPlaywrightSession:
+    def test_cdp_url_is_stored(self) -> None:
+        session = _make_async_session(cdp_url="http://localhost:1234")
+        assert session.cdp_url == "http://localhost:1234"
+
+    def test_page_and_context_properties(self) -> None:
+        mock_page = MagicMock()
+        mock_context = MagicMock()
+        session = _make_async_session(page=mock_page, context=mock_context)
+        assert session.page is mock_page
+        assert session.context is mock_context
+
+    async def test_stop_closes_context(self) -> None:
+        mock_context = AsyncMock()
+        session = _make_async_session(context=mock_context)
+        await session.stop()
+        mock_context.close.assert_called_once()
+
+    async def test_stop_calls_playwright_stop_even_when_context_close_raises(self) -> None:
+        mock_pw = AsyncMock()
+        mock_context = AsyncMock()
+        mock_context.close.side_effect = RuntimeError("context close error")
+        session = _make_async_session(playwright=mock_pw, context=mock_context)
+        await session.stop()  # should not raise
+        mock_pw.stop.assert_called_once()
+
+    async def test_stop_stops_playwright(self) -> None:
+        mock_pw = AsyncMock()
+        session = _make_async_session(playwright=mock_pw)
+        await session.stop()
+        mock_pw.stop.assert_called_once()
+
+    async def test_stop_removes_temp_dir(self, tmp_path: Path) -> None:
+        profile_dir = tmp_path / "profile"
+        profile_dir.mkdir()
+        session = _make_async_session(user_data_dir=str(profile_dir))
+        await session.stop()
+        assert not profile_dir.exists()
+
+
+class TestAsyncPlaywrightSessionConfig:
+    def _make_mock_pw(self) -> AsyncMock:
+        mock_page = MagicMock()
+        mock_context = AsyncMock()
+        mock_context.pages = [mock_page]
+        mock_pw = AsyncMock()
+        mock_pw.chromium.launch_persistent_context.return_value = mock_context
+        return mock_pw
+
+    def _make_async_playwright_mock(self, mock_pw: AsyncMock) -> MagicMock:
+        mock_ap_cm = AsyncMock()
+        mock_ap_cm.start.return_value = mock_pw
+        mock_ap = MagicMock(return_value=mock_ap_cm)
+        return mock_ap
+
+    async def test_make_returns_async_playwright_session(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_ap = self._make_async_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.async_playwright_session.async_playwright", mock_ap),
+            patch(
+                "cube_browser_playwright.async_playwright_session._read_cdp_url",
+                new=AsyncMock(return_value="http://localhost:1234"),
+            ),
+        ):
+            session = await AsyncPlaywrightSessionConfig().make()
+        assert isinstance(session, AsyncPlaywrightSession)
+
+    async def test_make_injects_remote_debugging_port_0(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_ap = self._make_async_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.async_playwright_session.async_playwright", mock_ap),
+            patch(
+                "cube_browser_playwright.async_playwright_session._read_cdp_url",
+                new=AsyncMock(return_value="http://localhost:1234"),
+            ),
+        ):
+            await AsyncPlaywrightSessionConfig().make()
+        launch_args = mock_pw.chromium.launch_persistent_context.call_args[1]["args"]
+        assert "--remote-debugging-port=0" in launch_args
+
+    async def test_make_cdp_url_comes_from_read_cdp_url(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_ap = self._make_async_playwright_mock(mock_pw)
+        mock_read = AsyncMock(return_value="http://localhost:9876")
+        with (
+            patch("cube_browser_playwright.async_playwright_session.async_playwright", mock_ap),
+            patch("cube_browser_playwright.async_playwright_session._read_cdp_url", new=mock_read),
+        ):
+            session = await AsyncPlaywrightSessionConfig().make()
+        mock_read.assert_called_once()
+        assert session.cdp_url == "http://localhost:9876"
+
+    async def test_make_passes_headless_flag(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_ap = self._make_async_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.async_playwright_session.async_playwright", mock_ap),
+            patch(
+                "cube_browser_playwright.async_playwright_session._read_cdp_url",
+                new=AsyncMock(return_value="http://localhost:1234"),
+            ),
+        ):
+            await AsyncPlaywrightSessionConfig(headless=False).make()
+        assert mock_pw.chromium.launch_persistent_context.call_args[1]["headless"] is False
+
+    async def test_make_timeout_sets_default_timeout(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_ap = self._make_async_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.async_playwright_session.async_playwright", mock_ap),
+            patch(
+                "cube_browser_playwright.async_playwright_session._read_cdp_url",
+                new=AsyncMock(return_value="http://localhost:1234"),
+            ),
+        ):
+            await AsyncPlaywrightSessionConfig(timeout=5000).make()
+        mock_pw.chromium.launch_persistent_context.return_value.set_default_timeout.assert_called_once_with(5000)
+
+    async def test_make_timeout_none_does_not_set_default_timeout(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_ap = self._make_async_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.async_playwright_session.async_playwright", mock_ap),
+            patch(
+                "cube_browser_playwright.async_playwright_session._read_cdp_url",
+                new=AsyncMock(return_value="http://localhost:1234"),
+            ),
+        ):
+            await AsyncPlaywrightSessionConfig(timeout=None).make()
+        mock_pw.chromium.launch_persistent_context.return_value.set_default_timeout.assert_not_called()
+
+    async def test_make_new_page_when_context_has_no_pages(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_pw.chromium.launch_persistent_context.return_value.pages = []
+        mock_ap = self._make_async_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.async_playwright_session.async_playwright", mock_ap),
+            patch(
+                "cube_browser_playwright.async_playwright_session._read_cdp_url",
+                new=AsyncMock(return_value="http://localhost:1234"),
+            ),
+        ):
+            await AsyncPlaywrightSessionConfig().make()
+        mock_pw.chromium.launch_persistent_context.return_value.new_page.assert_called_once()
+
+    async def test_make_resizeable_window_injects_window_size_arg_and_no_viewport(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_ap = self._make_async_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.async_playwright_session.async_playwright", mock_ap),
+            patch(
+                "cube_browser_playwright.async_playwright_session._read_cdp_url",
+                new=AsyncMock(return_value="http://localhost:1234"),
+            ),
+        ):
+            await AsyncPlaywrightSessionConfig(resizeable_window=True).make()
+        call_kwargs = mock_pw.chromium.launch_persistent_context.call_args[1]
+        assert any("--window-size=" in arg for arg in call_kwargs["args"])
+        assert call_kwargs.get("no_viewport") is True
+        assert "viewport" not in call_kwargs
+
+    async def test_make_record_video_size_not_set_when_no_video_dir(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_ap = self._make_async_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.async_playwright_session.async_playwright", mock_ap),
+            patch(
+                "cube_browser_playwright.async_playwright_session._read_cdp_url",
+                new=AsyncMock(return_value="http://localhost:1234"),
+            ),
+        ):
+            await AsyncPlaywrightSessionConfig().make()
+        call_kwargs = mock_pw.chromium.launch_persistent_context.call_args[1]
+        assert "record_video_size" not in call_kwargs
+
+    async def test_make_cleanup_pw_stop_called_when_context_close_raises(self) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_context = mock_pw.chromium.launch_persistent_context.return_value
+        mock_context.close.side_effect = RuntimeError("context close error")
+        mock_ap = self._make_async_playwright_mock(mock_pw)
+        with (
+            patch("cube_browser_playwright.async_playwright_session.async_playwright", mock_ap),
+            patch(
+                "cube_browser_playwright.async_playwright_session._read_cdp_url",
+                new=AsyncMock(side_effect=RuntimeError("chrome did not start")),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="chrome did not start"):
+                await AsyncPlaywrightSessionConfig().make()
+        mock_pw.stop.assert_called_once()
+
+    async def test_make_cleanup_removes_temp_dir_on_failure(self, tmp_path: Path) -> None:
+        mock_pw = self._make_mock_pw()
+        mock_ap = self._make_async_playwright_mock(mock_pw)
+        profile_dir = tmp_path / "cube_harness_test"
+        profile_dir.mkdir()
+        with (
+            patch("cube_browser_playwright.async_playwright_session.async_playwright", mock_ap),
+            patch("tempfile.mkdtemp", return_value=str(profile_dir)),
+            patch(
+                "cube_browser_playwright.async_playwright_session._read_cdp_url",
+                new=AsyncMock(side_effect=RuntimeError("chrome did not start")),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="chrome did not start"):
+                await AsyncPlaywrightSessionConfig().make()
         assert not profile_dir.exists()

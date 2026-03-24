@@ -178,6 +178,20 @@ class ToolConfig(TypedBaseModel, ABC):
         pass
 
 
+class AsyncToolConfig(TypedBaseModel, ABC):
+    """Configuration for creating async task-specific tools.
+
+    Mirrors ToolConfig but make() is a coroutine, allowing async resource
+    acquisition (browser launch, network connections, etc.) before the tool
+    is handed to the caller.
+    """
+
+    @abstractmethod
+    async def make(self, container: Container | None = None) -> AbstractAsyncTool:
+        """Instantiate AsyncTool from configuration data."""
+        pass
+
+
 def tool_action(func: Callable) -> Callable:
     """
     Decorator to mark a method as an action in a Tool or AsyncTool.
