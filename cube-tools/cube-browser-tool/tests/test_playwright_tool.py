@@ -8,6 +8,7 @@ Run them explicitly with: ``pytest -m integration``
 
 import inspect
 import time
+from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
@@ -15,7 +16,7 @@ from cube.core import Action, Observation, StepError
 from cube.tools.browser import AsyncBrowserTool, BrowserTool
 from cube_browser_playwright import PlaywrightSessionConfig, Viewport
 
-from cube_browser_tool import BidBrowserActionSpace, BrowserActionSpace, PlaywrightConfig
+from cube_browser_tool import AsyncBrowserActionSpace, BidBrowserActionSpace, BrowserActionSpace, PlaywrightConfig
 from cube_browser_tool.playwright_tool import AsyncPlaywrightConfig, AsyncPlaywrightTool, SyncPlaywrightTool
 
 # ---------------------------------------------------------------------------
@@ -89,8 +90,32 @@ def test_async_playwright_tool_is_async_browser_tool() -> None:
     assert issubclass(AsyncPlaywrightTool, AsyncBrowserTool)
 
 
+def test_async_playwright_tool_is_async_browser_action_space() -> None:
+    assert issubclass(AsyncPlaywrightTool, AsyncBrowserActionSpace)
+
+
 def test_async_playwright_config_make_is_coroutine() -> None:
     assert inspect.iscoroutinefunction(AsyncPlaywrightConfig().make)
+
+
+def test_async_playwright_config_defaults() -> None:
+    config = AsyncPlaywrightConfig()
+    assert config.max_wait == 60
+    assert config.use_html is True
+    assert config.use_screenshot is True
+    assert config.use_axtree is False
+    assert config.prune_html is True
+    assert config.obs_max_retries == 3
+
+
+def test_async_max_wait_validator_rejects_zero() -> None:
+    with pytest.raises(Exception, match="max_wait must be positive"):
+        AsyncPlaywrightConfig(max_wait=0)
+
+
+def test_async_max_wait_validator_rejects_negative() -> None:
+    with pytest.raises(Exception, match="max_wait must be positive"):
+        AsyncPlaywrightConfig(max_wait=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +305,7 @@ def test_page_property_exposes_raw_page() -> None:
 
 
 @pytest_asyncio.fixture
-async def async_tool():
+async def async_tool() -> AsyncGenerator[AsyncPlaywrightTool, None]:
     pytest.importorskip("playwright", reason="playwright not installed")
     tool = await AsyncPlaywrightConfig(use_html=True, use_screenshot=False, use_axtree=False).make()
     yield tool

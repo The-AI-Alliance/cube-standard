@@ -13,11 +13,12 @@ BrowserGym (optional dep):
     requires ``pip install cube-browser-tool[bgym]``
 
 Action space ABCs (for implementing custom tools):
-    BrowserActionSpace    — CSS-selector-based action contract
-    BidBrowserActionSpace — BID-based action contract (BrowserGym)
+    BrowserActionSpace      — CSS-selector-based action contract (sync)
+    AsyncBrowserActionSpace — CSS-selector-based action contract (async)
+    BidBrowserActionSpace   — BID-based action contract (BrowserGym)
 """
 
-from cube_browser_tool.action_spaces import BidBrowserActionSpace, BrowserActionSpace
+from cube_browser_tool.action_spaces import AsyncBrowserActionSpace, BidBrowserActionSpace, BrowserActionSpace
 from cube_browser_tool.playwright_tool import (
     AsyncPlaywrightConfig,
     AsyncPlaywrightTool,
@@ -31,5 +32,6 @@ __all__ = [
     "AsyncPlaywrightConfig",
     "AsyncPlaywrightTool",
     "BrowserActionSpace",
+    "AsyncBrowserActionSpace",
     "BidBrowserActionSpace",
 ]

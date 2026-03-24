@@ -302,7 +302,7 @@ class TestAsyncPlaywrightSession:
         mock_context = AsyncMock()
         session = _make_async_session(context=mock_context)
         await session.stop()
-        mock_context.close.assert_called_once()
+        mock_context.close.assert_awaited_once()
 
     async def test_stop_calls_playwright_stop_even_when_context_close_raises(self) -> None:
         mock_pw = AsyncMock()
@@ -310,13 +310,13 @@ class TestAsyncPlaywrightSession:
         mock_context.close.side_effect = RuntimeError("context close error")
         session = _make_async_session(playwright=mock_pw, context=mock_context)
         await session.stop()  # should not raise
-        mock_pw.stop.assert_called_once()
+        mock_pw.stop.assert_awaited_once()
 
     async def test_stop_stops_playwright(self) -> None:
         mock_pw = AsyncMock()
         session = _make_async_session(playwright=mock_pw)
         await session.stop()
-        mock_pw.stop.assert_called_once()
+        mock_pw.stop.assert_awaited_once()
 
     async def test_stop_removes_temp_dir(self, tmp_path: Path) -> None:
         profile_dir = tmp_path / "profile"
@@ -477,7 +477,7 @@ class TestAsyncPlaywrightSessionConfig:
         ):
             with pytest.raises(RuntimeError, match="chrome did not start"):
                 await AsyncPlaywrightSessionConfig().make()
-        mock_pw.stop.assert_called_once()
+        mock_pw.stop.assert_awaited_once()
 
     async def test_make_cleanup_removes_temp_dir_on_failure(self, tmp_path: Path) -> None:
         mock_pw = self._make_mock_pw()

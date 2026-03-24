@@ -7,8 +7,8 @@ of the ``BrowserTool`` / ``AsyncBrowserTool`` abstractions.
 
 import asyncio
 import logging
+import time
 from io import BytesIO
-from time import time
 from typing import Any, Literal
 
 from cube.container import Container
@@ -29,7 +29,7 @@ from playwright.sync_api import Page as SyncPage
 from pydantic import Field, field_validator
 
 from cube_browser_tool._utils import flatten_axtree, prune_html
-from cube_browser_tool.action_spaces import BrowserActionSpace
+from cube_browser_tool.action_spaces import AsyncBrowserActionSpace, BrowserActionSpace
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,7 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
         try:
             return result + self.page_obs()
         except Exception as e:
+            logger.exception("Error while capturing page_obs after action %s", action.name)
             return StepError.from_exception(e)
 
     # ------------------------------------------------------------------
@@ -176,8 +177,6 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
         Content included depends on the config flags ``use_html``,
         ``use_axtree``, and ``use_screenshot``.
         """
-        self._wait_dom_loaded()
-
         contents = []
         if self.config.use_html:
             html = self.page_html()
@@ -402,7 +401,7 @@ class AsyncPlaywrightConfig(AsyncToolConfig):
         return AsyncPlaywrightTool(config=self, session=session)
 
 
-class AsyncPlaywrightTool(AsyncBrowserTool, BrowserActionSpace):
+class AsyncPlaywrightTool(AsyncBrowserTool, AsyncBrowserActionSpace):
     """Fully asynchronous Playwright tool using playwright.async_api."""
 
     def __init__(self, config: AsyncPlaywrightConfig, session: AsyncPlaywrightSession) -> None:
@@ -434,6 +433,7 @@ class AsyncPlaywrightTool(AsyncBrowserTool, BrowserActionSpace):
         try:
             result += await self.page_obs()
         except Exception as e:
+            logger.exception("Error while capturing page_obs after action %s", action.name)
             return StepError.from_exception(e)
         return result
 
@@ -454,9 +454,12 @@ class AsyncPlaywrightTool(AsyncBrowserTool, BrowserActionSpace):
         from_elem = self._page.locator(from_selector)
         await from_elem.hover(timeout=500)
         await self._page.mouse.down()
-
-        to_elem = self._page.locator(to_selector)
-        await to_elem.hover(timeout=500)
+        try:
+            to_elem = self._page.locator(to_selector)
+            await to_elem.hover(timeout=500)
+        except Exception:
+            await self._page.mouse.up()
+            raise
         await self._page.mouse.up()
 
     async def browser_hover(self, selector: str) -> None:
@@ -505,7 +508,7 @@ class AsyncPlaywrightTool(AsyncBrowserTool, BrowserActionSpace):
 
     async def evaluate_js(self, js: str) -> Any:
         js_result = await self._page.evaluate(js)
-        logger.info("JS result: %s", js_result)
+        logger.debug("JS result: %s", js_result)
         return js_result
 
     async def goto(self, url: str) -> None:
@@ -529,6 +532,8 @@ class AsyncPlaywrightTool(AsyncBrowserTool, BrowserActionSpace):
             except AsyncError as e:
                 logger.debug("page.wait_dom_loaded failed: %s", e)
             for frame in page.frames:
+                if frame == page.main_frame:
+                    continue
                 try:
                     await frame.wait_for_load_state("domcontentloaded", timeout=3000)
                 except AsyncError as e:
