@@ -68,8 +68,6 @@ class PlaywrightConfig(ToolConfig):
         session = self.browser.make()
         return SyncPlaywrightTool(config=self, session=session)
 
-    def make_async(self, container=None) -> "AsyncPlaywrightTool":
-        return AsyncPlaywrightTool(config=self)
 
 
 class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
@@ -360,10 +358,50 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
         pass
 
 
+class AsyncPlaywrightConfig(ToolConfig):
+    """Configuration for ``AsyncPlaywrightTool``.
+
+    Parameters
+    ----------
+    browser : PlaywrightSessionConfig
+        Browser launch parameters (headless, viewport, etc.).
+    max_wait : int
+        Maximum number of seconds ``browser_wait`` may pause. Default ``60``.
+    use_html : bool
+        Include page HTML in ``page_obs()``. Default ``True``.
+    use_axtree : bool
+        Include accessibility tree in ``page_obs()``. Default ``False``.
+    use_screenshot : bool
+        Include a screenshot in ``page_obs()``. Default ``True``.
+    prune_html : bool
+        Strip noise from HTML before including it in ``page_obs()``. Default ``True``.
+    obs_max_retries : int
+        Number of times to retry observation extraction on error. Default ``3``.
+    """
+
+    browser: PlaywrightSessionConfig = Field(default_factory=PlaywrightSessionConfig)
+    max_wait: int = 60
+    use_html: bool = True
+    use_axtree: bool = False
+    use_screenshot: bool = True
+    prune_html: bool = True
+    obs_max_retries: int = 3
+
+    @field_validator("max_wait")
+    @classmethod
+    def _validate_max_wait(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("max_wait must be positive")
+        return v
+
+    def make(self, container=None) -> "AsyncPlaywrightTool":
+        return AsyncPlaywrightTool(config=self)
+
+
 class AsyncPlaywrightTool(AsyncTool, BrowserActionSpace):
     """Fully asynchronous Playwright tool using playwright.async_api."""
 
-    def __init__(self, config: PlaywrightConfig) -> None:
+    def __init__(self, config: AsyncPlaywrightConfig) -> None:
         super().__init__()
         self.config = config
         self._apw = None
@@ -481,8 +519,7 @@ class AsyncPlaywrightTool(AsyncTool, BrowserActionSpace):
                     except AsyncError as e:
                         logger.debug("frame.wait_dom_loaded failed: %s", e)
 
-    async def page_obs(self) -> Observation:
-        await self._wait_dom_loaded()
+    async def _page_obs(self) -> Observation:
         obs = Observation()
         if self.config.use_html:
             html = await self.page_html()
@@ -495,6 +532,22 @@ class AsyncPlaywrightTool(AsyncTool, BrowserActionSpace):
         if self.config.use_screenshot:
             obs.contents.append(Content.from_data(await self.page_screenshot(), name="screenshot"))
         return obs
+
+    async def page_obs(self) -> Observation:
+        for attempt in range(1, self.config.obs_max_retries + 1):
+            await self._wait_dom_loaded()
+            try:
+                return await self._page_obs()
+            except AsyncError as e:
+                if attempt == self.config.obs_max_retries:
+                    raise e
+                logger.warning(
+                    "Observation extraction failed (attempt %s/%s): %s",
+                    attempt,
+                    self.config.obs_max_retries,
+                    e,
+                )
+                await asyncio.sleep(0.5)
 
     async def close(self):
         await self._page.close()
