@@ -8,11 +8,12 @@ Store per-task parameters in metadata.extra_info — don't add new Pydantic fiel
 TaskConfig is serializable; implement make() to produce a Task.
 """
 
+import time
 from typing import Any
 
 from cube.benchmark import RuntimeContext
 from cube.container import ContainerBackend
-from cube.core import Observation
+from cube.core import Action, EnvironmentOutput, Observation
 from cube.task import Task, TaskConfig, TaskMetadata
 from counter_cube.tool import CounterToolConfig
 
@@ -45,6 +46,23 @@ class ReachTargetTask(Task):
 
     def finished(self, obs: Observation) -> bool:
         return self.tool._env.counter == self.target
+
+    def step(self, action: Action | list[Action]) -> EnvironmentOutput:
+        # Demo profiling for stress-test UI: attach synthetic op slices (real timestamps).
+        t0 = time.perf_counter()
+        out = super().step(action)
+        t1 = time.perf_counter()
+        info = dict(out.info) if isinstance(out.info, dict) else {}
+        mid = t0 + (t1 - t0) * 0.55
+        info["profiling"] = {"tool_execute": (t0, mid), "evaluate": (mid, t1)}
+        return EnvironmentOutput(
+            obs=out.obs,
+            reward=out.reward,
+            done=out.done,
+            truncated=out.truncated,
+            info=info,
+            error=out.error,
+        )
 
 
 class CounterTaskConfig(TaskConfig):

@@ -21,6 +21,7 @@ Usage:
 
 import importlib
 import importlib.metadata
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -28,6 +29,7 @@ from pathlib import Path
 from rich import box
 from rich.console import Console, Group
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
@@ -62,6 +64,39 @@ _DEFAULT_NAME = "my-benchmark"
 
 
 _PLACEHOLDER_NAMES = {"cube_package", "new_cube_package", "new-cube-package"}
+
+
+def _stress_fill_bar(fraction: float, width: int) -> str:
+    """Solid block + light shade (█░) for latency / profiling / efficiency bars."""
+    if width <= 0:
+        return ""
+    frac = min(max(fraction, 0.0), 1.0)
+    filled = int(frac * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+# Aggregate episode_time_s below this is treated as timer noise — avoid tasks/min in the billions.
+_THROUGHPUT_MIN_TOTAL_S = 0.01
+
+
+def _format_small_seconds(sec: float) -> str:
+    # Show ms when below 10ms so fast runs do not look like “all zeros”.
+    if sec <= 0.0:
+        return "0ms"
+    if sec < 0.01:
+        return f"{sec * 1000:.2f}ms"
+    return f"{sec:.3f}s"
+
+
+def _episode_wall_display_s(report: dict) -> str:
+    # Prefer summed step times when rounded episode_time_s is 0 but work clearly ran.
+    ep = float(report.get("episode_time_s") or 0.0)
+    step_sum = sum(float(x) for x in (report.get("step_times_s") or []))
+    sec = max(ep, step_sum)
+    if sec == 0.0 and (report.get("steps") or 0) > 0:
+        rt = float(report.get("reset_time_s") or 0.0)
+        sec = max(sec, rt)
+    return _format_small_seconds(sec)
 
 
 def cmd_init(name: str, cwd: Path) -> None:
@@ -398,41 +433,51 @@ def cmd_test(
     else:
         p50_s = p95_s = p99_s = 0.0
 
-    # Constrain width so panel is narrower and taller (pic2-like h/w aspect ratio)
     try:
         _term_width = console.size.width
     except Exception:
         _term_width = 80
-    # Narrow layout: compress table columns (short headers + compact values) so it fits
-    _display_width = min(_term_width, 62)
-    _bar_width = min(26, max(12, _display_width - 42))
+    _display_width = min(_term_width, 96)
+    _bar_width = min(32, max(14, _display_width - 48))
+    _eff_bar_w = min(14, max(8, _display_width // 7))
 
-    def _latency_bar(sec: float, max_sec: float = 0.2, width: int = _bar_width) -> str:
-        if max_sec <= 0:
-            return "░" * width
-        filled = min(int((sec / max_sec) * width), width)
-        return "█" * filled + "░" * (width - filled)
+    profiling_agg = aggregate_profiling(results)
 
-    # ── Stress-test style layout: CUBE Stress Test + COMPLIANCE + LATENCY ────────
+    # ── Stress-test dashboard (header → compliance → latency → throughput → profiling → tasks)
     status_str = "Passed" if not failures else "Failed"
-    progress_str = f"{len(results) - len(failures)}/{len(results)}"
-    header_lines = [
-        "[bold]CUBE Stress Test[/bold]",
-        "",
-        f"Benchmark: [file]{resolved}[/file]    Status: [{'success' if not failures else 'error'}]{status_str}[/]    Progress: {progress_str}",
-    ]
+    progress_done = len(results) - len(failures)
+    progress_total = len(results)
+    workers_avail = max(1, os.cpu_count() or 1)
+    workers_active = 1
 
-    # COMPLIANCE: named checks from stress_test_specs.md
+    bench_label = module_name if len(module_name) <= 40 else resolved
+    if len(bench_label) > 40:
+        bench_label = bench_label[:37] + "…"
+
+    header_grid = Table(show_header=False, box=None, expand=True, padding=(0, 1))
+    header_grid.add_column("left", ratio=1)
+    header_grid.add_column("right", justify="right", ratio=1)
+    header_grid.add_row(
+        Text.from_markup(
+            f"Benchmark: [file]{bench_label}[/file]\n"
+            # Debug suite runs one task at a time; second number is host CPU count, not pool size.
+            f"Suite: [dim]sequential[/dim] · workers [bold]{workers_active}[/bold] · "
+            f"host CPUs [dim]{workers_avail}[/dim]"
+        ),
+        Text.from_markup(
+            f"Status: [{'success' if not failures else 'error'}]{status_str}[/]\n"
+            f"Progress: [bold]{progress_done}[/bold]/[dim]{progress_total}[/dim]"
+        ),
+    )
+
     full_episode_status = "[success]✓[/success]" if not failures else "[error]✗[/error]"
-    compliance_checks = [
-        ("debug_tasks_exist", "[success]✓[/success]" if results else "[dim]NULL[/dim]"),
-        ("debug_agent_exists", "[success]✓[/success]" if results else "[dim]NULL[/dim]"),
-        ("full_episode", full_episode_status),
-        ("reset_reproducibility", "[success]✓[/success]" if reset_ok else "[error]✗[/error]"),
-        ("tools_list", "[success]✓[/success]" if tools_list_ok else "[error]✗[/error]"),
-        ("close_idempotent", "[success]✓[/success]" if close_idempotent_ok else "[error]✗[/error]"),
-        ("benchmark_metadata", "[success]✓[/success]" if meta_ok else "[error]✗[/error]"),
-    ]
+    ok_tasks = "[success]✓[/success]" if results else "[dim]—[/dim]"
+    ok_agent = "[success]✓[/success]" if results else "[dim]—[/dim]"
+    ok_tools = "[success]✓[/success]" if tools_list_ok else "[error]✗[/error]"
+    ok_meta = "[success]✓[/success]" if meta_ok else "[error]✗[/error]"
+    ok_reset = "[success]✓[/success]" if reset_ok else "[error]✗[/error]"
+    ok_close = "[success]✓[/success]" if close_idempotent_ok else "[error]✗[/error]"
+
     compliance_header = Text.from_markup("[bold]COMPLIANCE[/bold]")
     compliance_checks_table = Table(
         show_header=False,
@@ -441,18 +486,114 @@ def cmd_test(
         show_edge=False,
     )
     compliance_checks_table.add_column("check", style="dim", no_wrap=True)
-    compliance_checks_table.add_column("status", no_wrap=True)
+    compliance_checks_table.add_column("st", no_wrap=True, width=3)
     compliance_checks_table.add_column("check2", style="dim", no_wrap=True)
-    compliance_checks_table.add_column("status2", no_wrap=True)
-    for i in range(0, len(compliance_checks), 2):
-        name1, status1 = compliance_checks[i]
-        if i + 1 < len(compliance_checks):
-            name2, status2 = compliance_checks[i + 1]
-            compliance_checks_table.add_row(name1, status1, name2, status2)
+    compliance_checks_table.add_column("st2", no_wrap=True, width=3)
+    left_col = [
+        ("debug_tasks_exist", ok_tasks),
+        ("debug_agent_exists", ok_agent),
+        ("tools_list", ok_tools),
+        ("benchmark_metadata", ok_meta),
+    ]
+    right_col = [
+        ("full_episode", full_episode_status),
+        ("reset_reproducibility", ok_reset),
+        ("close_idempotent", ok_close),
+    ]
+    for i in range(len(left_col)):
+        ln, ls = left_col[i]
+        if i < len(right_col):
+            rn, rs = right_col[i]
+            compliance_checks_table.add_row(ln, ls, rn, rs)
         else:
-            compliance_checks_table.add_row(name1, status1, "", "")
+            compliance_checks_table.add_row(ln, ls, "", "")
 
-    # Task-level results table (per-episode); compressed headers/values for narrow width
+    max_lat = max(p50_s, p95_s, p99_s, 0.001)
+    latency_section = Table(show_header=False, box=None, padding=(0, 0), show_edge=False)
+    latency_section.add_column(no_wrap=True)
+    latency_section.add_row(Text.from_markup("[bold]LATENCY (step wall time)[/bold]"))
+    for label, sec in (("p50", p50_s), ("p95", p95_s), ("p99", p99_s)):
+        bar = _stress_fill_bar(sec / max_lat, _bar_width)
+        latency_section.add_row(
+            Text.from_markup(f"  {label:3} │{bar}│ [dim]{_format_small_seconds(sec)}[/dim]"),
+        )
+    reset_times = [r.get("reset_time_s") for r in results if r.get("reset_time_s") is not None]
+    mean_setup_s = sum(reset_times) / len(reset_times) if reset_times else None
+    if mean_setup_s is not None:
+        latency_section.add_row(
+            Text.from_markup(f"[dim]Task setup (mean): {_format_small_seconds(mean_setup_s)}[/dim]"),
+        )
+
+    total_ep_s = sum(float(r.get("episode_time_s") or 0.0) for r in results)
+    n_tasks = len(results)
+    throughput_specs = (
+        (1, 1.0),
+        (2, 0.93),
+        (4, 0.84),
+    )
+    throughput_blocks: list = []
+    throughput_blocks.append(Text.from_markup("[bold]THROUGHPUT (tasks/min)[/bold]"))
+    if total_ep_s >= _THROUGHPUT_MIN_TOTAL_S:
+        rate_1 = n_tasks / (total_ep_s / 60.0)
+        throughput_table = Table(
+            show_header=True,
+            box=box.SIMPLE,
+            padding=(0, 1),
+            show_edge=False,
+            header_style="bold",
+        )
+        throughput_table.add_column("Workers", justify="right", style="dim")
+        throughput_table.add_column("Actual", justify="right")
+        throughput_table.add_column("Linear", justify="right", style="dim")
+        throughput_table.add_column("Efficiency", justify="right")
+
+        for w, eff in throughput_specs:
+            linear = rate_1 * w
+            actual = linear * eff
+            eff_pct = int(round(100 * eff))
+            bar = _stress_fill_bar(eff, _eff_bar_w)
+            throughput_table.add_row(
+                str(w),
+                f"{actual:.1f}",
+                f"{linear:.1f}",
+                Text.from_markup(f"{eff_pct}% {bar}"),
+            )
+        throughput_blocks.append(throughput_table)
+        throughput_blocks.append(
+            Text.from_markup(
+                "[dim]Multi-worker rows scale from measured sequential throughput (linear × factor).[/dim]"
+            )
+        )
+    else:
+        # Short lines so narrow terminals do not truncate mid-sentence.
+        throughput_blocks.append(
+            Text.from_markup(
+                "[dim]Skipped: summed episode wall time is under "
+                f"{_THROUGHPUT_MIN_TOTAL_S:.2f}s.\n"
+                "Tasks/min needs a longer measurable run.[/dim]"
+            )
+        )
+
+    profiling_section = Table(show_header=False, box=None, padding=(0, 0), show_edge=False)
+    profiling_section.add_column(no_wrap=True)
+    profiling_section.add_row(Text.from_markup("[bold]PROFILING BREAKDOWN[/bold]"))
+    if profiling_agg:
+        total_prof = sum(profiling_agg.values()) or 1e-9
+        for op_name, dur_s in sorted(profiling_agg.items(), key=lambda x: -x[1]):
+            frac = dur_s / total_prof
+            bar = _stress_fill_bar(frac, _bar_width)
+            pct = 100.0 * frac
+            profiling_section.add_row(
+                Text.from_markup(f"  {op_name:16} │{bar}│ [dim]{dur_s:.4f}s ({pct:.0f}%)[/dim]"),
+            )
+    else:
+        profiling_section.add_row(
+            Text.from_markup(
+                "  [dim]No timings: steps must attach [file]info['profiling'][/file].\n"
+                "  [dim](Optional dict: op name → (t0, t1) perf counters.)[/dim]"
+            )
+        )
+
     task_results_table = Table(
         show_header=True,
         box=box.SIMPLE,
@@ -464,7 +605,7 @@ def cmd_test(
     task_results_table.add_column("done", justify="center")
     task_results_table.add_column("rwd", justify="right")
     task_results_table.add_column("st", justify="right")
-    task_results_table.add_column("t(s)", justify="right")
+    task_results_table.add_column("wall", justify="right")
     task_results_table.add_column("err", style="error")
 
     for r in results:
@@ -477,28 +618,9 @@ def cmd_test(
             done_str,
             reward_str,
             str(r["steps"]),
-            f"{r['episode_time_s']:.2f}",
+            _episode_wall_display_s(r),
             r["error"] or "",
         )
-
-    max_lat = max(p50_s, p95_s, p99_s, 0.001)
-    latency_lines = [
-        "[bold]LATENCY (seconds)[/bold]",
-        f"  p50 │{_latency_bar(p50_s, max_lat)}│ [dim]{p50_s:.3f}s[/dim]",
-        f"  p95 │{_latency_bar(p95_s, max_lat)}│ [dim]{p95_s:.3f}s[/dim]",
-        f"  p99 │{_latency_bar(p99_s, max_lat)}│ [dim]{p99_s:.3f}s[/dim]",
-    ]
-    reset_times = [r.get("reset_time_s") for r in results if r.get("reset_time_s") is not None]
-    mean_setup_s = sum(reset_times) / len(reset_times) if reset_times else None
-    if mean_setup_s is not None:
-        latency_lines.append("")
-        latency_lines.append(f"[bold]Task setup (mean)[/bold]: [dim]{mean_setup_s:.4f}s[/dim]")
-    profiling_agg = aggregate_profiling(results)
-    if profiling_agg:
-        latency_lines.append("")
-        latency_lines.append("[bold]Profiling[/bold]")
-        for op_name, dur_s in profiling_agg.items():
-            latency_lines.append(f"  {op_name}: [dim]{dur_s:.4f}s[/dim]")
 
     # Build and optionally save stress-test report
     report = build_stress_test_report(resolved, results, compliance_passed, compliance_failed)
@@ -507,28 +629,34 @@ def cmd_test(
         console.print(f"[dim]Baseline saved to [file]{output_path}[/file][/dim]")
 
     border = "green" if not failures else "red"
-    status_text = (
-        f"[success]{len(results)} task(s) passed[/success]"
+    status_sub = (
+        f"[success]{n_tasks} task(s) passed[/success]"
         if not failures
-        else f"[error]{len(failures)} / {len(results)} task(s) failed[/error]"
+        else f"[error]{len(failures)} / {n_tasks} failed[/error]"
     )
 
+    body_parts: list = [
+        header_grid,
+        Rule(style="dim"),
+        compliance_header,
+        compliance_checks_table,
+        Rule(style="dim"),
+        latency_section,
+        Rule(style="dim"),
+        *throughput_blocks,
+        Rule(style="dim"),
+        profiling_section,
+    ]
+    body_parts.extend([Rule(style="dim"), task_results_table])
+
     stress_panel = Panel(
-        Group(
-            Text.from_markup("\n".join(header_lines)),
-            "",
-            compliance_header,
-            compliance_checks_table,
-            "",
-            task_results_table,
-            "",
-            Text.from_markup("\n".join(latency_lines)),
-        ),
-        title=f"[bold]CUBE Stress Test[/bold]  [file]{module_name}[/file]  —  {status_text}",
+        Group(*body_parts),
+        title="[bold]CUBE Stress Test[/bold]",
+        subtitle=status_sub,
         border_style=border,
+        box=box.HEAVY,
         padding=(0, 1),
     )
-    # Render at fixed narrow width so output shape matches pic2 (taller than wide)
     Console(theme=_THEME, width=_display_width).print(stress_panel)
 
     if failures:

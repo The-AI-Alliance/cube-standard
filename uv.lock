@@ -301,6 +301,20 @@ wheels = [
 ]
 
 [[package]]
+name = "counter-cube"
+version = "0.1.0"
+source = { editable = "examples/counter-cube" }
+dependencies = [
+    { name = "cube-standard" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "cube-standard", editable = "." }]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.2" }]
+
+[[package]]
 name = "cube-standard"
 version = "0.1.0rc2"
 source = { editable = "." }
@@ -321,6 +335,7 @@ daytona = [
     { name = "tenacity" },
 ]
 dev = [
+    { name = "counter-cube" },
     { name = "httpx" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -346,6 +361,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "counter-cube", marker = "extra == 'dev'", editable = "examples/counter-cube" },
     { name = "daytona", marker = "extra == 'daytona'", specifier = ">=0.142.0" },
     { name = "docker", marker = "extra == 'docker'", specifier = ">=7.1.0" },
     { name = "docstring-parser", specifier = ">=0.16" },

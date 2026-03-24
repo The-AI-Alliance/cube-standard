@@ -387,16 +387,23 @@ class Benchmark(TypedBaseModel, ABC):
         Public method to setup the benchmark. Calls the internal _setup() implemented by the concrete subclass.
         """
         self._setup()
+        # One debug line instead of four warnings — optional fields are unset for many minimal benchmarks.
+        missing_optional: list[str] = []
         if not self._runtime_context:
-            logger.warning(
-                "Benchmark setup did not define any runtime context. If your tasks require shared infrastructure, please ensure that self._runtime_context is populated."
-            )
+            missing_optional.append("_runtime_context")
         if self.container_backend is None:
-            logger.warning("Benchmark initialization did not define a container backend.")
+            missing_optional.append("container_backend")
         if self.default_tool_config is None:
-            logger.warning("Benchmark initialization did not define a default tool config.")
+            missing_optional.append("default_tool_config")
         if self.seed_generator is None:
-            logger.warning("Benchmark initialization did not define a seed generator.")
+            missing_optional.append("seed_generator")
+        if missing_optional:
+            logger.debug(
+                "%s: optional benchmark fields not set (%s). Normal for simple examples; "
+                "define them when tasks need shared infra, containers, or seeds.",
+                type(self).__name__,
+                ", ".join(missing_optional),
+            )
 
     def get_task_configs(self) -> Generator[TaskConfig, None, None]:
         """Returns the list of TaskConfig objects for this benchmark."""
