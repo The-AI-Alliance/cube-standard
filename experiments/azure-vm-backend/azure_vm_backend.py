@@ -1,61 +1,42 @@
 """
-AzureVMBackend — experimental implementation of the cube.vm.VMBackend ABC for Azure.
+AzureVMBackend — experimental implementation of cube.vm.VMBackend for Azure.
 
-This is the bridge layer between:
-  - cube_azure_pipeline.py  (low-level Azure operations, validated 2026-03-25)
-  - cube.vm.VMBackend / VM  (the official CUBE API)
-
-It lives in experiments/ while we validate the design. Once tested against the
-real OSWorld image, it moves to cube-resources/cube-vm-backend/.
+Bridges:
+  cube_azure_pipeline.py  (low-level Azure ops, validated 2026-03-25)
+  cube.vm.VMBackend / VM  (official CUBE API)
 
 ARCHITECTURE
 ------------
-AzureVMBackend (VMBackend)        AzureVM (VM)
-  fields:                           fields:
-    subscription_id                   _backend    ← needed for restore_snapshot
-    resource_group                    _vm_name
-    location                          _pip_name
-    gallery_name                      _nic_name
-    vm_size                           _public_ip
-    hf_qcow2  ← image source          _endpoint   ← "http://localhost:{port}"
-    inject_agent                      _tunnel     ← subprocess handle
-    cache_dir                         _config     ← VMConfig (for restore)
-    ssh_privkey
-    ssh_pubkey
-  methods:
-    ensure_resource(config)       methods:
-    launch(config) → AzureVM        endpoint (property)
-    close()                         restore_snapshot(name)
-                                    stop()
+The VM image is expected to already expose an HTTP server on port 5000
+(the OSWorld Flask server, or any compatible server).  AzureVMBackend's job
+is purely infrastructure: get the image into Azure, provision a VM from it,
+and return a vm.endpoint the harness can talk to.
 
-GUEST AGENT
------------
-Two modes controlled by `inject_agent`:
-  True  (default) — cloud-init installs + starts the mini Flask agent from
-                    cube_azure_pipeline.py. Use for blank images or testing.
-  False           — image already has a server on port 5000 (e.g. OSWorld).
-                    cloud-init only injects SSH key; no agent installation.
+No agent injection happens here — the image owns its server.
 
-IMAGE SOURCE (hf_qcow2)
------------------------
-hf_qcow2 supports three forms:
-  "hf://repo_id/filename"          — HuggingFace dataset (uses huggingface_hub)
-  "/local/path/to/image.qcow2"     — pre-existing local file
-  None                             — image must already exist in gallery
+  AzureVMBackend.launch(config)
+    → gallery image → Azure VM
+    → SSH tunnel: localhost:{port} → vm:5000
+    → AzureVM.endpoint = "http://localhost:{port}"
+    → harness talks to endpoint directly
+
+SAFETY
+------
+stop() / restore_snapshot() only delete resources created at launch time:
+  cube-vm-{uid}, cube-nic-{uid}, cube-ip-{uid}
+Gallery images, blobs, managed disks, and any pre-existing resources
+are never touched by the VM lifecycle methods.
 
 USAGE
 -----
     from cube.vm import VMConfig
     from azure_vm_backend import AzureVMBackend
 
-    config = VMConfig(snapshot_name="osworld-ubuntu", cpu_cores=4, ram_gb=8)
-    backend = AzureVMBackend(
-        hf_qcow2="hf://xlangai/OSWORLD/ubuntu.vmdk",
-        inject_agent=False,   # OSWorld image already has its own Flask server
-    )
-    vm = backend.launch(config)        # ensure_resource() called automatically
+    config = VMConfig(snapshot_name="cube-ubuntu-22-04")
+    backend = AzureVMBackend()
+    vm = backend.launch(config)
     print(vm.endpoint)                 # http://localhost:15001
-    vm.restore_snapshot("init_state")  # stop + relaunch from gallery (~3-4 min)
+    vm.restore_snapshot("init_state")  # stop + relaunch (~3-4 min)
     vm.stop()
 """
 
@@ -64,17 +45,11 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
-from pathlib import Path
 
-# ── Pipeline imports ─────────────────────────────────────────────────────────
-# Low-level Azure operations, all validated end-to-end (2026-03-25).
 import cube_azure_pipeline as pipeline
 from azure.identity import AzureCliCredential
 from azure.mgmt.compute import ComputeManagementClient
 
-# ── CUBE imports ────────────────────────────────────────────────────────────
-# cube.vm defines the official API we must conform to.
-# These are already in cube-standard/src/; run from the cube-standard venv.
 from cube.vm import VM, VMBackend, VMConfig
 
 logger = logging.getLogger(__name__)
@@ -83,78 +58,77 @@ logger = logging.getLogger(__name__)
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def _download_hf(hf_uri: str, cache_dir: Path) -> str:
+def _download_hf(hf_uri: str) -> str:
     """Download a file from HuggingFace Hub.
 
-    hf_uri format: "hf://repo_id/filename"
-    e.g.  "hf://xlangai/OSWORLD/ubuntu.vmdk"
-         "hf://The-AI-Alliance/osworld-cube/ubuntu-22.04.qcow2"
+    hf_uri: "hf://repo_id/filename"
+    e.g.    "hf://xlangai/ubuntu_osworld/Ubuntu.qcow2"
 
-    Returns the local path to the downloaded file.
-    Requires: pip install huggingface_hub
+    Returns local path to the downloaded file.
     """
     try:
         from huggingface_hub import hf_hub_download
     except ImportError as e:
-        raise ImportError("pip install huggingface_hub  (needed for hf:// image sources)") from e
+        raise ImportError("pip install huggingface_hub") from e
 
-    # Parse "hf://repo_id/filename"  →  repo_id="repo_id", filename="filename"
     assert hf_uri.startswith("hf://"), f"Expected hf:// URI, got: {hf_uri}"
     path_part = hf_uri[len("hf://"):]
     slash = path_part.index("/")
     repo_id = path_part[:slash]
     filename = path_part[slash + 1:]
 
-    logger.info("[ensure_resource] Downloading %s from HuggingFace...", filename)
-    local_path = hf_hub_download(
-        repo_id=repo_id,
-        filename=filename,
-        repo_type="dataset",
-        cache_dir=str(cache_dir),
-        local_dir=str(cache_dir),
-    )
+    logger.info("[ensure_resource] Downloading %s from HuggingFace repo %s ...", filename, repo_id)
+    local_path = hf_hub_download(repo_id=repo_id, filename=filename, repo_type="dataset")
     logger.info("[ensure_resource] Downloaded to %s", local_path)
     return local_path
 
 
-def _resolve_image(hf_qcow2: str, cache_dir: Path) -> str:
-    """Resolve hf_qcow2 to a local file path.
-
-    Handles:
-      - "hf://..."   → download from HuggingFace
-      - "/path/..."  → local file (returned as-is)
-    """
+def _resolve_image_source(hf_qcow2: str) -> str:
+    """Return a local file path from an hf:// URI or a plain local path."""
     if hf_qcow2.startswith("hf://"):
-        return _download_hf(hf_qcow2, cache_dir)
-    local = Path(hf_qcow2)
-    if not local.exists():
-        raise FileNotFoundError(f"Image not found: {local}")
-    return str(local)
+        return _download_hf(hf_qcow2)
+    from pathlib import Path
+    p = Path(hf_qcow2)
+    if not p.exists():
+        raise FileNotFoundError(f"Image not found: {p}")
+    return str(p)
 
 
-def _wait_for_agent(endpoint: str, timeout: int = 300) -> None:
-    """Poll vm.endpoint/screenshot until it responds (HTTP 200 with image bytes).
+def _gallery_image_exists(subscription_id: str, resource_group: str, gallery_name: str, image_name: str) -> bool:
+    """Return True if the gallery has at least one succeeded version of image_name."""
+    compute = ComputeManagementClient(AzureCliCredential(), subscription_id)
+    try:
+        versions = list(
+            compute.gallery_image_versions.list_by_gallery_image(resource_group, gallery_name, image_name)
+        )
+    except Exception:
+        return False
+    return any(v.provisioning_state not in ("Failed", "Deleting") for v in versions)
 
-    Uses /screenshot rather than /health because the OSWorld server does not
-    expose /health — only our mini agent does. /screenshot is universal.
+
+def _wait_for_endpoint(endpoint: str, timeout: int = 300) -> None:
+    """Poll {endpoint}/screenshot until HTTP 200 with non-empty body.
+
+    Uses /screenshot because it is universal across all compatible servers
+    (OSWorld Flask server and the mini test agent both expose it).
     """
     import requests
 
-    deadline = time.time() + timeout
     url = f"{endpoint}/screenshot"
-    logger.info("[launch] Waiting for HTTP agent at %s (timeout %ds)...", url, timeout)
+    deadline = time.time() + timeout
+    logger.info("[launch] Waiting for HTTP server at %s ...", url)
     while time.time() < deadline:
         try:
             r = requests.get(url, timeout=5)
             if r.status_code == 200 and len(r.content) > 0:
-                logger.info("[launch] Agent ready ✓ (%d bytes)", len(r.content))
+                logger.info("[launch] HTTP server ready (%d bytes)", len(r.content))
                 return
         except Exception:
             pass
         remaining = int(deadline - time.time())
-        logger.debug("[launch] Waiting... (%ds left)", remaining)
+        logger.debug("[launch] Not ready yet (%ds left)", remaining)
         time.sleep(10)
-    raise TimeoutError(f"VM HTTP agent not ready after {timeout}s at {endpoint}")
+    raise TimeoutError(f"HTTP server not ready after {timeout}s at {endpoint}")
 
 
 # ── AzureVM ──────────────────────────────────────────────────────────────────
@@ -163,13 +137,13 @@ def _wait_for_agent(endpoint: str, timeout: int = 300) -> None:
 class AzureVM(VM):
     """Runtime handle to a running Azure VM.
 
-    Not serializable. Created by AzureVMBackend.launch() — do not instantiate directly.
+    Created by AzureVMBackend.launch() — do not instantiate directly.
 
-    The VM exposes an HTTP endpoint via SSH tunnel:
-        http://localhost:{port}  →  azurevm:5000
+    The HTTP endpoint is reached via SSH tunnel:
+        http://localhost:{port}  →  SSH  →  azurevm:5000
 
-    This bypasses Zscaler on corporate networks (SSH port 22 is always open).
-    The endpoint URL is what ComputerBase / GuestAgent talks to.
+    This bypasses Zscaler and other corporate proxies (SSH port 22 is always
+    open) without exposing the VM's port 5000 to the internet.
     """
 
     def __init__(
@@ -194,48 +168,52 @@ class AzureVM(VM):
 
     @property
     def endpoint(self) -> str:
-        """Base URL of the in-VM HTTP agent: ``http://localhost:{port}``."""
         return self._endpoint
 
     @property
     def public_ip(self) -> str:
-        """Azure public IP of the VM (useful for debugging, not needed by CUBE)."""
         return self._public_ip
 
     def restore_snapshot(self, name: str) -> None:
-        """Reset to clean state by deleting this VM and launching a fresh one.
+        """Reset to clean state: delete this VM and launch a fresh one from gallery.
 
-        Implementation: stop() + backend.launch() from the gallery image.
-        The `name` argument is accepted for API compatibility but is currently
-        ignored — the gallery always returns the base image state.
+        The `name` argument is accepted for API compatibility.
+        On cloud backends the entire VM IS the snapshot — restoring means
+        deleting the current instance and launching a fresh one from the
+        gallery image (which always represents the base state).
 
-        Time: ~3-4 min (Azure VM provisioning + cloud-init).
+        Time: ~3-4 min on Azure.
+
+        Safety: only the resources created at this VM's launch are deleted.
+        The gallery image and all other pre-existing resources are untouched.
         """
-        logger.info("[restore_snapshot] Resetting VM '%s' (stop + relaunch)", self._vm_name)
-        # Terminate tunnel and delete VM (in-place mutation of self)
-        self._stop_tunnel()
+        logger.info("[restore_snapshot] '%s' on %s", name, self._vm_name)
+        self._terminate_tunnel()
         pipeline.stop(self._vm_name, pip_name=self._pip_name, nic_name=self._nic_name)
 
-        # Launch a fresh VM from the same gallery image
         new_vm = self._backend.launch(self._config)
 
-        # Update our state in-place so the caller's reference stays valid
+        # Update state in-place so the caller's reference stays valid
         self._vm_name = new_vm._vm_name
         self._pip_name = new_vm._pip_name
         self._nic_name = new_vm._nic_name
         self._public_ip = new_vm._public_ip
         self._endpoint = new_vm._endpoint
         self._tunnel = new_vm._tunnel
-
         logger.info("[restore_snapshot] Done — new endpoint: %s", self._endpoint)
 
     def stop(self) -> None:
-        """Shut down this VM and release all its resources. Idempotent."""
-        logger.info("[stop] Stopping VM '%s'", self._vm_name)
-        self._stop_tunnel()
+        """Shut down and delete this VM's resources. Idempotent.
+
+        Deletes: VM, NIC, public IP (all named cube-vm/nic/ip-{uid}).
+        Does NOT touch: gallery images, blobs, managed disks, or any
+        resource that existed before this VM was launched.
+        """
+        logger.info("[stop] %s", self._vm_name)
+        self._terminate_tunnel()
         pipeline.stop(self._vm_name, pip_name=self._pip_name, nic_name=self._nic_name)
 
-    def _stop_tunnel(self) -> None:
+    def _terminate_tunnel(self) -> None:
         if self._tunnel is not None and self._tunnel.poll() is None:
             self._tunnel.terminate()
             self._tunnel = None
@@ -248,142 +226,86 @@ class AzureVM(VM):
 
 
 class AzureVMBackend(VMBackend):
-    """VMBackend that provisions VMs on Azure Compute from a gallery image.
+    """VMBackend that provisions VMs from an Azure Compute Gallery image.
 
-    One-time setup (ensure_resource):
-        download (HuggingFace or local) → convert to VHD → upload to Blob Storage
-        → import as Managed Disk → publish to Compute Gallery
+    ensure_resource() — one-time setup per subscription:
+        download image (HuggingFace or local) → convert to fixed VHD
+        → upload to Blob Storage → import as Managed Disk
+        → publish to Compute Gallery
 
-    Per-eval (launch):
-        Gallery image → VM (createOption: FromImage) + SSH key injection
+    launch() — per eval (~4 min):
+        Gallery image → VM (createOption: FromImage, SSH key via os_profile)
         → SSH tunnel → http://localhost:{port}
 
-    Between tasks (restore_snapshot on the returned VM):
-        stop + relaunch from gallery (~3-4 min)
+    restore_snapshot() on the returned VM — between tasks (~3-4 min):
+        stop() + launch() from gallery
 
     Attributes
     ----------
     subscription_id : str
-        Azure subscription ID.
     resource_group : str
-        Resource group for all provisioned resources.
     location : str
-        Azure region (e.g. "westus2").
     gallery_name : str
-        Name of the Azure Compute Gallery.
     vm_size : str
-        Azure VM size (e.g. "Standard_D4s_v3" = 4 vCPU, 16 GB RAM).
     hf_qcow2 : str | None
-        Image source. Supported formats:
-          "hf://repo_id/filename"    — HuggingFace dataset
-          "/local/path/image.qcow2"  — pre-existing local file
-          None                       — image must already be in gallery
-    inject_agent : bool
-        True  → cloud-init installs + starts the mini Flask agent (for blank images)
-        False → image already has a server on port 5000 (e.g. OSWorld)
-    cache_dir : str
-        Local directory for downloaded images and converted VHDs.
+        Image source: "hf://repo_id/filename" or "/local/path/image.qcow2".
+        If None, image must already exist in the gallery.
     ssh_privkey : str
-        Path to SSH private key (used for tunnel and cloud-init key injection).
+        Path to SSH private key for tunnel and os_profile injection.
     ssh_pubkey : str
-        Path to SSH public key (injected into VM via os_profile).
+        Path to SSH public key.
     agent_timeout : int
-        Seconds to wait for the HTTP agent to become ready after launch.
+        Seconds to wait for the VM's HTTP server to become ready.
     """
 
-    # Azure infrastructure
     subscription_id: str = pipeline.SUBSCRIPTION
     resource_group: str = pipeline.RESOURCE_GROUP
     location: str = pipeline.LOCATION
     gallery_name: str = pipeline.GALLERY_NAME
     vm_size: str = pipeline.VM_SIZE
 
-    # Image source
     hf_qcow2: str | None = None
 
-    # Guest agent
-    inject_agent: bool = True
-
-    # Local cache for images
-    cache_dir: str = str(Path.home() / ".cube" / "vm_data")
-
-    # SSH
     ssh_privkey: str = pipeline.SSH_PRIVKEY
     ssh_pubkey: str = pipeline.SSH_PUBKEY
 
-    # Readiness timeout
     agent_timeout: int = 300
 
-    # ── ensure_resource ───────────────────────────────────────────────────────
-
     def ensure_resource(self, config: VMConfig) -> None:
-        """Idempotent: ensure gallery image `config.snapshot_name` exists on Azure.
+        """Idempotent: ensure gallery image `config.snapshot_name` exists.
 
-        Steps (skipped if already done):
-          1. Download image from HuggingFace (or use local path)
-          2. Convert to fixed VHD
-          3. Upload to Azure Blob Storage
-          4. Import blob → Managed Disk
-          5. Publish Managed Disk → Compute Gallery image version
+        If the gallery image already exists, returns immediately (no-op).
+        Otherwise runs the full pipeline: download → convert → upload → gallery.
 
-        This is ~60-90 min the first time per subscription; subsequent calls
-        detect the existing gallery image and return immediately.
+        The gallery image is permanent and reused across all launches.
+        It is never deleted by launch() / stop() / restore_snapshot().
         """
         image_name = config.snapshot_name
 
-        # Fast-path: gallery image already exists
-        existing = self._find_gallery_image(image_name)
-        if existing:
-            logger.info("[ensure_resource] Gallery image '%s' already exists: %s", image_name, existing)
+        if _gallery_image_exists(self.subscription_id, self.resource_group, self.gallery_name, image_name):
+            logger.info("[ensure_resource] Gallery image '%s' already exists — skipping.", image_name)
             return
 
-        logger.info("[ensure_resource] Gallery image '%s' not found — running pipeline.", image_name)
-
-        # Step 1: Acquire image locally
         if self.hf_qcow2 is None:
             raise ValueError(
                 f"Gallery image '{image_name}' not found and hf_qcow2 is not set. "
-                "Either provide hf_qcow2 to download the image, or upload it manually first."
+                "Either provide hf_qcow2 to download the image, or run ensure_resource manually."
             )
-        cache = Path(self.cache_dir)
-        cache.mkdir(parents=True, exist_ok=True)
-        local_image = _resolve_image(self.hf_qcow2, cache)
 
-        # Step 2: Convert to fixed VHD
+        local_image = _resolve_image_source(self.hf_qcow2)
         vhd_path = pipeline.convert_to_vhd(local_image)
-
-        # Step 3–5: Upload → import disk → gallery
-        # pipeline.ensure_resource handles steps 3-5 and is idempotent.
-        # It uses the pipeline's global SUBSCRIPTION / RESOURCE_GROUP / LOCATION /
-        # GALLERY_NAME constants. Future: parameterize these from self.*.
         pipeline.ensure_resource(vhd_path, image_name)
-
-        logger.info("[ensure_resource] Done — '%s' is now in gallery.", image_name)
-
-    # ── launch ────────────────────────────────────────────────────────────────
+        logger.info("[ensure_resource] '%s' is now in gallery.", image_name)
 
     def launch(self, config: VMConfig) -> AzureVM:
-        """Ensure gallery image exists, then launch a VM and return a live handle.
+        """Ensure gallery image exists, provision a VM, open SSH tunnel, wait for HTTP.
 
-        Blocks until the HTTP endpoint on the VM is reachable.
-        Total time: ~4 min (2 min provisioning + 2 min cloud-init on first boot).
-
-        The returned AzureVM owns its tunnel and VM resources.
-        Call vm.stop() when done, or vm.restore_snapshot() between tasks.
+        Returns an AzureVM whose endpoint is ready for ComputerBase / GuestAgent.
+        Blocks for ~4 min on first boot (2 min provisioning + 2 min server startup).
         """
         self.ensure_resource(config)
 
-        image_name = config.snapshot_name
-
-        # Temporarily patch pipeline constants if this backend uses non-default values.
-        # TODO: refactor pipeline to accept params instead of using globals.
-        if not self.inject_agent:
-            # Launch without guest agent injection: cloud-init only injects SSH key.
-            # The image is expected to already have a server running on port 5000.
-            result = self._launch_no_agent(image_name)
-        else:
-            # Default: launch with mini Flask agent injected via cloud-init.
-            result = pipeline.launch(image_name, open_tunnel=True)
+        result = pipeline.launch(config.snapshot_name, open_tunnel=True)
 
         vm = AzureVM(
             backend=self,
@@ -396,111 +318,64 @@ class AzureVMBackend(VMBackend):
             tunnel=result.get("tunnel"),
         )
 
-        # Wait for the HTTP agent to be ready
-        _wait_for_agent(vm.endpoint, timeout=self.agent_timeout)
-
-        logger.info("[launch] VM ready: %s", vm)
+        _wait_for_endpoint(vm.endpoint, timeout=self.agent_timeout)
+        logger.info("[launch] Ready: %s", vm)
         return vm
 
     def close(self) -> None:
-        """No-op at the backend level — each VM is stopped individually via vm.stop()."""
         pass
-
-    # ── Internal helpers ──────────────────────────────────────────────────────
-
-    def _find_gallery_image(self, image_name: str) -> str | None:
-        """Return gallery image ID if it exists, else None.
-
-        Queries the Azure Compute Gallery directly via SDK.
-        Returns the first available version ID, or None if no versions exist.
-        """
-        compute = ComputeManagementClient(AzureCliCredential(), self.subscription_id)
-        try:
-            versions = list(
-                compute.gallery_image_versions.list_by_gallery_image(
-                    self.resource_group, self.gallery_name, image_name
-                )
-            )
-        except Exception:
-            return None
-
-        # Return ID of the first available (non-failed) version
-        for v in versions:
-            if v.provisioning_state not in ("Failed", "Deleting"):
-                return v.id or ""
-        return None
-
-    def _launch_no_agent(self, image_name: str) -> dict:
-        """Launch a VM without cloud-init agent injection.
-
-        Used when the image already has its own HTTP server (e.g. OSWorld).
-        Still injects SSH key via os_profile (needed for SSH tunnel).
-
-        NOTE: This is a separate launch path that omits the CLOUD_INIT_TEMPLATE.
-        cloud-init will still run (it always does for Generalized images) but
-        with an empty/minimal config — just SSH key injection.
-
-        TODO: Implement the minimal cloud-init path in cube_azure_pipeline.py
-              and call it here. For now, falls back to default launch() which
-              injects the mini agent (harmless if the real server is also running).
-        """
-        logger.warning(
-            "[launch] inject_agent=False not fully implemented yet — "
-            "using default launch with mini agent. The OSWorld server should "
-            "still be reachable at /screenshot if it is already running in the image."
-        )
-        return pipeline.launch(image_name, open_tunnel=True)
 
 
 # ── Smoke test ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    """Quick smoke test: launch from existing gallery image, probe, stop.
+    """Full lifecycle test: ensure_resource (skip) → launch → probe → restore → probe → stop.
 
-    Assumes cube-ubuntu-22-04 already exists in the gallery (from previous runs).
-    Run from the cube-standard venv:
-        uv run python experiments/azure-vm-backend/azure_vm_backend.py
+    Uses cube-ubuntu-22-04 which is already in the gallery (Generalized, v1.0.0).
+    ensure_resource() detects it exists and skips the upload pipeline.
+
+    Run:
+        uv run --extra cube python experiments/azure-vm-backend/azure_vm_backend.py
     """
     import sys
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-    config = VMConfig(snapshot_name="cube-ubuntu-22-04", cpu_cores=4, ram_gb=16)
-    backend = AzureVMBackend(inject_agent=True)
-
-    print("=== AzureVMBackend smoke test ===")
-    print(f"config: {config}")
-    print(f"backend: {backend}")
-
-    print("\n--- launch() ---")
-    vm = backend.launch(config)
-    print(f"vm: {vm}")
-    print(f"endpoint: {vm.endpoint}")
-
-    print("\n--- probe endpoints ---")
     import requests
 
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    config = VMConfig(snapshot_name="cube-ubuntu-22-04")
+    backend = AzureVMBackend()
+
+    print("\n=== AzureVMBackend full lifecycle test ===")
+
+    print("\n[1] ensure_resource()")
+    backend.ensure_resource(config)
+
+    print("\n[2] launch()")
+    vm = backend.launch(config)
+    print(f"    {vm}")
+
+    print("\n[3] probe endpoints")
     for path, method, body in [
         ("/screenshot", "GET", None),
-        ("/execute", "POST", {"command": ["uname", "-a"]}),
+        ("/execute",    "POST", {"command": ["uname", "-a"]}),
     ]:
-        if method == "GET":
-            r = requests.get(f"{vm.endpoint}{path}", timeout=10)
-        else:
-            r = requests.post(f"{vm.endpoint}{path}", json=body, timeout=10)
-        print(f"  {method} {path} → HTTP {r.status_code}, {len(r.content)} bytes")
-        if r.headers.get("content-type", "").startswith("application/json"):
-            print(f"    {r.json()}")
+        r = requests.get(f"{vm.endpoint}{path}", timeout=10) if method == "GET" \
+            else requests.post(f"{vm.endpoint}{path}", json=body, timeout=10)
+        status = f"HTTP {r.status_code}  {len(r.content)} bytes"
+        detail = r.json().get("stdout", "").strip() if r.headers.get("content-type", "").startswith("application/json") else ""
+        print(f"    {method} {path} → {status}  {detail}")
 
-    print("\n--- restore_snapshot() ---")
+    print("\n[4] restore_snapshot()")
     vm.restore_snapshot("init_state")
-    print(f"vm after restore: {vm}")
+    print(f"    {vm}")
 
-    print("\n--- probe after restore ---")
+    print("\n[5] probe after restore")
     r = requests.get(f"{vm.endpoint}/screenshot", timeout=10)
-    print(f"  GET /screenshot → HTTP {r.status_code}, {len(r.content)} bytes")
+    print(f"    GET /screenshot → HTTP {r.status_code}  {len(r.content)} bytes")
 
-    print("\n--- stop() ---")
+    print("\n[6] stop()")
     vm.stop()
-    print("Done.")
+    print("    Done — all runtime resources deleted.")
+    print("    Gallery image, blobs, and pre-existing resources untouched.")
     sys.exit(0)
