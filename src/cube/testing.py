@@ -3,9 +3,11 @@ CUBE testing utilities — framework-level harness for debug episodes.
 
 Public API
 ----------
+run_stress_test(module, *, benchmark_name, max_steps, print_json)  →  StressTestOutcome
 run_debug_episode(task, agent, *, max_steps)  →  dict
 run_debug_suite(benchmark_name, module, *, max_steps)  →  list[dict]
 assert_debug_tasks_reward_one(module, *, max_steps)  →  None
+collect_stress_compliance(results, module)  →  (passed_names, failed_names)
 
 Module protocol (for assert_debug_tasks_reward_one and run_debug_suite)
 ----------------------------------------------------------------------
@@ -26,6 +28,15 @@ Example usage in a test file::
         from cube.testing import assert_debug_tasks_reward_one
         import osworld_cube.debug as _mod
         assert_debug_tasks_reward_one(_mod)
+
+Stress test report (stress_test_specs.md)::
+
+    import counter_cube.debug as mod
+    from cube.testing import run_stress_test
+
+    outcome = run_stress_test(mod)
+    outcome.print_summary()
+    outcome.save("cube_stress_test_baseline.json")
 """
 
 from __future__ import annotations
@@ -391,6 +402,46 @@ def check_benchmark_metadata(module: types.ModuleType) -> tuple[bool, str]:
     return True, ""
 
 
+def collect_stress_compliance(
+    results: list[dict],
+    module: types.ModuleType,
+) -> tuple[list[str], list[str]]:
+    """
+    Derive stress_test_specs.md compliance pass/fail lists from episode reports and module checks.
+    """
+    failures = [r for r in results if r.get("error") or not r.get("done") or r.get("reward") != 1.0]
+    reset_ok, _ = check_reset_reproducibility(module)
+    meta_ok, _ = check_benchmark_metadata(module)
+    close_idempotent_ok = all(r.get("close_idempotent_ok", False) for r in results)
+    tools_list_ok = all(r.get("tools_list_ok", False) for r in results)
+    compliance_passed: list[str] = []
+    compliance_failed: list[str] = []
+    if results:
+        compliance_passed.append("test_debug_tasks_exist")
+        compliance_passed.append("test_debug_agent_exists")
+    if not failures:
+        compliance_passed.append("test_full_episode")
+    else:
+        compliance_failed.append("test_full_episode")
+    if reset_ok:
+        compliance_passed.append("test_reset_reproducibility")
+    else:
+        compliance_failed.append("test_reset_reproducibility")
+    if tools_list_ok:
+        compliance_passed.append("test_tools_list")
+    else:
+        compliance_failed.append("test_tools_list")
+    if close_idempotent_ok:
+        compliance_passed.append("test_close_idempotent")
+    else:
+        compliance_failed.append("test_close_idempotent")
+    if meta_ok:
+        compliance_passed.append("test_benchmark_metadata")
+    else:
+        compliance_failed.append("test_benchmark_metadata")
+    return compliance_passed, compliance_failed
+
+
 def aggregate_profiling(episode_reports: list[dict]) -> dict[str, float]:
     """
     Aggregate info["profiling"] from episode reports into mean duration per operation (seconds).
@@ -554,6 +605,74 @@ class StressTestReport:
         """Print a short summary to stdout (optional)."""
         print(f"Compliance: {len(self.compliance['passed'])} passed, {len(self.compliance['failed'])} failed")
         print(f"Performance: task_setup_time_s={self.performance.get('task_setup_time_s')}, ...")
+
+
+@dataclass
+class StressTestOutcome:
+    """
+    Result of run_stress_test: StressTestReport plus episode rows for inspection.
+    save() / print_summary() forward to .report so stress_test_specs.md examples work on the outcome object.
+    """
+
+    report: StressTestReport
+    episodes: list[dict]
+    failed_episodes: list[dict]
+
+    def print_summary(self) -> None:
+        self.report.print_summary()
+
+    def save(self, path: str) -> None:
+        self.report.save(path)
+
+
+def _ensure_debug_module_protocol(module: types.ModuleType) -> None:
+    # Required surface for any code path that runs the debug suite + compliance.
+    for attr in ("get_debug_benchmark", "make_debug_agent"):
+        if not callable(getattr(module, attr, None)):
+            raise TypeError(f"debug module must expose callable {attr}(); see cube_package/debug.py template.")
+
+
+def run_stress_test(
+    module: types.ModuleType,
+    *,
+    benchmark_name: str | None = None,
+    max_steps: int = 20,
+    print_json: bool = False,
+) -> StressTestOutcome:
+    """
+    Single entry point for the CUBE stress test (stress_test_specs.md §3.1).
+
+    Runs all debug episodes, applies compliance checks, and builds ``StressTestReport``.
+
+    Args:
+        module: Imported debug module with ``get_debug_benchmark()`` and ``make_debug_agent(task_id)``.
+        benchmark_name: Label stored in the report (default: ``module.__name__``).
+        max_steps: Safety cap per episode.
+        print_json: If True, print debug suite JSON to stdout (same as ``run_debug_suite``).
+
+    Returns:
+        StressTestOutcome: call ``.save(path)`` / ``.print_summary()`` or read ``.report`` / ``.episodes``.
+
+    Raises:
+        TypeError: If the module does not expose the required callables.
+        RuntimeError: If no debug tasks ran.
+    """
+    _ensure_debug_module_protocol(module)
+    label = benchmark_name if benchmark_name is not None else module.__name__
+    results = run_debug_suite(
+        label,
+        module,
+        max_steps=max_steps,
+        print_json=print_json,
+    )
+    if not results:
+        raise RuntimeError(
+            "No debug episodes ran; ensure get_debug_benchmark().get_task_configs() yields at least one task."
+        )
+    compliance_passed, compliance_failed = collect_stress_compliance(results, module)
+    report = build_stress_test_report(label, results, compliance_passed, compliance_failed)
+    failures = [r for r in results if r.get("error") or not r.get("done") or r.get("reward") != 1.0]
+    return StressTestOutcome(report=report, episodes=list(results), failed_episodes=failures)
 
 
 def assert_debug_tasks_reward_one(

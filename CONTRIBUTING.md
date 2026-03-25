@@ -8,7 +8,7 @@ src/cube/
   tool.py        # AbstractTool, Tool, @tool_action, ToolConfig
   task.py        # Task, TaskMetadata, TaskConfig, STOP_ACTION
   benchmark.py   # Benchmark, BenchmarkMetadata — ClassVar-driven registry
-  testing.py     # run_debug_suite(), assert_debug_tasks_reward_one()
+  testing.py     # run_stress_test(), run_debug_suite(), assert_debug_tasks_reward_one()
   cli.py         # `cube init` / `cube test` entry points
   server.py      # FastAPI wrapper around a Task (REST ↔ cube protocol)
   containers.py  # ContainerBackend / Container abstractions

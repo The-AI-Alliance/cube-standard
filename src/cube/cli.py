@@ -274,8 +274,7 @@ def cmd_test(
     from cube.testing import (
         aggregate_profiling,
         build_stress_test_report,
-        check_benchmark_metadata,
-        check_reset_reproducibility,
+        collect_stress_compliance,
         run_debug_suite,
     )
 
@@ -348,42 +347,12 @@ def cmd_test(
         )
         sys.exit(1)
 
-    failures: list[dict] = []
-    for r in results:
-        passed = not r["error"] and r["done"] and r["reward"] == 1.0
-        if not passed:
-            failures.append(r)
-
-    # ── Extra compliance checks (stress_test_specs.md) ─────────────────────────────
-    reset_ok, _ = check_reset_reproducibility(module)
-    meta_ok, _ = check_benchmark_metadata(module)
-    close_idempotent_ok = all(r.get("close_idempotent_ok", False) for r in results)
-    tools_list_ok = all(r.get("tools_list_ok", False) for r in results)
-    compliance_passed = []
-    compliance_failed = []
-    if results:
-        compliance_passed.append("test_debug_tasks_exist")
-        compliance_passed.append("test_debug_agent_exists")
-    if not failures:
-        compliance_passed.append("test_full_episode")
-    else:
-        compliance_failed.append("test_full_episode")
-    if reset_ok:
-        compliance_passed.append("test_reset_reproducibility")
-    else:
-        compliance_failed.append("test_reset_reproducibility")
-    if tools_list_ok:
-        compliance_passed.append("test_tools_list")
-    else:
-        compliance_failed.append("test_tools_list")
-    if close_idempotent_ok:
-        compliance_passed.append("test_close_idempotent")
-    else:
-        compliance_failed.append("test_close_idempotent")
-    if meta_ok:
-        compliance_passed.append("test_benchmark_metadata")
-    else:
-        compliance_failed.append("test_benchmark_metadata")
+    failures = [r for r in results if r.get("error") or not r.get("done") or r.get("reward") != 1.0]
+    compliance_passed, compliance_failed = collect_stress_compliance(results, module)
+    reset_ok = "test_reset_reproducibility" in compliance_passed
+    meta_ok = "test_benchmark_metadata" in compliance_passed
+    close_idempotent_ok = "test_close_idempotent" in compliance_passed
+    tools_list_ok = "test_tools_list" in compliance_passed
 
     # ── Latency: p50, p95, p99 from step_times_s across all episodes ────────────
     all_step_times: list[float] = []

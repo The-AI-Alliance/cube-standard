@@ -1,5 +1,6 @@
 """Tests for cube.testing — run_debug_episode, run_debug_suite, assert_debug_tasks_reward_one."""
 
+import json
 from types import ModuleType
 from unittest.mock import patch
 
@@ -15,8 +16,10 @@ from cube.testing import (
     ResetReproducibilityConfig,
     assert_debug_tasks_reward_one,
     check_reset_reproducibility,
+    collect_stress_compliance,
     run_debug_episode,
     run_debug_suite,
+    run_stress_test,
 )
 from cube.tool import Tool, ToolConfig, tool_action
 
@@ -276,6 +279,54 @@ def test_suite_benchmark_closed_even_when_get_task_configs_raises():
     with pytest.raises(RuntimeError, match="config error"):
         run_debug_suite("bench", mod)
     assert benchmark._close_calls == 1
+
+
+# ── run_stress_test / collect_stress_compliance ───────────────────────────────
+
+
+def test_run_stress_test_returns_outcome_with_passing_compliance():
+    mod, _ = _make_module(task_ids=("t1",))
+    out = run_stress_test(mod, print_json=False)
+    assert out.report.benchmark == "fake_debug"
+    assert len(out.episodes) == 1
+    assert not out.failed_episodes
+    assert "test_full_episode" in out.report.compliance["passed"]
+
+
+def test_run_stress_test_raises_typeerror_on_missing_protocol():
+    bad = ModuleType("nope")
+    with pytest.raises(TypeError, match="get_debug_benchmark"):
+        run_stress_test(bad)
+
+
+def test_run_stress_test_save_delegates_to_report(tmp_path):
+    mod, _ = _make_module(task_ids=("t1",))
+    out = run_stress_test(mod, print_json=False)
+    p = tmp_path / "stress.json"
+    out.save(str(p))
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data["benchmark"] == "fake_debug"
+    assert "compliance" in data
+
+
+def test_collect_stress_compliance_marks_full_episode_failed():
+    mod, _ = _make_module()
+    results = [
+        {
+            "task_id": "t1",
+            "error": "boom",
+            "done": False,
+            "reward": 0.0,
+            "steps": 0,
+            "episode_time_s": 0.0,
+            "step_times_s": [],
+            "tools_list_ok": True,
+            "close_idempotent_ok": True,
+        }
+    ]
+    passed, failed = collect_stress_compliance(results, mod)
+    assert "test_full_episode" in failed
+    assert "test_debug_tasks_exist" in passed
 
 
 # ── assert_debug_tasks_reward_one ────────────────────────────────────────────
