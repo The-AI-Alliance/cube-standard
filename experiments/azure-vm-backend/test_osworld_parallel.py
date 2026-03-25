@@ -1,13 +1,12 @@
 """
-Full OSWorld pipeline test — Azure + AWS in parallel.
+Full OSWorld pipeline test — Azure + AWS.
 
 Uses the real OSWorld Ubuntu.qcow2 from ~/.cube/osworld/Ubuntu.qcow2.
-Both clouds share the same VHD conversion artifact.
 
 Timeline (estimated):
   VHD conversion (50 GB):  ~15-20 min  (sequential, shared)
-  Azure upload (50 GB):    ~60-90 min  ┐
-  AWS upload   (50 GB):    ~60-90 min  ┘ parallel
+  Azure upload (50 GB):    ~60-90 min
+  AWS upload   (~23 GB VMDK): ~30-60 min
   Azure gallery + launch:  ~15 min
   AWS import + launch:     ~20 min
 
@@ -15,24 +14,30 @@ Timeline (estimated):
 
 USAGE
 -----
-    uv run --extra cube python test_osworld_parallel.py
+    cd experiments/azure-vm-backend
+    .venv/bin/python test_osworld_parallel.py
 """
 
 from __future__ import annotations
 
+import logging
 import sys
 import time
 from pathlib import Path
 
-import aws_pipeline as aws
-import cube_azure_pipeline as az
+from _common import configure_logging
+from aws_backend import AWSBackend
+from azure_backend import AzureBackend
+
+configure_logging()
+log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-OSWORLD_QCOW2  = Path.home() / ".cube" / "osworld" / "Ubuntu.qcow2"
-AZURE_IMAGE_NAME = "cube-osworld-ubuntu"   # new entry, won't touch cube-osworld-linux
+OSWORLD_QCOW2    = Path.home() / ".cube" / "osworld" / "Ubuntu.qcow2"
+AZURE_IMAGE_NAME = "cube-osworld-ubuntu"
 AWS_IMAGE_NAME   = "cube-osworld-ubuntu"
-OSWORLD_SSH_USER = "user"                  # OSWorld default user
+OSWORLD_SSH_USER = "user"
 
 
 # ── Per-cloud pipeline ────────────────────────────────────────────────────────
@@ -49,160 +54,145 @@ class CloudResult:
         self.probe_results: dict = {}
 
 
-def run_azure(vhd_path: str, result: CloudResult) -> None:
+def run_azure(vhd_path: Path, result: CloudResult) -> None:
+    backend = AzureBackend()
     try:
         t0 = time.time()
 
-        # ensure_resource: upload → disk → gallery
         t = time.time()
-        az.ensure_resource(vhd_path, AZURE_IMAGE_NAME)
+        backend.ensure_resource(vhd_path, AZURE_IMAGE_NAME)
         result.timings["ensure_resource"] = time.time() - t
 
-        # launch
         t = time.time()
-        info = az.launch(AZURE_IMAGE_NAME, open_tunnel=True)
+        info = backend.launch(AZURE_IMAGE_NAME, open_tunnel=True)
         result.timings["launch"] = time.time() - t
-        result.vm_id = info["vm_name"]
+        result.vm_id    = info["vm_name"]
         result.endpoint = info["endpoint"]
-        result.tunnel = info.get("tunnel")
+        result.tunnel   = info.get("tunnel")
 
-        # probe
-        probe = az.probe(info["endpoint"])
-        result.probe_results = probe
-
+        result.probe_results = backend.probe(info["endpoint"])
         result.timings["total"] = time.time() - t0
         result.success = True
-        print(f"\n[AZURE ✅] Done — endpoint: {info['endpoint']}  vm: {info['vm_name']}")
+        log.info("[AZURE ✅] Done — endpoint: %s  vm: %s", info["endpoint"], info["vm_name"])
 
     except Exception as e:
         result.error = str(e)
-        print(f"\n[AZURE ❌] {e}")
+        log.error("[AZURE ❌] %s", e, exc_info=True)
 
 
 def run_aws(result: CloudResult) -> None:
+    backend = AWSBackend()
     try:
         t0 = time.time()
 
-        # One-time account setup
-        aws.ensure_vmimport_role()
-        aws.ensure_s3_bucket()
-        aws.ensure_key_pair()
+        backend.ensure_vmimport_role()
+        backend.ensure_s3_bucket()
+        backend.ensure_key_pair()
 
-        # convert → upload → snapshot → AMI
-        # Use sparse VMDK (~23 GB) instead of fixed VHD (50 GB) for faster upload
+        # Use sparse VMDK (~23 GB) for faster upload vs fixed VHD (~50 GB)
         t = time.time()
-        vmdk_path = aws.convert_to_vmdk(str(OSWORLD_QCOW2))
-        s3_uri    = aws.upload_to_s3(vmdk_path)
-        snap_id   = aws.import_snapshot(s3_uri, description=AWS_IMAGE_NAME, disk_format="VMDK")
-        ami_id    = aws.register_ami(snap_id, AWS_IMAGE_NAME)
+        vmdk_path   = backend.convert_to_vmdk(OSWORLD_QCOW2)
+        s3_uri      = backend.upload_to_s3(vmdk_path)
+        snap_id     = backend.import_snapshot(s3_uri, description=AWS_IMAGE_NAME, disk_format="VMDK")
+        backend.register_ami(snap_id, AWS_IMAGE_NAME)
         result.timings["ensure_resource"] = time.time() - t
 
-        # launch
         t = time.time()
-        info = aws.launch(AWS_IMAGE_NAME, ssh_user=OSWORLD_SSH_USER, open_tunnel=True)
+        info = backend.launch(AWS_IMAGE_NAME, ssh_user=OSWORLD_SSH_USER, open_tunnel=True)
         result.timings["launch"] = time.time() - t
-        result.vm_id = info["instance_id"]
+        result.vm_id    = info["instance_id"]
         result.endpoint = info["endpoint"]
-        result.tunnel = info.get("tunnel")
+        result.tunnel   = info.get("tunnel")
 
-        # probe
-        probe = aws.probe(info["endpoint"])
-        result.probe_results = probe
-
+        result.probe_results = backend.probe(info["endpoint"])
         result.timings["total"] = time.time() - t0
         result.success = True
-        print(f"\n[AWS   ✅] Done — endpoint: {info['endpoint']}  instance: {info['instance_id']}")
+        log.info("[AWS ✅] Done — endpoint: %s  instance: %s", info["endpoint"], info["instance_id"])
 
     except Exception as e:
         result.error = str(e)
-        print(f"\n[AWS   ❌] {e}")
+        log.error("[AWS ❌] %s", e, exc_info=True)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     if not OSWORLD_QCOW2.exists():
-        print(f"[abort] OSWorld image not found: {OSWORLD_QCOW2}")
-        print("  Download it first from https://huggingface.co/datasets/xlangai/ubuntu_osworld")
+        log.error("OSWorld image not found: %s", OSWORLD_QCOW2)
+        log.error("Download from https://huggingface.co/datasets/xlangai/ubuntu_osworld")
         sys.exit(1)
 
     size_gb = OSWORLD_QCOW2.stat().st_size / 1024**3
-    print("=" * 60)
-    print("  CUBE OSWorld pipeline test — Azure + AWS parallel")
-    print("=" * 60)
-    print(f"\nImage: {OSWORLD_QCOW2}  ({size_gb:.1f} GB on disk)")
-    print(f"Azure gallery image: {AZURE_IMAGE_NAME}")
-    print(f"AWS AMI name:        {AWS_IMAGE_NAME}")
-    print(f"\nExpected total time: ~90-120 min (uploads dominate)")
+    log.info("=" * 60)
+    log.info("  CUBE OSWorld pipeline test — Azure + AWS")
+    log.info("=" * 60)
+    log.info("Image: %s  (%.1f GB)", OSWORLD_QCOW2, size_gb)
+    log.info("Azure gallery image: %s", AZURE_IMAGE_NAME)
+    log.info("AWS AMI name:        %s", AWS_IMAGE_NAME)
+    log.info("Expected total: ~90-120 min")
 
     t_total = time.time()
 
-    # Step 1: Convert qcow2 → VHD (shared, sequential — only needs to happen once)
-    print(f"\n[step 1] Convert OSWorld qcow2 → fixed VHD (50 GB output)")
+    # Step 1: Convert to VHD (shared)
+    log.info("[step 1] Convert OSWorld qcow2 → fixed VHD")
+    azure_backend = AzureBackend()
     t = time.time()
-    vhd_path = az.convert_to_vhd(str(OSWORLD_QCOW2))
-    print(f"  VHD ready in {(time.time()-t)/60:.1f} min: {vhd_path}")
+    vhd_path = azure_backend.convert_to_vhd(OSWORLD_QCOW2)
+    log.info("  VHD ready in %.1f min: %s", (time.time() - t) / 60, vhd_path)
 
-    # Step 2: Upload sequentially to avoid saturating the network.
-    # Azure uses the fixed VHD (~50 GB) produced in step 1.
-    # AWS uses a sparse VMDK (~23 GB) converted directly from the qcow2.
-    print(f"\n[step 2] Upload sequentially, then provision in parallel")
+    # Step 2: Run both pipelines
     azure_result = CloudResult("azure")
     aws_result   = CloudResult("aws")
 
-    # Azure upload + full pipeline
-    print("\n--- Azure ---")
+    log.info("[step 2] Azure pipeline...")
     run_azure(vhd_path, azure_result)
 
-    # AWS upload + full pipeline (converts to VMDK internally)
-    print("\n--- AWS ---")
+    log.info("[step 3] AWS pipeline...")
     run_aws(aws_result)
 
     # Summary
-    print(f"\n{'='*60}")
-    print(f"  Results")
-    print(f"{'='*60}")
+    log.info("")
+    log.info("=" * 60)
+    log.info("  Results")
+    log.info("=" * 60)
     total_min = (time.time() - t_total) / 60
 
     for r in [azure_result, aws_result]:
-        print(f"\n{r.cloud.upper()}: {'✅ SUCCESS' if r.success else '❌ FAILED'}")
+        log.info("")
+        log.info("%s: %s", r.cloud.upper(), "✅ SUCCESS" if r.success else "❌ FAILED")
         if r.error:
-            print(f"  Error: {r.error}")
-        if r.timings:
-            for k, v in r.timings.items():
-                print(f"  {k:<20}: {v/60:.1f} min")
+            log.info("  Error: %s", r.error)
+        for k, v in r.timings.items():
+            log.info("  %-20s: %.1f min", k, v / 60)
         if r.probe_results:
-            print(f"  /screenshot: {r.probe_results.get('screenshot_bytes', 0)} bytes")
-            print(f"  /execute:    {'ok' if r.probe_results.get('execute_ok') else 'failed'}")
+            log.info("  /screenshot: %d bytes", r.probe_results.get("screenshot_bytes", 0))
+            log.info("  /execute:    %s", "ok" if r.probe_results.get("execute_ok") else "failed")
         if r.endpoint:
-            print(f"  endpoint: {r.endpoint}")
+            log.info("  endpoint: %s", r.endpoint)
         if r.vm_id:
-            print(f"  vm: {r.vm_id}")
+            log.info("  vm: %s", r.vm_id)
 
-    print(f"\nTotal wall-clock: {total_min:.1f} min")
+    log.info("Total wall-clock: %.1f min", total_min)
 
-    # ── Cleanup: only stop runtime VMs, keep AMI/gallery image ───────────────
-    print(f"\n[cleanup] Stopping VMs (AMI and gallery image kept for future use)")
-
+    # Cleanup runtime VMs only
+    log.info("[cleanup] Stopping VMs (AMI and gallery image kept)")
     if azure_result.success and azure_result.vm_id:
-        print(f"  Azure: stopping {azure_result.vm_id}")
         if azure_result.tunnel:
             azure_result.tunnel.terminate()
         try:
-            az.stop(azure_result.vm_id)
+            AzureBackend().stop(azure_result.vm_id)
         except Exception as e:
-            print(f"  Warning: {e}")
+            log.warning("Azure stop: %s", e)
 
     if aws_result.success and aws_result.vm_id:
-        print(f"  AWS: terminating {aws_result.vm_id}")
         if aws_result.tunnel:
             aws_result.tunnel.terminate()
         try:
-            aws.stop(aws_result.vm_id)
+            AWSBackend().stop(aws_result.vm_id)
         except Exception as e:
-            print(f"  Warning: {e}")
+            log.warning("AWS stop: %s", e)
 
-    print("\nDone. AMI and gallery image retained for future launches (~4 min each).")
+    log.info("Done. Images retained for future launches.")
 
     if not azure_result.success or not aws_result.success:
         sys.exit(1)
