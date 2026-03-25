@@ -1,5 +1,8 @@
 """cube CLI — entry point for the `cube` command.
 
+Global options (before or after the subcommand): ``--no-color`` disables ANSI
+colors (also respects the ``NO_COLOR`` environment variable per no-color.org).
+
 Usage:
     cube list           List all cube benchmarks installed in the current
                         environment (registered under the cube.benchmarks
@@ -25,6 +28,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 from rich import box
 from rich.console import Console, Group
@@ -38,21 +42,51 @@ from cube import __version__
 
 # ── Console setup ─────────────────────────────────────────────────────────────
 
+# "dim" uses the terminal default foreground + dim — "dim white" was unreadable on light themes (e.g. Solarized Light).
 _THEME = Theme(
     {
         "info": "cyan",
         "success": "bold green",
         "warning": "bold yellow",
         "error": "bold red",
-        "dim": "dim white",
+        "dim": "dim",
         "file": "green",
         "cmd": "bold cyan",
         "brand": "bold blue",
     }
 )
 
-console = Console(theme=_THEME)
-err_console = Console(stderr=True, theme=_THEME)
+_NO_COLOR = False
+
+
+def _env_requests_no_color() -> bool:
+    """https://no-color.org/ — any non-empty NO_COLOR disables ANSI styling."""
+    v = os.environ.get("NO_COLOR")
+    return v is not None and v != ""
+
+
+def _make_console(**kwargs: Any) -> Console:
+    kw: dict[str, Any] = {"theme": _THEME, **kwargs}
+    if _NO_COLOR:
+        kw["no_color"] = True
+    return Console(**kw)
+
+
+console = _make_console()
+err_console = _make_console(stderr=True)
+
+
+def _strip_no_color_flags(argv: list[str]) -> tuple[list[str], bool]:
+    """Remove --no-color from argv; returns (rest, True if flag was present)."""
+    rest: list[str] = []
+    seen = False
+    for a in argv:
+        if a == "--no-color":
+            seen = True
+        else:
+            rest.append(a)
+    return rest, seen
+
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -233,7 +267,8 @@ def cmd_list() -> None:
     table.add_column("version", style="dim", no_wrap=True)
     table.add_column("tasks", justify="right", no_wrap=True)
     table.add_column("tags", style="dim")
-    table.add_column("description", style="white")
+    # Default foreground so description stays readable on light backgrounds (plain "white" did not).
+    table.add_column("description")
 
     for ep in sorted(eps, key=lambda e: e.name):
         version = num_tasks = tags = description = ""
@@ -657,7 +692,7 @@ def cmd_test(
         box=box.HEAVY,
         padding=(0, 1),
     )
-    Console(theme=_THEME, width=_display_width).print(stress_panel)
+    _make_console(width=_display_width).print(stress_panel)
 
     if failures:
         console.print(
@@ -686,7 +721,7 @@ def _print_help() -> None:
     """Print a rich-formatted help screen."""
     table = Table(show_header=False, box=box.SIMPLE, padding=(0, 2), show_edge=False)
     table.add_column("cmd", style="cmd", no_wrap=True)
-    table.add_column("desc", style="white")
+    table.add_column("desc")
     table.add_column("example", style="dim")
 
     table.add_row(
@@ -709,7 +744,8 @@ def _print_help() -> None:
         Panel(
             table,
             title=f"[brand]cube[/brand] [dim]v{__version__}[/dim]",
-            subtitle="[dim]Common Unified Benchmark Environments[/dim]",
+            subtitle="[dim]Common Unified Benchmark Environments[/dim]\n"
+            "[dim]Set NO_COLOR=1 or use --no-color for plain output.[/dim]",
             border_style="blue",
             padding=(0, 1),
         )
@@ -717,7 +753,13 @@ def _print_help() -> None:
 
 
 def main() -> None:
-    args = sys.argv[1:]
+    global _NO_COLOR, console, err_console
+
+    raw_argv = sys.argv[1:]
+    args, no_color_flag = _strip_no_color_flags(raw_argv)
+    _NO_COLOR = no_color_flag or _env_requests_no_color()
+    console = _make_console()
+    err_console = _make_console(stderr=True)
 
     if not args or args[0] in ("-h", "--help"):
         _print_help()
