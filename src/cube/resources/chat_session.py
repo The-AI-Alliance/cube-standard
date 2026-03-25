@@ -78,6 +78,9 @@ class ChatSession(ABC):
     def send_message(self, text: str) -> None:
         """Send a message from the agent side, unblocking wait_for_user_message().
 
+        Implementations must append the message to history with role "assistant"
+        in addition to unblocking any caller waiting in wait_for_user_message().
+
         Parameters
         ----------
         text : str

@@ -36,7 +36,7 @@ class BasicChatSession(ChatSession):
     @property
     def messages(self) -> list[dict]:
         """Return a copy of the full message history."""
-        return list(self._messages)
+        return self._messages[:]
 
     def add_message(self, role: ChatRole, msg: str) -> None:
         """Post a message to the chat from the task side.

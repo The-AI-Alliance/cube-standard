@@ -28,6 +28,7 @@ def test_messages_returns_copy() -> None:
     session = BasicChatSession()
     session.add_message("user", "hello")
     msgs = session.messages
+    assert msgs is not session._messages
     msgs.append({"role": "hack"})
     assert len(session.messages) == 1
 
@@ -36,27 +37,21 @@ def test_add_message_user_stored() -> None:
     session = BasicChatSession()
     session.add_message("user", "hello")
     msgs = session.messages
-    assert len(msgs) == 1
-    assert msgs[0]["role"] == "user"
-    assert msgs[0]["message"] == "hello"
-    assert "timestamp" in msgs[0]
+    assert msgs == [{"role": "user", "message": "hello", "timestamp": msgs[0]["timestamp"]}]
 
 
 def test_add_message_assistant_stored() -> None:
     session = BasicChatSession()
     session.add_message("assistant", "hi there")
     msgs = session.messages
-    assert len(msgs) == 1
-    assert msgs[0]["role"] == "assistant"
-    assert msgs[0]["message"] == "hi there"
+    assert msgs == [{"role": "assistant", "message": "hi there", "timestamp": msgs[0]["timestamp"]}]
 
 
 def test_add_message_infeasible_stored() -> None:
     session = BasicChatSession()
     session.add_message("infeasible", "cannot do this")
     msgs = session.messages
-    assert len(msgs) == 1
-    assert msgs[0]["role"] == "infeasible"
+    assert msgs == [{"role": "infeasible", "message": "cannot do this", "timestamp": msgs[0]["timestamp"]}]
 
 
 def test_add_message_info_not_stored() -> None:
@@ -83,9 +78,7 @@ def test_send_message_appends_assistant_message() -> None:
     session.send_message("Paris")
     t.join(timeout=1)
     msgs = session.messages
-    assert len(msgs) == 1
-    assert msgs[0]["role"] == "assistant"
-    assert msgs[0]["message"] == "Paris"
+    assert msgs == [{"role": "assistant", "message": "Paris", "timestamp": msgs[0]["timestamp"]}]
 
 
 def test_send_message_unblocks_wait_for_user_message() -> None:

@@ -8,7 +8,7 @@ as the single agent-facing action.
 import datetime
 
 from cube.core import Action, Content, Observation, StepError
-from cube.resources.chat_session import ChatRole, ChatSession
+from cube.resources.chat_session import ChatConfig, ChatRole, ChatSession
 from cube.tool import Tool, ToolConfig, tool_action
 from cube_chat import BasicChatConfig
 from pydantic import Field
@@ -19,11 +19,11 @@ class ChatToolConfig(ToolConfig):
 
     Parameters
     ----------
-    chat : BasicChatConfig
+    chat : ChatConfig
         Chat session configuration. Defaults to an in-memory BasicChatConfig.
     """
 
-    chat: BasicChatConfig = Field(default_factory=BasicChatConfig)
+    chat: ChatConfig = Field(default_factory=BasicChatConfig)
 
     def make(self, container=None) -> "ChatTool":
         """Create a ChatTool from this configuration."""
