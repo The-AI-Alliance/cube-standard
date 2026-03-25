@@ -21,11 +21,8 @@ USAGE
 from __future__ import annotations
 
 import sys
-import threading
 import time
 from pathlib import Path
-
-import requests
 
 import aws_pipeline as aws
 import cube_azure_pipeline as az
@@ -82,7 +79,7 @@ def run_azure(vhd_path: str, result: CloudResult) -> None:
         print(f"\n[AZURE ❌] {e}")
 
 
-def run_aws(vhd_path: str, result: CloudResult) -> None:
+def run_aws(result: CloudResult) -> None:
     try:
         t0 = time.time()
 
@@ -91,11 +88,13 @@ def run_aws(vhd_path: str, result: CloudResult) -> None:
         aws.ensure_s3_bucket()
         aws.ensure_key_pair()
 
-        # upload → snapshot → AMI
+        # convert → upload → snapshot → AMI
+        # Use sparse VMDK (~23 GB) instead of fixed VHD (50 GB) for faster upload
         t = time.time()
-        s3_uri  = aws.upload_to_s3(vhd_path)
-        snap_id = aws.import_snapshot(s3_uri, description=AWS_IMAGE_NAME)
-        ami_id  = aws.register_ami(snap_id, AWS_IMAGE_NAME)
+        vmdk_path = aws.convert_to_vmdk(str(OSWORLD_QCOW2))
+        s3_uri    = aws.upload_to_s3(vmdk_path)
+        snap_id   = aws.import_snapshot(s3_uri, description=AWS_IMAGE_NAME, disk_format="VMDK")
+        ami_id    = aws.register_ami(snap_id, AWS_IMAGE_NAME)
         result.timings["ensure_resource"] = time.time() - t
 
         # launch
@@ -144,18 +143,20 @@ def main() -> None:
     vhd_path = az.convert_to_vhd(str(OSWORLD_QCOW2))
     print(f"  VHD ready in {(time.time()-t)/60:.1f} min: {vhd_path}")
 
-    # Step 2: Upload + provision on both clouds in parallel
-    print(f"\n[step 2] Upload + provision — Azure and AWS running in parallel")
+    # Step 2: Upload sequentially to avoid saturating the network.
+    # Azure uses the fixed VHD (~50 GB) produced in step 1.
+    # AWS uses a sparse VMDK (~23 GB) converted directly from the qcow2.
+    print(f"\n[step 2] Upload sequentially, then provision in parallel")
     azure_result = CloudResult("azure")
     aws_result   = CloudResult("aws")
 
-    t_azure = threading.Thread(target=run_azure, args=(vhd_path, azure_result), name="Azure")
-    t_aws   = threading.Thread(target=run_aws,   args=(vhd_path, aws_result),   name="AWS")
+    # Azure upload + full pipeline
+    print("\n--- Azure ---")
+    run_azure(vhd_path, azure_result)
 
-    t_azure.start()
-    t_aws.start()
-    t_azure.join()
-    t_aws.join()
+    # AWS upload + full pipeline (converts to VMDK internally)
+    print("\n--- AWS ---")
+    run_aws(aws_result)
 
     # Summary
     print(f"\n{'='*60}")
