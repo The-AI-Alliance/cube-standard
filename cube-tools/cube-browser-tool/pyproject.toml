@@ -42,4 +42,5 @@ extend-select = ["I"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-rs"
+asyncio_mode = "auto"
 markers = ["integration: requires a live Playwright/Chromium install"]

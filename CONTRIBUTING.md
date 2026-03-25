@@ -81,6 +81,10 @@ The `benchmark.py` template explains both options in its docstring. Short versio
 
 The template at `src/cube/_template/new_cube_package/` is normal Python — edit it directly. `cube init` does a straight `shutil.copytree`. Keep the template's `TODO` comments accurate; they are the contributor's primary guide.
 
+## Contributing a Benchmark
+
+If you have a benchmark you'd like to wrap as a CUBE — or want to flag one as a good candidate — [fill out this short form](https://docs.google.com/forms/d/e/1FAIpQLSddMFyRXZJPpD0I2K27OEmIPUpj57w--u2NuMscrjNlkqy8rQ/viewform). It helps us track interest, assess schema fit, and pair you with the right support. No commitment required at this stage.
+
 ## Contribution philosophy
 
 We are in an era where AI coding agents generate more code than any team can carefully review. High-volume, low-quality submissions slow everyone down — so we ask contributors to hold themselves to a higher bar before opening a PR, RFC, or bug report.

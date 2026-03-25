@@ -20,6 +20,7 @@ Abstract classes:
 
 import copy
 import csv
+import enum
 import fnmatch
 import json
 import logging
@@ -37,6 +38,26 @@ from cube.task import TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
 
 logger = logging.getLogger(__name__)
+
+
+class ResetIsolation(str, enum.Enum):
+    """Describes the isolation guarantee provided by a benchmark's reset mechanism.
+
+    Declared on BenchmarkMetadata so harness users can reason about safe parallelism
+    and reproducibility before running tasks.
+
+    Values:
+        SNAPSHOT:     VM reverted to a saved savestate (~5s). Strongest isolation.
+        RESTART:      Container/VM stopped and restarted (~30s). No state leakage.
+        APP_LEVEL:    Application state reset via scripts; VM stays running (~5s).
+                      Risk of OS-level state leakage between tasks on the same VM.
+        NEW_INSTANCE: Fresh VM per task (~2-4 min). Strongest guarantee, slowest.
+    """
+
+    SNAPSHOT = "snapshot"
+    RESTART = "restart"
+    APP_LEVEL = "app_level"
+    NEW_INSTANCE = "new_instance"
 
 
 RuntimeContext = dict[str, Any]
@@ -79,6 +100,15 @@ class BenchmarkMetadata(TypedBaseModel):
     )
     num_tasks: int = Field(default=0, description="Total number of tasks")
     tags: list[str] = Field(default_factory=list, description="Benchmark tags")
+    reset_isolation: ResetIsolation | None = Field(
+        default=None,
+        description=(
+            "Isolation guarantee provided by this benchmark's reset mechanism. "
+            "None means unspecified. Set by benchmark authors to let harness users "
+            "reason about safe parallelism (e.g. APP_LEVEL + multiple workers on the "
+            "same VM is unsafe). See ResetIsolation for possible values."
+        ),
+    )
     extra_info: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     # TODO: discuss adding / removing fields such as homepage, repository, citation, etc.
 

@@ -4,7 +4,7 @@ import inspect
 
 import pytest
 
-from cube.core import Action, Observation, StepError, TextContent
+from cube.core import Action, ActionSchema, Observation, StepError, TextContent
 from cube.tool import AsyncTool, Tool, tool_action
 
 
@@ -16,8 +16,6 @@ def assert_tool_docstrings_valid(tool_cls: type) -> None:
 
     Raises AssertionError with a descriptive message on the first failure.
     """
-    from cube.utils import function_to_dict
-
     actions = [
         (name, func)
         for name, func in inspect.getmembers(tool_cls, predicate=callable)
@@ -27,14 +25,12 @@ def assert_tool_docstrings_valid(tool_cls: type) -> None:
     assert actions, f"{tool_cls.__name__} has no @tool_action methods"
 
     for name, func in actions:
-        result = function_to_dict(func)
-        assert result["description"], f"{tool_cls.__name__}.{name}: missing function description"
-        for param_name, param_info in result["parameters"]["properties"].items():
-            if param_name == "self":
-                continue
-            assert "description" in param_info and param_info["description"], (
-                f"{tool_cls.__name__}.{name}: parameter '{param_name}' missing description"
-            )
+        try:
+            schema = ActionSchema.from_function(func)
+        except ValueError as e:
+            raise AssertionError(f"{tool_cls.__name__}.{name}: {e}") from e
+        ok, msg = schema.validate_param_descriptions()
+        assert ok, f"{tool_cls.__name__}.{name}: {msg}"
 
 
 class EchoTool(Tool):
@@ -255,5 +251,5 @@ def test_assert_tool_docstrings_valid_catches_missing_param_description():
 
 
 def test_assert_tool_docstrings_valid_catches_missing_function_description():
-    with pytest.raises(AssertionError, match="missing function description"):
+    with pytest.raises(AssertionError, match="A docstring is required to extract parameter information"):
         assert_tool_docstrings_valid(MissingFunctionDescriptionTool)

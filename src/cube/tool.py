@@ -65,7 +65,6 @@ from typing import Any, Callable, List
 
 from cube.container import Container
 from cube.core import Action, ActionSchema, Content, Observation, StepError, TypedBaseModel
-from cube.resources.browser_session import BrowserSession
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +163,7 @@ class ToolConfig(TypedBaseModel, ABC):
     """
 
     @abstractmethod
-    def make(self, container: Container | None = None) -> AbstractTool | AbstractAsyncTool:
+    def make(self, container: Container | None = None) -> AbstractTool:
         """
         Instantiate Tool from configuration data.
 
@@ -174,8 +173,22 @@ class ToolConfig(TypedBaseModel, ABC):
                        tool's endpoint. None if the task needs no container.
 
         Returns:
-            AbstractTool or AbstractAsyncTool instance
+            AbstractTool instance
         """
+        pass
+
+
+class AsyncToolConfig(TypedBaseModel, ABC):
+    """Configuration for creating async task-specific tools.
+
+    Mirrors ToolConfig but make() is a coroutine, allowing async resource
+    acquisition (browser launch, network connections, etc.) before the tool
+    is handed to the caller.
+    """
+
+    @abstractmethod
+    async def make(self, container: Container | None = None) -> AbstractAsyncTool:
+        """Instantiate AsyncTool from configuration data."""
         pass
 
 
@@ -379,17 +392,3 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
             logger.exception(action_result)
             return StepError.from_exception(e)
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
-
-
-class BrowserTool(Tool):
-    """Abstract base for browser tools used by web-based tasks (setup, validation, observation)."""
-
-    @property
-    @abstractmethod
-    def session(self) -> BrowserSession: ...
-
-    @abstractmethod
-    def noop(self) -> None: ...
-
-    @abstractmethod
-    def page_obs(self) -> Observation: ...
