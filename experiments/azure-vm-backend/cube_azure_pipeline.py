@@ -213,7 +213,7 @@ def upload_vhd(vhd_path: str) -> str:
         storage.storage_accounts.get_properties(RESOURCE_GROUP, STORAGE_ACCOUNT)
     except Exception:
         print(f"  Creating storage account: {STORAGE_ACCOUNT}")
-        poller = storage.storage_accounts.begin_create(
+        poller = storage.storage_accounts.begin_create(  # type: ignore[arg-type]
             RESOURCE_GROUP, STORAGE_ACCOUNT,
             {"location": LOCATION, "tags": TAGS,
              "sku": {"name": "Standard_LRS"}, "kind": "StorageV2"},
