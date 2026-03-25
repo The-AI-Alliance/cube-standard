@@ -73,21 +73,21 @@ from azure.storage.blob import BlobServiceClient
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-SUBSCRIPTION   = "aeb958d3-a614-450e-94bc-88f284dc0664"
+SUBSCRIPTION = "aeb958d3-a614-450e-94bc-88f284dc0664"
 RESOURCE_GROUP = "ui_assist"
-LOCATION       = "westus2"
+LOCATION = "westus2"
 STORAGE_ACCOUNT = "cubeexpvhd"
-CONTAINER_NAME  = "vhds"
-VNET_NAME       = "vnet-westus2"
-SUBNET_NAME     = "snet-westus2-1"
-NSG_NAME        = "osworld-nsg"
-GALLERY_NAME    = "cube_exp_gallery"
-VM_SIZE         = "Standard_D4s_v3"    # 4 vCPU, 16 GB RAM
-GUEST_PORT      = 5000
-TAGS            = {"project": "cube-experiment"}
+CONTAINER_NAME = "vhds"
+VNET_NAME = "vnet-westus2"
+SUBNET_NAME = "snet-westus2-1"
+NSG_NAME = "osworld-nsg"
+GALLERY_NAME = "cube_exp_gallery"
+VM_SIZE = "Standard_D4s_v3"  # 4 vCPU, 16 GB RAM
+GUEST_PORT = 5000
+TAGS = {"project": "cube-experiment"}
 
-SSH_PRIVKEY     = str(Path.home() / ".ssh" / "id_ed25519")
-SSH_PUBKEY      = str(Path.home() / ".ssh" / "id_ed25519.pub")
+SSH_PRIVKEY = str(Path.home() / ".ssh" / "id_ed25519")
+SSH_PUBKEY = str(Path.home() / ".ssh" / "id_ed25519.pub")
 
 # Minimal CUBE guest agent (Flask) — base64-encoded to avoid YAML parse issues
 # Provides: /health, /screenshot (black rect placeholder), /execute
@@ -131,14 +131,18 @@ runcmd:
 
 # ── Azure clients ─────────────────────────────────────────────────────────────
 
+
 def _cred():
     return AzureCliCredential()
+
 
 def _compute() -> ComputeManagementClient:
     return ComputeManagementClient(_cred(), SUBSCRIPTION)
 
+
 def _network() -> NetworkManagementClient:
     return NetworkManagementClient(_cred(), SUBSCRIPTION)
+
 
 def _storage() -> StorageManagementClient:
     return StorageManagementClient(_cred(), SUBSCRIPTION)
@@ -146,7 +150,8 @@ def _storage() -> StorageManagementClient:
 
 # ── Step 1: Convert image to fixed VHD ───────────────────────────────────────
 
-def convert_to_vhd(image_path: str, output_path: str = None) -> str:
+
+def convert_to_vhd(image_path: str, output_path: str | None = None) -> str:
     """
     Convert a qcow2 or VMDK image to a fixed-size Azure-compatible VHD.
 
@@ -163,13 +168,15 @@ def convert_to_vhd(image_path: str, output_path: str = None) -> str:
     dst = Path(output_path).resolve()
 
     if dst.exists():
-        print(f"[convert] VHD already exists: {dst.name} ({dst.stat().st_size/1024**3:.1f} GB), skipping.")
+        print(f"[convert] VHD already exists: {dst.name} ({dst.stat().st_size / 1024**3:.1f} GB), skipping.")
         return str(dst)
 
     # Detect format
     result = subprocess.run(
         ["qemu-img", "info", "--output=json", str(src)],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     info = json.loads(result.stdout)
     fmt = info["format"]
@@ -182,16 +189,16 @@ def convert_to_vhd(image_path: str, output_path: str = None) -> str:
 
     t0 = time.time()
     subprocess.run(
-        ["qemu-img", "convert", "-f", fmt, "-O", "vpc",
-         "-o", "subformat=fixed,force_size", str(src), str(dst)],
+        ["qemu-img", "convert", "-f", fmt, "-O", "vpc", "-o", "subformat=fixed,force_size", str(src), str(dst)],
         check=True,
     )
     elapsed = time.time() - t0
-    print(f"  Done in {elapsed:.0f}s ({dst.stat().st_size/1024**3:.1f} GB on disk)")
+    print(f"  Done in {elapsed:.0f}s ({dst.stat().st_size / 1024**3:.1f} GB on disk)")
     return str(dst)
 
 
 # ── Step 2: Upload VHD to Azure Blob Storage ──────────────────────────────────
+
 
 def upload_vhd(vhd_path: str) -> str:
     """
@@ -212,16 +219,19 @@ def upload_vhd(vhd_path: str) -> str:
         storage.storage_accounts.get_properties(RESOURCE_GROUP, STORAGE_ACCOUNT)
     except Exception:
         print(f"  Creating storage account: {STORAGE_ACCOUNT}")
-        poller = storage.storage_accounts.begin_create(
-            RESOURCE_GROUP, STORAGE_ACCOUNT,
-            {"location": LOCATION, "tags": TAGS,
-             "sku": {"name": "Standard_LRS"}, "kind": "StorageV2"},
+        poller = storage.storage_accounts.begin_create(  # type: ignore[call-overload]
+            RESOURCE_GROUP,
+            STORAGE_ACCOUNT,
+            {"location": LOCATION, "tags": TAGS, "sku": {"name": "Standard_LRS"}, "kind": "StorageV2"},  # type: ignore[arg-type]
         )
         poller.result()
 
     keys = storage.storage_accounts.list_keys(RESOURCE_GROUP, STORAGE_ACCOUNT)
-    conn_str = (f"DefaultEndpointsProtocol=https;AccountName={STORAGE_ACCOUNT};"
-                f"AccountKey={keys.keys[0].value};EndpointSuffix=core.windows.net")
+    assert keys.keys, "Storage account returned no keys"
+    conn_str = (
+        f"DefaultEndpointsProtocol=https;AccountName={STORAGE_ACCOUNT};"
+        f"AccountKey={keys.keys[0].value};EndpointSuffix=core.windows.net"
+    )
 
     svc = BlobServiceClient.from_connection_string(conn_str)
     container = svc.get_container_client(CONTAINER_NAME)
@@ -247,14 +257,15 @@ def upload_vhd(vhd_path: str) -> str:
         blob_client.upload_blob(f, blob_type="PageBlob", overwrite=True, max_concurrency=4)
     elapsed = time.time() - t0
     speed = size_gb / (elapsed / 60)
-    print(f"  Uploaded in {elapsed/60:.1f} min ({speed:.1f} GB/min)")
+    print(f"  Uploaded in {elapsed / 60:.1f} min ({speed:.1f} GB/min)")
 
     return f"https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER_NAME}/{blob_name}"
 
 
 # ── Step 3: Import VHD blob as Managed Disk ───────────────────────────────────
 
-def import_disk(blob_url: str, disk_name: str = None) -> str:
+
+def import_disk(blob_url: str, disk_name: str | None = None) -> str:
     """
     Create a Managed Disk from a VHD blob.
     Returns the disk name.
@@ -266,9 +277,10 @@ def import_disk(blob_url: str, disk_name: str = None) -> str:
     t0 = time.time()
 
     compute = _compute()
-    poller = compute.disks.begin_create_or_update(
-        RESOURCE_GROUP, disk_name,
-        {
+    poller = compute.disks.begin_create_or_update(  # type: ignore[call-overload]
+        RESOURCE_GROUP,
+        disk_name,
+        {  # type: ignore[arg-type]
             "location": LOCATION,
             "tags": TAGS,
             "sku": {"name": "Standard_LRS"},
@@ -283,7 +295,7 @@ def import_disk(blob_url: str, disk_name: str = None) -> str:
                 },
                 "osType": "Linux",
             },
-        }
+        },
     )
     disk = poller.result()
     elapsed = time.time() - t0
@@ -293,6 +305,7 @@ def import_disk(blob_url: str, disk_name: str = None) -> str:
 
 # ── Step 4: Publish to Azure Compute Gallery ──────────────────────────────────
 
+
 def ensure_gallery() -> str:
     """Create Compute Gallery if it doesn't exist. Returns gallery name."""
     compute = _compute()
@@ -300,16 +313,15 @@ def ensure_gallery() -> str:
         compute.galleries.get(RESOURCE_GROUP, GALLERY_NAME)
     except Exception:
         print(f"[gallery] Creating gallery: {GALLERY_NAME}")
-        compute.galleries.begin_create_or_update(
-            RESOURCE_GROUP, GALLERY_NAME,
-            {"location": LOCATION, "tags": TAGS,
-             "description": "CUBE benchmark VM image gallery"},
+        compute.galleries.begin_create_or_update(  # type: ignore[call-overload]
+            RESOURCE_GROUP,
+            GALLERY_NAME,
+            {"location": LOCATION, "tags": TAGS, "description": "CUBE benchmark VM image gallery"},  # type: ignore[arg-type]
         ).result()
     return GALLERY_NAME
 
 
-def create_image_definition(name: str, os_state: str = "Generalized",
-                            hyper_v_gen: str = "V1") -> str:
+def create_image_definition(name: str, os_state: str = "Generalized", hyper_v_gen: str = "V1") -> str:
     """
     Create a gallery image definition.
 
@@ -332,16 +344,18 @@ def create_image_definition(name: str, os_state: str = "Generalized",
         pass
 
     print(f"[imgdef] Creating image definition: {name} ({os_state}, HyperV {hyper_v_gen})")
-    poller = compute.gallery_images.begin_create_or_update(
-        RESOURCE_GROUP, GALLERY_NAME, name,
-        {
+    poller = compute.gallery_images.begin_create_or_update(  # type: ignore[call-overload]
+        RESOURCE_GROUP,
+        GALLERY_NAME,
+        name,
+        {  # type: ignore[arg-type]
             "location": LOCATION,
             "tags": TAGS,
             "os_type": "Linux",
             "os_state": os_state,
             "hyper_v_generation": hyper_v_gen,
             "identifier": {"publisher": "cube", "offer": name, "sku": "linux"},
-        }
+        },
     )
     poller.result()
     print(f"  Created: {name}")
@@ -357,11 +371,10 @@ def create_image_version(image_def: str, version: str, disk_name: str) -> str:
     """
     compute = _compute()
     try:
-        existing = compute.gallery_image_versions.get(
-            RESOURCE_GROUP, GALLERY_NAME, image_def, version)
+        existing = compute.gallery_image_versions.get(RESOURCE_GROUP, GALLERY_NAME, image_def, version)
         if existing.provisioning_state == "Succeeded":
             print(f"[version] Already exists: {image_def}/{version}")
-            return existing.id
+            return existing.id or ""
     except Exception:
         pass
 
@@ -369,33 +382,35 @@ def create_image_version(image_def: str, version: str, disk_name: str) -> str:
     print(f"[version] Publishing {image_def}/{version} from {disk_name} ({disk.disk_size_gb} GB)...")
     t0 = time.time()
 
-    poller = compute.gallery_image_versions.begin_create_or_update(
-        RESOURCE_GROUP, GALLERY_NAME, image_def, version,
-        {
+    poller = compute.gallery_image_versions.begin_create_or_update(  # type: ignore[call-overload]
+        RESOURCE_GROUP,
+        GALLERY_NAME,
+        image_def,
+        version,
+        {  # type: ignore[arg-type]
             "location": LOCATION,
             "tags": TAGS,
             "publishing_profile": {
                 "replica_count": 1,
                 "storage_account_type": "Standard_LRS",
-                "target_regions": [{"name": LOCATION, "regional_replica_count": 1,
-                                    "storage_account_type": "Standard_LRS"}],
+                "target_regions": [
+                    {"name": LOCATION, "regional_replica_count": 1, "storage_account_type": "Standard_LRS"}
+                ],
                 "exclude_from_latest": False,
             },
-            "storage_profile": {
-                "os_disk_image": {"source": {"id": disk.id}, "host_caching": "ReadWrite"}
-            }
-        }
+            "storage_profile": {"os_disk_image": {"source": {"id": disk.id}, "host_caching": "ReadWrite"}},
+        },
     )
     version_obj = poller.result()
     elapsed = time.time() - t0
     print(f"  Done in {elapsed:.0f}s: {version_obj.id}")
-    return version_obj.id
+    return version_obj.id or ""
 
 
 # ── ensure_resource: all steps in one call ────────────────────────────────────
 
-def ensure_resource(image_path: str, name: str, version: str = "1.0.0",
-                    admin_user: str = "azureuser") -> dict:
+
+def ensure_resource(image_path: str, name: str, version: str = "1.0.0", admin_user: str = "azureuser") -> dict:
     """
     Full one-time setup: image file → Compute Gallery image version.
 
@@ -406,9 +421,9 @@ def ensure_resource(image_path: str, name: str, version: str = "1.0.0",
     Returns {"gallery_image": name, "version": version, "image_id": ...}
     """
     timings = {}
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"ensure_resource: {name} v{version}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     t0 = time.time()
     vhd_path = convert_to_vhd(image_path)
@@ -429,14 +444,15 @@ def ensure_resource(image_path: str, name: str, version: str = "1.0.0",
 
     print("\n--- ensure_resource timings ---")
     for step, secs in timings.items():
-        print(f"  {step:8s}: {secs/60:.1f} min")
-    print(f"  {'total':8s}: {sum(timings.values())/60:.1f} min")
+        print(f"  {step:8s}: {secs / 60:.1f} min")
+    print(f"  {'total':8s}: {sum(timings.values()) / 60:.1f} min")
     print(f"\nReady to launch: python cube_azure_pipeline.py launch --name {name}")
 
     return {"gallery_image": name, "version": version, "image_id": image_id}
 
 
 # ── Step 5: Launch VM ─────────────────────────────────────────────────────────
+
 
 def _free_port(start: int = 15000) -> int:
     for port in range(start, start + 100):
@@ -451,24 +467,33 @@ def _free_port(start: int = 15000) -> int:
 
 def _open_tunnel(vm_ip: str, local_port: int, remote_port: int = GUEST_PORT):
     """Open SSH tunnel. Returns subprocess handle — caller must .terminate() it."""
-    proc = subprocess.Popen([
-        "ssh", "-N",
-        "-L", f"127.0.0.1:{local_port}:localhost:{remote_port}",
-        "-i", SSH_PRIVKEY,
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ExitOnForwardFailure=yes",
-        "-o", "ServerAliveInterval=30",
-        "-o", "IdentitiesOnly=yes",
-        f"azureuser@{vm_ip}",
-    ], stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(
+        [
+            "ssh",
+            "-N",
+            "-L",
+            f"127.0.0.1:{local_port}:localhost:{remote_port}",
+            "-i",
+            SSH_PRIVKEY,
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "IdentitiesOnly=yes",
+            f"azureuser@{vm_ip}",
+        ],
+        stderr=subprocess.DEVNULL,
+    )
     time.sleep(2)
     return proc
 
 
-def launch(name: str, version: str = "1.0.0",
-           admin_user: str = "azureuser",
-           open_tunnel: bool = True) -> dict:
+def launch(name: str, version: str = "1.0.0", admin_user: str = "azureuser", open_tunnel: bool = True) -> dict:
     """
     Launch a VM from a gallery image.
 
@@ -481,7 +506,7 @@ def launch(name: str, version: str = "1.0.0",
     }
     """
     uid = uuid.uuid4().hex[:6]
-    vm_name  = f"cube-vm-{uid}"
+    vm_name = f"cube-vm-{uid}"
     pip_name = f"cube-ip-{uid}"
     nic_name = f"cube-nic-{uid}"
 
@@ -500,11 +525,15 @@ def launch(name: str, version: str = "1.0.0",
 
     # Networking
     print("[launch] Creating network resources...")
-    pip_poller = network.public_ip_addresses.begin_create_or_update(
-        RESOURCE_GROUP, pip_name,
-        {"location": LOCATION, "tags": TAGS,
-         "sku": {"name": "Standard"},
-         "properties": {"publicIPAllocationMethod": "Static"}},
+    pip_poller = network.public_ip_addresses.begin_create_or_update(  # type: ignore[call-overload]
+        RESOURCE_GROUP,
+        pip_name,
+        {  # type: ignore[arg-type]
+            "location": LOCATION,
+            "tags": TAGS,
+            "sku": {"name": "Standard"},
+            "properties": {"publicIPAllocationMethod": "Static"},
+        },
     )
     pip = pip_poller.result()
 
@@ -516,19 +545,23 @@ def launch(name: str, version: str = "1.0.0",
         f"/subscriptions/{SUBSCRIPTION}/resourceGroups/{RESOURCE_GROUP}"
         f"/providers/Microsoft.Network/networkSecurityGroups/{NSG_NAME}"
     )
-    nic_poller = network.network_interfaces.begin_create_or_update(
-        RESOURCE_GROUP, nic_name,
-        {
-            "location": LOCATION, "tags": TAGS,
+    nic_poller = network.network_interfaces.begin_create_or_update(  # type: ignore[call-overload]
+        RESOURCE_GROUP,
+        nic_name,
+        {  # type: ignore[arg-type]
+            "location": LOCATION,
+            "tags": TAGS,
             "properties": {
                 "networkSecurityGroup": {"id": nsg_id},
-                "ipConfigurations": [{
-                    "name": "ipconfig1",
-                    "properties": {
-                        "subnet": {"id": subnet_id},
-                        "publicIPAddress": {"id": pip.id},
-                    },
-                }],
+                "ipConfigurations": [
+                    {
+                        "name": "ipconfig1",
+                        "properties": {
+                            "subnet": {"id": subnet_id},
+                            "publicIPAddress": {"id": pip.id},
+                        },
+                    }
+                ],
             },
         },
     )
@@ -539,9 +572,10 @@ def launch(name: str, version: str = "1.0.0",
     print(f"  image: {name}/{version}")
     t0 = time.time()
 
-    poller = compute.virtual_machines.begin_create_or_update(
-        RESOURCE_GROUP, vm_name,
-        {
+    poller = compute.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
+        RESOURCE_GROUP,
+        vm_name,
+        {  # type: ignore[arg-type]
             "location": LOCATION,
             "tags": TAGS,
             "hardware_profile": {"vm_size": VM_SIZE},
@@ -560,21 +594,24 @@ def launch(name: str, version: str = "1.0.0",
                 "custom_data": custom_data_b64,
                 "linux_configuration": {
                     "disable_password_authentication": True,
-                    "ssh": {"public_keys": [{
-                        "path": f"/home/{admin_user}/.ssh/authorized_keys",
-                        "key_data": pubkey,
-                    }]}
+                    "ssh": {
+                        "public_keys": [
+                            {
+                                "path": f"/home/{admin_user}/.ssh/authorized_keys",
+                                "key_data": pubkey,
+                            }
+                        ]
+                    },
                 },
             },
-            "network_profile": {
-                "network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]
-            },
-        }
+            "network_profile": {"network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]},
+        },
     )
     poller.result()
     elapsed = time.time() - t0
 
     pip_info = network.public_ip_addresses.get(RESOURCE_GROUP, pip_name)
+    assert pip_info.ip_address, "Public IP address was not assigned"
     public_ip = pip_info.ip_address
     print(f"  VM ready in {elapsed:.0f}s: {vm_name} @ {public_ip}")
     print(f"  SSH: ssh -i {SSH_PRIVKEY} -o IdentitiesOnly=yes {admin_user}@{public_ip}")
@@ -595,11 +632,25 @@ def launch(name: str, version: str = "1.0.0",
         deadline = time.time() + 300
         while time.time() < deadline:
             r = subprocess.run(
-                ["ssh", "-i", SSH_PRIVKEY, "-o", "IdentitiesOnly=yes",
-                 "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-                 "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
-                 f"{admin_user}@{public_ip}", "echo OK"],
-                capture_output=True, text=True,
+                [
+                    "ssh",
+                    "-i",
+                    SSH_PRIVKEY,
+                    "-o",
+                    "IdentitiesOnly=yes",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "UserKnownHostsFile=/dev/null",
+                    "-o",
+                    "ConnectTimeout=5",
+                    "-o",
+                    "BatchMode=yes",
+                    f"{admin_user}@{public_ip}",
+                    "echo OK",
+                ],
+                capture_output=True,
+                text=True,
             )
             if "OK" in r.stdout:
                 print("  SSH available!")
@@ -609,19 +660,21 @@ def launch(name: str, version: str = "1.0.0",
         local_port = _free_port()
         print(f"[launch] Opening tunnel: localhost:{local_port} → {public_ip}:{GUEST_PORT}")
         tunnel = _open_tunnel(public_ip, local_port)
-        result.update({
-            "endpoint": f"http://localhost:{local_port}",
-            "tunnel": tunnel,
-            "local_port": local_port,
-        })
+        result.update(
+            {
+                "endpoint": f"http://localhost:{local_port}",
+                "tunnel": tunnel,
+                "local_port": local_port,
+            }
+        )
 
     return result
 
 
 # ── Step 6: Probe guest agent ─────────────────────────────────────────────────
 
-def probe(ip_or_endpoint: str, timeout: int = 300,
-          key_path: str = None, admin_user: str = "azureuser") -> dict:
+
+def probe(ip_or_endpoint: str, timeout: int = 300, key_path: str | None = None, admin_user: str = "azureuser") -> dict:
     """
     Wait for the CUBE guest agent to become available.
 
@@ -636,8 +689,7 @@ def probe(ip_or_endpoint: str, timeout: int = 300,
     else:
         local_port = _free_port()
         print(f"[probe] Opening tunnel: localhost:{local_port} → {ip_or_endpoint}:{GUEST_PORT}")
-        tunnel = _open_tunnel(ip_or_endpoint, local_port,
-                              remote_port=GUEST_PORT)
+        tunnel = _open_tunnel(ip_or_endpoint, local_port, remote_port=GUEST_PORT)
         endpoint = f"http://localhost:{local_port}"
 
     print(f"[probe] Polling {endpoint}/health (cloud-init may take 2-3 min)...")
@@ -650,11 +702,12 @@ def probe(ip_or_endpoint: str, timeout: int = 300,
                 print(f"\n  ✅ /health → {health}")
 
                 r2 = requests.get(f"{endpoint}/screenshot", timeout=10)
-                print(f"  ✅ /screenshot → HTTP {r2.status_code}, "
-                      f"{r2.headers.get('content-type')}, {len(r2.content)} bytes")
+                print(
+                    f"  ✅ /screenshot → HTTP {r2.status_code}, "
+                    f"{r2.headers.get('content-type')}, {len(r2.content)} bytes"
+                )
 
-                r3 = requests.post(f"{endpoint}/execute",
-                                   json={"command": ["uname", "-a"]}, timeout=10)
+                r3 = requests.post(f"{endpoint}/execute", json={"command": ["uname", "-a"]}, timeout=10)
                 uname = r3.json().get("stdout", "").strip()
                 print(f"  ✅ /execute → {uname}")
 
@@ -678,7 +731,8 @@ def probe(ip_or_endpoint: str, timeout: int = 300,
 
 # ── stop / restore_snapshot ───────────────────────────────────────────────────
 
-def stop(vm_name: str, pip_name: str = None, nic_name: str = None):
+
+def stop(vm_name: str, pip_name: str | None = None, nic_name: str | None = None):
     """
     Delete a VM and its associated networking resources.
     The OS disk is auto-deleted (delete_option: Delete set at launch).
@@ -706,8 +760,7 @@ def stop(vm_name: str, pip_name: str = None, nic_name: str = None):
             pass
 
 
-def restore_snapshot(vm_name: str, name: str, version: str = "1.0.0",
-                     admin_user: str = "azureuser") -> dict:
+def restore_snapshot(vm_name: str, name: str, version: str = "1.0.0", admin_user: str = "azureuser") -> dict:
     """
     Reset VM to clean state: stop current VM + launch fresh from gallery.
     Equivalent to restore_snapshot() in the VMBackend interface.
@@ -718,6 +771,7 @@ def restore_snapshot(vm_name: str, name: str, version: str = "1.0.0",
 
 
 # ── List gallery images ───────────────────────────────────────────────────────
+
 
 def list_images():
     """Print all image definitions in the gallery."""
@@ -734,16 +788,17 @@ def list_images():
     print("-" * 60)
     for d in defs:
         print(f"{d.name:<35} {d.os_state:<14} {d.hyper_v_generation}")
-        versions = list(compute.gallery_image_versions.list_by_gallery_image(
-            RESOURCE_GROUP, GALLERY_NAME, d.name))
+        if not d.name:
+            continue
+        versions = list(compute.gallery_image_versions.list_by_gallery_image(RESOURCE_GROUP, GALLERY_NAME, d.name))
         for v in versions:
             print(f"  version {v.name:<10} {v.provisioning_state}")
 
 
 # ── Full end-to-end run (convenience) ────────────────────────────────────────
 
-def run_full(image_path: str, name: str, version: str = "1.0.0",
-             admin_user: str = "azureuser") -> dict:
+
+def run_full(image_path: str, name: str, version: str = "1.0.0", admin_user: str = "azureuser") -> dict:
     """
     Runs ensure_resource + launch + probe in one call.
     Use this to test a new image end-to-end.
@@ -758,8 +813,10 @@ def run_full(image_path: str, name: str, version: str = "1.0.0",
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+
 def main():
     import argparse
+
     p = argparse.ArgumentParser(
         description="CUBE Azure VM Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
