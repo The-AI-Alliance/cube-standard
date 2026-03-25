@@ -10,11 +10,17 @@ ChatConfig is the serializable factory for creating a ChatSession.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Literal
+from typing import Literal, TypedDict
 
 from cube.core import TypedBaseModel
 
 ChatRole = Literal["user", "assistant", "info", "infeasible"]
+
+
+class ChatMessage(TypedDict):
+    role: ChatRole
+    timestamp: float
+    message: str
 
 
 class ChatConfig(TypedBaseModel, ABC):
@@ -46,8 +52,8 @@ class ChatSession(ABC):
 
     @property
     @abstractmethod
-    def messages(self) -> list[dict]:
-        """Full message history as a list of dicts with role, timestamp, and message keys."""
+    def messages(self) -> list[ChatMessage]:
+        """Full message history."""
         ...
 
     @abstractmethod

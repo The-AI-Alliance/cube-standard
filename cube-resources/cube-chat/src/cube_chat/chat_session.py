@@ -3,7 +3,7 @@
 import queue
 import time
 
-from cube.resources.chat_session import ChatConfig, ChatRole, ChatSession
+from cube.resources.chat_session import ChatConfig, ChatMessage, ChatRole, ChatSession
 
 _STORED_ROLES = {"user", "assistant", "infeasible"}
 _VALID_ROLES = {"user", "assistant", "info", "infeasible"}
@@ -30,11 +30,11 @@ class BasicChatSession(ChatSession):
     """
 
     def __init__(self) -> None:
-        self._messages: list[dict] = []
+        self._messages: list[ChatMessage] = []
         self._queue: queue.SimpleQueue[str] = queue.SimpleQueue()
 
     @property
-    def messages(self) -> list[dict]:
+    def messages(self) -> list[ChatMessage]:
         """Return a copy of the full message history."""
         return self._messages[:]
 
@@ -56,7 +56,7 @@ class BasicChatSession(ChatSession):
         if role not in _VALID_ROLES:
             raise ValueError(f"Invalid role '{role}'. Must be one of: {sorted(_VALID_ROLES)}")
         if role in _STORED_ROLES:
-            self._messages.append({"role": role, "timestamp": time.time(), "message": msg})
+            self._messages.append(ChatMessage(role=role, timestamp=time.time(), message=msg))
 
     def wait_for_user_message(self) -> str:
         """Block until the agent sends a message and return it.
@@ -78,7 +78,7 @@ class BasicChatSession(ChatSession):
         text : str
             Message content to send.
         """
-        self._messages.append({"role": "assistant", "timestamp": time.time(), "message": text})
+        self._messages.append(ChatMessage(role="assistant", timestamp=time.time(), message=text))
         self._queue.put(text)
 
     def stop(self) -> None:
