@@ -55,10 +55,10 @@ ARCHITECTURE NOTES
 - qemu-img handles both qcow2 and vmdk input formats ✓
 - Tested end-to-end with Ubuntu 22.04 cloud image (2026-03-24) ✓
 """
+# pyright: reportArgumentType=false
 
 import base64
 import json
-import os
 import socket
 import subprocess
 import time
@@ -213,7 +213,7 @@ def upload_vhd(vhd_path: str) -> str:
         storage.storage_accounts.get_properties(RESOURCE_GROUP, STORAGE_ACCOUNT)
     except Exception:
         print(f"  Creating storage account: {STORAGE_ACCOUNT}")
-        poller = storage.storage_accounts.begin_create(  # type: ignore[arg-type]
+        poller = storage.storage_accounts.begin_create(
             RESOURCE_GROUP, STORAGE_ACCOUNT,
             {"location": LOCATION, "tags": TAGS,
              "sku": {"name": "Standard_LRS"}, "kind": "StorageV2"},
@@ -428,7 +428,7 @@ def ensure_resource(image_path: str, name: str, version: str = "1.0.0",
     image_id = create_image_version(name, version, disk_name)
     timings["gallery"] = time.time() - t0
 
-    print(f"\n--- ensure_resource timings ---")
+    print("\n--- ensure_resource timings ---")
     for step, secs in timings.items():
         print(f"  {step:8s}: {secs/60:.1f} min")
     print(f"  {'total':8s}: {sum(timings.values())/60:.1f} min")
@@ -500,7 +500,7 @@ def launch(name: str, version: str = "1.0.0",
     network = _network()
 
     # Networking
-    print(f"[launch] Creating network resources...")
+    print("[launch] Creating network resources...")
     pip_poller = network.public_ip_addresses.begin_create_or_update(
         RESOURCE_GROUP, pip_name,
         {"location": LOCATION, "tags": TAGS,
@@ -572,7 +572,7 @@ def launch(name: str, version: str = "1.0.0",
             },
         }
     )
-    vm = poller.result()
+    poller.result()
     elapsed = time.time() - t0
 
     pip_info = network.public_ip_addresses.get(RESOURCE_GROUP, pip_name)
@@ -592,7 +592,7 @@ def launch(name: str, version: str = "1.0.0",
 
     if open_tunnel:
         # Wait for SSH
-        print(f"[launch] Waiting for SSH...")
+        print("[launch] Waiting for SSH...")
         deadline = time.time() + 300
         while time.time() < deadline:
             r = subprocess.run(
@@ -603,7 +603,7 @@ def launch(name: str, version: str = "1.0.0",
                 capture_output=True, text=True,
             )
             if "OK" in r.stdout:
-                print(f"  SSH available!")
+                print("  SSH available!")
                 break
             time.sleep(10)
 
@@ -688,7 +688,7 @@ def stop(vm_name: str, pip_name: str = None, nic_name: str = None):
     network = _network()
     print(f"[stop] Deleting VM: {vm_name}")
     compute.virtual_machines.begin_delete(RESOURCE_GROUP, vm_name).result()
-    print(f"  VM deleted.")
+    print("  VM deleted.")
 
     # Infer names if not provided
     if nic_name is None:
