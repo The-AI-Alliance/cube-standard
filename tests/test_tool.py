@@ -5,7 +5,7 @@ import inspect
 import pytest
 
 from cube.core import Action, ActionSchema, Observation, StepError, TextContent
-from cube.tool import AsyncTool, Tool, tool_action
+from cube.tool import AsyncTool, AsyncToolbox, Tool, Toolbox, tool_action
 
 
 def assert_tool_docstrings_valid(tool_cls: type) -> None:
@@ -253,3 +253,150 @@ def test_assert_tool_docstrings_valid_catches_missing_param_description():
 def test_assert_tool_docstrings_valid_catches_missing_function_description():
     with pytest.raises(AssertionError, match="A docstring is required to extract parameter information"):
         assert_tool_docstrings_valid(MissingFunctionDescriptionTool)
+
+
+# ── Toolbox fixtures ───────────────────────────────────────────────────────────
+
+
+class UpperTool(Tool):
+    @tool_action
+    def upper(self, text: str) -> str:
+        """Return the text in uppercase."""
+        return text.upper()
+
+
+class AsyncUpperTool(AsyncTool):
+    @tool_action
+    async def upper(self, text: str) -> str:
+        """Return the text in uppercase."""
+        return text.upper()
+
+
+# ── Toolbox (sync) ─────────────────────────────────────────────────────────────
+
+
+def test_toolbox_action_set_is_union_of_tools():
+    box = Toolbox(tools=[EchoTool(), UpperTool()])
+    names = {a.name for a in box.action_set}
+    assert names == {"echo", "add", "crash", "upper"}
+
+
+def test_toolbox_execute_action_delegates_to_correct_tool():
+    box = Toolbox(tools=[EchoTool(), UpperTool()])
+    result = box.execute_action(Action(name="upper", arguments={"text": "hello"}))
+    assert isinstance(result, Observation)
+    assert result.contents == [TextContent(data="HELLO")]
+
+
+def test_toolbox_execute_action_unknown_raises():
+    box = Toolbox(tools=[EchoTool()])
+    with pytest.raises(ValueError, match="not supported"):
+        box.execute_action(Action(name="nonexistent", arguments={}))
+
+
+def test_toolbox_duplicate_action_name_raises_on_construction():
+    with pytest.raises(ValueError, match="Duplicate action name"):
+        Toolbox(tools=[EchoTool(), EchoTool()])
+
+
+def test_toolbox_find_tool_returns_correct_instance():
+    echo = EchoTool()
+    upper = UpperTool()
+    box = Toolbox(tools=[echo, upper])
+    assert box.find_tool(UpperTool) is upper
+
+
+def test_toolbox_find_tool_returns_none_when_absent():
+    box = Toolbox(tools=[EchoTool()])
+    assert box.find_tool(UpperTool) is None
+
+
+def test_toolbox_reset_calls_reset_on_all_tools():
+    resets = 0
+
+    class TrackingTool(Tool):
+        def reset(self) -> None:
+            nonlocal resets
+            resets += 1
+
+    Toolbox(tools=[TrackingTool(), TrackingTool()]).reset()
+    assert resets == 2
+
+
+def test_toolbox_close_calls_close_on_all_tools():
+    closed = 0
+
+    class TrackingTool(Tool):
+        def close(self) -> None:
+            nonlocal closed
+            closed += 1
+
+    Toolbox(tools=[TrackingTool(), TrackingTool()]).close()
+    assert closed == 2
+
+
+# ── AsyncToolbox ───────────────────────────────────────────────────────────────
+
+
+def test_async_toolbox_action_set_is_union_of_tools():
+    box = AsyncToolbox(tools=[AsyncEchoTool(), AsyncUpperTool()])
+    names = {a.name for a in box.action_set}
+    assert names == {"echo", "add", "crash", "upper"}
+
+
+@pytest.mark.asyncio
+async def test_async_toolbox_execute_action_delegates_to_correct_tool():
+    box = AsyncToolbox(tools=[AsyncEchoTool(), AsyncUpperTool()])
+    result = await box.execute_action(Action(name="upper", arguments={"text": "hello"}))
+    assert isinstance(result, Observation)
+    assert result.contents == [TextContent(data="HELLO")]
+
+
+@pytest.mark.asyncio
+async def test_async_toolbox_execute_action_unknown_raises():
+    box = AsyncToolbox(tools=[AsyncEchoTool()])
+    with pytest.raises(ValueError, match="not supported"):
+        await box.execute_action(Action(name="nonexistent", arguments={}))
+
+
+def test_async_toolbox_duplicate_action_name_raises_on_construction():
+    with pytest.raises(ValueError, match="Duplicate action name"):
+        AsyncToolbox(tools=[AsyncEchoTool(), AsyncEchoTool()])
+
+
+def test_async_toolbox_find_tool_returns_correct_instance():
+    echo = AsyncEchoTool()
+    upper = AsyncUpperTool()
+    box = AsyncToolbox(tools=[echo, upper])
+    assert box.find_tool(AsyncUpperTool) is upper
+
+
+def test_async_toolbox_find_tool_returns_none_when_absent():
+    box = AsyncToolbox(tools=[AsyncEchoTool()])
+    assert box.find_tool(AsyncUpperTool) is None
+
+
+@pytest.mark.asyncio
+async def test_async_toolbox_reset_calls_reset_on_all_tools():
+    resets = 0
+
+    class TrackingAsyncTool(AsyncTool):
+        async def reset(self) -> None:
+            nonlocal resets
+            resets += 1
+
+    await AsyncToolbox(tools=[TrackingAsyncTool(), TrackingAsyncTool()]).reset()
+    assert resets == 2
+
+
+@pytest.mark.asyncio
+async def test_async_toolbox_close_calls_close_on_all_tools():
+    closed = 0
+
+    class TrackingAsyncTool(AsyncTool):
+        async def close(self) -> None:
+            nonlocal closed
+            closed += 1
+
+    await AsyncToolbox(tools=[TrackingAsyncTool(), TrackingAsyncTool()]).close()
+    assert closed == 2
