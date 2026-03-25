@@ -35,7 +35,7 @@ class BrowserConfig(TypedBaseModel, ABC):
     all parameters needed to reproduce the launch and must be fully serializable.
 
     Subclasses:
-    - PlaywrightSessionConfig: Chromium via Playwright (in cube-resources)
+    - PlaywrightSessionConfig: Chromium via Playwright (in cube-resources/cube-browser-playwright)
     # Future: CUAConfig — no browser protocol; just OS-level window metadata
     """
 
@@ -56,7 +56,7 @@ class BrowserSession(ABC):
     or CDP-capable client can attach via pw.chromium.connect_over_cdp(session.cdp_url).
 
     Subclasses:
-    - PlaywrightSession: owns Playwright objects directly; cdp_url always set (cube-resources)
+    - PlaywrightSession: owns Playwright objects directly; cdp_url always set (in cube-resources/cube-browser-playwright)
     # Future: CUASession — identified via OS process PID and/or Display env var
     """
 
@@ -79,7 +79,7 @@ class AsyncBrowserConfig(TypedBaseModel, ABC):
     all parameters needed to reproduce the launch and must be fully serializable.
 
     Subclasses:
-    # Future: AsyncPlaywrightSessionConfig — Chromium via async Playwright
+    - AsyncPlaywrightSessionConfig: Chromium via async Playwright (in cube-resources/cube-browser-playwright)
     """
 
     @abstractmethod
@@ -95,7 +95,7 @@ class AsyncBrowserSession(ABC):
     matching the async Playwright API for high-throughput parallel data collection.
 
     Subclasses:
-    # Future: AsyncPlaywrightSession — owns async Playwright objects directly
+    - AsyncPlaywrightSession: owns async Playwright objects directly; cdp_url always set (in cube-resources/cube-browser-playwright)
     """
 
     @property

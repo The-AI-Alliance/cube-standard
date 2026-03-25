@@ -104,7 +104,13 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
     # ------------------------------------------------------------------
 
     def reset(self) -> None:
-        """Close the current page and open a fresh one (clears cookies and state)."""
+        """Close the current page and open a fresh one (clears cookies and state).
+
+        If stop() raises, make() is not called and self._session is left in an
+        indeterminate state — the caller should treat the tool as unusable and
+        discard it. If make() raises, self._session holds the stopped session
+        and any subsequent call will fail.
+        """
         self._session.stop()
         self._session = self.config.browser.make()
 
@@ -121,7 +127,10 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
         if isinstance(result, StepError):
             return result
         try:
-            return result + self.page_obs()
+            # All browser actions return None, so super() always produces a
+            # spurious "Success" content item. Discard it and return the page
+            # observation directly — that is the real result for browser tools.
+            return self.page_obs()
         except Exception as e:
             logger.exception("Error while capturing page_obs after action %s", action.name)
             return StepError.from_exception(e)
@@ -418,7 +427,13 @@ class AsyncPlaywrightTool(AsyncBrowserTool, AsyncBrowserActionSpace):
         return self._session.page
 
     async def reset(self) -> None:
-        """Close the current session and open a fresh one (clears cookies and state)."""
+        """Close the current session and open a fresh one (clears cookies and state).
+
+        If stop() raises, make() is not called and self._session is left in an
+        indeterminate state — the caller should treat the tool as unusable and
+        discard it. If make() raises, self._session holds the stopped session
+        and any subsequent call will fail.
+        """
         await self._session.stop()
         self._session = await self.config.browser.make()
 
@@ -431,26 +446,56 @@ class AsyncPlaywrightTool(AsyncBrowserTool, AsyncBrowserActionSpace):
         if isinstance(result, StepError):
             return result
         try:
-            result += await self.page_obs()
+            # All browser actions return None, so super() always produces a
+            # spurious "Success" content item. Discard it and return the page
+            # observation directly — that is the real result for browser tools.
+            return await self.page_obs()
         except Exception as e:
             logger.exception("Error while capturing page_obs after action %s", action.name)
             return StepError.from_exception(e)
-        return result
 
     async def browser_press_key(self, key: str) -> None:
-        """Press a key on the keyboard."""
+        """Press a keyboard key.
+
+        Parameters
+        ----------
+        key : str
+            Key name as accepted by Playwright (e.g. 'Enter', 'Tab', 'Escape').
+        """
         await self._page.keyboard.press(key)
 
     async def browser_type(self, selector: str, text: str) -> None:
-        """Type text into the focused element."""
+        """Type text into an element specified by CSS selector.
+
+        Parameters
+        ----------
+        selector : str
+            CSS selector of the element to type into.
+        text : str
+            Text to type.
+        """
         await self._page.type(selector, text)
 
     async def browser_click(self, selector: str) -> None:
-        """Click on a selector."""
+        """Click on an element specified by CSS selector.
+
+        Parameters
+        ----------
+        selector : str
+            CSS selector of the element to click.
+        """
         await self._page.click(selector, timeout=3000, strict=True)
 
     async def browser_drag(self, from_selector: str, to_selector: str) -> None:
-        """Drag and drop from one selector to another."""
+        """Drag an element to another element using CSS selectors.
+
+        Parameters
+        ----------
+        from_selector : str
+            CSS selector of the element to drag.
+        to_selector : str
+            CSS selector of the drop target.
+        """
         from_elem = self._page.locator(from_selector)
         await from_elem.hover(timeout=500)
         await self._page.mouse.down()
@@ -463,21 +508,53 @@ class AsyncPlaywrightTool(AsyncBrowserTool, AsyncBrowserActionSpace):
         await self._page.mouse.up()
 
     async def browser_hover(self, selector: str) -> None:
-        """Hover over a given element."""
+        """Hover over an element specified by CSS selector.
+
+        Parameters
+        ----------
+        selector : str
+            CSS selector of the element to hover over.
+        """
         await self._page.hover(selector, timeout=3000, strict=True)
 
     async def browser_select_option(self, selector: str, value: str) -> None:
-        """Select an option from a given element."""
+        """Select an option in a <select> element specified by CSS selector.
+
+        Parameters
+        ----------
+        selector : str
+            CSS selector of the <select> element.
+        value : str
+            Option value to select.
+        """
         await self._page.select_option(selector, value)
 
     async def browser_mouse_click_xy(self, x: int, y: int) -> None:
-        """Click at a given x, y coordinate using the mouse."""
+        """Click at an absolute (x, y) coordinate on the page.
+
+        Parameters
+        ----------
+        x : int
+            Horizontal coordinate in pixels from the left edge of the viewport.
+        y : int
+            Vertical coordinate in pixels from the top edge of the viewport.
+        """
         await self._page.mouse.click(x, y, delay=100)
 
     async def browser_scroll(
         self, selector: str, direction: Literal["up", "down", "left", "right"], amount: int
     ) -> None:
-        """Scroll an element in the specified direction."""
+        """Scroll an element in the specified direction.
+
+        Parameters
+        ----------
+        selector : str
+            CSS selector of the element to scroll.
+        direction : {'up', 'down', 'left', 'right'}
+            Direction to scroll.
+        amount : int
+            Number of pixels to scroll.
+        """
         elem = self._page.locator(selector).first
         await elem.scroll_into_view_if_needed()
         box = await elem.bounding_box()
@@ -491,7 +568,13 @@ class AsyncPlaywrightTool(AsyncBrowserTool, AsyncBrowserActionSpace):
         await self._page.mouse.wheel(delta_x, delta_y)
 
     async def browser_wait(self, seconds: int) -> None:
-        """Wait for a given number of seconds, up to max_wait."""
+        """Wait for a number of seconds before the next action.
+
+        Parameters
+        ----------
+        seconds : int
+            Number of seconds to wait (capped at the tool's ``max_wait``).
+        """
         await asyncio.sleep(min(seconds, self.config.max_wait))
 
     async def browser_back(self) -> None:

@@ -163,7 +163,7 @@ class ToolConfig(TypedBaseModel, ABC):
     """
 
     @abstractmethod
-    def make(self, container: Container | None = None) -> AbstractTool | AbstractAsyncTool:
+    def make(self, container: Container | None = None) -> AbstractTool:
         """
         Instantiate Tool from configuration data.
 
@@ -173,7 +173,7 @@ class ToolConfig(TypedBaseModel, ABC):
                        tool's endpoint. None if the task needs no container.
 
         Returns:
-            AbstractTool or AbstractAsyncTool instance
+            AbstractTool instance
         """
         pass
 
