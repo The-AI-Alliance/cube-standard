@@ -1,0 +1,13 @@
+[project]
+name = "cube-azure-experiment"
+version = "0.0.1"
+requires-python = ">=3.12"
+dependencies = [
+    "azure-identity>=1.15",
+    "azure-mgmt-compute>=31.0",
+    "azure-mgmt-network>=25.0",
+    "azure-mgmt-storage>=21.0",
+    "azure-storage-blob>=12.28.0",
+    "huggingface-hub>=1.7.2",
+    "requests>=2.28",
+]
