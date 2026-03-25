@@ -1,1 +1,1 @@
-"""Tool protocols for cube-standard benchmark domains."""
+"""Tool domain subclasses for cube-standard benchmarks."""
