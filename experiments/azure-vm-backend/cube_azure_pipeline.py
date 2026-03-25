@@ -55,7 +55,6 @@ ARCHITECTURE NOTES
 - qemu-img handles both qcow2 and vmdk input formats ✓
 - Tested end-to-end with Ubuntu 22.04 cloud image (2026-03-24) ✓
 """
-# pyright: reportArgumentType=false
 
 import base64
 import json
