@@ -156,39 +156,92 @@ Example gotchas documented so far (Azure/ServiceNow):
 
 ---
 
+## Bootstrap VM Approach
+
+A key finding from these experiments is that uploading large VM images from a local machine is
+the primary bottleneck. Home broadband (~0.1–1 GB/min) makes a 50 GB image take hours.
+
+**Solution**: spin up a cheap VM *inside* the target cloud, download the image from HuggingFace
+at datacenter speed (~55–120 MB/s), convert, and upload to cloud storage (~200–500 Mb/s) — all
+without any large local transfer.
+
+```
+Local machine                    Cloud (bootstrap VM)
+─────────────                    ────────────────────
+"start bootstrap" ──launch──→   t3.medium / Standard_B2ms
+                                    ↓  wget HuggingFace (~3.5 min, 120 MB/s)
+                                    ↓  unzip
+                                    ↓  qemu-img convert → fixed VHD (~5-10 min)
+                                    ↓  upload to S3/Blob (~10-20 min, datacenter speed)
+                                    ↓  write sentinel object/blob
+                                 VM terminates
+poll sentinel ←──────────────── sentinel detected
+    ↓  import snapshot / import disk  (~5-10 min)
+    ↓  publish AMI / gallery image    (~5-10 min)
+ Ready                                                Total: ~30-46 min, ~$0.02-$0.04
+```
+
+### Bootstrap gotchas
+
+| Issue | Root cause | Fix |
+|-------|-----------|-----|
+| Azure Golden Image Policy | Applies to bootstrap VM too — Marketplace images blocked | Bootstrap VM uses our own gallery image (`cube-ubuntu-22-04/1.0.0`) |
+| `mkfs.ext4` fails on data disk | udev/udevadm timing on newly-attached block device | Use large OS disk (128 GB) instead of attaching a separate data disk |
+| Azure VHD footer corrupt | Local upload timed out, left blob at right size with zeroed footer | Validate `conectix` magic in last 512 bytes; delete + re-upload if invalid |
+| AWS rejects sparse VMDK | `ec2 import-snapshot` requires fixed or stream-optimized VMDK; `monolithicSparse` unsupported | Use fixed VHD (`qemu-img convert -O vpc -o subformat=fixed,force_size`) |
+| AWS CLI not on Ubuntu 22.04 | `aws` not installed by default | Install `boto3` via pip3; use Python for all S3 operations |
+| HuggingFace URL is a zip | `Ubuntu.qcow2.zip`, not bare `.qcow2` | Detect zip with `file(1)`, unzip before conversion |
+
+---
+
 ## Current State (2026-03-25)
 
 ### Validated (experiments/azure-vm-backend/)
-- ✅ `cube_azure_pipeline.py` — full Azure pipeline, tested end-to-end
-- ✅ `ensure_resource`: convert + upload + gallery (idempotent, skips existing steps)
+
+**Azure (cube_azure_pipeline.py)**
+- ✅ `ensure_resource`: local convert + upload + gallery (idempotent, skips existing steps)
+- ✅ `bootstrap_ensure_resource`: in-cloud bootstrap from HuggingFace URL — tested end-to-end
 - ✅ `launch`: gallery → VM + SSH tunnel + cloud-init agent injection
 - ✅ `restore_snapshot`: stop + relaunch, ~3.5 min, all endpoints pass
 - ✅ SSH tunnel bypasses Zscaler
 - ✅ Golden Image Policy bypass via Compute Gallery
+- ✅ VHD footer validation prevents corrupt re-upload
+- ✅ OSWorld Ubuntu image: bootstrap → gallery → VM → probe passing
+
+**AWS (aws_pipeline.py)**
+- ✅ `ensure_resource`: local convert (sparse VMDK) + S3 upload + snapshot import + AMI
+- ✅ `bootstrap_ensure_resource`: in-cloud bootstrap from HuggingFace URL — tested end-to-end
+- ✅ `launch`: AMI → EC2 + SSH tunnel + user-data agent injection
+- ✅ `restore_snapshot`: terminate + relaunch
+- ✅ IAM instance profile for credential-free S3 writes from bootstrap EC2
+- ✅ OSWorld Ubuntu image: bootstrap → AMI → EC2 → probe passing
+
+**Test scripts**
+- ✅ `test_osworld_parallel.py`: full OSWorld pipeline on Azure + AWS (local upload path)
+- ✅ `test_bootstrap.py`: bootstrap approach on Azure + AWS from HuggingFace URL
 
 ### Not yet done
-- ❌ `AzureVMBackend(VMBackend)` class wired into cube-vm-backend
-- ❌ HuggingFace download integrated into `ensure_resource`
-- ❌ Real OSWorld server tested (needs Generalized OSWorld image)
-- ❌ `AWSVMBackend`, `GCPVMBackend`
+- ❌ `AzureVMBackend(VMBackend)` / `AWSVMBackend(VMBackend)` classes wired into cube-vm-backend
+- ❌ HuggingFace `hf://` scheme in `ensure_resource` (currently takes raw HTTPS URL)
+- ❌ Real OSWorld HTTP server tested end-to-end (27 endpoints)
+- ❌ `GCPVMBackend`
 
 ---
 
 ## Next Steps
 
-### Immediate (this experiment dir)
-1. `azure_vm_backend.py` — `AzureVMBackend(VMBackend)` + `AzureVM(VM)` wrapping `cube_azure_pipeline.py`
-2. Add HuggingFace download to `ensure_resource`
-3. Test with the OSWorld team's custom image (Generalized version)
+### Immediate (cube-vm-backend package)
+1. `AzureVMBackend(VMBackend)` + `AzureVM(VM)` wrapping `cube_azure_pipeline.py`
+2. `AWSVMBackend(VMBackend)` + `AWSVM(VM)` wrapping `aws_pipeline.py`
+3. `ensure_resource` accepts `hf://` scheme → resolves to HTTPS bootstrap URL
 
-### Short term (cube-vm-backend package)
-1. Move `AzureVMBackend` into `cube-resources/cube-vm-backend/`
-2. Test real OSWorld: `task.reset()` → `vm.endpoint` → `GuestAgent` → real OSWorld HTTP
-3. Document OSWorld-specific `VMConfig` in `osworld-cube`
+### Short term
+1. Test real OSWorld: `task.reset()` → `vm.endpoint` → full 27-endpoint protocol
+2. Document OSWorld-specific `VMConfig` in `osworld-cube`
 
 ### Medium term
-1. `AWSVMBackend`, `GCPVMBackend` — same pattern, different SDKs
-2. CI: benchmark pushes qcow2 → CUBE auto-converts + publishes to all registries
+1. `GCPVMBackend` — same pattern (GCS + `gcloud compute images import`)
+2. CI: benchmark pushes qcow2 → CUBE auto-bootstraps to all registries
 3. Backend knowledge base (`.md`) for coding agents to implement new backends
 
 ---

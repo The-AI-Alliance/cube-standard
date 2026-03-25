@@ -1,40 +1,51 @@
 """
 CUBE AWS VM Pipeline
 ====================
-AWS equivalent of cube_azure_pipeline.py.
+AWS equivalent of cube_azure_pipeline.py. Full path from a VM image (qcow2 or
+HuggingFace URL) to a running EC2 instance the CUBE harness can talk to.
 
-ensure_resource():
-    1. Convert qcow2/vmdk → fixed VHD  (shared with Azure pipeline)
-    2. Upload VHD to S3 (multipart, with progress)
-    3. ec2 import-snapshot → EBS snapshot
-    4. Register snapshot as AMI
+Two ensure_resource approaches
+--------------------------------
+1. Local pipeline  — convert + upload from your machine (ensure_resource)
+   Steps: convert qcow2 → sparse VMDK → upload to S3 → ec2 import-snapshot → AMI
+   Note: sparse VMDK (~23 GB for OSWorld) is faster to upload than fixed VHD (50 GB).
 
-launch():
-    5. RunInstances from AMI + key pair injection
-    6. Wait for SSH, open tunnel: localhost:{port} → vm:5000
-    → returns endpoint URL
+2. Bootstrap VM    — spin up a cheap EC2 to do the heavy lifting (bootstrap_ensure_resource)
+   Best for: images on HuggingFace / public URLs, slow local upload.
+   Steps: launch t3.medium → download from HF at ~120 MB/s → convert to fixed VHD
+          → upload to S3 via boto3 at datacenter speed → signal sentinel → instance terminated
+          → ec2 import-snapshot (VHD format) → register AMI
+   Timing: ~30-35 min total for 12 GB zip / 50 GB VHD
+   Cost:   ~$0.02 (t3.medium @ $0.047/hr × ~30 min + 128 GB gp3 volume)
 
-restore_snapshot():
-    stop() + launch()
-
-stop():
-    terminate instance + release elastic IP (if any)
+Key design decisions
+---------------------
+- IAM instance profile for bootstrap EC2: grants S3 write access without embedding
+  credentials. Created automatically and idempotently by ensure_bootstrap_instance_profile().
+- Bootstrap uses fixed VHD (not sparse VMDK): ec2 import-snapshot rejects
+  monolithicSparse VMDK with "unsupported vmdk file format". Fixed VHD works reliably.
+- Local ensure_resource uses sparse VMDK for faster upload; only bootstrap uses VHD.
+- S3 sentinel pattern: bootstrap EC2 writes a zero-byte .bootstrap_done object when done;
+  caller polls every 30s. A .bootstrap_failed object triggers immediate error propagation.
+- boto3 for S3 ops in bootstrap script: Ubuntu 22.04 AMIs don't have the AWS CLI installed.
+  We install boto3 via pip3 and use a heredoc Python script instead.
+- No Golden Image Policy on AWS (personal account) — AMIs launch directly without gallery.
+- SSH tunnel: same pattern as Azure — localhost:{port} → vm:5000.
+- OSWorld image user: 'user' (not 'ubuntu') — user-data injects our SSH key.
 
 USAGE
 -----
+    python aws_pipeline.py bootstrap --url https://huggingface.co/.../Ubuntu.qcow2.zip --name cube-osworld
     python aws_pipeline.py ensure --image path/to/image.qcow2 --name cube-osworld
     python aws_pipeline.py launch --name cube-osworld
     python aws_pipeline.py probe --ip <public-ip>
     python aws_pipeline.py stop --instance i-0abc123
     python aws_pipeline.py list
 
-NOTES
------
-- No Golden Image Policy on AWS (personal account) — AMI launch works directly
-- SSH key injected via key pair (os_profile equivalent) + user-data fallback
-- SSH tunnel same pattern as Azure (bypasses any proxy)
-- vmimport IAM role created automatically on first run (one-time)
-- OSWorld image user: 'user' (not 'ubuntu') — user-data injects our SSH key
+Tested end-to-end
+------------------
+- Ubuntu 22.04 cloud image: local pipeline ✓ (2026-03-24)
+- OSWorld Ubuntu image (50 GB qcow2): bootstrap VM pipeline ✓ (2026-03-25)
 """
 
 from __future__ import annotations
@@ -191,7 +202,7 @@ def ensure_security_group() -> str:
 
     sg = ec2.create_security_group(
         GroupName="cube-sg",
-        Description="CUBE experiment — SSH inbound only",
+        Description="CUBE experiment - SSH inbound only",
     )
     sg_id = sg["GroupId"]
     ec2.authorize_security_group_ingress(
@@ -209,22 +220,58 @@ def ensure_security_group() -> str:
 
 
 # ── Step 1: Convert image ─────────────────────────────────────────────────────
-# Reuses cube_azure_pipeline.convert_to_vhd — same VHD works for both clouds.
+# AWS ec2 import-snapshot accepts VMDK (sparse) — much smaller than fixed VHD.
+# A 50 GB qcow2 becomes ~50 GB fixed VHD but only ~23 GB sparse VMDK.
 
-def convert_to_vhd(image_path: str, output_path: str | None = None) -> str:
-    """Convert qcow2/vmdk to fixed VHD. Shared with Azure pipeline."""
-    import cube_azure_pipeline as az
-    return az.convert_to_vhd(image_path, output_path)
+def convert_to_vmdk(image_path: str, output_path: str | None = None) -> str:
+    """Convert qcow2/vhd to sparse VMDK for S3 upload.
+
+    Sparse VMDK contains only the written sectors (~23 GB for OSWorld Ubuntu)
+    vs a fixed VHD which is always the full virtual size (50 GB).
+    """
+    src = Path(image_path).resolve()
+    if output_path is None:
+        output_path = str(src.with_suffix(".vmdk"))
+    dst = Path(output_path).resolve()
+
+    if dst.exists():
+        size_gb = dst.stat().st_size / 1024**3
+        print(f"[convert] VMDK already exists: {dst.name} ({size_gb:.1f} GB), skipping.")
+        return str(dst)
+
+    result = subprocess.run(
+        ["qemu-img", "info", "--output=json", str(src)],
+        capture_output=True, text=True, check=True,
+    )
+    import json as _json
+    info = _json.loads(result.stdout)
+    fmt = info["format"]
+    vsize_gb = info["virtual-size"] / 1024**3
+    dsize_gb = info.get("disk-size", info["virtual-size"]) / 1024**3
+    print(f"[convert] {src.name}")
+    print(f"  format: {fmt}  virtual: {vsize_gb:.1f} GB  on-disk: {dsize_gb:.1f} GB")
+    print(f"  → {dst.name} (sparse VMDK, ~{dsize_gb:.1f} GB expected)")
+
+    t0 = time.time()
+    subprocess.run(
+        ["qemu-img", "convert", "-f", fmt, "-O", "vmdk",
+         "-o", "subformat=monolithicSparse", str(src), str(dst)],
+        check=True,
+    )
+    elapsed = time.time() - t0
+    actual_gb = dst.stat().st_size / 1024**3
+    print(f"  Done in {elapsed:.0f}s ({actual_gb:.1f} GB on disk)")
+    return str(dst)
 
 
 # ── Step 2: Upload VHD to S3 ──────────────────────────────────────────────────
 
-def upload_to_s3(vhd_path: str) -> str:
-    """Upload VHD to S3 using multipart upload with progress. Idempotent.
+def upload_to_s3(file_path: str) -> str:
+    """Upload a disk image to S3 using multipart upload with progress. Idempotent.
 
     Returns s3://bucket/key URI.
     """
-    vhd = Path(vhd_path).resolve()
+    vhd = Path(file_path).resolve()
     s3_key = vhd.name
     size_gb = vhd.stat().st_size / 1024**3
 
@@ -270,22 +317,23 @@ def upload_to_s3(vhd_path: str) -> str:
 
 # ── Step 3: Import S3 object → EBS snapshot ───────────────────────────────────
 
-def import_snapshot(s3_uri: str, description: str = "cube-snapshot") -> str:
-    """Import VHD from S3 as an EBS snapshot. Returns snapshot_id.
+def import_snapshot(s3_uri: str, description: str = "cube-snapshot", disk_format: str = "VMDK") -> str:
+    """Import a disk image from S3 as an EBS snapshot. Returns snapshot_id.
 
-    This is async — polls until complete (~8-15 min for a 2 GB VHD).
+    disk_format : "VMDK" (default, sparse) or "VHD" (fixed)
+    This is async — polls until complete (~15-30 min for a 23 GB VMDK).
     """
     # Parse s3://bucket/key
     parts = s3_uri.removeprefix("s3://").split("/", 1)
     bucket, key = parts[0], parts[1]
 
     ec2 = _ec2()
-    print(f"[import] S3 → EBS snapshot: {key}")
+    print(f"[import] S3 → EBS snapshot: {key} (format={disk_format})")
     resp = ec2.import_snapshot(
         Description=description,
         DiskContainer={
             "Description": description,
-            "Format": "VHD",
+            "Format": disk_format,
             "UserBucket": {"S3Bucket": bucket, "S3Key": key},
         },
     )
@@ -375,19 +423,19 @@ def ensure_resource(image_path: str, name: str) -> str:
     ensure_s3_bucket()
     ensure_key_pair()
 
-    # 1. Convert
+    # 1. Convert to sparse VMDK (~23 GB for OSWorld vs 50 GB fixed VHD)
     t = time.time()
-    vhd_path = convert_to_vhd(image_path)
+    vmdk_path = convert_to_vmdk(image_path)
     timings["convert"] = time.time() - t
 
     # 2. Upload
     t = time.time()
-    s3_uri = upload_to_s3(vhd_path)
+    s3_uri = upload_to_s3(vmdk_path)
     timings["upload"] = time.time() - t
 
     # 3. Import snapshot
     t = time.time()
-    snapshot_id = import_snapshot(s3_uri, description=name)
+    snapshot_id = import_snapshot(s3_uri, description=name, disk_format="VMDK")
     timings["import"] = time.time() - t
 
     # 4. Register AMI
@@ -618,6 +666,337 @@ def stop(instance_id: str) -> None:
     waiter = ec2.get_waiter("instance_terminated")
     waiter.wait(InstanceIds=[instance_id])
     print(f"  Terminated.")
+
+
+# ── Bootstrap VM: remote ensure_resource ─────────────────────────────────────
+#
+# Spin up a cheap EC2 instance in the same region as the S3 bucket, download
+# the qcow2 from HuggingFace, convert to sparse VMDK, upload to S3, terminate.
+# Uses an IAM instance profile so the VM can write to S3 without embedded creds.
+
+BOOTSTRAP_INSTANCE_TYPE = "t3.medium"   # 2 vCPU, 4 GB — sufficient for qemu-img
+BOOTSTRAP_ROOT_VOLUME_GB = 128          # holds ~23 GB qcow2 + ~50 GB VHD
+BOOTSTRAP_PROFILE_NAME = "cube-bootstrap"
+BOOTSTRAP_ROLE_NAME    = "cube-bootstrap-role"
+
+# Script injected via EC2 user_data (base64).
+# Placeholders: {hf_url}, {s3_bucket}, {s3_key}, {sentinel_key}, {failed_key}, {region}
+_BOOTSTRAP_SCRIPT = """\
+#!/bin/bash
+set -eo pipefail
+exec > /var/log/cube-bootstrap.log 2>&1
+
+# Write a string to an S3 key using Python/boto3 (no CLI dependency)
+s3_put() {{
+    python3 -c "
+import boto3, sys
+boto3.client('s3', region_name='{region}').put_object(
+    Bucket='{s3_bucket}', Key='$1', Body=sys.stdin.buffer.read()
+)" <<< "$2"
+}}
+
+on_error() {{
+    msg="[bootstrap] FAILED at line $1: $2"
+    echo "$msg"
+    s3_put "{failed_key}" "$msg" || true
+    exit 1
+}}
+trap 'on_error $LINENO "$BASH_COMMAND"' ERR
+
+echo "[bootstrap] Starting at $(date)"
+
+# ── install tools ─────────────────────────────────────────────────────────────
+if command -v yum &>/dev/null; then
+    yum install -y qemu-img wget unzip python3-pip
+else
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq && apt-get install -y -qq qemu-utils wget unzip python3-pip
+fi
+pip3 install boto3 -q
+echo "[bootstrap] Tools ready"
+
+# ── download ──────────────────────────────────────────────────────────────────
+echo "[bootstrap] Downloading: {hf_url}"
+wget --progress=dot:giga -O /tmp/source.download "{hf_url}"
+echo "[bootstrap] Downloaded: $(du -sh /tmp/source.download)"
+
+# ── unzip if needed ───────────────────────────────────────────────────────────
+if file /tmp/source.download | grep -qi "zip archive"; then
+    echo "[bootstrap] Unzipping..."
+    unzip -q /tmp/source.download -d /tmp/
+    QCOW2=$(find /tmp -name "*.qcow2" | head -1)
+    echo "[bootstrap] Unzipped: $QCOW2"
+else
+    QCOW2=/tmp/source.download
+fi
+
+# ── convert ───────────────────────────────────────────────────────────────────
+echo "[bootstrap] Converting qcow2 → fixed VHD..."
+qemu-img convert -f qcow2 -O vpc -o subformat=fixed,force_size "$QCOW2" /tmp/output.vhd
+echo "[bootstrap] Converted: $(du -sh /tmp/output.vhd)"
+
+# ── upload via boto3 ──────────────────────────────────────────────────────────
+echo "[bootstrap] Uploading to S3..."
+python3 - << 'PYEOF'
+import boto3
+s3 = boto3.client('s3', region_name='{region}')
+s3.upload_file('/tmp/output.vhd', '{s3_bucket}', '{s3_key}',
+    Callback=lambda n: print(f'  uploaded {{n}} bytes', end='\\r', flush=True))
+print()
+PYEOF
+echo "[bootstrap] Upload complete"
+
+# ── signal done ───────────────────────────────────────────────────────────────
+s3_put "{sentinel_key}" "done"
+echo "[bootstrap] Done at $(date)"
+"""
+
+
+def ensure_bootstrap_instance_profile() -> str:
+    """Create IAM instance profile that grants S3 write access to bootstrap VMs.
+
+    Idempotent — safe to call on every bootstrap_ensure_resource() call.
+    Returns the instance profile name.
+    """
+    iam = _iam()
+
+    trust_policy = json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "ec2.amazonaws.com"},
+            "Action": "sts:AssumeRole",
+        }],
+    })
+    s3_policy = json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Action": ["s3:PutObject", "s3:GetObject", "s3:HeadObject"],
+            "Resource": f"arn:aws:s3:::{S3_BUCKET}/*",
+        }],
+    })
+
+    try:
+        iam.create_role(
+            RoleName=BOOTSTRAP_ROLE_NAME,
+            AssumeRolePolicyDocument=trust_policy,
+            Description="Bootstrap VMs: S3 write for image conversion",
+        )
+        print(f"[setup] Created IAM role: {BOOTSTRAP_ROLE_NAME}")
+    except iam.exceptions.EntityAlreadyExistsException:
+        pass
+
+    iam.put_role_policy(
+        RoleName=BOOTSTRAP_ROLE_NAME,
+        PolicyName="s3-bootstrap-write",
+        PolicyDocument=s3_policy,
+    )
+
+    try:
+        iam.create_instance_profile(InstanceProfileName=BOOTSTRAP_PROFILE_NAME)
+        iam.add_role_to_instance_profile(
+            InstanceProfileName=BOOTSTRAP_PROFILE_NAME,
+            RoleName=BOOTSTRAP_ROLE_NAME,
+        )
+        print(f"[setup] Created instance profile: {BOOTSTRAP_PROFILE_NAME}")
+        time.sleep(10)  # IAM propagation delay
+    except iam.exceptions.EntityAlreadyExistsException:
+        pass
+
+    return BOOTSTRAP_PROFILE_NAME
+
+
+def _latest_ubuntu_ami() -> str:
+    """Return the latest Ubuntu 22.04 LTS AMI ID for the configured region."""
+    ec2 = _ec2()
+    resp = ec2.describe_images(
+        Owners=["099720109477"],  # Canonical
+        Filters=[
+            {"Name": "name", "Values": ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]},
+            {"Name": "state", "Values": ["available"]},
+            {"Name": "architecture", "Values": ["x86_64"]},
+        ],
+    )
+    images = sorted(resp["Images"], key=lambda x: x["CreationDate"], reverse=True)
+    if not images:
+        raise RuntimeError("No Ubuntu 22.04 AMI found in region")
+    ami_id = images[0]["ImageId"]
+    print(f"[bootstrap-vm] Ubuntu 22.04 AMI: {ami_id}")
+    return ami_id
+
+
+def _s3_object_exists(key: str) -> bool:
+    """Return True if an S3 object exists in the bootstrap bucket."""
+    try:
+        _s3().head_object(Bucket=S3_BUCKET, Key=key)
+        return True
+    except botocore.exceptions.ClientError:
+        return False
+
+
+def poll_s3_sentinel(
+    sentinel_key: str,
+    failed_key: str | None = None,
+    timeout: int = 7200,
+    interval: int = 30,
+) -> None:
+    """Poll S3 until sentinel object appears (bootstrap done) or failed object appears."""
+    s3 = _s3()
+    deadline = time.time() + timeout
+    t0 = time.time()
+
+    while time.time() < deadline:
+        if failed_key:
+            try:
+                data = s3.get_object(Bucket=S3_BUCKET, Key=failed_key)["Body"].read()
+                raise RuntimeError(f"Bootstrap VM reported failure: {data.decode()}")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+
+        if _s3_object_exists(sentinel_key):
+            print(f"\n  Bootstrap complete after {int(time.time()-t0)}s")
+            return
+
+        elapsed = int(time.time() - t0)
+        remaining = int(deadline - time.time())
+        print(f"\r  [{elapsed}s elapsed, {remaining}s remaining] waiting for bootstrap...", end="", flush=True)
+        time.sleep(interval)
+
+    raise TimeoutError(f"Bootstrap did not complete within {timeout}s")
+
+
+def launch_bootstrap_ec2(script: str, root_volume_gb: int = BOOTSTRAP_ROOT_VOLUME_GB) -> dict:
+    """Launch an EC2 instance with a bootstrap script and a large root volume.
+
+    Uses the latest Ubuntu 22.04 AMI. The instance profile grants S3 write access.
+    Returns {instance_id, public_ip}.
+    """
+    ec2 = _ec2()
+    ami_id = _latest_ubuntu_ami()
+    sg_id  = ensure_security_group()
+    profile_name = ensure_bootstrap_instance_profile()
+
+    # Encode script as base64 for user_data
+    user_data = base64.b64encode(script.encode()).decode()
+
+    print(f"[bootstrap-vm] Launching EC2 ({BOOTSTRAP_INSTANCE_TYPE}, {root_volume_gb} GB root)")
+    t0 = time.time()
+
+    resp = ec2.run_instances(
+        ImageId=ami_id,
+        InstanceType=BOOTSTRAP_INSTANCE_TYPE,
+        MinCount=1,
+        MaxCount=1,
+        KeyName=KEY_PAIR_NAME,
+        SecurityGroupIds=[sg_id],
+        UserData=user_data,
+        IamInstanceProfile={"Name": profile_name},
+        TagSpecifications=[{
+            "ResourceType": "instance",
+            "Tags": TAGS + [
+                {"Key": "Name",  "Value": f"cube-bootstrap-{uuid.uuid4().hex[:6]}"},
+                {"Key": "role",  "Value": "bootstrap"},
+            ],
+        }],
+        BlockDeviceMappings=[{
+            "DeviceName": "/dev/sda1",
+            "Ebs": {
+                "VolumeSize": root_volume_gb,
+                "VolumeType": "gp3",
+                "DeleteOnTermination": True,
+            },
+        }],
+    )
+    instance_id = resp["Instances"][0]["InstanceId"]
+    print(f"  Instance: {instance_id}")
+
+    waiter = ec2.get_waiter("instance_running")
+    waiter.wait(InstanceIds=[instance_id])
+
+    desc = ec2.describe_instances(InstanceIds=[instance_id])
+    public_ip = desc["Reservations"][0]["Instances"][0].get("PublicIpAddress", "")
+    print(f"  Running in {int(time.time()-t0)}s: {instance_id} @ {public_ip}")
+    print(f"  SSH (for debugging): ssh -i {SSH_PRIVKEY} -o IdentitiesOnly=yes ubuntu@{public_ip}")
+    print(f"  Logs: ssh ... 'sudo tail -f /var/log/cube-bootstrap.log'")
+
+    return {"instance_id": instance_id, "public_ip": public_ip}
+
+
+def cleanup_bootstrap_ec2(instance_id: str) -> None:
+    """Terminate bootstrap EC2 instance. Root EBS volume auto-deletes."""
+    print(f"[bootstrap-vm] Terminating {instance_id}...")
+    ec2 = _ec2()
+    ec2.terminate_instances(InstanceIds=[instance_id])
+    waiter = ec2.get_waiter("instance_terminated")
+    waiter.wait(InstanceIds=[instance_id])
+    print("  Bootstrap instance terminated.")
+
+
+def bootstrap_ensure_resource(hf_url: str, name: str, vhd_key: str | None = None) -> str:
+    """Remote bootstrap: spin up an EC2 instance to download + convert + upload.
+
+    Replaces the local upload steps with an in-cloud operation that runs at
+    datacenter speed (~15-20 min vs hours from home broadband).
+    After this returns, the VHD is in S3 and the downstream steps
+    (import_snapshot, register_ami) run as usual.
+
+    hf_url  : HTTPS URL to the source .qcow2 (HuggingFace public repo)
+    name    : AMI name
+    Returns ami_id.
+    """
+    # Strip all extensions: "Ubuntu.qcow2.zip" → "Ubuntu"
+    src_filename = hf_url.rstrip("/").split("/")[-1]
+    base_name    = src_filename.split(".")[0]
+    vhd_key      = vhd_key if vhd_key else (base_name + ".vhd")
+    sentinel_key = vhd_key + ".bootstrap_done"
+    failed_key   = vhd_key + ".bootstrap_failed"
+
+    print(f"\n{'='*60}")
+    print(f"bootstrap_ensure_resource (AWS): {name}")
+    print(f"  source:   {hf_url}")
+    print(f"  vhd key:  s3://{S3_BUCKET}/{vhd_key}")
+    print(f"{'='*60}")
+
+    # One-time account setup
+    ensure_vmimport_role()
+    ensure_s3_bucket()
+    ensure_key_pair()
+
+    # Idempotent: skip bootstrap if VHD already in S3
+    if _s3_object_exists(sentinel_key):
+        print("[bootstrap] Sentinel exists — VHD already bootstrapped.")
+    else:
+        t_bootstrap = time.time()
+
+        script = _BOOTSTRAP_SCRIPT.format(
+            hf_url=hf_url,
+            s3_bucket=S3_BUCKET,
+            s3_key=vhd_key,
+            sentinel_key=sentinel_key,
+            failed_key=failed_key,
+            region=REGION,
+        )
+
+        vm_info = launch_bootstrap_ec2(script)
+
+        try:
+            print("\n[bootstrap] EC2 is running. Polling for completion every 30s...")
+            print(f"  (watch logs: ssh -i {SSH_PRIVKEY} ubuntu@{vm_info['public_ip']}"
+                  f" 'sudo tail -f /var/log/cube-bootstrap.log')")
+            poll_s3_sentinel(sentinel_key, failed_key=failed_key)
+        finally:
+            cleanup_bootstrap_ec2(vm_info["instance_id"])
+
+        print(f"[bootstrap] VHD in S3. Bootstrap took {(time.time()-t_bootstrap)/60:.1f} min")
+
+    # Downstream steps: import snapshot → register AMI (unchanged)
+    s3_uri      = f"s3://{S3_BUCKET}/{vhd_key}"
+    snapshot_id = import_snapshot(s3_uri, description=name, disk_format="VHD")
+    ami_id      = register_ami(snapshot_id, name)
+    return ami_id
 
 
 # ── List AMIs ─────────────────────────────────────────────────────────────────
