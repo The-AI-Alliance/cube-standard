@@ -7,7 +7,6 @@ as the single agent-facing action.
 
 import datetime
 
-from cube.core import Action, Content, Observation, StepError
 from cube.resources.chat_session import ChatConfig, ChatRole, ChatSession
 from cube.tool import Tool, ToolConfig, tool_action
 from cube_chat import BasicChatConfig
@@ -71,16 +70,6 @@ class ChatTool(Tool):
         self._session.stop()
 
     # ------------------------------------------------------------------
-    # Action dispatch override — appends chat_obs() after every action
-    # ------------------------------------------------------------------
-
-    def execute_action(self, action: Action) -> Observation | StepError:
-        result = super().execute_action(action)
-        if isinstance(result, StepError):
-            return result
-        return result + self.chat_obs()
-
-    # ------------------------------------------------------------------
     # Task-internal methods (not agent-facing actions)
     # ------------------------------------------------------------------
 
@@ -106,27 +95,26 @@ class ChatTool(Tool):
         """
         return self._session.wait_for_user_message()
 
-    def chat_obs(self) -> Observation:
-        """Format the full message history as a chat observation.
+    def chat_obs(self) -> str:
+        """Format the full message history as a string.
 
         Returns
         -------
-        Observation
-            Contains a single TextContent with the formatted chat history.
+        str
+            Formatted chat history with one line per message.
         """
         lines = []
         for entry in self._session.messages:
             ts = datetime.datetime.fromtimestamp(entry["timestamp"]).strftime("%H:%M:%S")
             lines.append(f"[{ts}] {entry['role']}: {entry['message']}")
-        formatted = "\n".join(lines)
-        return Observation(contents=[Content.from_data(formatted, name="chat_history")])
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Agent-facing actions
     # ------------------------------------------------------------------
 
     @tool_action
-    def send_message(self, text: str) -> None:
+    def send_message(self, text: str) -> str:
         """Send a message to the task.
 
         Parameters
@@ -135,3 +123,4 @@ class ChatTool(Tool):
             Message content to send.
         """
         self._session.send_message(text)
+        return self.chat_obs()

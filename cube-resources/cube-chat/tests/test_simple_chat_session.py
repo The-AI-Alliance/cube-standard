@@ -6,7 +6,7 @@ import time
 import pytest
 from cube.resources.chat_session import ChatConfig, ChatSession
 
-from cube_chat import BasicChatConfig, BasicChatSession
+from cube_chat import BasicChatConfig, BasicChatSession, SessionStoppedError
 
 
 def test_chat_config_is_abstract() -> None:
@@ -111,11 +111,30 @@ def test_wait_for_user_message_blocks_until_send() -> None:
     assert received == ["response"]
 
 
-def test_stop_is_noop() -> None:
+def test_stop_unblocks_wait_for_user_message() -> None:
     session = BasicChatSession()
-    session.add_message("user", "hello")
-    session.stop()  # should not raise
-    assert len(session.messages) == 1
+    error: list[Exception] = []
+
+    def waiter() -> None:
+        try:
+            session.wait_for_user_message()
+        except SessionStoppedError as e:
+            error.append(e)
+
+    t = threading.Thread(target=waiter, daemon=True)
+    t.start()
+    time.sleep(0.05)  # ensure waiter is blocked
+    session.stop()
+    t.join(timeout=2)
+    assert not t.is_alive(), "waiter thread hung after stop()"
+    assert len(error) == 1
+
+
+def test_stop_raises_on_next_wait() -> None:
+    session = BasicChatSession()
+    session.stop()
+    with pytest.raises(SessionStoppedError):
+        session.wait_for_user_message()
 
 
 def test_basic_chat_config_make() -> None:

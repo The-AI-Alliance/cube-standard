@@ -7,6 +7,11 @@ from cube.resources.chat_session import ChatConfig, ChatMessage, ChatRole, ChatS
 
 _STORED_ROLES = {"user", "assistant", "infeasible"}
 _VALID_ROLES = {"user", "assistant", "info", "infeasible"}
+_STOP_SENTINEL = None
+
+
+class SessionStoppedError(Exception):
+    """Raised by wait_for_user_message() when stop() has been called."""
 
 
 class BasicChatConfig(ChatConfig):
@@ -31,7 +36,7 @@ class BasicChatSession(ChatSession):
 
     def __init__(self) -> None:
         self._messages: list[ChatMessage] = []
-        self._queue: queue.SimpleQueue[str] = queue.SimpleQueue()
+        self._queue: queue.SimpleQueue[str | None] = queue.SimpleQueue()
 
     @property
     def messages(self) -> list[ChatMessage]:
@@ -65,8 +70,16 @@ class BasicChatSession(ChatSession):
         -------
         str
             The agent's message text.
+
+        Raises
+        ------
+        SessionStoppedError
+            If stop() was called while blocked or before this call.
         """
-        return self._queue.get()
+        msg = self._queue.get()
+        if msg is _STOP_SENTINEL:
+            raise SessionStoppedError("Session has been stopped")
+        return msg
 
     def send_message(self, text: str) -> None:
         """Send a message from the agent side, unblocking wait_for_user_message().
@@ -82,5 +95,5 @@ class BasicChatSession(ChatSession):
         self._queue.put(text)
 
     def stop(self) -> None:
-        """No-op: in-memory sessions hold no external resources."""
-        pass
+        """Unblock any thread waiting in wait_for_user_message() and mark the session stopped."""
+        self._queue.put(_STOP_SENTINEL)
