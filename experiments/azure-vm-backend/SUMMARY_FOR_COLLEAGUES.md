@@ -1,6 +1,6 @@
 # CUBE VM Backend — Engineering Summary
 *For: AI Research Team*
-*Date: 2026-03-24*
+*Date: 2026-03-25*
 *Author: Alexandre Lacoste (with hands-on experiments)*
 
 ---
@@ -42,29 +42,33 @@ The key insight: benchmark authors don't know or care what cloud a researcher us
 
 ## What We Validated (hands-on experiments, ServiceNow Azure subscription)
 
-### ✅ Full pipeline automated end-to-end — single command
+### ✅ Full pipeline automated end-to-end — consolidated script
 
-The complete pipeline from qcow2 to communicating VM is scripted (`experiment_ubuntu_gallery.py`) and was run end-to-end in a single command:
+The complete pipeline from qcow2 to communicating VM is implemented in `cube_azure_pipeline.py` and validated end-to-end:
 
 ```bash
-python experiment_ubuntu_gallery.py full --img ubuntu-22.04-cloudimg-amd64.img
+# One-time setup (~60-90 min, dominated by upload)
+python cube_azure_pipeline.py ensure --image ubuntu-22.04-cloudimg-amd64.img --name cube-ubuntu-22-04
+
+# Per eval (~4 min)
+python cube_azure_pipeline.py launch --name cube-ubuntu-22-04
+python cube_azure_pipeline.py probe --ip <returned_ip>
+
+# Task reset (~3.5 min)
+python cube_azure_pipeline.py restore --vm cube-vm-abc123 --name cube-ubuntu-22-04
 ```
 
-**Actual output from our test run:**
+**Actual output from our test run (2026-03-25):**
 ```
-[convert]  ubuntu-22.04-cloudimg-amd64.img → .vhd  (qcow2, 2.2 GB)
-[upload]   VHD → cubeexpvhd/vhds/  (Azure Blob Storage, PageBlob)
-[import]   Blob → Managed Disk  cube-exp-disk-7e931d
-[imgdef]   Created Generalized gallery image definition  cube-ubuntu-22-04
-[version]  Disk → Gallery image version 1.0.0  (~8 min, 2.2 GB)
-[launch]   VM  cube-ub-vm-60e70d  @ 20.230.193.132  (createOption: FromImage)
-[probe]    SSH available  (~2 min after provisioning)
-           /health  → {"status": "ok", "agent": "cube-mini-guest-agent"}  ✅
+[launch]   VM  cube-vm-13cc79  @ 20.114.13.244  — ready in 69s
+[probe]    /health  → {"status": "ok", "agent": "cube-mini-guest-agent"}  ✅
            /screenshot  → HTTP 200, image/png, 2788 bytes  ✅
            /execute  → uname -a returns Ubuntu 22.04 kernel info  ✅
+[restore]  cube-vm-13cc79 deleted → cube-vm-f53530 @ 52.247.227.140 — 3.5 min
+[probe]    All three endpoints pass on restored VM  ✅
 ```
 
-All three guest agent endpoints work over SSH tunnel. **The full path from qcow2 to communicating VM is automated.**
+All three guest agent endpoints work over SSH tunnel, and `restore_snapshot()` is validated. **The full path from qcow2 to communicating VM — including task reset — is automated.**
 
 ### ✅ qcow2-converted VHD actually boots on Azure
 
@@ -107,23 +111,28 @@ ssh -N -L 127.0.0.1:15000:localhost:5000 azureuser@vm_ip
 
 `VM.endpoint` returns the tunneled URL transparently. Tested live — all three endpoints respond correctly through the tunnel.
 
-### ✅ cloud-init guest agent injection works (with correct YAML)
+### ✅ cloud-init guest agent injection works (two gotchas fixed)
 
-The `custom_data` field passes a cloud-init script at launch to install and start the CUBE guest agent. One gotcha: Python code in `runcmd` heredocs is misinterpreted as YAML by cloud-init. The fix is to use `write_files` with `encoding: b64`:
+The `custom_data` field passes a cloud-init script at launch to install and start the CUBE guest agent. Two gotchas found and fixed:
+
+**Gotcha 1**: Python code in `runcmd` heredocs is misinterpreted as YAML (`import io` → parse error). Fix: use `write_files` with `encoding: b64`.
+
+**Gotcha 2**: `write_files` with `owner: "azureuser:azureuser"` fails because `write_files` runs at the `init-network` phase, before waagent creates the `azureuser` account. Fix: write to `/usr/local/bin/` with no `owner` field (`runcmd` runs as root anyway).
 
 ```yaml
 #cloud-config
 packages:
   - python3-flask
 write_files:
-  - path: /home/azureuser/guest_agent.py
+  - path: /usr/local/bin/cube_guest_agent.py
+    permissions: '0755'
     encoding: b64
     content: <base64-encoded agent code>
 runcmd:
-  - nohup python3 /home/azureuser/guest_agent.py > /var/log/cube-guest-agent.log 2>&1 &
+  - nohup python3 /usr/local/bin/cube_guest_agent.py > /var/log/cube-guest-agent.log 2>&1 &
 ```
 
-This is implemented in `experiment_ubuntu_gallery.py` and works correctly.
+This is the working pattern in `cube_azure_pipeline.py` — validated live.
 
 ---
 
