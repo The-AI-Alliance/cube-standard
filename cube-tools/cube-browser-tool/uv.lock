@@ -299,11 +299,25 @@ wheels = [
 ]
 
 [[package]]
+name = "cube-browser-playwright"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cube-standard" },
+    { name = "playwright" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9f/b3/360047dea00946f8b0a4b15f9edd3a675d556e54f255ae075a2852a348aa/cube_browser_playwright-0.1.0.tar.gz", hash = "sha256:ee11fadc7bb22588bd26703a1424acb3e91947f1fd82b1d7baf1ee1f74128b25", size = 2922, upload-time = "2026-03-16T19:22:19.857Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/eb/ce/0457a8b89c76f15e5a13a98b73b172eda1026303ecbfd2e79cadcad6d2df/cube_browser_playwright-0.1.0-py3-none-any.whl", hash = "sha256:bd3eca362e24afd7bba02a9eed873ba14eb614c3236b4f56f8c471dab96adfdb", size = 4001, upload-time = "2026-03-16T19:22:18.593Z" },
+]
+
+[[package]]
 name = "cube-browser-tool"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
+    { name = "cube-browser-playwright" },
     { name = "cube-standard" },
     { name = "pillow" },
     { name = "playwright" },
@@ -322,6 +336,7 @@ dev = [
 requires-dist = [
     { name = "beautifulsoup4" },
     { name = "browsergym-core", marker = "extra == 'bgym'" },
+    { name = "cube-browser-playwright" },
     { name = "cube-standard" },
     { name = "pillow", specifier = ">=9.0" },
     { name = "playwright" },
@@ -1022,11 +1037,11 @@ wheels = [
 
 [[package]]
 name = "pyjwt"
-version = "2.11.0"
+version = "2.12.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/5c/5a/b46fa56bf322901eee5b0454a34343cdbdae202cd421775a8ee4e42fd519/pyjwt-2.11.0.tar.gz", hash = "sha256:35f95c1f0fbe5d5ba6e43f00271c275f7a1a4db1dab27bf708073b75318ea623", size = 98019, upload-time = "2026-01-30T19:59:55.694Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a8/10/e8192be5f38f3e8e7e046716de4cae33d56fd5ae08927a823bb916be36c1/pyjwt-2.12.0.tar.gz", hash = "sha256:2f62390b667cd8257de560b850bb5a883102a388829274147f1d724453f8fb02", size = 102511, upload-time = "2026-03-12T17:15:30.831Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6f/01/c26ce75ba460d5cd503da9e13b21a33804d38c2165dec7b716d06b13010c/pyjwt-2.11.0-py3-none-any.whl", hash = "sha256:94a6bde30eb5c8e04fee991062b534071fd1439ef58d2adc9ccb823e7bcd0469", size = 28224, upload-time = "2026-01-30T19:59:54.539Z" },
+    { url = "https://files.pythonhosted.org/packages/15/70/70f895f404d363d291dcf62c12c85fdd47619ad9674ac0f53364d035925a/pyjwt-2.12.0-py3-none-any.whl", hash = "sha256:9bb459d1bdd0387967d287f5656bf7ec2b9a26645d1961628cda1764e087fd6e", size = 29700, upload-time = "2026-03-12T17:15:29.257Z" },
 ]
 
 [package.optional-dependencies]

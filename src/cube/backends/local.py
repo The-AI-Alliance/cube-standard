@@ -197,8 +197,8 @@ class LocalContainerBackend(ContainerBackend):
             kwargs["ports"] = {f"{p}/tcp": None for p in config.ports}
 
         try:
-            docker_container = client.containers.run(
-                config.image,
+            docker_container = client.containers.run(  # nosemgrep: docker-arbitrary-container-run
+                config.image,  # trusted: DockerConfig is authored by the benchmark developer, not end-user input
                 command="sleep infinity",
                 detach=True,
                 network_mode=self.network_mode,

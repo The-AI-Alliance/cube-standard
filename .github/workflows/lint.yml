@@ -8,5 +8,8 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
 
+      - name: Install dev dependencies
+        run: uv sync --extra dev
+
       - name: Run Ruff linting and formatting checks
         run: make lint-check

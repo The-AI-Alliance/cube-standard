@@ -302,7 +302,7 @@ wheels = [
 
 [[package]]
 name = "cube-standard"
-version = "0.1.0rc1"
+version = "0.1.0rc3"
 source = { editable = "." }
 dependencies = [
     { name = "docstring-parser" },

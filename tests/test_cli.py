@@ -185,10 +185,12 @@ def test_resolve_debug_module_shows_available_benchmarks():
 # ── cmd_test ──────────────────────────────────────────────────────────────────
 
 
-def _make_debug_module(*, get_debug_task_configs=True, make_debug_agent=True) -> ModuleType:
+def _make_debug_module(*, get_debug_benchmark=True, make_debug_agent=True) -> ModuleType:
     mod = ModuleType("fake_debug")
-    if get_debug_task_configs:
-        mod.get_debug_task_configs = MagicMock(return_value=[])
+    if get_debug_benchmark:
+        mock_benchmark = MagicMock()
+        mock_benchmark.get_task_configs.return_value = []
+        mod.get_debug_benchmark = MagicMock(return_value=mock_benchmark)
     if make_debug_agent:
         mod.make_debug_agent = MagicMock(return_value=lambda obs, actions: None)
     return mod
@@ -239,9 +241,9 @@ def test_cmd_test_import_error_exits_1():
     assert exc.value.code == 1
 
 
-def test_cmd_test_missing_get_debug_task_configs_exits_1():
-    mod = _make_debug_module(get_debug_task_configs=False)
-    key = "fake_debug_no_configs.debug"
+def test_cmd_test_missing_get_debug_benchmark_exits_1():
+    mod = _make_debug_module(get_debug_benchmark=False)
+    key = "fake_debug_no_benchmark.debug"
     sys.modules[key] = mod
     try:
         with patch("cube.cli._resolve_debug_module", return_value=key):
@@ -272,7 +274,7 @@ def test_cmd_test_passes_max_steps(fake_debug_in_sys_modules):
         with patch("cube.testing.run_debug_suite", return_value=results) as mock_suite:
             cmd_test("fake_debug.debug", max_steps=5)
 
-    mock_suite.assert_called_once_with("fake_debug.debug", fake_debug_in_sys_modules, max_steps=5)
+    mock_suite.assert_called_once_with("fake_debug.debug", fake_debug_in_sys_modules, max_steps=5, print_json=False)
 
 
 # ── main() ────────────────────────────────────────────────────────────────────
@@ -327,11 +329,11 @@ def test_main_test_dispatches_with_default_max_steps():
     with patch("cube.cli.cmd_test") as mock_test:
         with patch.object(sys, "argv", ["cube", "test", "counter-cube"]):
             main()
-    mock_test.assert_called_once_with("counter-cube", max_steps=20)
+    mock_test.assert_called_once_with("counter-cube", max_steps=20, output_path=None)
 
 
 def test_main_test_dispatches_with_custom_max_steps():
     with patch("cube.cli.cmd_test") as mock_test:
         with patch.object(sys, "argv", ["cube", "test", "counter-cube", "--max-steps=5"]):
             main()
-    mock_test.assert_called_once_with("counter-cube", max_steps=5)
+    mock_test.assert_called_once_with("counter-cube", max_steps=5, output_path=None)
