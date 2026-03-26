@@ -34,7 +34,7 @@ from pydantic import ConfigDict, Field, PrivateAttr
 from cube.container import ContainerBackend
 from cube.core import TypedBaseModel
 from cube.seed import AbstractSeedGenerator
-from cube.task import TaskConfig, TaskMetadata
+from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
 
 logger = logging.getLogger(__name__)
@@ -488,24 +488,34 @@ class Benchmark(TypedBaseModel, ABC):
         object.__setattr__(new_instance, "task_metadata", {tm.id: tm for tm in task_subset})
         return new_instance
 
-    def spawn(self, task_config: TaskConfig) -> str:
+    def spawn(self, task_config: TaskConfig) -> Task:
         """
-        Spawn a new RPC server for the specified task and return its endpoint URL.
+        Create and return a Task for the given config.
+
+        This is a pure creation call — no subprocess, no server, no network.
+        Callers that need a JSON-RPC server can do so in one extra line::
+
+            task = benchmark.spawn(task_config)
+            app  = make_task_jsonrpc_app(task)   # only if you need a server
+
+        The ``cube/spawn`` network endpoint (on a running benchmark server) is a
+        separate concept: it creates a task, wraps it in a JSON-RPC app, and spawns
+        a subprocess, then returns a URL.  That mixing of concerns is appropriate for
+        a remote API; it is not appropriate for the in-process Python API.
 
         Args:
             task_config: A TaskConfig produced by get_task_configs().
-        """
-        from cube.server import make_task_rpc_server
 
+        Returns:
+            The instantiated Task, ready to call reset() / step() / evaluate() on.
+        """
         if task_config.task_id not in self.task_metadata:
             raise ValueError(f"Task '{task_config.task_id}' not found in benchmark")
 
-        task = task_config.make(
+        return task_config.make(
             runtime_context=self._runtime_context,
             container_backend=self.container_backend,
         )
-        _app, _process, url = make_task_rpc_server(task)
-        return url
 
     @abstractmethod
     def close(self) -> None:

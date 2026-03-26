@@ -28,7 +28,7 @@ class SimpleTask(Task):
     def reset(self):
         return Observation.from_text("ready"), {}
 
-    def evaluate(self, obs: Observation):
+    def evaluate(self, obs: Observation | None = None):
         return 0.5, {"score": 0.5}
 
 

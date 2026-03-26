@@ -29,13 +29,30 @@ Benchmark methods (``POST /``)
 Task methods (``POST /``)
 --------------------------
 - ``tools/list``           → list[ActionSchema]
-- ``tools/call``           → Observation | StepError    (params: action)
+- ``tools/call``           → Observation | StepError    (params: name, arguments?)
 - ``cube/reset``           → {obs, info}
-- ``cube/step``            → EnvironmentOutput          (params: action)
-- ``cube/evaluate``        → {reward, info}             (params: obs)
+- ``cube/step``            → EnvironmentOutput          (params: name, arguments?)
+- ``cube/evaluate``        → {reward, info}             (params: obs?)  obs defaults to empty Observation when omitted
 - ``cube/close``           → null
 - ``cube/status``          → str
 - ``cube/privileged_info`` → Content
+
+Note on ``tools/call`` and ``cube/step`` param shape
+-----------------------------------------------------
+Both methods use a flat MCP-compatible param shape::
+
+    {"name": "click", "arguments": {"x": 100, "y": 200}, "action_id": "abc-123"}
+
+This mirrors the MCP wire format for ``tools/call`` exactly, so a CUBE task
+server can be driven by a standard MCP client with no adapter layer.  The
+``Action`` type remains an internal implementation detail — clients never
+construct it directly.
+
+``action_id`` is optional.  When provided it is forwarded as ``Action.id``,
+allowing clients to correlate actions to observations in logs and traces, and
+anticipating the Phase 2 WebSocket async flow where the server pushes results
+back with the same id.  ``action_id`` is intentionally distinct from the
+JSON-RPC envelope ``id`` field (which identifies the request, not the action).
 
 Note on ``cube/spawn`` vs ``benchmark.spawn()``
 ------------------------------------------------
@@ -250,9 +267,9 @@ def make_task_jsonrpc_app(task: Task) -> FastAPI:
                 result = [a.model_dump(mode="json") for a in task.action_set]
 
             elif method == "tools/call":
-                if "action" not in params:
-                    return JSONResponse(_err(req_id, _INVALID_PARAMS, "Missing 'action' in params"))
-                action = Action.model_validate(params["action"])
+                if "name" not in params:
+                    return JSONResponse(_err(req_id, _INVALID_PARAMS, "Missing 'name' in params"))
+                action = Action(name=params["name"], arguments=params.get("arguments", {}), id=params.get("action_id"))
                 result = task.tool.execute_action(action).model_dump(mode="json")
 
             elif method == "cube/reset":
@@ -260,18 +277,13 @@ def make_task_jsonrpc_app(task: Task) -> FastAPI:
                 result = {"obs": obs.model_dump(mode="json"), "info": info}
 
             elif method == "cube/step":
-                if "action" not in params:
-                    return JSONResponse(_err(req_id, _INVALID_PARAMS, "Missing 'action' in params"))
-                raw = params["action"]
-                action: Action | list[Action] = (
-                    [Action.model_validate(a) for a in raw] if isinstance(raw, list) else Action.model_validate(raw)
-                )
+                if "name" not in params:
+                    return JSONResponse(_err(req_id, _INVALID_PARAMS, "Missing 'name' in params"))
+                action = Action(name=params["name"], arguments=params.get("arguments", {}), id=params.get("action_id"))
                 result = task.step(action).model_dump(mode="json")
 
             elif method == "cube/evaluate":
-                if "obs" not in params:
-                    return JSONResponse(_err(req_id, _INVALID_PARAMS, "Missing 'obs' in params"))
-                obs = Observation.model_validate(params["obs"])
+                obs = Observation.model_validate(params["obs"]) if "obs" in params else None
                 reward, info = task.evaluate(obs)
                 result = {"reward": reward, "info": info}
 

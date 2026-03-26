@@ -77,13 +77,30 @@ Task server (`POST /`):
 | Method | Python equivalent | Params | Result |
 |---|---|---|---|
 | `tools/list` | `task.action_set` | — | `list[ActionSchema]` |
-| `tools/call` | `task.tool.execute_action(action)` | `action` | `Observation \| StepError` |
+| `tools/call` | `task.tool.execute_action(action)` | `name`, `arguments?`, `action_id?` | `Observation \| StepError` |
 | `cube/reset` | `task.reset()` | — | `{obs, info}` |
-| `cube/step` | `task.step(action)` | `action` (single or list) | `EnvironmentOutput` |
-| `cube/evaluate` | `task.evaluate(obs)` | `obs` | `{reward, info}` |
+| `cube/step` | `task.step(action)` | `name`, `arguments?`, `action_id?` | `EnvironmentOutput` |
+| `cube/evaluate` | `task.evaluate(obs)` | `obs?` | `{reward, info}` |
 | `cube/close` | `task.close()` | — | `null` |
 | `cube/status` | `task.get_status()` | — | `str` |
 | `cube/privileged_info` | `task.get_privileged_info()` | — | `Content` |
+
+**Param shape for `tools/call` and `cube/step`**
+
+Both use a flat, MCP-compatible shape:
+
+```json
+{"name": "click", "arguments": {"x": 100, "y": 200}, "action_id": "abc-123"}
+```
+
+This matches the MCP wire format for `tools/call` exactly — a CUBE task server
+can be driven by a standard MCP client with no adapter.  `action_id` is
+optional; when provided it maps to `Action.id`, enabling action↔observation
+correlation in logs and anticipating the Phase 2 async WebSocket flow.
+`action_id` is distinct from the JSON-RPC envelope `id` field.
+
+The old `action` wrapper (`{"action": {"name": "...", "arguments": {...}}}`) and
+multi-action list support for `cube/step` have been removed.
 
 **Serialization notes**
 
@@ -279,34 +296,6 @@ developers.  Contains:
   - `make_benchmark_rpc_server` / `make_task_rpc_server` kept, now wrap the new apps.
 
 ### What remains
-
-- [ ] **`src/cube/benchmark.py`** — update `spawn()`:
-  - Change return type from `str` to `tuple[Task, FastAPI]`.
-  - Remove `from cube.server import make_task_rpc_server` inside the method.
-  - New body: `task = task_config.make(...); app = make_task_jsonrpc_app(task); return task, app`
-  - Import `make_task_jsonrpc_app` from `cube.server` (lazy import inside the method to
-    avoid circular imports, same pattern as the current code).
-  - Update docstring accordingly.
-
-- [ ] **`tests/test_benchmark_server.py`** — update existing test:
-  - Change import: `make_benchmark_fastapi_app` → `make_benchmark_jsonrpc_app`
-  - Replace REST endpoint calls (`GET /cube/info`, etc.) with JSON-RPC POST calls.
-  - Keep the same `MinimalBenchmark` / `MinimalTask` / `MinimalTool` fixtures (reuse or
-    move to conftest if `test_server.py` also needs them).
-
-- [ ] **`tests/test_server.py`** — write new comprehensive test file:
-  - Define a minimal inline cube (no counter-cube dependency).
-    The existing `MinimalBenchmark` from `test_benchmark_server.py` is a good starting
-    point — move shared fixtures to a conftest or duplicate if test files stay separate.
-  - Test benchmark server: `cube/info`, `cube/tasks` (with offset/limit), `cube/shutdown`.
-  - Test `benchmark.spawn()` returning `(task, app)` and use `TestClient(app)` directly.
-  - Test task server: `tools/list`, `cube/reset`, `cube/step` (full episode to done),
-    `cube/evaluate`, `cube/close`, `cube/status`, `cube/privileged_info`.
-  - Test JSON-RPC error envelope:
-    - Unknown method → `{"error": {"code": -32601}}`
-    - Missing required param → `{"error": {"code": -32602}}`
-    - Invalid JSON body → `{"error": {"code": -32700}}`
-    - Missing `jsonrpc` field → `{"error": {"code": -32600}}`
 
 - [ ] **`examples/counter-cube-remote/`** — new example:
   - `server.py` — imports `CounterBenchmark`, calls `make_benchmark_rpc_server()`,
