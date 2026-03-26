@@ -34,7 +34,7 @@ from pydantic import ConfigDict, Field, PrivateAttr
 from cube.container import ContainerBackend
 from cube.core import TypedBaseModel
 from cube.seed import AbstractSeedGenerator
-from cube.task import Task, TaskConfig, TaskMetadata
+from cube.task import RuntimeContext, Task, TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
 
 logger = logging.getLogger(__name__)
@@ -58,15 +58,6 @@ class ResetIsolation(str, enum.Enum):
     RESTART = "restart"
     APP_LEVEL = "app_level"
     NEW_INSTANCE = "new_instance"
-
-
-RuntimeContext = dict[str, Any]
-"""
-Type alias for shared infrastructure references created during benchmark.setup().
-
-example:
-    {"container_id": "abc123", "vm_address": "http://12.34.56.78", "ssh_session": session}
-"""
 
 
 class BenchmarkMetadata(TypedBaseModel):
