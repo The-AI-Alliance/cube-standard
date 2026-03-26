@@ -249,6 +249,20 @@ class TestAzureBackendDefaults(unittest.TestCase):
         self.assertIn("open_tunnel", sig.parameters)
         self.assertNotIn("do_open_tunnel", sig.parameters)
 
+    def test_bootstrap_script_generates_ssh_host_keys(self):
+        """Regression: sshd refuses to start without host keys.
+
+        OSWorld ships with openssh-server installed but host keys may be absent
+        (never generated if sshd was never run in the source image). Without
+        host keys, sshd -t (the ExecStartPre check) fails and sshd silently
+        won't start despite the multi-user.target.wants symlink being present.
+        Fix: run ssh-keygen -A in chroot to generate any missing host keys.
+        """
+        import azure_backend
+        script = azure_backend._AZURE_BOOTSTRAP_SCRIPT
+        self.assertIn("ssh-keygen -A", script)
+        self.assertIn("sshd_not_to_be_run", script)
+
     def test_launch_uses_specialized_image_no_os_profile(self):
         """Regression: Specialized gallery image — no os_profile in launch() payload.
 

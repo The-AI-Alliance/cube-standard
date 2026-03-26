@@ -90,6 +90,10 @@ cp /etc/resolv.conf /mnt/guest/etc/resolv.conf 2>/dev/null || true
 chroot /mnt/guest /bin/bash -c "
 export DEBIAN_FRONTEND=noninteractive
 which sshd 2>/dev/null || (apt-get update -qq && apt-get install -y -qq openssh-server)
+# Generate missing host keys (sshd refuses to start without them)
+ls /etc/ssh/ssh_host_*_key 2>/dev/null | grep -q . || ssh-keygen -A
+# Remove inhibit file if present
+rm -f /etc/ssh/sshd_not_to_be_run
 "
 # Enable sshd at boot via direct symlink (systemctl in chroot fails without running systemd).
 # This is exactly what 'systemctl enable ssh' does internally.
