@@ -1,27 +1,37 @@
 """cube-browser-tool — concrete browser tool implementations for cube-standard.
 
-Phase 1 (sync Playwright):
+Sync Playwright:
     PlaywrightConfig    — serializable config; call .make() to get a SyncPlaywrightTool
-    SyncPlaywrightTool  — synchronous Playwright tool satisfying AbstractBrowserTool
+    SyncPlaywrightTool  — synchronous Playwright tool satisfying BrowserTool
 
-Phase 2 (async Playwright):
-    AsyncPlaywrightTool — async variant (not yet implemented)
+Async Playwright:
+    AsyncPlaywrightConfig — serializable config; call .make() to get an AsyncPlaywrightTool
+    AsyncPlaywrightTool   — async Playwright tool
 
-Phase 3 (BrowserGym, optional dep):
+BrowserGym (optional dep):
     BgymToolConfig, BgymTool — import from cube_browser_tool.bgym_tool;
     requires ``pip install cube-browser-tool[bgym]``
 
 Action space ABCs (for implementing custom tools):
-    BrowserActionSpace    — CSS-selector-based action contract
-    BidBrowserActionSpace — BID-based action contract (BrowserGym)
+    BrowserActionSpace      — CSS-selector-based action contract (sync)
+    AsyncBrowserActionSpace — CSS-selector-based action contract (async)
+    BidBrowserActionSpace   — BID-based action contract (BrowserGym)
 """
 
-from cube_browser_tool.action_spaces import BidBrowserActionSpace, BrowserActionSpace
-from cube_browser_tool.playwright_tool import PlaywrightConfig, SyncPlaywrightTool
+from cube_browser_tool.action_spaces import AsyncBrowserActionSpace, BidBrowserActionSpace, BrowserActionSpace
+from cube_browser_tool.playwright_tool import (
+    AsyncPlaywrightConfig,
+    AsyncPlaywrightTool,
+    PlaywrightConfig,
+    SyncPlaywrightTool,
+)
 
 __all__ = [
     "PlaywrightConfig",
     "SyncPlaywrightTool",
+    "AsyncPlaywrightConfig",
+    "AsyncPlaywrightTool",
     "BrowserActionSpace",
+    "AsyncBrowserActionSpace",
     "BidBrowserActionSpace",
 ]

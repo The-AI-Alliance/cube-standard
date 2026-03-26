@@ -65,7 +65,6 @@ from typing import Any, Callable, List
 
 from cube.container import Container
 from cube.core import Action, ActionSchema, Content, Observation, StepError, TypedBaseModel
-from cube.resources.browser_session import BrowserSession
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +163,7 @@ class ToolConfig(TypedBaseModel, ABC):
     """
 
     @abstractmethod
-    def make(self, container: Container | None = None) -> AbstractTool | AbstractAsyncTool:
+    def make(self, container: Container | None = None) -> AbstractTool:
         """
         Instantiate Tool from configuration data.
 
@@ -174,8 +173,22 @@ class ToolConfig(TypedBaseModel, ABC):
                        tool's endpoint. None if the task needs no container.
 
         Returns:
-            AbstractTool or AbstractAsyncTool instance
+            AbstractTool instance
         """
+        pass
+
+
+class AsyncToolConfig(TypedBaseModel, ABC):
+    """Configuration for creating async task-specific tools.
+
+    Mirrors ToolConfig but make() is a coroutine, allowing async resource
+    acquisition (browser launch, network connections, etc.) before the tool
+    is handed to the caller.
+    """
+
+    @abstractmethod
+    async def make(self, container: Container | None = None) -> AbstractAsyncTool:
+        """Instantiate AsyncTool from configuration data."""
         pass
 
 
@@ -361,6 +374,9 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
     """
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
+        """
+        Validate that all @tool_action methods in AsyncTool subclasses are async def.
+        """
         super().__init_subclass__(**kwargs)
         for name, attr in cls.__dict__.items():
             if getattr(attr, "_is_action", False) and not inspect.iscoroutinefunction(attr):
@@ -381,15 +397,107 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
 
-class BrowserTool(Tool):
-    """Abstract base for browser tools used by web-based tasks (setup, validation, observation)."""
+class Toolbox(Tool):
+    """Composite sync tool that delegates to a list of AbstractTool instances."""
+
+    def __init__(self, tools: list[AbstractTool]):
+        self.tools = tools
+        self._action_name_to_tool: dict[str, AbstractTool] = {}
+        for tool in tools:
+            for action in tool.action_set:
+                if action.name in self._action_name_to_tool:
+                    previous_tool_name = self._action_name_to_tool[action.name].__class__.__name__
+                    this_tool_name = tool.__class__.__name__
+                    raise ValueError(
+                        f"Duplicate action name '{action.name}' found in multiple tools ({previous_tool_name} and {this_tool_name}). Action names must be unique across all tools in the toolbox."
+                    )
+                self._action_name_to_tool[action.name] = tool
 
     @property
-    @abstractmethod
-    def session(self) -> BrowserSession: ...
+    def action_set(self) -> list[ActionSchema]:
+        """Returns the union of all action sets across contained tools."""
+        return [action for tool in self.tools for action in tool.action_set]
 
-    @abstractmethod
-    def noop(self) -> None: ...
+    def find_tool(self, tool_cls: type) -> AbstractTool | None:
+        """Find a tool of the given class in the toolbox."""
+        for tool in self.tools:
+            if isinstance(tool, tool_cls):
+                return tool
+        return None
 
-    @abstractmethod
-    def page_obs(self) -> Observation: ...
+    def reset(self) -> None:
+        for tool in self.tools:
+            tool.reset()
+
+    def execute_action(self, action: Action) -> Observation | StepError:
+        if action.name not in self._action_name_to_tool:
+            raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
+        tool = self._action_name_to_tool[action.name]
+        assert isinstance(tool, AbstractTool)
+        return tool.execute_action(action)
+
+    def close(self) -> None:
+        for tool in self.tools:
+            tool.close()
+
+
+class AsyncToolbox(AsyncTool):
+    """Composite async tool that delegates to a list of AbstractAsyncTool instances."""
+
+    def __init__(self, tools: list[AbstractAsyncTool]):
+        self.tools = tools
+        self._action_name_to_tool: dict[str, AbstractAsyncTool] = {}
+        for tool in tools:
+            for action in tool.action_set:
+                if action.name in self._action_name_to_tool:
+                    previous_tool_name = self._action_name_to_tool[action.name].__class__.__name__
+                    this_tool_name = tool.__class__.__name__
+                    raise ValueError(
+                        f"Duplicate action name '{action.name}' found in multiple tools ({previous_tool_name} and {this_tool_name}). Action names must be unique across all tools in the toolbox."
+                    )
+                self._action_name_to_tool[action.name] = tool
+
+    @property
+    def action_set(self) -> list[ActionSchema]:
+        """Returns the union of all action sets across contained tools."""
+        return [action for tool in self.tools for action in tool.action_set]
+
+    def find_tool(self, tool_cls: type) -> AbstractAsyncTool | None:
+        """Find a tool of the given class in the toolbox."""
+        for tool in self.tools:
+            if isinstance(tool, tool_cls):
+                return tool
+        return None
+
+    async def reset(self) -> None:
+        for tool in self.tools:
+            await tool.reset()
+
+    async def execute_action(self, action: Action) -> Observation | StepError:
+        if action.name not in self._action_name_to_tool:
+            raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
+        return await self._action_name_to_tool[action.name].execute_action(action)
+
+    async def close(self) -> None:
+        for tool in self.tools:
+            await tool.close()
+
+
+class ToolboxConfig(ToolConfig):
+    """Configuration for a list of tools (sync only)."""
+
+    tool_configs: list[ToolConfig] = []
+
+    def make(self, container: Container | None = None) -> Toolbox:
+        tools = [tc.make(container) for tc in self.tool_configs]
+        return Toolbox(tools=tools)
+
+
+class AsyncToolboxConfig(AsyncToolConfig):
+    """Configuration for a list of async only tools."""
+
+    tool_configs: list[AsyncToolConfig] = []
+
+    async def make(self, container: Container | None = None) -> AsyncToolbox:
+        tools = [await tc.make(container) for tc in self.tool_configs]
+        return AsyncToolbox(tools=tools)

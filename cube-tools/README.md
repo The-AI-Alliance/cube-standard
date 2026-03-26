@@ -9,8 +9,9 @@ For instance, web browsing benchmarks (MiniWob, WorkArena, WebArena) can use the
 ## Packages
 
 | Package | PyPI name | Description |
-|---|---|---|
+| --- | --- | --- |
 | [`cube-browser-tool/`](cube-browser-tool/) | `cube-browser-tool` | BrowserGym and Playwright concrete browser tools |
+| [`cube-computer-tool/`](cube-computer-tool/) | `cube-computer-tool` | Generic desktop computer tool for VM-based benchmarks |
 
 ## Usage
 
@@ -25,6 +26,26 @@ pip install cube-miniwob
 
 # Benchmark + bundled browser tool (quick start, stress test)
 pip install cube-miniwob[browser]
+```
+
+### Example usage for VM-based desktop benchmark cubes
+
+Desktop benchmark cubes (OSWorld, …) use `cube-computer-tool` with a live VM handle:
+
+```python
+from cube_computer_tool import ComputerConfig, ActionSpace
+
+# computer_13: 13 mouse/keyboard primitives
+config = ComputerConfig(action_space=ActionSpace.COMPUTER_13)
+tool = config.make(vm=vm)  # vm is a cube.vm.VM handle
+
+# pyautogui: execute Python/pyautogui code in the VM
+config = ComputerConfig(action_space=ActionSpace.PYAUTOGUI)
+tool = config.make(vm=vm)
+
+# Deferred VM attach (for deferred-launch patterns)
+tool = config.make()
+tool.attach_vm(vm)
 ```
 
 ## Adding a new tool package

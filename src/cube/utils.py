@@ -4,8 +4,16 @@
 # - function_to_dict
 # ==================================================================
 
+import inspect
+import types
+import typing
+from ast import literal_eval
+from collections.abc import Callable
 
-def _json_schema_type(python_type_name: str):
+import docstring_parser
+
+
+def _json_schema_type(python_type_name: str) -> str:
     """Converts standard python types to json schema types
 
     Parameters
@@ -31,7 +39,16 @@ def _json_schema_type(python_type_name: str):
     return python_to_json_schema_types.get(python_type_name, "string")
 
 
-def function_to_dict(input_function) -> dict:  # noqa: C901
+def _get_type_name(annotation: type) -> str:
+    """Returns the base type name for an annotation, handling generic aliases like list[str]."""
+    if hasattr(annotation, "__name__"):
+        return annotation.__name__
+    if hasattr(annotation, "__origin__"):
+        return annotation.__origin__.__name__
+    return str(annotation)
+
+
+def function_to_dict(input_function: Callable) -> dict:  # noqa: C901
     """Using type hints and numpy- or Google-style docstring,
     produce a dictionary usable for OpenAI function calling
 
@@ -44,18 +61,24 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
     -------
     dictionnary
         A dictionnary to add to the list passed to `functions` parameter of `litellm.completion`
+
+    Raises
+    ------
+    ValueError
+        If the function has no docstring.
+        If a union annotation is not of the form ``X | None``.
+        If a ``X | None`` parameter has no default value.
+        If a ``X | None`` parameter has a non-None default. LLMs only support
+        a single type per parameter; the only meaningful optional union is
+        ``X | None = None``.
     """
     # Get function name and docstring
-    try:
-        import inspect
-        from ast import literal_eval
-
-        import docstring_parser
-    except Exception as e:
-        raise e
-
     name = input_function.__name__
     docstring = inspect.getdoc(input_function)
+    if not docstring:
+        raise ValueError(
+            f"Function '{name}' has no docstring. A docstring is required to extract parameter information."
+        )
     parsed = docstring_parser.parse(docstring)
     description = parsed.short_description or ""
 
@@ -66,7 +89,24 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
 
     for param_name, param in param_info.items():
         if hasattr(param, "annotation") and param.annotation is not inspect.Parameter.empty:
-            param_type = _json_schema_type(param.annotation.__name__)
+            annotation = param.annotation
+            is_union = (
+                isinstance(annotation, types.UnionType) or getattr(annotation, "__origin__", None) is typing.Union
+            )
+            if is_union:
+                non_none = [a for a in annotation.__args__ if a is not type(None)]
+                if len(non_none) != 1:
+                    raise ValueError(f"Unsupported union type {annotation}: only 'X | None' is supported.")
+                if param.default is inspect.Parameter.empty:
+                    raise ValueError(
+                        f"Parameter '{param_name}' has type '{annotation}' but has no default value. 'X | None' parameters must default to None."
+                    )
+                if param.default is not None:
+                    raise ValueError(
+                        f"Parameter '{param_name}' has type '{annotation}' but default is {param.default!r}, not None."
+                    )
+                annotation = non_none[0]
+            param_type = _json_schema_type(_get_type_name(annotation))
         else:
             param_type = None
         param_description = None
@@ -84,7 +124,7 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
                         # may represent a set of acceptable values
                         # translating as enum for function calling
                         try:
-                            param_enum = str(list(literal_eval(param_type)))
+                            param_enum = list(literal_eval(param_type))
                             param_type = "string"
                         except Exception:
                             pass
@@ -97,10 +137,13 @@ def function_to_dict(input_function) -> dict:  # noqa: C901
             "enum": param_enum,
         }
 
-        parameters[param_name] = dict([(k, v) for k, v in param_dict.items() if isinstance(v, str)])
+        param_schema = {k: v for k, v in param_dict.items() if v is not None}
+        if param_type == "array":
+            param_schema["items"] = {}
+        parameters[param_name] = param_schema
 
         # Check if the parameter has no default value (i.e., it's required)
-        if param.default == param.empty:
+        if param.default is inspect.Parameter.empty:
             required_params.append(param_name)
 
     # Create the dictionary

@@ -119,15 +119,16 @@ def _make_module(task_ids=("t1",), *, fail=False):
 def test_episode_stop_action_completes_with_reward_one():
     task = DoneTask(metadata=TaskMetadata(id="t1"), tool_config=NoopToolConfig())
     report = run_debug_episode(task, stop_agent)
-    assert report == {
-        "task_id": "t1",
-        "done": True,
-        "reward": 1.0,
-        "steps": 1,
-        "episode_time_s": report["episode_time_s"],
-        "step_times_s": report["step_times_s"],
-        "error": None,
-    }
+    assert report["task_id"] == "t1"
+    assert report["done"] is True
+    assert report["reward"] == 1.0
+    assert report["steps"] == 1
+    assert report["error"] is None
+    assert "episode_time_s" in report
+    assert len(report["step_times_s"]) == 1
+    # Stress-test report extras (tools_list, close_idempotent)
+    assert report.get("tools_list_ok") is True
+    assert report.get("close_idempotent_ok") is True
 
 
 # ── run_debug_episode — close() is always called ──────────────────────────────
@@ -136,13 +137,15 @@ def test_episode_stop_action_completes_with_reward_one():
 def test_episode_close_called_on_success():
     task = DoneTask(metadata=TaskMetadata(id="t1"), tool_config=NoopToolConfig())
     run_debug_episode(task, stop_agent)
-    assert task._close_calls == 1
+    # close() is called once normally and once again for close_idempotent check
+    assert task._close_calls == 2
 
 
 def test_episode_close_called_when_reset_raises():
     task = FailOnResetTask(metadata=TaskMetadata(id="t1"), tool_config=NoopToolConfig())
     run_debug_episode(task, stop_agent)
-    assert task._close_calls == 1
+    # close() is called once in finally and once for close_idempotent check
+    assert task._close_calls == 2
 
 
 # ── run_debug_episode — error handling ────────────────────────────────────────
@@ -189,6 +192,49 @@ def test_suite_reports_contain_task_ids():
 
 
 # ── run_debug_suite — benchmark lifecycle ────────────────────────────────────
+
+
+def test_double_setup_metadata_preserved():
+    """Multiple setup() calls must not overwrite task_metadata; subset_from_list still works."""
+    task_ids = ("t1", "t2")
+
+    class DoubleSetupBenchmark(Benchmark):
+        benchmark_metadata = BenchmarkMetadata(name="double-setup-bench", version="0.1", description="test")
+        task_metadata = {}
+        task_config_class = DoneTaskConfig
+        _setup_calls: int = PrivateAttr(default=0)
+
+        def _setup(self) -> None:
+            self._setup_calls += 1
+            # Idempotent:Only populate if not already set (correct pattern for multiple setup() calls)
+            if not self.task_metadata:
+                object.__setattr__(
+                    self,
+                    "task_metadata",
+                    {tid: TaskMetadata(id=tid) for tid in task_ids},
+                )
+
+        def close(self) -> None:
+            pass
+
+    benchmark = DoubleSetupBenchmark()
+    benchmark.install()
+    benchmark.setup()
+    configs_first = list(benchmark.get_task_configs())
+    assert len(configs_first) == 2
+    assert {c.task_id for c in configs_first} == set(task_ids)
+
+    benchmark.setup()  # second call must not overwrite
+    configs_second = list(benchmark.get_task_configs())
+    assert len(configs_second) == 2
+    assert {c.task_id for c in configs_second} == set(task_ids)
+    assert benchmark._setup_calls == 2
+
+    # subset_from_list must still work after double setup
+    subset = benchmark.subset_from_list(["t1"])
+    subset_configs = list(subset.get_task_configs())
+    assert len(subset_configs) == 1
+    assert subset_configs[0].task_id == "t1"
 
 
 def test_suite_benchmark_setup_and_close_called():
