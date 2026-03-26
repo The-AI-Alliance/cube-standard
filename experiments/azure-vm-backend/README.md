@@ -1,51 +1,34 @@
-# Azure VM Backend — Experiments
+# Azure + AWS VM Backend — Experiments
 
-Exploring the automated VM creation pipeline for CUBE.
+Validates the full CUBE VM backend pipeline (local and bootstrap paths) for Azure and AWS.
 
 ## Setup
 
 ```bash
 cd experiments/azure-vm-backend
-uv venv && uv pip install -r pyproject.toml
-az login  # select ServiceNow AI Research subscription
+uv sync
+az login --tenant "8bcff170-9979-491e-8683-d8ced0850bad" --use-device-code
 ```
 
-## Resource Tracking
+## Modules
 
-Every Azure resource we create is:
-1. Tagged `project=cube-experiment` in Azure
-2. Recorded in `resources.json`
+| File | Purpose |
+|------|---------|
+| `_common.py` | Shared utilities: `open_tunnel`, `wait_for_ssh`, `convert_image`, `BootstrapMonitor` |
+| `azure_backend.py` | `AzureBackend` — full Azure pipeline (upload, gallery, launch, bootstrap) |
+| `aws_backend.py` | `AWSBackend` — full AWS pipeline (S3, AMI, EC2, bootstrap) |
+| `osworld.py` | OSWorld-specific wrappers + CLI (`python osworld.py create_resources --backend azure\|aws`) |
+
+## Tests
 
 ```bash
-# List tracked resources (+ Azure query by tag)
-python track.py list
+# Bootstrap path: in-cloud VM downloads from HuggingFace, converts, uploads (~45-60 min, ~$0.06)
+python test_bootstrap.py
 
-# Delete everything we created
-python track.py delete
+# Local path: convert local qcow2 → upload → gallery/AMI → launch (~90-120 min)
+python test_osworld_parallel.py
 ```
 
-## Experiments
+## Key findings
 
-### 1. List existing managed images
-```bash
-python azure_backend.py list-images
-```
-
-### 2. Launch a VM from an existing image
-```bash
-python azure_backend.py launch --image webarena-jeph-image-20250903-2
-```
-
-### 3. Stop/delete a VM
-```bash
-python azure_backend.py stop --vm cube-exp-abc123
-```
-
-## Options Under Exploration
-
-| Option | Description | Pros | Cons |
-|--------|-------------|------|------|
-| A | Launch from existing managed image | Fast (image already there) | Manual one-time setup |
-| B | qcow2 → VHD → import as managed image | Fully automated | Azure boot issues with raw qcow2 |
-| C | Docker container on Azure Container Instances | Simplest | No GPU, container-only |
-| D | Azure VM Compute Gallery (Shared Image Gallery) | Multi-region, versioned | More setup |
+See `OBJECTIVE.md` for the full design, pipeline diagram, and documented gotchas.

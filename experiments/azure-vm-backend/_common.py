@@ -141,6 +141,36 @@ def convert_image(
     log.info("convert: done in %.0fs (%.1f GB on disk)", time.time() - t0, dst.stat().st_size / 1024**3)
 
 
+def probe(endpoint: str, timeout: int = 300) -> dict:
+    """Poll a CUBE guest agent endpoint until it's ready.
+
+    Hits {endpoint}/screenshot (GET) to confirm the agent is up, then
+    {endpoint}/execute (POST) with ['uname', '-a'] to confirm command execution.
+
+    Both Azure and AWS backends use this — the guest agent protocol is cloud-agnostic.
+    Returns {screenshot_bytes, execute_ok}.
+    Raises TimeoutError if not ready within timeout seconds.
+    """
+    import requests as _requests
+    log = logging.getLogger(__name__)
+    log.info("probe: polling %s/screenshot ...", endpoint)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r = _requests.get(f"{endpoint}/screenshot", timeout=5)
+            if r.status_code == 200 and len(r.content) > 0:
+                log.info("probe: /screenshot → HTTP 200, %d bytes", len(r.content))
+                r2 = _requests.post(f"{endpoint}/execute", json={"command": ["uname", "-a"]}, timeout=10)
+                log.info("probe: /execute → %s", r2.json().get("stdout", "").strip())
+                return {"screenshot_bytes": len(r.content), "execute_ok": r2.status_code == 200}
+        except Exception:
+            pass
+        remaining = int(deadline - time.time())
+        log.debug("probe: waiting... (%ds left)", remaining)
+        time.sleep(10)
+    raise TimeoutError(f"HTTP server not ready after {timeout}s")
+
+
 # ── BootstrapMonitor ─────────────────────────────────────────────────────────
 
 @dataclass
@@ -205,13 +235,13 @@ class BootstrapMonitor:
             pct, mbps = float(m.group(1)), float(m.group(2))
             if pct - self._last_pct >= 5.0 or pct >= 99.9:
                 self._last_pct = pct
-                return logging.DEBUG, f"  upload: {pct:.0f}%  {mbps:.0f} Mb/s"
+                return logging.INFO, f"  upload: {pct:.0f}%  {mbps:.0f} Mb/s"
             return None  # suppress
 
         # wget final line: "100%  97.0M=3m28s"
         m = self._WGET_PCT.search(line)
         if m and m.group(1) == "100":
-            return logging.DEBUG, f"  download: 100% ({m.group(2)})"
+            return logging.INFO, f"  download: 100% ({m.group(2)})"
 
         # boto3: accumulate and emit every 512 MB
         m = self._BOTO3_RE.search(line)
@@ -220,7 +250,7 @@ class BootstrapMonitor:
             gb = self._boto3_uploaded / 1024**3
             # emit every ~512 MB
             if self._boto3_uploaded % (512 * 1024 * 1024) < int(m.group(1)):
-                return logging.DEBUG, f"  upload: {gb:.1f} GB uploaded"
+                return logging.INFO, f"  upload: {gb:.1f} GB uploaded"
             return None  # suppress
 
         return logging.DEBUG, line
@@ -228,16 +258,22 @@ class BootstrapMonitor:
     # ── Thread bodies ─────────────────────────────────────────────────────────
 
     def _tail_body(self) -> None:
-        """Background thread: SSH into VM, tail log, parse and emit each line."""
-        for attempt in range(3):
-            if self._done.is_set():
-                return
+        """Background thread: SSH into VM, tail log, parse and emit each line.
+
+        Retries every 30s until the sentinel is detected (_done). This handles
+        the common case where the VM takes 1-3 min to have SSH ready after
+        the EC2/Azure API reports it as "running".
+        """
+        attempt = 0
+        while not self._done.is_set():
+            attempt += 1
             try:
                 proc = subprocess.Popen(
                     [
                         "ssh", "-i", self.ssh_privkey,
                         "-o", "IdentitiesOnly=yes",
                         "-o", "StrictHostKeyChecking=no",
+                        "-o", "BatchMode=yes",
                         "-o", "ConnectTimeout=30",
                         f"{self.ssh_user}@{self.public_ip}",
                         f"sudo tail -f {self.log_path}",
@@ -256,11 +292,15 @@ class BootstrapMonitor:
                         level, msg = result
                         self._log.log(level, "%s", msg)
                 proc.wait()
-                return
+                # If sentinel was set while streaming, we're done.
+                # Otherwise the command exited early (e.g. log file didn't exist
+                # yet) — fall through and retry after the sleep below.
+                if self._done.is_set():
+                    return
             except Exception as e:
-                self._log.debug("SSH tail attempt %d failed: %s", attempt + 1, e)
-                if not self._done.is_set():
-                    time.sleep(10)
+                self._log.debug("SSH tail attempt %d failed: %s", attempt, e)
+            if not self._done.is_set():
+                time.sleep(30)
 
     def _poll_body(self) -> None:
         """Background thread: poll sentinel_fn. Sets _done on success, _failed on error."""

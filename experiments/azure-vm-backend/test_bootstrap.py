@@ -27,6 +27,7 @@ USAGE
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 import time
@@ -196,24 +197,37 @@ def test_aws() -> bool:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="CUBE bootstrap VM test")
+    parser.add_argument(
+        "--cloud", choices=["azure", "aws", "both"], default="both",
+        help="Which cloud to test (default: both)",
+    )
+    args = parser.parse_args()
+
+    run_azure = args.cloud in ("azure", "both")
+    run_aws   = args.cloud in ("aws",   "both")
+
     log.info("=" * 60)
-    log.info("  CUBE Bootstrap VM test — Azure + AWS")
+    log.info("  CUBE Bootstrap VM test — %s", args.cloud.upper())
     log.info("=" * 60)
     log.info("Source: %s", HF_URL)
-    log.info("Azure image: %s", AZURE_IMAGE_NAME)
-    log.info("AWS AMI:     %s", AWS_IMAGE_NAME)
-    log.info("Expected total: ~45-60 min, ~$0.06 in cloud costs")
+    if run_azure:
+        log.info("Azure image: %s", AZURE_IMAGE_NAME)
+    if run_aws:
+        log.info("AWS AMI:     %s", AWS_IMAGE_NAME)
 
     t_total = time.time()
-    azure_ok = test_azure()
-    aws_ok   = test_aws()
+    azure_ok = test_azure() if run_azure else True
+    aws_ok   = test_aws()   if run_aws   else True
 
     log.info("")
     log.info("=" * 60)
     log.info("  Results  (total: %.1f min)", (time.time() - t_total) / 60)
     log.info("=" * 60)
-    log.info("  Azure: %s", "✅ PASSED" if azure_ok else "❌ FAILED")
-    log.info("  AWS:   %s", "✅ PASSED" if aws_ok   else "❌ FAILED")
+    if run_azure:
+        log.info("  Azure: %s", "✅ PASSED" if azure_ok else "❌ FAILED")
+    if run_aws:
+        log.info("  AWS:   %s", "✅ PASSED" if aws_ok   else "❌ FAILED")
 
     if not azure_ok or not aws_ok:
         sys.exit(1)

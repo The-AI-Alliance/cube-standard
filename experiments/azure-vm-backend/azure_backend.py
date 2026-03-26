@@ -9,14 +9,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import requests
 from azure.identity import AzureCliCredential
 from azure.mgmt.compute import ComputeManagementClient
 from azure.mgmt.network import NetworkManagementClient
 from azure.mgmt.storage import StorageManagementClient
 from azure.storage.blob import BlobSasPermissions, BlobServiceClient, generate_blob_sas
 
-from _common import BootstrapMonitor, convert_image, free_port, open_tunnel, wait_for_ssh
+from _common import BootstrapMonitor, convert_image, free_port, open_tunnel as ssh_tunnel, probe, wait_for_ssh
 
 log = logging.getLogger(__name__)
 
@@ -123,6 +122,55 @@ class AzureBackend:
     def _storage(self) -> StorageManagementClient:
         return StorageManagementClient(self._cred(), self.subscription)
 
+    def _create_network_resources(self, uid: str) -> tuple:
+        """Create a static public IP and NIC for a new VM. Returns (pip, nic, pip_name, nic_name).
+
+        Both launch() and launch_bootstrap_vm() need this — extracted to avoid duplication.
+        The uid suffix makes names unique per VM. Resources are tagged and wired to the
+        configured VNet/subnet and NSG.
+        """
+        network = self._network()
+        pip_name = f"cube-ip-{uid}"
+        nic_name = f"cube-nic-{uid}"
+
+        pip = network.public_ip_addresses.begin_create_or_update(  # type: ignore[call-overload]
+            self.resource_group, pip_name,
+            {  # type: ignore[arg-type]
+                "location": self.location,
+                "tags": self.tags,
+                "sku": {"name": "Standard"},
+                "properties": {"publicIPAllocationMethod": "Static"},
+            },
+        ).result()
+
+        subnet_id = (
+            f"/subscriptions/{self.subscription}/resourceGroups/{self.resource_group}"
+            f"/providers/Microsoft.Network/virtualNetworks/{self.vnet_name}/subnets/{self.subnet_name}"
+        )
+        nsg_id = (
+            f"/subscriptions/{self.subscription}/resourceGroups/{self.resource_group}"
+            f"/providers/Microsoft.Network/networkSecurityGroups/{self.nsg_name}"
+        )
+        nic = network.network_interfaces.begin_create_or_update(  # type: ignore[call-overload]
+            self.resource_group, nic_name,
+            {  # type: ignore[arg-type]
+                "location": self.location,
+                "tags": self.tags,
+                "properties": {
+                    "networkSecurityGroup": {"id": nsg_id},
+                    "ipConfigurations": [{
+                        "name": "ipconfig1",
+                        "properties": {
+                            "subnet": {"id": subnet_id},
+                            "publicIPAddress": {"id": pip.id},
+                        },
+                    }],
+                },
+            },
+        ).result()
+
+        return pip, nic, pip_name, nic_name
+
     # ── Storage helpers ───────────────────────────────────────────────────────
 
     def _get_storage_key(self) -> str:
@@ -202,7 +250,13 @@ class AzureBackend:
     def upload_vhd(self, vhd_path: Path, blob_name: str | None = None) -> str:
         """Upload a fixed VHD to Azure Blob Storage as a PageBlob.
 
-        Validates VHD footer ('conectix' magic) before skipping re-upload.
+        Validates the VHD footer ('conectix' magic in last 512 bytes) before
+        skipping re-upload — a partial/interrupted upload leaves a blob at the
+        correct size but with a zeroed footer, which would cause import to fail
+        silently. Deletes and re-uploads if the footer is invalid.
+
+        Progress is logged every 512 MB (can take 60-90 min for a 50 GB image on
+        home broadband; use bootstrap() for in-cloud speed).
         Returns the blob URL.
         """
         vhd = vhd_path.resolve()
@@ -272,45 +326,6 @@ class AzureBackend:
             f"https://{self.storage_account}.blob.core.windows.net"
             f"/{self.container_name}/{blob_name}"
         )
-
-    def poll_sentinel(
-        self,
-        sentinel_blob_name: str,
-        failed_blob_name: str | None = None,
-        timeout: int = 7200,
-        interval: int = 30,
-    ) -> None:
-        """Poll until the sentinel blob appears (bootstrap complete) or failed blob appears.
-
-        Raises TimeoutError or RuntimeError on failure.
-        """
-        svc = self._blob_service_client()
-        deadline = time.time() + timeout
-        t0 = time.time()
-
-        while time.time() < deadline:
-            if failed_blob_name:
-                try:
-                    data = svc.get_blob_client(self.container_name, failed_blob_name).download_blob().readall()
-                    raise RuntimeError(f"Bootstrap VM reported failure: {data.decode()}")
-                except RuntimeError:
-                    raise
-                except Exception:
-                    pass
-
-            try:
-                svc.get_blob_client(self.container_name, sentinel_blob_name).get_blob_properties()
-                log.info("poll_sentinel: complete after %ds", int(time.time() - t0))
-                return
-            except Exception:
-                pass
-
-            elapsed = int(time.time() - t0)
-            remaining = int(deadline - time.time())
-            log.debug("poll_sentinel: [%ds elapsed, %ds remaining] waiting...", elapsed, remaining)
-            time.sleep(interval)
-
-        raise TimeoutError(f"Bootstrap did not complete within {timeout}s")
 
     # ── Disk / Gallery ────────────────────────────────────────────────────────
 
@@ -450,10 +465,20 @@ class AzureBackend:
         return version_obj.id or ""
 
     def ensure_resource_from_blob(self, vhd_blob_name: str, name: str, version: str = "1.0.0") -> str:
-        """Run post-upload steps: import blob → managed disk → gallery image.
+        """Post-upload steps: blob → managed disk → gallery image definition → version.
 
-        Idempotent — skips steps already done.
-        Returns the gallery image version ID.
+        Called after a VHD has landed in Blob Storage — either via upload_vhd()
+        (local path) or the bootstrap VM (in-cloud path). Idempotent at each step.
+
+        Pipeline:
+            Blob Storage (PageBlob VHD)
+              ↓  import_disk()           — createOption: Import, ~8 min
+            Managed Disk
+              ↓  create_image_definition() — gallery image definition (Generalized, HyperV V1)
+              ↓  create_image_version()  — publishes disk as gallery version, ~8-15 min
+            Compute Gallery image        ← reused for all subsequent launch() calls
+
+        Returns the gallery image version resource ID.
         """
         blob_url = (
             f"https://{self.storage_account}.blob.core.windows.net"
@@ -462,16 +487,21 @@ class AzureBackend:
         disk_name = f"cube-disk-{name}"
 
         self.import_disk(blob_url, disk_name)
-        self.ensure_gallery()
         self.create_image_definition(name)
         image_id = self.create_image_version(name, version, disk_name)
         log.info("ensure_resource_from_blob: image ready: %s/%s", name, version)
         return image_id
 
     def ensure_resource(self, image_path: Path, name: str, version: str = "1.0.0") -> str:
-        """Full one-time setup: local image file → Compute Gallery image version.
+        """One-time setup from a local image file to a Compute Gallery image version.
 
-        image_path : local path to .qcow2, .img, .vmdk, or .vhd
+        Local path (slow for large images on home broadband):
+            local qcow2/vmdk/vhd → convert_to_vhd() → upload_vhd() → ensure_resource_from_blob()
+
+        For large images (>10 GB) consider bootstrap() instead, which does the
+        download + convert + upload inside the cloud at datacenter speed.
+
+        image_path : local .qcow2, .img, .vmdk, or .vhd
         Returns the gallery image version ID.
         """
         log.info("ensure_resource: %s v%s  source=%s", name, version, image_path)
@@ -495,53 +525,14 @@ class AzureBackend:
         """
         uid = uuid.uuid4().hex[:6]
         vm_name  = f"cube-bootstrap-{uid}"
-        pip_name = f"cube-bootstrap-ip-{uid}"
-        nic_name = f"cube-bootstrap-nic-{uid}"
 
         pubkey = Path(self.ssh_pubkey).read_text().strip()
         custom_data_b64 = base64.b64encode(script.encode()).decode()
 
         compute = self._compute()
-        network = self._network()
 
         log.info("launch_bootstrap_vm: creating network resources")
-        pip_poller = network.public_ip_addresses.begin_create_or_update(  # type: ignore[call-overload]
-            self.resource_group, pip_name,
-            {  # type: ignore[arg-type]
-                "location": self.location,
-                "tags": self.tags,
-                "sku": {"name": "Standard"},
-                "properties": {"publicIPAllocationMethod": "Static"},
-            },
-        )
-        pip = pip_poller.result()
-
-        subnet_id = (
-            f"/subscriptions/{self.subscription}/resourceGroups/{self.resource_group}"
-            f"/providers/Microsoft.Network/virtualNetworks/{self.vnet_name}/subnets/{self.subnet_name}"
-        )
-        nsg_id = (
-            f"/subscriptions/{self.subscription}/resourceGroups/{self.resource_group}"
-            f"/providers/Microsoft.Network/networkSecurityGroups/{self.nsg_name}"
-        )
-        nic_poller = network.network_interfaces.begin_create_or_update(  # type: ignore[call-overload]
-            self.resource_group, nic_name,
-            {  # type: ignore[arg-type]
-                "location": self.location,
-                "tags": self.tags,
-                "properties": {
-                    "networkSecurityGroup": {"id": nsg_id},
-                    "ipConfigurations": [{
-                        "name": "ipconfig1",
-                        "properties": {
-                            "subnet": {"id": subnet_id},
-                            "publicIPAddress": {"id": pip.id},
-                        },
-                    }],
-                },
-            },
-        )
-        nic = nic_poller.result()
+        pip, nic, pip_name, nic_name = self._create_network_resources(uid)
 
         log.info(
             "launch_bootstrap_vm: launching %s (%s, %d GB OS disk)",
@@ -627,9 +618,23 @@ class AzureBackend:
         version: str = "1.0.0",
         blob_name: str | None = None,
     ) -> str:
-        """Remote bootstrap: spin up an Azure VM to download + convert + upload the image.
+        """In-cloud bootstrap: spin up a cheap Azure VM to download, convert, and upload the image.
 
-        Uses BootstrapMonitor for live log streaming.
+        Faster than ensure_resource() for large remote images (e.g. 50 GB OSWorld qcow2):
+        - Bootstrap VM downloads from HuggingFace at ~55 MB/s (datacenter speed)
+        - Converts to fixed VHD with qemu-img
+        - Uploads to Blob Storage via azcopy at ~300 Mb/s
+        - Writes a sentinel blob when done; local process polls every 30s
+        - Bootstrap VM terminates automatically on success or failure
+
+        Uses BootstrapMonitor to SSH-tail /var/log/cube-bootstrap.log in real time.
+        Idempotent: skips the VM phase if the sentinel blob already exists.
+
+        The bootstrap VM uses our Compute Gallery image (cube-ubuntu-22-04) to
+        bypass ServiceNow's Golden Image Policy which blocks Marketplace images.
+
+        After the VHD is in blob storage, calls ensure_resource_from_blob() to
+        import it as a managed disk and publish it to the gallery.
         Returns the gallery image version ID.
         """
         src_filename = url.rstrip("/").split("/")[-1]
@@ -680,14 +685,26 @@ class AzureBackend:
         admin_user: str = "azureuser",
         open_tunnel: bool = True,
     ) -> dict:
-        """Launch a VM from a gallery image.
+        """Launch a VM from a Compute Gallery image. Returns a dict with connection info.
+
+        Creates: static public IP → NIC → VM.
+        Injects SSH key via cloud-init custom_data (not waagent os_profile.ssh.public_keys).
+
+        Why cloud-init instead of waagent:
+            The OSWorld image was not deprovisioned with 'waagent -deprovision', so
+            waagent never signals "provisioning complete" — Azure times out with
+            OSProvisioningTimedOut if we rely on it. With provision_vm_agent=False,
+            Azure skips the wait. Cloud-init runs independently and creates the user
+            + authorized_keys reliably.
+
+        If open_tunnel=True: waits for SSH, opens localhost:{port} → VM:5000 tunnel
+        (bypasses Zscaler, which blocks all ports except SSH on corporate networks).
 
         Returns {vm_name, public_ip, pip_name, nic_name, endpoint, tunnel, local_port}.
+        endpoint is None if open_tunnel=False.
         """
         uid = uuid.uuid4().hex[:6]
         vm_name  = f"cube-vm-{uid}"
-        pip_name = f"cube-ip-{uid}"
-        nic_name = f"cube-nic-{uid}"
 
         image_id = (
             f"/subscriptions/{self.subscription}/resourceGroups/{self.resource_group}"
@@ -697,51 +714,28 @@ class AzureBackend:
 
         pubkey = Path(self.ssh_pubkey).read_text().strip()
 
+        # Inject SSH key via cloud-init (custom_data) instead of waagent.
+        # The OSWorld image was not deprovisioned with `waagent -deprovision`,
+        # so waagent will never signal "provisioning complete" — Azure would
+        # time out (OSProvisioningTimedOut) if we relied on it.  With
+        # provision_vm_agent=False Azure skips that wait entirely.  Cloud-init
+        # runs independently and reliably creates the user + authorized_keys.
+        cloud_init = (
+            "#cloud-config\n"
+            "users:\n"
+            f"  - name: {admin_user}\n"
+            "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
+            "    groups: [sudo, adm]\n"
+            "    shell: /bin/bash\n"
+            "    ssh_authorized_keys:\n"
+            f"      - {pubkey}\n"
+        )
+        custom_data = base64.b64encode(cloud_init.encode()).decode()
+
         compute = self._compute()
-        network = self._network()
 
         log.info("launch: creating network resources")
-        pip_poller = network.public_ip_addresses.begin_create_or_update(  # type: ignore[call-overload]
-            self.resource_group,
-            pip_name,
-            {  # type: ignore[arg-type]
-                "location": self.location,
-                "tags": self.tags,
-                "sku": {"name": "Standard"},
-                "properties": {"publicIPAllocationMethod": "Static"},
-            },
-        )
-        pip = pip_poller.result()
-
-        subnet_id = (
-            f"/subscriptions/{self.subscription}/resourceGroups/{self.resource_group}"
-            f"/providers/Microsoft.Network/virtualNetworks/{self.vnet_name}/subnets/{self.subnet_name}"
-        )
-        nsg_id = (
-            f"/subscriptions/{self.subscription}/resourceGroups/{self.resource_group}"
-            f"/providers/Microsoft.Network/networkSecurityGroups/{self.nsg_name}"
-        )
-        nic_poller = network.network_interfaces.begin_create_or_update(  # type: ignore[call-overload]
-            self.resource_group,
-            nic_name,
-            {  # type: ignore[arg-type]
-                "location": self.location,
-                "tags": self.tags,
-                "properties": {
-                    "networkSecurityGroup": {"id": nsg_id},
-                    "ipConfigurations": [
-                        {
-                            "name": "ipconfig1",
-                            "properties": {
-                                "subnet": {"id": subnet_id},
-                                "publicIPAddress": {"id": pip.id},
-                            },
-                        }
-                    ],
-                },
-            },
-        )
-        nic = nic_poller.result()
+        pip, nic, pip_name, nic_name = self._create_network_resources(uid)
 
         log.info("launch: creating VM %s (%s)  image=%s/%s", vm_name, self.vm_size, name, version)
         t0 = time.time()
@@ -764,16 +758,10 @@ class AzureBackend:
                 "os_profile": {
                     "computer_name": vm_name,
                     "admin_username": admin_user,
+                    "custom_data": custom_data,
                     "linux_configuration": {
                         "disable_password_authentication": True,
-                        "ssh": {
-                            "public_keys": [
-                                {
-                                    "path": f"/home/{admin_user}/.ssh/authorized_keys",
-                                    "key_data": pubkey,
-                                }
-                            ]
-                        },
+                        "provision_vm_agent": False,
                     },
                 },
                 "network_profile": {
@@ -805,7 +793,7 @@ class AzureBackend:
             wait_for_ssh(public_ip, admin_user, self.ssh_privkey)
             local_port = free_port()
             log.info("launch: opening tunnel localhost:%d → %s:%d", local_port, public_ip, self.guest_port)
-            tunnel = open_tunnel(public_ip, admin_user, self.ssh_privkey, local_port, self.guest_port)
+            tunnel = ssh_tunnel(public_ip, admin_user, self.ssh_privkey, local_port, self.guest_port)
             result.update({
                 "endpoint": f"http://localhost:{local_port}",
                 "tunnel": tunnel,
@@ -849,33 +837,19 @@ class AzureBackend:
         version: str = "1.0.0",
         admin_user: str = "azureuser",
     ) -> dict:
-        """Reset VM to clean state: stop current VM + launch fresh from gallery."""
+        """Reset a VM to clean state by stopping it and launching a fresh copy from the gallery.
+
+        For cloud VMs there is no snapshot mechanism — 'restore' means terminate + re-provision.
+        This takes ~3-4 min on Azure (vs ~30s for local QEMU savestate).
+        """
         self.stop(vm_name)
         return self.launch(name, version=version, admin_user=admin_user)
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 
     def probe(self, endpoint: str, timeout: int = 300) -> dict:
-        """Poll {endpoint}/screenshot and {endpoint}/execute.
-
-        Returns {screenshot_bytes, execute_ok}.
-        """
-        log.info("probe: polling %s/screenshot ...", endpoint)
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                r = requests.get(f"{endpoint}/screenshot", timeout=5)
-                if r.status_code == 200 and len(r.content) > 0:
-                    log.info("probe: /screenshot → HTTP 200, %d bytes", len(r.content))
-                    r2 = requests.post(f"{endpoint}/execute", json={"command": ["uname", "-a"]}, timeout=10)
-                    log.info("probe: /execute → %s", r2.json().get("stdout", "").strip())
-                    return {"screenshot_bytes": len(r.content), "execute_ok": r2.status_code == 200}
-            except Exception:
-                pass
-            remaining = int(deadline - time.time())
-            log.debug("probe: waiting... (%ds left)", remaining)
-            time.sleep(10)
-        raise TimeoutError(f"HTTP server not ready after {timeout}s")
+        """Poll the guest agent at endpoint. See _common.probe for details."""
+        return probe(endpoint, timeout=timeout)
 
     def list_images(self) -> list[dict]:
         """Return all image definitions in the gallery."""

@@ -10,14 +10,13 @@ from pathlib import Path
 
 import boto3
 import botocore.exceptions
-import requests
-
-from _common import BootstrapMonitor, convert_image, free_port, open_tunnel, wait_for_ssh
+from _common import BootstrapMonitor, convert_image, free_port, open_tunnel as ssh_tunnel, probe, wait_for_ssh
 
 log = logging.getLogger(__name__)
 
 # ── Bootstrap script ──────────────────────────────────────────────────────────
-# Placeholders: {hf_url}, {s3_bucket}, {s3_key}, {sentinel_key}, {failed_key}, {region}
+# Placeholders: {hf_url}, {s3_bucket}, {s3_key}, {sentinel_key}, {failed_key},
+#               {region}, {ssh_pubkey}
 
 _AWS_BOOTSTRAP_SCRIPT = """\
 #!/bin/bash
@@ -73,6 +72,79 @@ echo "[bootstrap] Converting qcow2 → fixed VHD..."
 qemu-img convert -f qcow2 -O vpc -o subformat=fixed,force_size "$QCOW2" /tmp/output.vhd
 echo "[bootstrap] Converted: $(du -sh /tmp/output.vhd)"
 
+# ── inject SSH into VHD (OSWorld has no openssh-server; cloud-init won't run) ─
+echo "[bootstrap] Injecting SSH into VHD..."
+LOOP=$(losetup -f --show -P /tmp/output.vhd)
+sleep 2
+# Find the root partition (ext4)
+ROOT_PART=$(lsblk -rno NAME,FSTYPE "$LOOP" | awk '$2=="ext4" {{print "/dev/"$1}}' | tail -1)
+if [ -z "$ROOT_PART" ]; then
+    echo "[bootstrap] WARNING: no ext4 partition found, trying whole device"
+    ROOT_PART="$LOOP"
+fi
+mkdir -p /mnt/guest
+mount "$ROOT_PART" /mnt/guest
+for fs in dev dev/pts proc sys run; do mount --bind "/$fs" "/mnt/guest/$fs" 2>/dev/null || true; done
+cp /etc/resolv.conf /mnt/guest/etc/resolv.conf 2>/dev/null || true
+chroot /mnt/guest /bin/bash -c "
+export DEBIAN_FRONTEND=noninteractive
+which sshd 2>/dev/null || (apt-get update -qq && apt-get install -y -qq openssh-server)
+dpkg -l xserver-xorg-video-dummy 2>/dev/null | grep -q '^ii' || \
+    apt-get install -y -qq xserver-xorg-video-dummy
+"
+# Enable sshd at boot via direct symlink (systemctl in chroot fails without running systemd).
+# This is exactly what 'systemctl enable ssh' does internally.
+SSH_SVC=/mnt/guest/lib/systemd/system/ssh.service
+SSH_SVC_ALT=/mnt/guest/usr/lib/systemd/system/ssh.service
+for svc in "$SSH_SVC" "$SSH_SVC_ALT"; do
+    [ -f "$svc" ] && \
+        mkdir -p /mnt/guest/etc/systemd/system/multi-user.target.wants && \
+        ln -sf "${{svc#/mnt/guest}}" \
+            /mnt/guest/etc/systemd/system/multi-user.target.wants/ssh.service && \
+        echo "[bootstrap] Enabled sshd via $svc" && break
+done
+# Create xorg.conf for dummy display so Xorg/GDM work headless in EC2 (no GPU).
+mkdir -p /mnt/guest/etc/X11
+cat > /mnt/guest/etc/X11/xorg.conf << 'XORGEOF'
+Section "Device"
+  Identifier "Configured Video Device"
+  Driver "dummy"
+  VideoRam 16384
+EndSection
+
+Section "Monitor"
+  Identifier "Configured Monitor"
+  HorizSync 5-1000
+  VertRefresh 5-200
+EndSection
+
+Section "Screen"
+  Identifier "Default Screen"
+  Monitor "Configured Monitor"
+  Device "Configured Video Device"
+  DefaultDepth 24
+  SubSection "Display"
+    Depth 24
+    Virtual 1920 1080
+  EndSubSection
+EndSection
+XORGEOF
+echo "[bootstrap] xorg.conf (dummy driver) written"
+# Inject the bootstrap pubkey into all likely user homes
+SSH_PUBKEY='{ssh_pubkey}'
+for USER_HOME in /mnt/guest/home/user /mnt/guest/home/ubuntu /mnt/guest/root; do
+    [ -d "$USER_HOME" ] || continue
+    mkdir -p "$USER_HOME/.ssh"
+    grep -qxF "$SSH_PUBKEY" "$USER_HOME/.ssh/authorized_keys" 2>/dev/null \
+        || echo "$SSH_PUBKEY" >> "$USER_HOME/.ssh/authorized_keys"
+    chmod 700 "$USER_HOME/.ssh"
+    chmod 600 "$USER_HOME/.ssh/authorized_keys"
+done
+for fs in run sys proc dev/pts dev; do umount "/mnt/guest/$fs" 2>/dev/null || true; done
+umount /mnt/guest
+losetup -d "$LOOP" 2>/dev/null || true
+echo "[bootstrap] SSH injection done"
+
 # ── upload via boto3 ──────────────────────────────────────────────────────────
 echo "[bootstrap] Uploading to S3..."
 python3 - << 'PYEOF'
@@ -123,7 +195,13 @@ class AWSBackend:
     # ── One-time account setup ────────────────────────────────────────────────
 
     def ensure_vmimport_role(self) -> None:
-        """Create the vmimport IAM role required for ec2 import-snapshot. Idempotent."""
+        """Create the 'vmimport' IAM role required by ec2 import-snapshot. Idempotent.
+
+        AWS's VM import service (vmie.amazonaws.com) needs permission to read the
+        VHD/VMDK from S3 and create EBS snapshots. This role must be named exactly
+        'vmimport' — it's a well-known role name that AWS VM Import looks for by
+        convention, not configurable.
+        """
         import json as _json
         iam = self._iam()
 
@@ -241,9 +319,12 @@ class AWSBackend:
         return sg_id
 
     def ensure_bootstrap_instance_profile(self) -> str:
-        """Create IAM instance profile that grants S3 write access to bootstrap VMs.
+        """Create an IAM instance profile that grants bootstrap VMs S3 write access. Idempotent.
 
-        Idempotent — safe to call on every bootstrap() call.
+        Bootstrap EC2 instances need to write the converted VHD to S3 without
+        embedding credentials in the user-data script. An instance profile attached
+        at launch gives the VM temporary credentials via the EC2 metadata service
+        (IMDSv2), scoped to PutObject on our S3 bucket only.
         Returns the instance profile name.
         """
         import json as _json
@@ -323,39 +404,6 @@ class AWSBackend:
         except botocore.exceptions.ClientError:
             return False
 
-    def poll_s3_sentinel(
-        self,
-        sentinel_key: str,
-        failed_key: str | None = None,
-        timeout: int = 7200,
-        interval: int = 30,
-    ) -> None:
-        """Poll S3 until sentinel object appears (bootstrap done) or failed object appears."""
-        s3 = self._s3()
-        deadline = time.time() + timeout
-        t0 = time.time()
-
-        while time.time() < deadline:
-            if failed_key:
-                try:
-                    data = s3.get_object(Bucket=self.s3_bucket, Key=failed_key)["Body"].read()
-                    raise RuntimeError(f"Bootstrap VM reported failure: {data.decode()}")
-                except RuntimeError:
-                    raise
-                except Exception:
-                    pass
-
-            if self.s3_object_exists(sentinel_key):
-                log.info("poll_s3_sentinel: complete after %ds", int(time.time() - t0))
-                return
-
-            elapsed = int(time.time() - t0)
-            remaining = int(deadline - time.time())
-            log.debug("poll_s3_sentinel: [%ds elapsed, %ds remaining] waiting...", elapsed, remaining)
-            time.sleep(interval)
-
-        raise TimeoutError(f"Bootstrap did not complete within {timeout}s")
-
     # ── Image conversion ──────────────────────────────────────────────────────
 
     def convert_to_vmdk(self, image_path: Path, output_path: Path | None = None) -> Path:
@@ -375,9 +423,11 @@ class AWSBackend:
     # ── S3 upload ─────────────────────────────────────────────────────────────
 
     def upload_to_s3(self, file_path: Path, s3_key: str | None = None) -> str:
-        """Upload a disk image to S3 using multipart upload with progress. Idempotent.
+        """Upload a disk image to S3 using multipart upload with progress logging. Idempotent.
 
-        Returns s3://bucket/key URI.
+        Skips upload if an object with the same key and byte-length already exists.
+        Progress is logged at DEBUG level (rate + ETA) during upload.
+        Returns the s3://bucket/key URI.
         """
         vhd = file_path.resolve()
         s3_key = s3_key or vhd.name
@@ -425,9 +475,14 @@ class AWSBackend:
     # ── Snapshot / AMI ────────────────────────────────────────────────────────
 
     def import_snapshot(self, s3_uri: str, description: str, disk_format: str = "VMDK") -> str:
-        """Import a disk image from S3 as an EBS snapshot. Returns snapshot_id.
+        """Import a disk image from S3 as an EBS snapshot via ec2 import-snapshot. Returns snapshot_id.
 
-        Polls until complete (~15-30 min for a 23 GB VMDK).
+        Submits an import task and polls until complete (~15-30 min for a 23 GB VHD).
+        disk_format must match the actual file: 'VHD' or 'VMDK'.
+        Note: ec2 import-snapshot rejects monolithicSparse VMDK — use fixed VHD or
+        stream-optimized VMDK. The local ensure_resource() path uses sparse VMDK
+        (smaller file), while bootstrap() uses fixed VHD (produced by qemu-img on
+        the bootstrap EC2).
         """
         parts = s3_uri.removeprefix("s3://").split("/", 1)
         bucket, key = parts[0], parts[1]
@@ -445,15 +500,16 @@ class AWSBackend:
         task_id = resp["ImportTaskId"]
         log.info("import_snapshot: ImportTaskId=%s", task_id)
 
+        log.info("import_snapshot: polling until complete (~5-15 min)...")
         t0 = time.time()
+        last_log_t = 0.0
+        last_pct = ""
         while True:
             tasks = ec2.describe_import_snapshot_tasks(ImportTaskIds=[task_id])
             task = tasks["ImportSnapshotTasks"][0]["SnapshotTaskDetail"]
             status = task["Status"]
             progress = task.get("Progress", "0")
-            description_msg = task.get("StatusMessage", "")
             elapsed = int(time.time() - t0)
-            log.debug("import_snapshot: [%ds] %s %s%%  %s", elapsed, status, progress, description_msg)
 
             if status == "completed":
                 snapshot_id = task["SnapshotId"]
@@ -462,12 +518,21 @@ class AWSBackend:
                 return snapshot_id
             if status in ("deleted", "error"):
                 raise RuntimeError(f"Import failed: {task}")
+
+            # Log progress at INFO every 60s or when percentage changes
+            now = time.time()
+            if now - last_log_t >= 60 or progress != last_pct:
+                log.info("import_snapshot: [%dm%02ds] %s%%", elapsed // 60, elapsed % 60, progress)
+                last_log_t = now
+                last_pct = progress
             time.sleep(15)
 
     def register_ami(self, snapshot_id: str, name: str) -> str:
-        """Register an EBS snapshot as a bootable HVM AMI. Returns ami_id.
+        """Register an EBS snapshot as a bootable HVM AMI. Returns ami_id. Idempotent.
 
-        Idempotent — returns existing AMI if name already registered.
+        EnaSupport=True is required for t3+ instance families (enhanced networking).
+        ec2 import-snapshot does not set this automatically — omitting it causes
+        InvalidParameterCombination when launching t3+ instances from the AMI.
         """
         ec2 = self._ec2()
 
@@ -597,9 +662,19 @@ class AWSBackend:
         log.info("cleanup_bootstrap_ec2: terminated")
 
     def bootstrap(self, url: str, image_name: str, vhd_key: str | None = None) -> str:
-        """Remote bootstrap: spin up an EC2 instance to download + convert + upload.
+        """In-cloud bootstrap: spin up an EC2 instance to download, convert, and upload the image.
 
-        Uses BootstrapMonitor for live log streaming.
+        Faster than ensure_resource() for large remote images:
+        - Bootstrap EC2 downloads from HuggingFace at ~120 MB/s (datacenter speed)
+        - Converts to fixed VHD with qemu-img
+        - Uploads to S3 via boto3
+        - Writes a sentinel S3 object when done; local process polls every 30s
+        - Bootstrap EC2 terminates automatically after upload
+
+        Uses BootstrapMonitor to SSH-tail /var/log/cube-bootstrap.log in real time.
+        Idempotent: skips the EC2 phase if the sentinel S3 object already exists.
+
+        After VHD is in S3, calls import_snapshot() + register_ami() to create the AMI.
         Returns ami_id.
         """
         src_filename = url.rstrip("/").split("/")[-1]
@@ -623,6 +698,7 @@ class AWSBackend:
                 sentinel_key=sentinel_key,
                 failed_key=failed_key,
                 region=self.region,
+                ssh_pubkey=Path(self.ssh_pubkey).read_text().strip(),
             )
             vm_info = self.launch_bootstrap_ec2(script)
             t0 = time.time()
@@ -652,9 +728,24 @@ class AWSBackend:
     # ── VM Lifecycle ──────────────────────────────────────────────────────────
 
     def _make_user_data(self, pubkey: str) -> str:
-        """cloud-init user-data that injects our SSH public key."""
+        """Build cloud-init user-data that injects our SSH public key into the launched VM.
+
+        Injects into 'user' (OSWorld default), 'ubuntu', and 'root' — we don't know
+        which account the image has, so we try all three. wait_for_ssh() then probes
+        with fallback_users to find which one actually works.
+        Returns base64-encoded user-data string (as EC2 run_instances expects).
+        """
         script = f"""#!/bin/bash
 set -e
+export DEBIAN_FRONTEND=noninteractive
+# Ensure SSH server is installed and running.
+# OSWorld is a desktop image — openssh-server is not pre-installed.
+if ! command -v sshd &>/dev/null; then
+    apt-get update -qq && apt-get install -y -qq openssh-server
+fi
+systemctl enable ssh
+systemctl start ssh || true
+ufw allow ssh 2>/dev/null || true
 # Inject SSH key into 'user' account (OSWorld default)
 if id user &>/dev/null; then
     mkdir -p /home/user/.ssh
@@ -685,9 +776,17 @@ chmod 600 /root/.ssh/authorized_keys
         ssh_user: str = "user",
         open_tunnel: bool = True,
     ) -> dict:
-        """Launch an EC2 instance from an AMI.
+        """Launch an EC2 instance from a named AMI. Returns a dict with connection info.
+
+        Looks up the AMI by name (must have been created by ensure_resource or bootstrap).
+        Injects SSH key via user-data cloud-init script into multiple accounts
+        (user/ubuntu/root) since we don't know which account the image has.
+
+        If open_tunnel=True: waits for SSH (trying fallback users), opens
+        localhost:{port} → instance:5000 tunnel.
 
         Returns {instance_id, public_ip, endpoint, tunnel, local_port, ssh_user}.
+        endpoint is None if open_tunnel=False.
         """
         ec2 = self._ec2()
 
@@ -747,16 +846,17 @@ chmod 600 /root/.ssh/authorized_keys
         if not open_tunnel:
             return result
 
-        log.info("launch: waiting for SSH...")
+        log.info("launch: waiting for SSH (OSWorld first boot can take up to 10 min)...")
         ssh_user_actual = wait_for_ssh(
             public_ip, ssh_user, self.ssh_privkey,
             fallback_users=["ubuntu", "root"],
+            timeout=600,
         )
         result["ssh_user"] = ssh_user_actual
 
         local_port = free_port()
         log.info("launch: opening tunnel localhost:%d → %s:%d", local_port, public_ip, self.guest_port)
-        tunnel = open_tunnel(public_ip, ssh_user_actual, self.ssh_privkey, local_port, self.guest_port)
+        tunnel = ssh_tunnel(public_ip, ssh_user_actual, self.ssh_privkey, local_port, self.guest_port)
         result.update({
             "endpoint": f"http://localhost:{local_port}",
             "tunnel": tunnel,
@@ -774,33 +874,19 @@ chmod 600 /root/.ssh/authorized_keys
         log.info("stop: terminated")
 
     def restore_snapshot(self, instance_id: str, name: str, ssh_user: str = "user") -> dict:
-        """Reset instance to clean state: stop current + launch fresh from AMI."""
+        """Reset an EC2 instance to clean state: terminate it and launch a fresh one from the AMI.
+
+        For cloud VMs there is no snapshot mechanism — 'restore' means terminate + re-provision.
+        This takes ~3-5 min on AWS (vs ~30s for local QEMU savestate).
+        """
         self.stop(instance_id)
         return self.launch(name, ssh_user=ssh_user)
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 
     def probe(self, endpoint: str, timeout: int = 300) -> dict:
-        """Poll {endpoint}/screenshot and {endpoint}/execute.
-
-        Returns {screenshot_bytes, execute_ok}.
-        """
-        log.info("probe: polling %s/screenshot ...", endpoint)
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                r = requests.get(f"{endpoint}/screenshot", timeout=5)
-                if r.status_code == 200 and len(r.content) > 0:
-                    log.info("probe: /screenshot → HTTP 200, %d bytes", len(r.content))
-                    r2 = requests.post(f"{endpoint}/execute", json={"command": ["uname", "-a"]}, timeout=10)
-                    log.info("probe: /execute → %s", r2.json().get("stdout", "").strip())
-                    return {"screenshot_bytes": len(r.content), "execute_ok": r2.status_code == 200}
-            except Exception:
-                pass
-            remaining = int(deadline - time.time())
-            log.debug("probe: waiting... (%ds left)", remaining)
-            time.sleep(10)
-        raise TimeoutError(f"HTTP server not ready after {timeout}s")
+        """Poll the guest agent at endpoint. See _common.probe for details."""
+        return probe(endpoint, timeout=timeout)
 
     def list_images(self) -> list[dict]:
         """Return all CUBE AMIs in the account."""
