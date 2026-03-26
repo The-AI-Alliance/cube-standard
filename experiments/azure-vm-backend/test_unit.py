@@ -249,19 +249,24 @@ class TestAzureBackendDefaults(unittest.TestCase):
         self.assertIn("open_tunnel", sig.parameters)
         self.assertNotIn("do_open_tunnel", sig.parameters)
 
-    def test_bootstrap_script_generates_ssh_host_keys(self):
-        """Regression: sshd refuses to start without host keys.
+    def test_bootstrap_script_ssh_injection_defensive(self):
+        """Regression: sshd fails to start due to several OSWorld image quirks.
 
-        OSWorld ships with openssh-server installed but host keys may be absent
-        (never generated if sshd was never run in the source image). Without
-        host keys, sshd -t (the ExecStartPre check) fails and sshd silently
-        won't start despite the multi-user.target.wants symlink being present.
-        Fix: run ssh-keygen -A in chroot to generate any missing host keys.
+        Three issues found across bootstrap runs:
+        1. Host keys absent → sshd -t (ExecStartPre) fails silently.
+           Fix: ssh-keygen -A in chroot.
+        2. ssh.socket Conflicts=ssh.service → if socket activation is enabled,
+           adding multi-user.target.wants/ssh.service causes both to refuse to
+           start. Fix: remove sockets.target.wants/ssh.socket.
+        3. authorized_keys owned by root → sshd rejects keys not owned by the
+           login user. Fix: chown -R $OWNER after injecting key.
         """
         import azure_backend
         script = azure_backend._AZURE_BOOTSTRAP_SCRIPT
         self.assertIn("ssh-keygen -A", script)
         self.assertIn("sshd_not_to_be_run", script)
+        self.assertIn("sockets.target.wants/ssh.socket", script)
+        self.assertIn("chown -R", script)
 
     def test_launch_uses_specialized_image_no_os_profile(self):
         """Regression: Specialized gallery image — no os_profile in launch() payload.

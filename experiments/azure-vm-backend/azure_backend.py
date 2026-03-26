@@ -95,6 +95,16 @@ ls /etc/ssh/ssh_host_*_key 2>/dev/null | grep -q . || ssh-keygen -A
 # Remove inhibit file if present
 rm -f /etc/ssh/sshd_not_to_be_run
 "
+# Remove any systemd mask on ssh.service (symlink → /dev/null suppresses the service)
+[ -L /mnt/guest/etc/systemd/system/ssh.service ] && \
+    readlink /mnt/guest/etc/systemd/system/ssh.service | grep -q '/dev/null' && \
+    rm -f /mnt/guest/etc/systemd/system/ssh.service && \
+    echo "[bootstrap] Removed ssh.service mask"
+# Remove socket activation — ssh.socket Conflicts=ssh.service; if both are
+# enabled systemd refuses to start either. We want a plain persistent daemon.
+rm -f /mnt/guest/etc/systemd/system/sockets.target.wants/ssh.socket
+rm -f /mnt/guest/etc/systemd/system/ssh.socket  # also remove if masked
+echo "[bootstrap] Removed ssh.socket (conflict with ssh.service)"
 # Enable sshd at boot via direct symlink (systemctl in chroot fails without running systemd).
 # This is exactly what 'systemctl enable ssh' does internally.
 SSH_SVC=/mnt/guest/lib/systemd/system/ssh.service
@@ -115,6 +125,9 @@ for USER_HOME in /mnt/guest/home/user /mnt/guest/home/ubuntu /mnt/guest/root; do
         || echo "$SSH_PUBKEY" >> "$USER_HOME/.ssh/authorized_keys"
     chmod 700 "$USER_HOME/.ssh"
     chmod 600 "$USER_HOME/.ssh/authorized_keys"
+    # Fix ownership — injected as root; sshd rejects keys not owned by the user
+    OWNER=$(stat -c '%U' "$USER_HOME" 2>/dev/null || echo "root")
+    chown -R "$OWNER:$OWNER" "$USER_HOME/.ssh" 2>/dev/null || true
 done
 for fs in run sys proc dev/pts dev; do umount "/mnt/guest/$fs" 2>/dev/null || true; done
 umount /mnt/guest
