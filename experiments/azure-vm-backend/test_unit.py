@@ -123,17 +123,17 @@ class TestBootstrapMonitorParseLine(unittest.TestCase):
         if result is not None:
             self.assertEqual(result[0], logging.DEBUG)
 
-    def test_boto3_512mb_boundary(self):
+    def test_boto3_5gb_boundary(self):
         import logging
-        half_gb = 512 * 1024 * 1024
-        # Just under 512 MB — suppressed
-        result = self.monitor._parse_line(f"  uploaded {half_gb - 1} bytes")
+        five_gb = 5 * 1024 * 1024 * 1024
+        # Just under 5 GB — suppressed
+        result = self.monitor._parse_line(f"  uploaded {five_gb - 1} bytes")
         self.assertIsNone(result)
-        # Cross the 512 MB boundary — emitted
+        # Cross the 5 GB boundary — emitted
         result = self.monitor._parse_line("  uploaded 2 bytes")
         self.assertIsNotNone(result)
         self.assertEqual(result[0], logging.INFO)
-        self.assertIn("0.5 GB", result[1])
+        self.assertIn("5 GB", result[1])
 
     def test_unknown_line_is_debug(self):
         import logging
@@ -249,20 +249,20 @@ class TestAzureBackendDefaults(unittest.TestCase):
         self.assertIn("open_tunnel", sig.parameters)
         self.assertNotIn("do_open_tunnel", sig.parameters)
 
-    def test_cloud_init_contains_provision_vm_agent_false(self):
-        """Regression: OSProvisioningTimedOut fix — provision_vm_agent must be False."""
-        import inspect
-        src = inspect.getsource(self.AzureBackend.launch)
-        self.assertIn("provision_vm_agent", src)
-        self.assertIn("False", src)
+    def test_launch_uses_specialized_image_no_os_profile(self):
+        """Regression: Specialized gallery image — no os_profile in launch() payload.
 
-    def test_cloud_init_uses_custom_data_not_ssh_keys(self):
-        """Regression: SSH key must be injected via custom_data (cloud-init), not os_profile.ssh."""
+        Generalized image + provision_vm_agent=False caused OSProvisioningTimedOut
+        (ARM waited indefinitely for a guest-OS signal that never came).
+        Fix: use Specialized images (SSH key injected during bootstrap, not cloud-init).
+        """
         import inspect
         src = inspect.getsource(self.AzureBackend.launch)
-        self.assertIn("custom_data", src)
-        # The old waagent-dependent approach should not be present
-        self.assertNotIn('"ssh": {"public_keys"', src)
+        self.assertNotIn('"os_profile"', src)
+        self.assertNotIn("provision_vm_agent", src)
+        # Specialized must be the default in create_image_definition
+        src2 = inspect.getsource(self.AzureBackend.create_image_definition)
+        self.assertIn("Specialized", src2)
 
 
 if __name__ == "__main__":

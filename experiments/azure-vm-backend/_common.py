@@ -243,14 +243,13 @@ class BootstrapMonitor:
         if m and m.group(1) == "100":
             return logging.INFO, f"  download: 100% ({m.group(2)})"
 
-        # boto3: accumulate and emit every 512 MB
+        # boto3: accumulate and emit every 5 GB
         m = self._BOTO3_RE.search(line)
         if m:
             self._boto3_uploaded += int(m.group(1))
             gb = self._boto3_uploaded / 1024**3
-            # emit every ~512 MB
-            if self._boto3_uploaded % (512 * 1024 * 1024) < int(m.group(1)):
-                return logging.INFO, f"  upload: {gb:.1f} GB uploaded"
+            if self._boto3_uploaded % (5 * 1024 * 1024 * 1024) < int(m.group(1)):
+                return logging.INFO, f"  upload: {gb:.0f} GB uploaded"
             return None  # suppress
 
         return logging.DEBUG, line

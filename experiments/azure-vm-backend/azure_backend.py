@@ -20,7 +20,8 @@ from _common import BootstrapMonitor, convert_image, free_port, open_tunnel as s
 log = logging.getLogger(__name__)
 
 # ── Bootstrap script ──────────────────────────────────────────────────────────
-# Placeholders: {hf_url}, {vhd_sas_url}, {sentinel_sas_url}, {failed_sas_url}
+# Placeholders: {hf_url}, {vhd_sas_url}, {sentinel_sas_url}, {failed_sas_url},
+#               {ssh_pubkey}
 
 _AZURE_BOOTSTRAP_SCRIPT = """\
 #!/bin/bash
@@ -71,6 +72,50 @@ fi
 echo "[bootstrap] Converting qcow2 → fixed VHD..."
 qemu-img convert -f qcow2 -O vpc -o subformat=fixed,force_size "$QCOW2" /data/output.vhd
 echo "[bootstrap] Converted: $(du -sh /data/output.vhd)"
+
+# ── inject SSH into VHD (OSWorld has no openssh-server; cloud-init won't run) ─
+echo "[bootstrap] Injecting SSH into VHD..."
+LOOP=$(losetup -f --show -P /data/output.vhd)
+sleep 2
+# Find the root partition (ext4)
+ROOT_PART=$(lsblk -rno NAME,FSTYPE "$LOOP" | awk '$2=="ext4" {{print "/dev/"$1}}' | tail -1)
+if [ -z "$ROOT_PART" ]; then
+    echo "[bootstrap] WARNING: no ext4 partition found, trying whole device"
+    ROOT_PART="$LOOP"
+fi
+mkdir -p /mnt/guest
+mount "$ROOT_PART" /mnt/guest
+for fs in dev dev/pts proc sys run; do mount --bind "/$fs" "/mnt/guest/$fs" 2>/dev/null || true; done
+cp /etc/resolv.conf /mnt/guest/etc/resolv.conf 2>/dev/null || true
+chroot /mnt/guest /bin/bash -c "
+export DEBIAN_FRONTEND=noninteractive
+which sshd 2>/dev/null || (apt-get update -qq && apt-get install -y -qq openssh-server)
+"
+# Enable sshd at boot via direct symlink (systemctl in chroot fails without running systemd).
+# This is exactly what 'systemctl enable ssh' does internally.
+SSH_SVC=/mnt/guest/lib/systemd/system/ssh.service
+SSH_SVC_ALT=/mnt/guest/usr/lib/systemd/system/ssh.service
+for svc in "$SSH_SVC" "$SSH_SVC_ALT"; do
+    [ -f "$svc" ] && \\
+        mkdir -p /mnt/guest/etc/systemd/system/multi-user.target.wants && \\
+        ln -sf "${{svc#/mnt/guest}}" \\
+            /mnt/guest/etc/systemd/system/multi-user.target.wants/ssh.service && \\
+        echo "[bootstrap] Enabled sshd via $svc" && break
+done
+# Inject the bootstrap pubkey into all likely user homes
+SSH_PUBKEY='{ssh_pubkey}'
+for USER_HOME in /mnt/guest/home/user /mnt/guest/home/ubuntu /mnt/guest/root; do
+    [ -d "$USER_HOME" ] || continue
+    mkdir -p "$USER_HOME/.ssh"
+    grep -qxF "$SSH_PUBKEY" "$USER_HOME/.ssh/authorized_keys" 2>/dev/null \\
+        || echo "$SSH_PUBKEY" >> "$USER_HOME/.ssh/authorized_keys"
+    chmod 700 "$USER_HOME/.ssh"
+    chmod 600 "$USER_HOME/.ssh/authorized_keys"
+done
+for fs in run sys proc dev/pts dev; do umount "/mnt/guest/$fs" 2>/dev/null || true; done
+umount /mnt/guest
+losetup -d "$LOOP" 2>/dev/null || true
+echo "[bootstrap] SSH injection done"
 
 # ── upload ────────────────────────────────────────────────────────────────────
 echo "[bootstrap] Uploading to Azure Blob Storage..."
@@ -380,7 +425,7 @@ class AzureBackend:
     def create_image_definition(
         self,
         name: str,
-        os_state: str = "Generalized",
+        os_state: str = "Specialized",
         hyper_v_gen: str = "V1",
     ) -> str:
         """Create a gallery image definition. Returns image definition name."""
@@ -580,7 +625,7 @@ class AzureBackend:
         )
         poller.result()
 
-        pip_info = network.public_ip_addresses.get(self.resource_group, pip_name)
+        pip_info = self._network().public_ip_addresses.get(self.resource_group, pip_name)
         assert pip_info.ip_address
         public_ip = pip_info.ip_address
         log.info("launch_bootstrap_vm: VM ready in %ds: %s @ %s", int(time.time() - t0), vm_name, public_ip)
@@ -655,6 +700,7 @@ class AzureBackend:
                 vhd_sas_url=vhd_sas_url,
                 sentinel_sas_url=sentinel_sas_url,
                 failed_sas_url=failed_sas_url,
+                ssh_pubkey=Path(self.ssh_pubkey).read_text().strip(),
             )
             vm_info = self.launch_bootstrap_vm(script)
             t0 = time.time()
@@ -682,20 +728,17 @@ class AzureBackend:
         self,
         name: str,
         version: str = "1.0.0",
-        admin_user: str = "azureuser",
+        ssh_user: str = "user",
         open_tunnel: bool = True,
     ) -> dict:
         """Launch a VM from a Compute Gallery image. Returns a dict with connection info.
 
         Creates: static public IP → NIC → VM.
-        Injects SSH key via cloud-init custom_data (not waagent os_profile.ssh.public_keys).
 
-        Why cloud-init instead of waagent:
-            The OSWorld image was not deprovisioned with 'waagent -deprovision', so
-            waagent never signals "provisioning complete" — Azure times out with
-            OSProvisioningTimedOut if we rely on it. With provision_vm_agent=False,
-            Azure skips the wait. Cloud-init runs independently and creates the user
-            + authorized_keys reliably.
+        The gallery image is Specialized (not Generalized) — no cloud-init or waagent
+        runs on boot. SSH access uses the key injected during bootstrap()
+        (into /home/user, /home/ubuntu, /root). ARM completes provisioning without
+        waiting for any guest-OS signal, avoiding OSProvisioningTimedOut.
 
         If open_tunnel=True: waits for SSH, opens localhost:{port} → VM:5000 tunnel
         (bypasses Zscaler, which blocks all ports except SSH on corporate networks).
@@ -712,26 +755,6 @@ class AzureBackend:
             f"/images/{name}/versions/{version}"
         )
 
-        pubkey = Path(self.ssh_pubkey).read_text().strip()
-
-        # Inject SSH key via cloud-init (custom_data) instead of waagent.
-        # The OSWorld image was not deprovisioned with `waagent -deprovision`,
-        # so waagent will never signal "provisioning complete" — Azure would
-        # time out (OSProvisioningTimedOut) if we relied on it.  With
-        # provision_vm_agent=False Azure skips that wait entirely.  Cloud-init
-        # runs independently and reliably creates the user + authorized_keys.
-        cloud_init = (
-            "#cloud-config\n"
-            "users:\n"
-            f"  - name: {admin_user}\n"
-            "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
-            "    groups: [sudo, adm]\n"
-            "    shell: /bin/bash\n"
-            "    ssh_authorized_keys:\n"
-            f"      - {pubkey}\n"
-        )
-        custom_data = base64.b64encode(cloud_init.encode()).decode()
-
         compute = self._compute()
 
         log.info("launch: creating network resources")
@@ -740,6 +763,9 @@ class AzureBackend:
         log.info("launch: creating VM %s (%s)  image=%s/%s", vm_name, self.vm_size, name, version)
         t0 = time.time()
 
+        # Specialized gallery image: no os_profile allowed (and not needed).
+        # ARM completes once infrastructure is provisioned, without waiting for
+        # waagent or cloud-init to signal back from inside the guest.
         poller = compute.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
             self.resource_group,
             vm_name,
@@ -755,15 +781,6 @@ class AzureBackend:
                         "delete_option": "Delete",
                     },
                 },
-                "os_profile": {
-                    "computer_name": vm_name,
-                    "admin_username": admin_user,
-                    "custom_data": custom_data,
-                    "linux_configuration": {
-                        "disable_password_authentication": True,
-                        "provision_vm_agent": False,
-                    },
-                },
                 "network_profile": {
                     "network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]
                 },
@@ -772,11 +789,11 @@ class AzureBackend:
         poller.result()
         elapsed = time.time() - t0
 
-        pip_info = network.public_ip_addresses.get(self.resource_group, pip_name)
+        pip_info = self._network().public_ip_addresses.get(self.resource_group, pip_name)
         assert pip_info.ip_address, "Public IP address was not assigned"
         public_ip = pip_info.ip_address
         log.info("launch: VM ready in %.0fs: %s @ %s", elapsed, vm_name, public_ip)
-        log.info("launch: SSH: ssh -i %s -o IdentitiesOnly=yes %s@%s", self.ssh_privkey, admin_user, public_ip)
+        log.info("launch: SSH: ssh -i %s -o IdentitiesOnly=yes %s@%s", self.ssh_privkey, ssh_user, public_ip)
 
         result: dict = {
             "vm_name": vm_name,
@@ -790,10 +807,13 @@ class AzureBackend:
 
         if open_tunnel:
             log.info("launch: waiting for SSH...")
-            wait_for_ssh(public_ip, admin_user, self.ssh_privkey)
+            active_user = wait_for_ssh(
+                public_ip, ssh_user, self.ssh_privkey,
+                fallback_users=["ubuntu", "root"],
+            )
             local_port = free_port()
             log.info("launch: opening tunnel localhost:%d → %s:%d", local_port, public_ip, self.guest_port)
-            tunnel = ssh_tunnel(public_ip, admin_user, self.ssh_privkey, local_port, self.guest_port)
+            tunnel = ssh_tunnel(public_ip, active_user, self.ssh_privkey, local_port, self.guest_port)
             result.update({
                 "endpoint": f"http://localhost:{local_port}",
                 "tunnel": tunnel,
