@@ -165,7 +165,7 @@ class AzureBackend:
     tags:                        dict = field(default_factory=lambda: {"project": "cube-experiment"})
     ssh_privkey:                 str  = field(default_factory=lambda: str(Path.home() / ".ssh" / "id_ed25519"))
     ssh_pubkey:                  str  = field(default_factory=lambda: str(Path.home() / ".ssh" / "id_ed25519.pub"))
-    bootstrap_vm_size:           str  = "Standard_B2ms"
+    bootstrap_vm_size:           str  = "Standard_D4s_v3"
     bootstrap_disk_sku:          str  = "Premium_LRS"
     bootstrap_gallery_image:     str  = "cube-ubuntu-22-04"
     bootstrap_gallery_image_ver: str  = "1.0.0"
