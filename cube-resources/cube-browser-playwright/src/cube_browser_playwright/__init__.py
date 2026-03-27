@@ -1,5 +1,12 @@
 """playwright-browser: concrete browser session implementations for cube-standard."""
 
+from cube_browser_playwright.async_playwright_session import AsyncPlaywrightSession, AsyncPlaywrightSessionConfig
 from cube_browser_playwright.playwright_session import PlaywrightSession, PlaywrightSessionConfig, Viewport
 
-__all__ = ["PlaywrightSession", "PlaywrightSessionConfig", "Viewport"]
+__all__ = [
+    "PlaywrightSession",
+    "PlaywrightSessionConfig",
+    "Viewport",
+    "AsyncPlaywrightSession",
+    "AsyncPlaywrightSessionConfig",
+]

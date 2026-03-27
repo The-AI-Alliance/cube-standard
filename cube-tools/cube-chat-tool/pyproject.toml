@@ -1,17 +1,16 @@
 [project]
-name = "cube-browser-playwright"
-version = "0.2.0"
-description = "Concrete browser session implementations for cube-standard"
+name = "cube-chat-tool"
+version = "0.1.0"
+description = "Chat tool implementation for cube-standard benchmarks"
 requires-python = ">=3.12"
 dependencies = [
     "cube-standard",
-    "playwright",
+    "cube-chat",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
-    "pytest-asyncio>=0.24.0",
 ]
 
 [build-system]
@@ -19,7 +18,7 @@ requires = ["uv_build>=0.6.0,<0.7.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "cube_browser_playwright"
+module-name = "cube_chat_tool"
 
 [tool.ruff]
 fix = true
@@ -38,4 +37,3 @@ extend-select = ["I"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-rs"
-asyncio_mode = "auto"

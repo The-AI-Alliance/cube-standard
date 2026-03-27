@@ -19,7 +19,7 @@ from pathlib import Path
 
 from cube.vm import VM, VMBackend, VMConfig
 
-from cube_vm_backend.docker_manager import DockerConfig, DockerManager
+from cube_vm_backend.docker_manager import OSWORLD_DOCKER_IMAGE, DockerConfig, DockerManager
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,7 @@ class LocalDockerVMBackend(VMBackend):
 
     cache_dir: str = str(_DEFAULT_CACHE_DIR)
     path_to_vm: str | None = None
+    image: str = OSWORLD_DOCKER_IMAGE
     memory: str = "4G"
     cpus: int = 4
     disk_size: str = "32G"
@@ -123,6 +124,7 @@ class LocalDockerVMBackend(VMBackend):
 
         docker_config = DockerConfig(
             path_to_vm=Path(self.path_to_vm),  # type: ignore[arg-type]
+            image=self.image,
             memory=self.memory,
             cpus=self.cpus,
             disk_size=self.disk_size,
