@@ -295,9 +295,27 @@ developers.  Contains:
   - `_ok()` / `_err()` helpers with docstrings.
   - `make_benchmark_rpc_server` / `make_task_rpc_server` kept, now wrap the new apps.
 
+- [x] `src/cube/benchmark.py` — `spawn()` updated.
+  - Signature is now `spawn(task_config) → Task` (pure creation, no subprocess/server).
+  - Docstring explains the separation between in-process `spawn()` and the `cube/spawn`
+    network endpoint.
+
+- [x] `tests/test_server.py` — new file replacing `test_benchmark_server.py`.
+  - Defines a minimal inline cube (`_MiniBenchmark`, `_CounterTask`, `_CounterTool`) —
+    no dependency on `counter-cube`.
+  - Uses `starlette.testclient.TestClient` (no `pytest-asyncio`).
+  - Covers: `cube/info`, `cube/tasks` (all / filter / pagination), `cube/shutdown`,
+    `tools/list`, `cube/reset`, `tools/call` (with and without `action_id`),
+    `cube/step` full episode, `cube/evaluate` (with and without obs),
+    `cube/status`, `cube/privileged_info`, `cube/close`.
+  - Covers JSON-RPC error envelopes: unknown method (-32601), missing param (-32602),
+    invalid JSON (-32700), invalid request (-32600).
+
+- [x] `tests/test_benchmark_server.py` — deleted (superseded by `test_server.py`).
+
 ### What remains
 
-- [ ] **`examples/counter-cube-remote/`** — new example:
+- [ ] **`examples/counter-cube-remote/`** — Python end-to-end example (use case #2: process isolation):
   - `server.py` — imports `CounterBenchmark`, calls `make_benchmark_rpc_server()`,
     prints the URL, then joins the process (blocks).
   - `client.py` — pure HTTP JSON-RPC (uses only `httpx`, no cube imports).
@@ -307,46 +325,55 @@ developers.  Contains:
   - Short `README.md` showing how to run (`python server.py` in one terminal,
     `python client.py` in another).
 
+- [ ] **`examples/counter-cube-node/`** — cross-language example (use case #1: language-agnostic protocol):
+  - A minimal Node.js server (~50–80 lines) that implements the CUBE JSON-RPC protocol
+    without any Python or cube-standard dependency.
+  - Methods: `cube/info`, `cube/tasks`, `cube/spawn` (stub), `tools/list`,
+    `cube/reset`, `cube/step`, `cube/evaluate`, `cube/close`.
+  - Behaviour mirrors `counter-cube` (increment a counter; done when it reaches 2).
+  - `tests/` — pytest test suite that:
+    1. Spawns the Node.js server as a subprocess (`subprocess.Popen`).
+    2. Polls until the HTTP port is up.
+    3. Drives a full episode via `httpx` JSON-RPC calls.
+    4. Asserts correct responses and final reward.
+  - No `pytest.mark.integration` needed — the test lives inside this package and is
+    only run when you `cd` into it.
+  - `package.json` — single dependency: none (use Node.js built-in `http` module).
+
+- [ ] **`examples/docker-cube/`** — Docker-backed example (use case #4: security sandbox):
+  - A self-contained benchmark where each task's tool runs a command **inside a Docker
+    container** via `LocalContainerBackend`.
+  - The task does something simple that requires a container — e.g. run `echo hello`
+    or `python3 -c "print(1+1)"` inside `alpine` or `python:3.12-alpine` and return
+    the stdout as the observation.
+  - `ContainerConfig` is declared on the `TaskConfig`; `LocalContainerBackend` is
+    passed in at setup time.
+  - `tests/` — pytest test that instantiates the benchmark with `LocalContainerBackend`,
+    spawns a task, runs a full episode, and checks the reward.  Requires Docker daemon
+    (test fails gracefully with `pytest.skip` if Docker is not available).
+  - No dependency on `counter-cube`; standalone `pyproject.toml`.
+
+- [ ] **Ray parallel test** (use case #3: scaling across cores) — lives in `cube-harness`:
+  - An integration test in `cube-harness/tests/` that:
+    1. Starts a benchmark server (`make_benchmark_rpc_server`) in a background thread
+       or process.
+    2. Initialises a local Ray cluster (`ray.init(num_cpus=N)`).
+    3. Defines a Ray remote function that: calls `cube/spawn` on the benchmark server,
+       polls until the task URL is up, runs a full episode via `httpx`, returns the reward.
+    4. Dispatches N episodes in parallel and asserts all rewards are correct.
+  - **Prerequisite**: fix the `cube/spawn` readiness race — the subprocess starts
+    `uvicorn` but returns the URL immediately.  The caller must poll
+    `GET /` (or a `/healthz` endpoint) until it gets a 200 before using the URL.
+    Options: (a) add a `cube/health` no-op method to the task server, (b) retry in
+    the client, (c) have `cube/spawn` block until uvicorn signals readiness via a
+    `multiprocessing.Event`.  Option (c) is cleanest.
+
 ### Key context for next session
-
-- `benchmark.spawn()` currently (old code) does:
-
-  ```python
-  from cube.server import make_task_rpc_server
-  task = task_config.make(...)
-  _app, _process, url = make_task_rpc_server(task)
-  return url
-  ```
-
-  It needs to become:
-
-  ```python
-  from cube.server import make_task_jsonrpc_app
-  task = task_config.make(...)
-  app = make_task_jsonrpc_app(task)
-  return task, app
-  ```
-
-- `test_benchmark_server.py` currently uses:
-
-  ```python
-  from cube.server import make_benchmark_fastapi_app
-  app = make_benchmark_fastapi_app(benchmark)
-  client.get("/cube/info")        # → REST
-  client.get("/cube/tasks")       # → REST
-  client.post("/cube/shutdown")   # → REST
-  ```
-
-  Needs to become:
-
-  ```python
-  from cube.server import make_benchmark_jsonrpc_app
-  app = make_benchmark_jsonrpc_app(benchmark)
-  client.post("/", json={"jsonrpc":"2.0","method":"cube/info","id":1})
-  client.post("/", json={"jsonrpc":"2.0","method":"cube/tasks","id":2})
-  client.post("/", json={"jsonrpc":"2.0","method":"cube/shutdown","id":3})
-  ```
 
 - `counter-cube` example lives in `examples/counter-cube/` and is a working reference
   for how a benchmark is structured.  `counter-cube-remote` should `import CounterBenchmark`
   from it.
+- `LocalContainerBackend` is fully implemented in `src/cube/backends/local.py`.  The
+  `docker` Python SDK is already a dependency.  No new infra needed for the Docker example.
+- `cube_harness/exp_runner.py` already uses `ray.init` + `@ray.remote`.  The Ray test
+  should follow the same pattern.
