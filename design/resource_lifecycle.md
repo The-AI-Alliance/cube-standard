@@ -40,6 +40,78 @@ class ResourceConfig(TypedBaseModel):
     source_url: str | None              # canonical image source (HuggingFace URL, etc.)
     source_hash: str | None             # for deduplication across benchmarks
     default_ttl_seconds: int = 3600     # time-to-live: max lifetime before auto-cleanup; 0 = no expiry
+
+    # ── Capability requirements (checked by infra before provisioning) ──────────
+    def requirements(self) -> set[str]:
+        """Declare what the infra must support to run this resource.
+
+        The infra checks these against its own capabilities() and fails fast
+        with a helpful message before any cloud API call.
+
+        Standard capability tokens: "kvm", "docker", "gpu:nvidia", "network:egress"
+        """
+        return set()
+
+    # ── Lifecycle hooks (run in harness process, not on remote VM) ───────────────
+    def pre_provision(self, infra: "InfraConfig") -> None:
+        """Called before infra begins provisioning. Default: no-op.
+
+        Can be used to validate prerequisites, pre-fetch assets locally,
+        or generate the bootstrap_script_extra fragment (see below).
+        Runs in the harness process — no cube dependencies needed on the VM.
+        """
+
+    def post_provision(self, infra: "InfraConfig", resource_info: dict) -> dict:
+        """Called after provisioning completes. May augment resource_info.
+
+        Can inspect or patch the resulting artifact (e.g. mount a VHD locally,
+        run a chroot command, validate the image). Returns the (possibly updated)
+        resource_info that will be written to the ProvisionStore.
+        Runs in the harness process.
+        """
+        return resource_info
+
+    # ── Script injection (executed on the bootstrap VM, not in harness) ─────────
+    bootstrap_script_extra: str | None = None
+    """Optional bash fragment appended to the infra's bootstrap script.
+
+    This is the escape hatch for benchmark-specific VM setup that the generic
+    infra cannot know about (e.g. installing a custom service, patching the image).
+    The fragment runs as root on the ephemeral bootstrap VM.
+
+    Security: this field must be declared in the benchmark's source code — never
+    fetched from an external URL at runtime. The trust boundary is the installed
+    benchmark package, not this field value. Infra backends should refuse to
+    execute bootstrap_script_extra from dynamically loaded or unsigned configs.
+    """
+```
+
+**ResourceConfig subclasses by infrastructure category.** The infra backend dispatches
+on the subtype and raises `UnsupportedResourceType` for categories it does not support:
+
+```python
+class VMResourceConfig(ResourceConfig):
+    """QEMU-based VM (OSWorld, WindowsAgentArena, macOSWorld, AndroidWorld...)."""
+    requires_kvm: bool = True
+    def requirements(self) -> set[str]:
+        return {"kvm"} if self.requires_kvm else set()
+
+class DockerServiceConfig(ResourceConfig):
+    """Multi-container Docker Compose stack (WebArena, WorkArena, TheAgentCompany...)."""
+    compose_url: str
+    def requirements(self) -> set[str]:
+        return {"docker"}
+
+class DockerImageConfig(ResourceConfig):
+    """Single Docker image per task (SWE-bench, MLE-bench, CTF...)."""
+    image: str
+    def requirements(self) -> set[str]:
+        return {"docker"}
+
+class PythonEnvConfig(ResourceConfig):
+    """Pure Python environment — trivially HPC-compatible (MuJoCo, TextArena...)."""
+    packages: list[str] = []
+    # no special requirements
 ```
 
 **Provisioning hints** for semi-manual or agent-assisted setup live as Markdown files
@@ -89,6 +161,18 @@ class InfraConfig(TypedBaseModel):
         """
         ...
 
+    def capabilities(self) -> set[str]:
+        """Declare what this infra supports.
+
+        Checked against resource.requirements() before provisioning or launch.
+        Fails fast with a helpful message if requirements are not met —
+        e.g. "This resource requires KVM but LocalInfraConfig does not support it."
+
+        Standard tokens: "kvm", "docker", "gpu:nvidia", "network:egress"
+        """
+        ...
+
+    def provision(self, resource: ResourceConfig) -> None: ...  # Level 1
     def launch(self, resource: ResourceConfig, run_id: str, ttl_seconds: int | None = None) -> ResourceHandle: ...
     def list_active(self, run_id: str | None = None) -> list[ResourceHandle]: ...
     def cleanup(self, run_id: str) -> None: ...
@@ -481,3 +565,19 @@ store deduplicate — both names point to the same provisioned image.
 
 - **ProvisionStore v2**: team/CI sharing via `CUBE_PROVISION_STORE` env var pointing
   to an S3/GCS path. v1 is local only (`~/.cube/provisions.json`).
+
+- **Provisioner registry**: a `Provisioner` class that encapsulates how to provision
+  a specific `(ResourceConfig subtype, InfraConfig subtype)` pair, registered via a
+  dispatch table. Benchmarks can register custom provisioners without subclassing either
+  InfraConfig or ResourceConfig. The registry walks the MRO to find the best match,
+  falling back from specific subtypes to base classes. This cleanly separates
+  provisioning logic from both resource declaration and infra config, and is the right
+  long-term architecture once there are 3+ provisioners that need to be swapped or
+  overridden. The current `infra.provision(resource)` method is the short-term
+  equivalent — migrating to a registry is non-breaking.
+
+  ```python
+  @provisioner_registry.register(VMResourceConfig, AWSInfraConfig)
+  class AWSQcow2Provisioner(Provisioner):
+      def provision(self, resource: VMResourceConfig, infra: AWSInfraConfig) -> dict: ...
+  ```
