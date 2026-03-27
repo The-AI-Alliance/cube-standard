@@ -392,11 +392,23 @@ class AzureBackend:
     # ── Disk / Gallery ────────────────────────────────────────────────────────
 
     def import_disk(self, blob_url: str, disk_name: str) -> str:
-        """Create a Managed Disk from a VHD blob. Returns the disk name."""
+        """Create a Managed Disk from a VHD blob. Returns the disk name.
+
+        Always deletes any existing disk with this name first — ARM's
+        create_or_update for createOption=Import silently reuses the old disk
+        content if the disk already exists (the import is a no-op), so we must
+        ensure a fresh import on every call.
+        """
         log.info("import_disk: %s → %s", blob_url.split("/")[-1].split("?")[0], disk_name)
         t0 = time.time()
 
         compute = self._compute()
+        try:
+            compute.disks.begin_delete(self.resource_group, disk_name).result()
+            log.info("import_disk: deleted existing disk %s", disk_name)
+        except Exception:
+            pass  # disk didn't exist — fine
+
         poller = compute.disks.begin_create_or_update(  # type: ignore[call-overload]
             self.resource_group,
             disk_name,
