@@ -167,11 +167,32 @@ dispatch_to_workers(handle.endpoint, run_id)  # run_id is serializable
 backend.cleanup(run_id=run_id)
 ```
 
+### ResourceSpec vs resource_info
+
+These two concepts are easy to confuse but serve completely different purposes:
+
+| | `ResourceSpec` | `resource_info` |
+|---|---|---|
+| **Owner** | benchmark author | harness user (or `provision()`) |
+| **Where it lives** | benchmark package, source control | `~/.cube/provisions.json` |
+| **Cloud-agnostic?** | yes | no — backend-specific |
+| **Stable?** | yes, changes only when benchmark changes | changes when image is rebuilt |
+| **Content** | what is needed ("OSWorld Ubuntu VM") | where it is ("ami-0abc123 in us-east-2") |
+
+`ResourceSpec` is a static declaration of requirements. `resource_info` is the
+runtime answer to "where did you actually put the image for this backend?"
+
+**`register()` is the handoff point.** It does not matter how the image was created —
+manually, by `provision()`, by a teammate, or from a Marketplace — once `register()`
+is called the harness can launch it. `provision()` is just one path that calls
+`register()` internally at the end.
+
 ### resource_info
 
-`resource_info` is the opaque dict written by `register()` and read by `launch()` to
-locate the provisioned image. Each backend defines what fields it needs. The store
-treats it as an opaque blob — only the backend interprets it.
+An opaque dict read by `launch()` to locate the provisioned image. Each backend
+defines what fields it needs; the ProvisionStore treats it as a blob and only the
+backend interprets it. It is created either by `provision()` (automatically) or by
+the user calling `register()` manually with backend-specific values.
 
 Examples by backend:
 
