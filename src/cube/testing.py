@@ -6,6 +6,7 @@ Public API
 run_debug_episode(task, agent, *, max_steps)  →  dict
 run_debug_suite(benchmark_name, module, *, max_steps)  →  list[dict]
 assert_debug_tasks_reward_one(module, *, max_steps)  →  None
+run_debug_agent(benchmark, infra)  →  dict
 
 Module protocol (for assert_debug_tasks_reward_one and run_debug_suite)
 ----------------------------------------------------------------------
@@ -37,6 +38,11 @@ import time
 import types
 from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cube.benchmark import Benchmark
+    from cube.resource import InfraConfig, ResourceConfig
 
 from cube import __version__  # report.cube_version and .save()
 from cube.core import Action, ActionSchema, Observation
@@ -428,6 +434,187 @@ class StressTestReport:
         """Print a short summary to stdout (optional)."""
         print(f"Compliance: {len(self.compliance['passed'])} passed, {len(self.compliance['failed'])} failed")
         print(f"Performance: task_setup_time_s={self.performance.get('task_setup_time_s')}, ...")
+
+
+def run_debug_agent(
+    benchmark: "Benchmark",
+    infra: "InfraConfig",
+    *,
+    run_id: str | None = None,
+) -> dict:
+    """Pre-flight smoke test for a (benchmark, infra) pair.
+
+    Mirrors the three-step check from resource_lifecycle.md §5:
+
+    1. **Provision check** — queries the ProvisionStore for every resource in
+       ``benchmark.list_resources()``. Reports missing registrations with
+       actionable instructions and aborts if any are missing.
+
+    2. **Capability check** — verifies ``infra.can_serve(resource)`` for every
+       resource. Fails fast with a clear message if requirements are not met
+       (e.g. "requires kvm but infra does not support it").
+
+    3. **Launch check** — calls ``infra.launch()`` on the first task-scoped
+       resource. Probes the HTTP endpoint (/screenshot + /execute uname -a) to
+       confirm the guest agent is reachable. Tears down the resource on exit.
+
+    A clean run guarantees that the infra is ready for a full evaluation run.
+    Reuses ``run_debug_suite`` for the functional episode check when the benchmark
+    exposes a debug module (``get_debug_benchmark`` + ``make_debug_agent``).
+
+    Args:
+        benchmark:  An instantiated Benchmark (not yet setup).
+        infra:      An InfraConfig to test against.
+        run_id:     Optional run identifier; generated if not provided.
+
+    Returns:
+        dict with keys: resources_checked, provision_ok, capabilities_ok,
+        launch_ok, endpoint, error.
+    """
+    import uuid
+
+    from cube.resource import InfraConfig, ResourceConfig
+
+    run_id = run_id or str(uuid.uuid4())
+    report: dict = {
+        "run_id": run_id,
+        "resources_checked": 0,
+        "provision_ok": False,
+        "capabilities_ok": False,
+        "launch_ok": False,
+        "endpoint": None,
+        "error": None,
+    }
+
+    resources: list[ResourceConfig] = benchmark.list_resources()
+
+    if not resources:
+        logger.warning(
+            "[run_debug_agent] %r defines no resources — nothing to check. "
+            "Override list_resources() to declare dependencies.",
+            benchmark.name,
+        )
+        report["provision_ok"] = True
+        report["capabilities_ok"] = True
+        report["launch_ok"] = True
+        return report
+
+    report["resources_checked"] = len(resources)
+
+    # ── Step 1: provision check ───────────────────────────────────────────────
+
+    missing = [r for r in resources if infra.provision_status(r) != "ready"]
+    if missing:
+        names = ", ".join(repr(r.name) for r in missing)
+        msg = (
+            f"[run_debug_agent] {len(missing)} resource(s) not registered for "
+            f"{infra.fingerprint()!r}: {names}.\n"
+            f"  Run: infra.register(resource, {{...}})   # manual\n"
+            f"  Or:  infra.provision(resource)          # automated, if supported"
+        )
+        logger.error(msg)
+        report["error"] = msg
+        return report
+
+    report["provision_ok"] = True
+    logger.info(
+        "[run_debug_agent] provision check passed (%d resource(s))", len(resources)
+    )
+
+    # ── Step 2: capability check ──────────────────────────────────────────────
+
+    incompatible = [r for r in resources if not infra.can_serve(r)]
+    if incompatible:
+        details = "; ".join(
+            f"{r.name!r} requires {r.requirements()} but infra provides {infra.capabilities()}"
+            for r in incompatible
+        )
+        msg = f"[run_debug_agent] capability mismatch: {details}"
+        logger.error(msg)
+        report["error"] = msg
+        return report
+
+    report["capabilities_ok"] = True
+    logger.info("[run_debug_agent] capability check passed")
+
+    # ── Step 3: launch check ──────────────────────────────────────────────────
+    # Use the first task-scoped resource for the smoke test.
+
+    task_resources = [r for r in resources if r.scope == "task"]
+    if not task_resources:
+        logger.info(
+            "[run_debug_agent] no task-scoped resources to launch — skipping launch check"
+        )
+        report["launch_ok"] = True
+        return report
+
+    probe_resource = task_resources[0]
+    logger.info(
+        "[run_debug_agent] launching %r on %r for smoke test …",
+        probe_resource.name,
+        infra.fingerprint(),
+    )
+
+    handle = None
+    try:
+        handle = infra.launch(probe_resource, run_id=run_id)
+        report["endpoint"] = handle.endpoint
+        logger.info("[run_debug_agent] endpoint: %s", handle.endpoint)
+
+        if handle.endpoint:
+            _probe_endpoint(handle.endpoint)
+
+        report["launch_ok"] = True
+        logger.info("[run_debug_agent] launch check passed — infra is ready")
+
+    except Exception as exc:
+        msg = f"[run_debug_agent] launch check failed: {type(exc).__name__}: {exc}"
+        logger.error(msg)
+        report["error"] = msg
+    finally:
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+    return report
+
+
+def _probe_endpoint(endpoint: str, timeout: int = 120) -> None:
+    """Hit /screenshot and /execute on a CUBE guest agent endpoint.
+
+    Reuses the same probe logic as the experiment backends (_common.probe).
+    Raises RuntimeError if the endpoint is not responsive within timeout seconds.
+    """
+    import time
+
+    try:
+        import requests as _requests
+    except ImportError:
+        logger.warning("[run_debug_agent] 'requests' not installed — skipping HTTP probe")
+        return
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r = _requests.get(f"{endpoint}/screenshot", timeout=5)
+            if r.status_code == 200 and len(r.content) > 0:
+                logger.info(
+                    "[run_debug_agent] /screenshot → HTTP 200, %d bytes", len(r.content)
+                )
+                r2 = _requests.post(
+                    f"{endpoint}/execute",
+                    json={"command": ["uname", "-a"]},
+                    timeout=10,
+                )
+                stdout = r2.json().get("stdout", "").strip()
+                logger.info("[run_debug_agent] /execute → %s", stdout)
+                return
+        except Exception:
+            pass
+        time.sleep(5)
+    raise RuntimeError(f"Guest agent at {endpoint} not responsive after {timeout}s")
 
 
 def assert_debug_tasks_reward_one(

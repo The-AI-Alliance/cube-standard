@@ -27,7 +27,10 @@ import logging
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, ClassVar, Generator
+from typing import TYPE_CHECKING, Any, ClassVar, Generator
+
+if TYPE_CHECKING:
+    from cube.resource import ResourceConfig
 
 from pydantic import ConfigDict, Field, PrivateAttr
 
@@ -520,6 +523,29 @@ class Benchmark(TypedBaseModel, ABC):
         Clean up runtime resources that were created during setup().
         """
         pass
+
+    def list_resources(self) -> "list[ResourceConfig]":
+        """Return the resource dependencies declared by this benchmark.
+
+        Override this method to declare the ResourceConfig objects your benchmark
+        needs. The harness and run_debug_agent() use this list to check provision
+        status and capability compatibility before launching tasks.
+
+        Default returns an empty list (backward-compatible — benchmarks that have
+        not yet adopted the resource lifecycle API are unaffected).
+
+        Example::
+
+            def list_resources(self) -> list[ResourceConfig]:
+                return [
+                    VMResourceConfig(
+                        name="osworld-ubuntu-vm",
+                        scope="task",
+                        source_url="https://huggingface.co/.../Ubuntu.qcow2.zip",
+                    )
+                ]
+        """
+        return []
 
     def install(self) -> None:
         """
