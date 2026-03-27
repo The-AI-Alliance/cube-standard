@@ -166,6 +166,7 @@ class AzureBackend:
     ssh_privkey:                 str  = field(default_factory=lambda: str(Path.home() / ".ssh" / "id_ed25519"))
     ssh_pubkey:                  str  = field(default_factory=lambda: str(Path.home() / ".ssh" / "id_ed25519.pub"))
     bootstrap_vm_size:           str  = "Standard_B2ms"
+    bootstrap_disk_sku:          str  = "Premium_LRS"
     bootstrap_gallery_image:     str  = "cube-ubuntu-22-04"
     bootstrap_gallery_image_ver: str  = "1.0.0"
     bootstrap_os_disk_gb:        int  = 128
@@ -630,7 +631,7 @@ class AzureBackend:
                     },
                     "os_disk": {
                         "create_option": "FromImage",
-                        "managed_disk": {"storage_account_type": "Standard_LRS"},
+                        "managed_disk": {"storage_account_type": self.bootstrap_disk_sku},
                         "disk_size_gb": self.bootstrap_os_disk_gb,
                         "delete_option": "Delete",
                     },
