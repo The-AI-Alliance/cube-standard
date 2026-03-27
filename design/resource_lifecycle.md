@@ -298,9 +298,14 @@ Team/CI sharing deferred to v2 (`CUBE_PROVISION_STORE` env var → S3/GCS path).
 resources = my_cube.list_resources()
 ```
 
-Returns a list of `ResourceConfig`, each annotated with:
-- `.provision_status(infra)` → `"ready" | "needs_provisioning" | "unknown"`
-- `.infra_types` — which `InfraConfig` types can serve this resource
+Returns a list of `ResourceConfig`. To query provision state, call into `infra`:
+
+```python
+infra.provision_status(resource)  # → "ready" | "needs_provisioning" | "unknown"
+infra.can_serve(resource)         # → bool — checks capabilities() vs requirements()
+```
+
+`ResourceConfig` stays a pure data object — store and infra queries live on `InfraConfig`.
 
 ### 2. Register (Level 1 — the core primitive)
 
@@ -462,6 +467,14 @@ infra.cleanup_stale(max_age_seconds=7200)
 # At harness shutdown (normal or signal handler)
 infra.cleanup(run_id=run_id)
 ```
+
+**L2 vs L3 teardown:** the API is identical — `handle.close()` or `infra.cleanup(run_id)`.
+The difference is when the harness calls it:
+- **L3** (`scope="task"`): close after each task completes.
+- **L2** (`scope="benchmark"`): close once at run end, after all tasks are complete.
+
+The cube and infra expose no special L2 protocol — teardown timing is entirely the
+harness's responsibility.
 
 ---
 
