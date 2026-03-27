@@ -185,7 +185,16 @@ class AzureInfraConfig(InfraConfig):
 
 **Custom infra providers:** subclass `InfraConfig`, implement the abstract methods, and
 serialize to JSON via `TypedBaseModel` with no extra boilerplate. This is the extension
-point for private clouds, Kubernetes clusters, or any custom provisioning API.
+point for private clouds, Kubernetes clusters, or any custom provisioning API. No plugin
+registration is needed — just import and pass the config directly:
+
+```python
+from my_org.infra import KubernetesInfraConfig
+
+infra = KubernetesInfraConfig(cluster="prod-us-east")
+run_debug_agent(my_cube, infra)
+my_cube.run(infra)
+```
 
 ### ResourceHandle
 
