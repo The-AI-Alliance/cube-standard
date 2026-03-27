@@ -543,6 +543,8 @@ for informational purposes but store-level deduplication is not implemented in v
 4. **InfraConfig migration**: current experiment code (`azure_backend.py`,
    `aws_backend.py`) uses `@dataclass` and must be migrated to `InfraConfig` before
    integration. `VMBackend` in `vm.py` already follows the target pattern.
+   `ensure_resource()` on `VMBackend` is superseded by `infra.provision(resource)` +
+   `ProvisionStore` and will be removed as part of this migration.
 
 5. **Public images**: a resource whose infra already has a public image available
    is implicitly pre-registered — no action needed. Calling `register()` with
