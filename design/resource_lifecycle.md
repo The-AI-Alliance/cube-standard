@@ -38,8 +38,8 @@ class ResourceConfig(TypedBaseModel):
     scope: Literal["task", "benchmark"] # task = per-task VM; benchmark = shared server
     max_concurrent_agents: int | None   # capacity hint for Level 2 (e.g. 10 for WebArena)
     source_url: str | None              # canonical image source (HuggingFace URL, etc.)
-    source_hash: str | None             # for deduplication across benchmarks
-    default_ttl_seconds: int = 3600     # time-to-live: max lifetime before auto-cleanup; 0 = no expiry
+    source_hash: str | None             # content hash; informational only
+    default_ttl_seconds: int | None = 3600  # max lifetime before auto-cleanup; None = no expiry
 
     # ── Capability requirements (checked by infra before provisioning) ──────────
     def requirements(self) -> set[str]:
@@ -305,7 +305,7 @@ Returns a list of `ResourceConfig`, each annotated with:
 ### 2. Register (Level 1 — the core primitive)
 
 ```python
-resource.register(infra, resource_info)
+infra.register(resource, resource_info)
 # e.g. resource_info = {"ami_id": "ami-xxx"} or {"gallery_image": "cube-osworld/1.0.0"}
 ```
 
@@ -313,6 +313,9 @@ resource.register(infra, resource_info)
 is available for a given (resource, infra) pair, whatever the provenance:
 manually built, purchased from a Marketplace, provisioned by a teammate, or
 produced by the automated `provision()` path below.
+
+`register()` lives on `InfraConfig`, not on `ResourceConfig` — the infra owns the
+store interaction; the resource stays a pure data object.
 
 Calling `register()` with new info overrides the existing entry and logs a warning.
 
@@ -328,8 +331,8 @@ handle = infra.launch(resource, run_id=run_id, ttl_seconds=3600)
 
 ```
 ResourceNotReadyError: osworld-ubuntu-vm is not registered for aws:us-east-2.
-  Run: resource.register(infra, {"ami_id": "..."})
-  Or:  resource.provision(infra)    # automated, ~30 min, if supported
+  Run: infra.register(resource, {"ami_id": "..."})
+  Or:  infra.provision(resource)    # automated, ~30 min, if supported
 ```
 
 If no infra is provided, `LocalInfraConfig` is used by default (see below).
@@ -482,17 +485,20 @@ cube resource cleanup  --older-than <duration> [--dry-run]         # age-based c
 ```
 
 `--infra` accepts either a fingerprint string (`aws:us-east-2`) or a path to a
-serialized `InfraConfig` JSON file. `--dry-run` on cleanup prints what would be
-deleted without acting.
+serialized `InfraConfig` JSON file. The fingerprint form is sufficient for read-only
+commands (`list`, `status`, `active`, `cleanup`). The JSON file form is required for
+`register` and `provision`, which call `infra.launch()` internally and need full
+credentials and config. `--dry-run` on cleanup prints what would be deleted without
+acting.
 
 ---
 
 ## Meta-benchmarks
 
 A meta-benchmark's `list_resources()` is the union of all sub-benchmarks'.
-Each resource provisions independently. Risk: two benchmarks declare the same
-underlying image under different names. Mitigation: `source_hash` lets the provision
-store deduplicate — both names point to the same provisioned image.
+Each resource provisions independently. If two benchmarks declare the same underlying
+image under different names, they will provision it twice — `source_hash` is recorded
+for informational purposes but store-level deduplication is not implemented in v1.
 
 ---
 
