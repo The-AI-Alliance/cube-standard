@@ -601,8 +601,8 @@ def cmd_test(
         throughput_blocks.append(throughput_table)
         throughput_blocks.append(
             Text.from_markup(
-                "[dim]Measured = sequential 1-worker tasks/min. Illustrative = fixed-efficiency projection "
-                "(not measured; real multi-worker needs a parallel harness).[/dim]"
+                "[dim]Measured = sequential 1-worker tasks/min. Illustrative = linear × efficiency factor "
+                "(fixed; not measured; real multi-worker needs a parallel harness).[/dim]"
             )
         )
     else:
