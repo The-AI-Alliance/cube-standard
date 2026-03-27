@@ -56,8 +56,10 @@ class ProvisionStore:
     def _load(self) -> dict:
         if not self._path.exists():
             return {}
-        with open(self._path) as f:
-            return json.load(f)
+        content = self._path.read_text().strip()
+        if not content:
+            return {}
+        return json.loads(content)
 
     def _save(self, data: dict) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
