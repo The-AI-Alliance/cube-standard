@@ -241,21 +241,49 @@ def check_benchmark_metadata(module: types.ModuleType) -> tuple[bool, str]:
 def aggregate_profiling(episode_reports: list[dict]) -> dict[str, float]:
     """
     Aggregate info["profiling"] from episode reports into mean duration per operation (seconds).
-    Each step's profiling is { "op_name": (start_ts, end_ts), ... }.
+
+    Accepts two value formats per operation:
+    - float: duration in seconds (emitted by Task.step() for "evaluate" and "obs_postprocess")
+    - dict:  sub-fields, e.g. "tool_execute" → {"total": ..., "avg_per_action": ..., "n_actions": ...}
+             Each sub-field becomes a separate "op_name/sub_key" entry.
+    - (start_ts, end_ts) tuple: legacy format from benchmark authors
+
+    Returns a flat dict of mean values across all steps/episodes. Example:
+        {
+            "step/tool_execute/total_s":          0.123,   # mean total tool time per step
+            "step/tool_execute/avg_per_action_s": 0.041,   # mean per-action tool time
+            "step/tool_execute/n_actions":        3.0,     # mean actions per step
+            "step/evaluate_s":                    0.045,   # mean evaluate() duration
+            "step/obs_postprocess_s":             0.001,   # mean obs_postprocess() duration
+        }
     """
-    durations: dict[str, list[float]] = {}
+    buckets: dict[str, list[float]] = {}
+
+    def _record(key: str, value: float) -> None:
+        buckets.setdefault(key, []).append(value)
+
     for r in episode_reports:
         for step_prof in r.get("profiling") or []:
             if not isinstance(step_prof, dict):
                 continue
             for op_name, val in step_prof.items():
-                if isinstance(val, (list, tuple)) and len(val) >= 2:
+                if isinstance(val, dict):
+                    for sub_key, sub_val in val.items():
+                        try:
+                            suffix = "" if "n_actions" in sub_key else "_s"
+                            _record(f"step/{op_name}/{sub_key}{suffix}", float(sub_val))
+                        except (TypeError, ValueError):
+                            pass
+                elif isinstance(val, float):
+                    _record(f"step/{op_name}", val)
+                elif isinstance(val, (list, tuple)) and len(val) == 2:
+                    # Legacy (start_ts, end_ts) format
                     try:
-                        dur = float(val[1]) - float(val[0])
-                        durations.setdefault(op_name, []).append(dur)
+                        _record(f"step/{op_name}", float(val[1]) - float(val[0]))
                     except (TypeError, ValueError):
                         pass
-    return {op: sum(v) / len(v) for op, v in durations.items() if v}
+
+    return {key: sum(v) / len(v) for key, v in buckets.items() if v}
 
 
 def run_debug_suite(
