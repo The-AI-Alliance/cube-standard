@@ -1,14 +1,14 @@
 # Resource Lifecycle Design
 
 > High-level API proposal for managing benchmark resources across backends.
-> Status: **draft v0.9 — for review**
+> Status: **draft v1.0 — for review**
 
 ---
 
 ## The Three Levels
 
 ```
-Level 1 — Install-time    one-time image prep per backend/region  (slow, idempotent)
+Level 1 — Install-time    one-time image prep per infra/region    (slow, idempotent)
 Level 2 — Benchmark-wide  shared server per benchmark run         (e.g. WebArena, WorkArena)
 Level 3 — Task-level      per-task ephemeral resources            (e.g. individual VMs)
 ```
@@ -22,18 +22,18 @@ and the downstream user experience.
 ## Core Abstractions
 
 ```
-ResourceSpec      WHAT the benchmark needs — declared by benchmark author, serializable
-BackendConfig     HOW to provision it — declared by harness user, serializable
+ResourceConfig    WHAT the benchmark needs — declared by benchmark author, serializable
+InfraConfig       HOW to provision it — declared by harness user, serializable + executable
 ResourceHandle    The live runtime object — not serializable, returned by launch()
-ProvisionStore    (~/.cube/provisions.json) — maps (spec, backend) → provisioned image info
+ProvisionStore    (~/.cube/provisions.json) — maps (resource, infra) → resource_info
 ```
 
-### ResourceSpec
+### ResourceConfig
 
 Declared by the benchmark author. Describes a single resource dependency.
 
 ```python
-class ResourceSpec(TypedBaseModel):
+class ResourceConfig(TypedBaseModel):
     name: str                           # "osworld-ubuntu-vm", "webarena-server"
     scope: Literal["task", "benchmark"] # task = per-task VM; benchmark = shared server
     max_concurrent_agents: int | None   # capacity hint for Level 2 (e.g. 10 for WebArena)
@@ -43,7 +43,7 @@ class ResourceSpec(TypedBaseModel):
 ```
 
 **Provisioning hints** for semi-manual or agent-assisted setup live as Markdown files
-in the benchmark package, one per backend:
+in the benchmark package, one per infra provider:
 
 ```
 cube_osworld/
@@ -56,18 +56,28 @@ cube_osworld/
 
 These files can contain code blocks, links, and multi-step procedures. A dedicated
 agent skill is responsible for locating and surfacing the right file — this is not
-part of the `ResourceSpec` API.
+part of the `ResourceConfig` API.
 
-### BackendConfig
+### InfraConfig
 
-Declared by the harness user. Extends `TypedBaseModel` — pure Pydantic, no runtime state.
-Credentials are never stored — resolved from env vars at runtime.
+Declared by the harness user. Extends `TypedBaseModel` — fields are pure Pydantic config,
+no runtime state. Credentials are never stored — resolved from env vars at runtime.
 Polymorphic deserialization is handled by `TypedBaseModel`: the base class automatically
 injects the fully-qualified class name as `_type` on serialization and resolves it back
 on deserialization. Subclasses declare no `_type` field — it is provided for free.
 
+`InfraConfig` is both the config **and** the executor: it extends `TypedBaseModel` for
+serializability but also carries the `launch()`, `cleanup()`, and `list_active()` methods.
+This follows the existing `VMBackend` pattern in `vm.py` where the backend is a Pydantic
+model that is instantiated and then called directly:
+
 ```python
-class BackendConfig(TypedBaseModel):
+infra = AWSInfraConfig(region="us-east-2", instance_type="t3.xlarge")
+handle = infra.launch(resource_config, run_id=run_id)
+```
+
+```python
+class InfraConfig(TypedBaseModel):
     def fingerprint(self) -> str:
         """Stable key for ProvisionStore.
 
@@ -79,26 +89,31 @@ class BackendConfig(TypedBaseModel):
         """
         ...
 
+    def launch(self, resource: ResourceConfig, run_id: str, ttl_seconds: int | None = None) -> ResourceHandle: ...
+    def list_active(self, run_id: str | None = None) -> list[ResourceHandle]: ...
+    def cleanup(self, run_id: str) -> None: ...
+    def cleanup_stale(self, max_age_seconds: int | None = None) -> list[str]: ...
+
 # Examples
-class LocalBackendConfig(BackendConfig):
+class LocalInfraConfig(InfraConfig):
     # No credentials needed
     def fingerprint(self) -> str:
         return "local"
 
-class DockerBackendConfig(BackendConfig):
+class DockerInfraConfig(InfraConfig):
     registry: str = "docker.io"
     # credentials via DOCKER_USERNAME / DOCKER_PASSWORD or docker login
     def fingerprint(self) -> str:
         return f"docker:{self.registry}"
 
-class AWSEC2BackendConfig(BackendConfig):
+class AWSInfraConfig(InfraConfig):
     region: str = "us-east-2"
     instance_type: str = "t3.xlarge"
     # credentials via AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
     def fingerprint(self) -> str:
         return f"aws:{self.region}"
 
-class AzureVMBackendConfig(BackendConfig):
+class AzureInfraConfig(InfraConfig):
     subscription: str
     location: str = "westus2"
     vm_size: str = "Standard_D4s_v3"
@@ -107,26 +122,27 @@ class AzureVMBackendConfig(BackendConfig):
         return f"azure:{self.location}"
 ```
 
-**Custom backends:** subclass `BackendConfig` and implement the abstract backend methods.
-The config serializes to JSON via `TypedBaseModel` with no extra boilerplate.
+**Custom infra providers:** subclass `InfraConfig`, implement the abstract methods, and
+serialize to JSON via `TypedBaseModel` with no extra boilerplate. This is the extension
+point for private clouds, Kubernetes clusters, or any custom provisioning API.
 
 ### ResourceHandle
 
-Returned by `backend.launch(spec)`. Represents a live cloud resource.
+Returned by `infra.launch(resource)`. Represents a live cloud resource.
 Not serializable — holds live state (tunnel subprocess, cloud client, etc.).
 
 **`close()` is the primary API.** The context manager is a convenience wrapper on top of it
 and should be used when the resource lifetime fits within a single process/thread scope.
 For multi-process use cases (e.g. Ray workers), the handle is not passed across process
 boundaries — instead `run_id` (a plain string) is passed, and any process can call
-`backend.cleanup(run_id)` to tear down all resources associated with that run.
+`infra.cleanup(run_id)` to tear down all resources associated with that run.
 
 ```python
 class ResourceHandle:
-    run_id:     str          # links this resource to a run (for cleanup)
-    spec:       ResourceSpec
-    backend:    BackendConfig
-    endpoint:   str | None   # http://... if a service is exposed
+    run_id:     str           # links this resource to a run (for cleanup)
+    resource:   ResourceConfig
+    infra:      InfraConfig
+    endpoint:   str | None    # http://... if a service is exposed
     created_at: datetime
     expires_at: datetime | None
 
@@ -140,7 +156,7 @@ class ResourceHandle:
 
 Usage — single process (context manager):
 ```python
-with backend.launch(spec, run_id=run_id) as handle:
+with infra.launch(resource, run_id=run_id) as handle:
     result = agent.run(task, endpoint=handle.endpoint)
 # VM is deleted on exit
 ```
@@ -148,30 +164,30 @@ with backend.launch(spec, run_id=run_id) as handle:
 Usage — multi-process (manual):
 ```python
 # Coordinator process
-handle = backend.launch(spec, run_id=run_id)
+handle = infra.launch(resource, run_id=run_id)
 dispatch_to_workers(handle.endpoint, run_id)  # run_id is serializable
 
 # Any process (including coordinator) at shutdown
-backend.cleanup(run_id=run_id)
+infra.cleanup(run_id=run_id)
 ```
 
-### ResourceSpec vs resource_info
+### ResourceConfig vs resource_info
 
-`ResourceSpec` is owned by the *benchmark author* — static, source-controlled,
-cloud-agnostic ("I need an OSWorld Ubuntu VM"). `resource_info` is owned by the
-*harness user* — dynamic, local, backend-specific ("on aws:us-east-2, that is
+`ResourceConfig` is owned by the *benchmark author* — static, source-controlled,
+infra-agnostic ("I need an OSWorld Ubuntu VM"). `resource_info` is owned by the
+*harness user* — dynamic, local, infra-specific ("on aws:us-east-2, that is
 `ami-0abc123`"). **`register()` is the handoff point** between them: it does not
 matter whether the image was built by `provision()`, a teammate, or a Marketplace
 — once registered, the harness can launch it.
 
 ### resource_info
 
-An opaque dict read by `launch()` to locate the provisioned image. Each backend
+An opaque dict read by `launch()` to locate the provisioned image. Each infra provider
 defines what fields it needs; the ProvisionStore treats it as a blob and only the
-backend interprets it. It is created either by `provision()` (automatically) or by
-the user calling `register()` manually with backend-specific values.
+provider interprets it. It is created either by `provision()` (automatically) or by
+the user calling `register()` manually with provider-specific values.
 
-Examples by backend:
+Examples by provider:
 
 ```python
 # AWS — AMI in a specific region
@@ -187,28 +203,28 @@ Examples by backend:
 {"image_path": "/data/Ubuntu.qcow2"}
 ```
 
-Backend implementations may type `resource_info` via a subclass for internal use,
+Provider implementations may type `resource_info` via a subclass for internal use,
 but the store and the `register()` / `get()` interface always use `dict` to keep the
-ProvisionStore backend-agnostic.
+ProvisionStore provider-agnostic.
 
 ### ProvisionStore
 
-Maps `(spec.name, backend.fingerprint())` → `resource_info`.
+Maps `(resource.name, infra.fingerprint())` → `resource_info`.
 
 ```python
-# Key format: "{spec_name}@{backend_fingerprint}"
+# Key format: "{resource_name}@{infra_fingerprint}"
 # e.g.        "osworld-ubuntu-vm@aws:us-east-2"
 #             "osworld-ubuntu-vm@docker:docker.io"
 #             "osworld-ubuntu-vm@local"
 
 class ProvisionStore:
-    def get(self, spec: ResourceSpec, backend: BackendConfig) -> dict | None: ...
-    def put(self, spec: ResourceSpec, backend: BackendConfig, info: dict) -> None: ...
+    def get(self, resource: ResourceConfig, infra: InfraConfig) -> dict | None: ...
+    def put(self, resource: ResourceConfig, infra: InfraConfig, resource_info: dict) -> None: ...
     def list(self) -> list[tuple[str, dict]]: ...
 ```
 
 File: `~/.cube/provisions.json` (v1 local). Provisions are written at most once
-per `(spec, backend)` pair — read-modify-write over a small JSON file is fine.
+per `(resource, infra)` pair — read-modify-write over a small JSON file is fine.
 Team/CI sharing deferred to v2 (`CUBE_PROVISION_STORE` env var → S3/GCS path).
 
 ---
@@ -218,22 +234,22 @@ Team/CI sharing deferred to v2 (`CUBE_PROVISION_STORE` env var → S3/GCS path).
 ### 1. Inspect what a benchmark needs
 
 ```python
-specs = my_cube.list_resource_specs()
+resources = my_cube.list_resources()
 ```
 
-Returns a list of `ResourceSpec`, each annotated with:
-- `.provision_status(backend_config)` → `"ready" | "needs_provisioning" | "unknown"`
-- `.backends` — which `BackendConfig` types can serve this spec
+Returns a list of `ResourceConfig`, each annotated with:
+- `.provision_status(infra)` → `"ready" | "needs_provisioning" | "unknown"`
+- `.infra_types` — which `InfraConfig` types can serve this resource
 
 ### 2. Register (Level 1 — the core primitive)
 
 ```python
-spec.register(backend_config, resource_info)
+resource.register(infra, resource_info)
 # e.g. resource_info = {"ami_id": "ami-xxx"} or {"gallery_image": "cube-osworld/1.0.0"}
 ```
 
 `register()` is the **only thing `launch()` depends on**. It records that a resource
-is available for a given (spec, backend) pair, whatever the provenance:
+is available for a given (resource, infra) pair, whatever the provenance:
 manually built, purchased from a Marketplace, provisioned by a teammate, or
 produced by the automated `provision()` path below.
 
@@ -243,27 +259,27 @@ Calling `register()` with new info overrides the existing entry and logs a warni
 
 ```python
 # Returns ResourceHandle; raises ResourceNotReadyError if register() wasn't called
-resource = backend.launch(spec, run_id=run_id, ttl_seconds=3600)
+handle = infra.launch(resource, run_id=run_id, ttl_seconds=3600)
 ```
 
 `launch()` reads from the provision store, tags the new resource with `run_id` and
-`expires_at`, then delegates to the backend. Fails fast if no entry is found:
+`expires_at`, then provisions and returns the handle. Fails fast if no entry is found:
 
 ```
 ResourceNotReadyError: osworld-ubuntu-vm is not registered for aws:us-east-2.
-  Run: spec.register(backend_config, {"ami_id": "..."})
-  Or:  spec.provision(backend_config)    # automated, ~30 min, if supported
+  Run: resource.register(infra, {"ami_id": "..."})
+  Or:  resource.provision(infra)    # automated, ~30 min, if supported
 ```
 
-If no backend is provided, `LocalBackend` is used by default (see below).
+If no infra is provided, `LocalInfraConfig` is used by default (see below).
 
 ### 4. Provision (Level 1 — optional automation)
 
 ```python
-spec.provision(backend_config)   # idempotent, ~30 min
+resource.provision(infra)   # idempotent, ~30 min
 ```
 
-`provision()` automates the full install path for supported (spec, backend) pairs:
+`provision()` automates the full install path for supported (resource, infra) pairs:
 download → convert → upload → import as cloud image → calls `register()`.
 
 It is a **convenience wrapper around `register()`**, isolated in `cube.provisioners`.
@@ -274,46 +290,45 @@ but it must never be the only path, and its failures must not block the core flo
 ### 5. Debug agent (smoke test)
 
 ```python
-my_cube.run_debug_agent(backend_config)
+my_cube.run_debug_agent(infra)
 ```
 
-Runs a quick end-to-end smoke test against a given backend before committing to a
+Runs a quick end-to-end smoke test against a given infra before committing to a
 full evaluation run. It performs three checks in order:
 
-1. **Resource availability** — queries the ProvisionStore. If a spec is not registered,
+1. **Resource availability** — queries the ProvisionStore. If a resource is not registered,
    it prints actionable instructions (`register()` or `provision()`) and stops.
-2. **Backend compatibility** — attempts to launch a single task-scoped VM. If the
-   backend cannot satisfy the resource (wrong region, policy block, quota exceeded),
+2. **Infra compatibility** — attempts to launch a single task-scoped VM. If the
+   infra cannot satisfy the resource (wrong region, policy block, quota exceeded),
    it reports the specific challenge and stops.
 3. **Functional validation** — runs a minimal debug task (screenshot + execute).
-   If this passes, the backend is considered ready for full evaluation.
+   If this passes, the infra is considered ready for full evaluation.
 
-A clean run guarantees that `my_cube.run(backend_config)` will not fail due to
-infrastructure issues. Intended to be run once per (cube, backend) pair before
-a batch evaluation.
+A clean run guarantees that `my_cube.run(infra)` will not fail due to infrastructure
+issues. Intended to be run once per (cube, infra) pair before a batch evaluation.
 
 ---
 
-## LocalBackend — Default Backend
+## LocalInfraConfig — Default
 
-`LocalBackend` is a first-class backend that runs resources locally — either via
+`LocalInfraConfig` is a first-class provider that runs resources locally — either via
 QEMU (for VM-based benchmarks) or Docker (for container-based benchmarks). It requires
-no cloud credentials and is the default when no backend is provided.
+no cloud credentials and is the default when no infra is provided.
 
 ```python
 # Explicit
-backend = LocalBackendConfig()
-backend.launch(spec, run_id=run_id)
+infra = LocalInfraConfig()
+handle = infra.launch(resource, run_id=run_id)
 
-# Implicit default — no backend argument
-my_cube.run(tasks)  # uses LocalBackend
+# Implicit default — no infra argument
+my_cube.run(tasks)  # uses LocalInfraConfig
 ```
 
-`LocalBackend` provisions images to a local path (configured via `CUBE_LOCAL_IMAGE_DIR`,
-defaults to `~/.cube/images/`). `provision()` on `LocalBackend` downloads and converts
+`LocalInfraConfig` provisions images to a local path (configured via `CUBE_LOCAL_IMAGE_DIR`,
+defaults to `~/.cube/images/`). `provision()` on `LocalInfraConfig` downloads and converts
 the image locally — no upload step.
 
-The `resource_info` for `LocalBackend` is `{"image_path": "/path/to/image.qcow2"}`.
+The `resource_info` for `LocalInfraConfig` is `{"image_path": "/path/to/image.qcow2"}`.
 For Docker resources the image is pulled on demand; `register()` is a no-op if
 `image` is a public Docker Hub reference.
 
@@ -340,10 +355,10 @@ cube-a3f9b21c-ip-44197d
 | Tag              | Example                       | Purpose                        |
 |------------------|-------------------------------|--------------------------------|
 | `cube:run_id`    | `a3f9b21c-...`                | groups resources by run        |
-| `cube:spec`      | `osworld-ubuntu-vm`           | which benchmark spec           |
+| `cube:resource`  | `osworld-ubuntu-vm`           | which resource config          |
 | `cube:created_at`| `2026-03-26T20:04:07Z`        | for age-based cleanup          |
 | `cube:expires_at`| `2026-03-26T21:04:07Z`        | TTL; absent = no auto-expiry   |
-| `cube:backend`   | `azure:westus2`               | backend fingerprint            |
+| `cube:infra`     | `azure:westus2`               | infra fingerprint              |
 
 L1 resources (gallery images, AMIs, S3 buckets) are **not tagged for auto-cleanup** —
 they are managed manually as they represent significant invested work.
@@ -355,31 +370,31 @@ they are managed manually as they represent significant invested work.
 L2/L3 resources can outlive their harness process (crash, network loss, OOM kill).
 Cloud providers do not enforce TTL natively — deletion is driven entirely by the harness.
 `cube:expires_at` is set at `launch()` time from `ttl_seconds` (falls back to
-`spec.default_ttl_seconds`). `cleanup_stale()` deletes any resource where
+`resource.default_ttl_seconds`). `cleanup_stale()` deletes any resource where
 `cube:expires_at < now`. This harness-side approach is more reliable than cloud-native
-TTL because it works uniformly across all backends (including `LocalBackend`) and is
+TTL because it works uniformly across all providers (including `LocalInfraConfig`) and is
 not subject to provider-specific limitations.
 
 ```python
-# List all live cube resources on this backend (L2 + L3 only)
-backend.list_active(run_id: str | None = None) -> list[ResourceHandle]
+# List all live cube resources on this infra (L2 + L3 only)
+infra.list_active(run_id: str | None = None) -> list[ResourceHandle]
 
 # Delete all resources for a specific run
-backend.cleanup(run_id: str) -> None
+infra.cleanup(run_id: str) -> None
 
 # Delete all cube resources older than max_age_seconds (regardless of run_id)
 # Skips resources without cube:expires_at if max_age_seconds is not set
-backend.cleanup_stale(max_age_seconds: int | None = None) -> list[str]
+infra.cleanup_stale(max_age_seconds: int | None = None) -> list[str]
 ```
 
 **Lifecycle hooks the harness should call:**
 
 ```python
 # At harness startup — garbage-collect previous crashes
-backend.cleanup_stale(max_age_seconds=7200)
+infra.cleanup_stale(max_age_seconds=7200)
 
 # At harness shutdown (normal or signal handler)
-backend.cleanup(run_id=run_id)
+infra.cleanup(run_id=run_id)
 ```
 
 ---
@@ -389,30 +404,30 @@ backend.cleanup(run_id=run_id)
 Resource management is exposed as a `cube resource` subgroup of the existing cube CLI —
 a thin layer over the Python API with no additional logic.
 
-The ProvisionStore is keyed by `spec.name` — resources are not owned by a single cube,
+The ProvisionStore is keyed by `resource.name` — resources are not owned by a single cube,
 so most commands are cube-agnostic. `--cube` is an optional filter for discovery and
-status commands; `register` and `provision` take a spec name directly.
+status commands; `register` and `provision` take a resource name directly.
 
 ```
-cube resource list   [--cube <name>] [--backend <fingerprint>]   # registered specs
-cube resource status [--cube <name>] [--backend <fingerprint>]   # provision_status per spec
-cube resource register <spec-name> <backend> <info-json>         # manual register()
-cube resource provision <spec-name> <backend>                    # automated provision()
-cube resource active  [--backend <fingerprint>]                  # live L2/L3 resources
-cube resource cleanup --run-id <id>                              # delete a specific run
-cube resource cleanup --older-than <duration> [--dry-run]        # age-based cleanup
+cube resource list     [--cube <name>] [--infra <fingerprint>]     # registered resources
+cube resource status   [--cube <name>] [--infra <fingerprint>]     # provision_status per resource
+cube resource register <resource-name> <infra> <resource-info-json> # manual register()
+cube resource provision <resource-name> <infra>                    # automated provision()
+cube resource active   [--infra <fingerprint>]                     # live L2/L3 resources
+cube resource cleanup  --run-id <id>                               # delete a specific run
+cube resource cleanup  --older-than <duration> [--dry-run]         # age-based cleanup
 ```
 
-`--backend` accepts either a fingerprint string (`aws:us-east-2`) or a path to a
-serialized `BackendConfig` JSON file. `--dry-run` on cleanup prints what would be
+`--infra` accepts either a fingerprint string (`aws:us-east-2`) or a path to a
+serialized `InfraConfig` JSON file. `--dry-run` on cleanup prints what would be
 deleted without acting.
 
 ---
 
 ## Meta-benchmarks
 
-A meta-benchmark's `list_resource_specs()` is the union of all sub-benchmarks'.
-Each spec provisions independently. Risk: two benchmarks declare the same
+A meta-benchmark's `list_resources()` is the union of all sub-benchmarks'.
+Each resource provisions independently. Risk: two benchmarks declare the same
 underlying image under different names. Mitigation: `source_hash` lets the provision
 store deduplicate — both names point to the same provisioned image.
 
@@ -420,38 +435,49 @@ store deduplicate — both names point to the same provisioned image.
 
 ## Resolved
 
-1. **`backend.launch(spec)` vs `spec.launch(backend)`**
-   Keeping `backend.launch(spec)` for consistency with the existing codebase.
-   `spec.provision(backend)` for Level 1 — install-time feels resource-centric.
+1. **`infra.launch(resource)` vs `resource.launch(infra)`**
+   Keeping `infra.launch(resource)` for consistency with the existing `VMBackend` pattern.
+   `resource.provision(infra)` for Level 1 — install-time feels resource-centric.
 
-2. **Level 2 capacity tracking**: `ResourceHandle` does not expose
+2. **`InfraConfig` is config + executor**: following the existing `VMBackend` pattern in
+   `vm.py`, `InfraConfig` extends `TypedBaseModel` (making it serializable) and also
+   carries `launch()` / `cleanup()` methods. There is no separate "backend class" distinct
+   from the config — instantiating the config IS the backend.
+
+3. **Level 2 capacity tracking**: `ResourceHandle` does not expose
    `active_agents` / `available_slots`. The harness manages concurrency itself
    (e.g. via Ray worker count, a semaphore, or a task queue). Level 2 handles
    stay alive across tasks but carry no capacity state.
 
-3. **BackendConfig migration**: `BackendConfig` must extend `TypedBaseModel`
-   (already the pattern in `vm.py`). Current experiment code (`azure_backend.py`,
-   `aws_backend.py`) uses `@dataclass` and must be migrated before integration.
+4. **InfraConfig migration**: current experiment code (`azure_backend.py`,
+   `aws_backend.py`) uses `@dataclass` and must be migrated to `InfraConfig` before
+   integration. `VMBackend` in `vm.py` already follows the target pattern.
 
-4. **Public images**: a spec whose backend already has a public image available
+5. **Public images**: a resource whose infra already has a public image available
    is implicitly pre-registered — no action needed. Calling `register()` with
    new info overrides the entry and logs a warning. No separate
-   `spec.use_public_image()` verb needed.
+   `resource.use_public_image()` verb needed.
 
-5. **Docker resources**: `DockerBackendConfig` and `LocalBackendConfig` are
-   first-class backends. The `resource_info` schema differs per backend but the
-   store and the `register()` / `launch()` interface are backend-agnostic.
+6. **Docker resources**: `DockerInfraConfig` and `LocalInfraConfig` are
+   first-class providers. The `resource_info` schema differs per provider but the
+   store and the `register()` / `launch()` interface are provider-agnostic.
    Existing Docker resources will be migrated to this schema in a follow-up PR.
 
 ---
 
 ## Deferred
 
+- **Infra providers as optional packages**: cloud-specific providers (`AWSInfraConfig`,
+  `AzureInfraConfig`) carry heavy optional dependencies (boto3, azure-sdk). In a future
+  phase these should be isolated as separate optional packages (e.g. `cube-infra-aws`,
+  `cube-infra-azure`) so users only install what they need. `LocalInfraConfig` and
+  `DockerInfraConfig` remain in the core package.
+
 - **In-cloud provisioning shortcut**: if the harness process is itself running inside
   the target cloud (e.g. an EC2 instance launching an AWS bootstrap), it could skip
   the bootstrap VM entirely and convert the image locally, then upload at datacenter
   speed. Detected via the instance metadata endpoint. No code changes needed now —
-  `provision()` on a cloud backend should check for this and optimize accordingly.
+  `provision()` on a cloud provider should check for this and optimize accordingly.
 
 - **ProvisionStore v2**: team/CI sharing via `CUBE_PROVISION_STORE` env var pointing
   to an S3/GCS path. v1 is local only (`~/.cube/provisions.json`).
