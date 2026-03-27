@@ -613,14 +613,23 @@ def cmd_test(
     profiling_section.add_column(no_wrap=True)
     profiling_section.add_row(Text.from_markup("[bold]PROFILING BREAKDOWN[/bold]"))
     if profiling_agg:
-        total_prof = sum(profiling_agg.values()) or 1e-9
-        for op_name, dur_s in sorted(profiling_agg.items(), key=lambda x: -x[1]):
-            frac = dur_s / total_prof
-            bar = _stress_fill_bar(frac, _bar_width)
-            pct = 100.0 * frac
-            profiling_section.add_row(
-                Text.from_markup(f"  {op_name:16} │{bar}│ [dim]{dur_s:.4f}s ({pct:.0f}%)[/dim]"),
-            )
+        # Keys that are derived/non-additive: exclude from the step-time total
+        independent_keys = {k for k in profiling_agg if k.endswith("/n_actions") or k.endswith("/avg_per_action")}
+        additive_keys = {k for k in profiling_agg if k not in independent_keys}
+        total_prof = sum(profiling_agg[k] for k in additive_keys) or 1e-9
+        for op_name, val in sorted(profiling_agg.items(), key=lambda x: (x[0] not in independent_keys, -x[1])):
+            if op_name in independent_keys:
+                fmt = f"{val:.0f} action(s) per step" if op_name.endswith("/n_actions") else f"{val:.4f}s per action"
+                profiling_section.add_row(
+                    Text.from_markup(f"  {op_name:16}\t{fmt}"),
+                )
+            else:
+                frac = val / total_prof
+                bar = _stress_fill_bar(frac, _bar_width)
+                pct = 100.0 * frac
+                profiling_section.add_row(
+                    Text.from_markup(f"  {op_name:16} │{bar}│ [dim]{val:.4f}s ({pct:.0f}%)[/dim]"),
+                )
     else:
         profiling_section.add_row(
             Text.from_markup(

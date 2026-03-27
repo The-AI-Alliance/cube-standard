@@ -250,11 +250,11 @@ def aggregate_profiling(episode_reports: list[dict]) -> dict[str, float]:
 
     Returns a flat dict of mean values across all steps/episodes. Example:
         {
-            "step/tool_execute/total_s":          0.123,   # mean total tool time per step
-            "step/tool_execute/avg_per_action_s": 0.041,   # mean per-action tool time
-            "step/tool_execute/n_actions":        3.0,     # mean actions per step
-            "step/evaluate_s":                    0.045,   # mean evaluate() duration
-            "step/obs_postprocess_s":             0.001,   # mean obs_postprocess() duration
+            "step/tool_execute/total":          0.123,   # mean total tool time per step
+            "step/tool_execute/avg_per_action": 0.041,   # mean per-action tool time
+            "step/tool_execute/n_actions":      3.0,     # mean actions per step
+            "step/evaluate":                    0.045,   # mean evaluate() duration
+            "step/obs_postprocess":             0.001,   # mean obs_postprocess() duration
         }
     """
     buckets: dict[str, list[float]] = {}
@@ -270,8 +270,7 @@ def aggregate_profiling(episode_reports: list[dict]) -> dict[str, float]:
                 if isinstance(val, dict):
                     for sub_key, sub_val in val.items():
                         try:
-                            suffix = "" if "n_actions" in sub_key else "_s"
-                            _record(f"step/{op_name}/{sub_key}{suffix}", float(sub_val))
+                            _record(f"step/{op_name}/{sub_key}", float(sub_val))
                         except (TypeError, ValueError):
                             pass
                 elif isinstance(val, float):

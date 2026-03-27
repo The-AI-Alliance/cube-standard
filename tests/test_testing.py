@@ -327,11 +327,11 @@ def test_aggregate_profiling_float_values():
 
 
 def test_aggregate_profiling_dict_values():
-    # tool_execute is a dict → sub-fields keyed as "step/tool_execute/<sub_key>[_s]"
+    # tool_execute is a dict → sub-fields keyed as "step/tool_execute/<sub_key>"
     reports = [{"profiling": [{"tool_execute": {"total": 0.12, "avg_per_action": 0.06, "n_actions": 2}}]}]
     assert aggregate_profiling(reports) == {
-        "step/tool_execute/total_s": 0.12,
-        "step/tool_execute/avg_per_action_s": 0.06,
+        "step/tool_execute/total": 0.12,
+        "step/tool_execute/avg_per_action": 0.06,
         "step/tool_execute/n_actions": 2.0,
     }
 
