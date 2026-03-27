@@ -578,25 +578,31 @@ def cmd_test(
             header_style="bold",
         )
         throughput_table.add_column("Workers", justify="right", style="dim")
-        throughput_table.add_column("Actual", justify="right")
+        # Only the 1-worker row is measured; 2/4 are illustrative scaling (not separate benchmark runs).
+        throughput_table.add_column("Measured", justify="right")
+        throughput_table.add_column("Illustrative", justify="right", style="dim")
         throughput_table.add_column("Linear", justify="right", style="dim")
         throughput_table.add_column("Efficiency", justify="right")
 
         for w, eff in throughput_specs:
             linear = rate_1 * w
-            actual = linear * eff
+            projected = linear * eff
+            measured_str = f"{rate_1:.1f}" if w == 1 else "—"
+            illustrative_str = f"{projected:.1f}" if w > 1 else "—"
             eff_pct = int(round(100 * eff))
             bar = _stress_fill_bar(eff, _eff_bar_w)
             throughput_table.add_row(
                 str(w),
-                f"{actual:.1f}",
+                measured_str,
+                illustrative_str,
                 f"{linear:.1f}",
                 Text.from_markup(f"{eff_pct}% {bar}"),
             )
         throughput_blocks.append(throughput_table)
         throughput_blocks.append(
             Text.from_markup(
-                "[dim]Multi-worker rows scale from measured sequential throughput (linear × factor).[/dim]"
+                "[dim]Measured = sequential 1-worker tasks/min. Illustrative = fixed-efficiency projection "
+                "(not measured; real multi-worker needs a parallel harness).[/dim]"
             )
         )
     else:
