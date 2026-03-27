@@ -62,15 +62,12 @@ part of the `ResourceSpec` API.
 
 Declared by the harness user. Extends `TypedBaseModel` — pure Pydantic, no runtime state.
 Credentials are never stored — resolved from env vars at runtime.
-A `_type` discriminator field enables polymorphic deserialization from JSON
-(same pattern as `core.py`), so users can serialize their backend config and pass it
-to a harness without code changes. Custom backends follow the same pattern by
-subclassing `BackendConfig` and providing a unique `_type`.
+Polymorphic deserialization is handled by `TypedBaseModel`: the base class automatically
+injects the fully-qualified class name as `_type` on serialization and resolves it back
+on deserialization. Subclasses declare no `_type` field — it is provided for free.
 
 ```python
 class BackendConfig(TypedBaseModel):
-    _type: str  # discriminator for polymorphic deserialization
-
     def fingerprint(self) -> str:
         """Stable key for ProvisionStore.
 
@@ -84,43 +81,34 @@ class BackendConfig(TypedBaseModel):
 
 # Examples
 class LocalBackendConfig(BackendConfig):
-    _type: str = "local"
     # No credentials needed
-
     def fingerprint(self) -> str:
         return "local"
 
 class DockerBackendConfig(BackendConfig):
-    _type: str = "docker"
-    registry: str = "docker.io"   # registry where images are pulled from
+    registry: str = "docker.io"
     # credentials via DOCKER_USERNAME / DOCKER_PASSWORD or docker login
-
     def fingerprint(self) -> str:
         return f"docker:{self.registry}"
 
 class AWSEC2BackendConfig(BackendConfig):
-    _type: str = "aws"
     region: str = "us-east-2"
     instance_type: str = "t3.xlarge"
     # credentials via AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
-
     def fingerprint(self) -> str:
         return f"aws:{self.region}"
 
 class AzureVMBackendConfig(BackendConfig):
-    _type: str = "azure"
     subscription: str
     location: str = "westus2"
     vm_size: str = "Standard_D4s_v3"
     # credentials via az login / AZURE_CLIENT_ID
-
     def fingerprint(self) -> str:
         return f"azure:{self.location}"
 ```
 
-**Custom backends:** a user can bring their own backend (e.g. Kubernetes, private cloud)
-by subclassing `BackendConfig` with a unique `_type` and implementing the abstract
-backend methods. The config is still serializable to JSON via Pydantic.
+**Custom backends:** subclass `BackendConfig` and implement the abstract backend methods.
+The config serializes to JSON via `TypedBaseModel` with no extra boilerplate.
 
 ### ResourceHandle
 
@@ -169,23 +157,12 @@ backend.cleanup(run_id=run_id)
 
 ### ResourceSpec vs resource_info
 
-These two concepts are easy to confuse but serve completely different purposes:
-
-| | `ResourceSpec` | `resource_info` |
-|---|---|---|
-| **Owner** | benchmark author | harness user (or `provision()`) |
-| **Where it lives** | benchmark package, source control | `~/.cube/provisions.json` |
-| **Cloud-agnostic?** | yes | no — backend-specific |
-| **Stable?** | yes, changes only when benchmark changes | changes when image is rebuilt |
-| **Content** | what is needed ("OSWorld Ubuntu VM") | where it is ("ami-0abc123 in us-east-2") |
-
-`ResourceSpec` is a static declaration of requirements. `resource_info` is the
-runtime answer to "where did you actually put the image for this backend?"
-
-**`register()` is the handoff point.** It does not matter how the image was created —
-manually, by `provision()`, by a teammate, or from a Marketplace — once `register()`
-is called the harness can launch it. `provision()` is just one path that calls
-`register()` internally at the end.
+`ResourceSpec` is owned by the *benchmark author* — static, source-controlled,
+cloud-agnostic ("I need an OSWorld Ubuntu VM"). `resource_info` is owned by the
+*harness user* — dynamic, local, backend-specific ("on aws:us-east-2, that is
+`ami-0abc123`"). **`register()` is the handoff point** between them: it does not
+matter whether the image was built by `provision()`, a teammate, or a Marketplace
+— once registered, the harness can launch it.
 
 ### resource_info
 
@@ -412,19 +389,23 @@ backend.cleanup(run_id=run_id)
 Resource management is exposed as a `cube resource` subgroup of the existing cube CLI —
 a thin layer over the Python API with no additional logic.
 
+The ProvisionStore is keyed by `spec.name` — resources are not owned by a single cube,
+so most commands are cube-agnostic. `--cube` is an optional filter for discovery and
+status commands; `register` and `provision` take a spec name directly.
+
 ```
-cube resource list   [--backend <fingerprint>]          # show all registered specs
-cube resource status [--backend <fingerprint>]          # provision_status per spec
-cube resource register <spec> <backend> <info-json>     # manual register()
-cube resource provision <spec> <backend>                # automated provision()
-cube resource active  [--backend <fingerprint>]         # list live L2/L3 resources
-cube resource cleanup --run-id <id>                     # delete a specific run
-cube resource cleanup --older-than <duration> [--dry-run]  # age-based cleanup
+cube resource list   [--cube <name>] [--backend <fingerprint>]   # registered specs
+cube resource status [--cube <name>] [--backend <fingerprint>]   # provision_status per spec
+cube resource register <spec-name> <backend> <info-json>         # manual register()
+cube resource provision <spec-name> <backend>                    # automated provision()
+cube resource active  [--backend <fingerprint>]                  # live L2/L3 resources
+cube resource cleanup --run-id <id>                              # delete a specific run
+cube resource cleanup --older-than <duration> [--dry-run]        # age-based cleanup
 ```
 
-All commands accept `--backend` as either a fingerprint string (`aws:us-east-2`) or a
-path to a JSON file containing a serialized `BackendConfig`. The `--dry-run` flag on
-cleanup prints what would be deleted without acting.
+`--backend` accepts either a fingerprint string (`aws:us-east-2`) or a path to a
+serialized `BackendConfig` JSON file. `--dry-run` on cleanup prints what would be
+deleted without acting.
 
 ---
 
