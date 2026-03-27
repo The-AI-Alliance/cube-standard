@@ -52,25 +52,6 @@ class ResourceConfig(TypedBaseModel):
         """
         return set()
 
-    # ── Lifecycle hooks (run in harness process, not on remote VM) ───────────────
-    def pre_provision(self, infra: "InfraConfig") -> None:
-        """Called before infra begins provisioning. Default: no-op.
-
-        Can be used to validate prerequisites, pre-fetch assets locally,
-        or generate the bootstrap_script_extra fragment (see below).
-        Runs in the harness process — no cube dependencies needed on the VM.
-        """
-
-    def post_provision(self, infra: "InfraConfig", resource_info: dict) -> dict:
-        """Called after provisioning completes. May augment resource_info.
-
-        Can inspect or patch the resulting artifact (e.g. mount a VHD locally,
-        run a chroot command, validate the image). Returns the (possibly updated)
-        resource_info that will be written to the ProvisionStore.
-        Runs in the harness process.
-        """
-        return resource_info
-
     # ── Script injection (executed on the bootstrap VM, not in harness) ─────────
     bootstrap_script_extra: str | None = None
     """Optional bash fragment appended to the infra's bootstrap script.
@@ -108,10 +89,6 @@ class DockerImageConfig(ResourceConfig):
     def requirements(self) -> set[str]:
         return {"docker"}
 
-class PythonEnvConfig(ResourceConfig):
-    """Pure Python environment — trivially HPC-compatible (MuJoCo, TextArena...)."""
-    packages: list[str] = []
-    # no special requirements
 ```
 
 **Provisioning hints** for semi-manual or agent-assisted setup live as Markdown files
@@ -374,7 +351,7 @@ but it must never be the only path, and its failures must not block the core flo
 ### 5. Debug agent (smoke test)
 
 ```python
-my_cube.run_debug_agent(infra)
+run_debug_agent(my_cube, infra)
 ```
 
 Runs a quick end-to-end smoke test against a given infra before committing to a
@@ -390,6 +367,8 @@ full evaluation run. It performs three checks in order:
 
 A clean run guarantees that `my_cube.run(infra)` will not fail due to infrastructure
 issues. Intended to be run once per (cube, infra) pair before a batch evaluation.
+`run_debug_agent` is a standalone function, not a method on the cube, since it requires
+both a cube and an infra as equal inputs.
 
 ---
 
