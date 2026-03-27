@@ -22,6 +22,14 @@ def configure_logging(debug: bool = False) -> None:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    # Azure SDK HTTP logging is very verbose at INFO — suppress unless debug mode
+    if not debug:
+        for noisy in (
+            "azure.core.pipeline.policies.http_logging_policy",
+            "azure.identity",
+            "urllib3.connectionpool",
+        ):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 # ── SSH utilities ─────────────────────────────────────────────────────────────
