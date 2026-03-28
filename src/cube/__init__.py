@@ -32,6 +32,7 @@ from cube.resource import (  # noqa: E402
     VMResourceConfig,
 )
 from cube.provision_store import ProvisionStore  # noqa: E402
+from cube.infra_local import LocalInfraConfig  # noqa: E402
 
 __all__ += [
     "ResourceConfig",
@@ -43,4 +44,5 @@ __all__ += [
     "ResourceNotReadyError",
     "UnsupportedResourceType",
     "ProvisionStore",
+    "LocalInfraConfig",
 ]

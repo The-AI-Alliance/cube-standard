@@ -99,7 +99,7 @@ class ResourceConfig(TypedBaseModel):
 
 
 class VMResourceConfig(ResourceConfig):
-    """QEMU-based VM resource (OSWorld, WindowsAgentArena, macOSWorld, AndroidWorld...)."""
+    """VM-based resource (OSWorld, WindowsAgentArena, macOSWorld, AndroidWorld...)."""
 
     requires_kvm: bool = True
 

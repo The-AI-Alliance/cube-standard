@@ -18,7 +18,7 @@ from counter_cube.benchmark import CounterBenchmark
 from cube.resource import InfraConfig, ResourceConfig, ResourceHandle, VMResourceConfig
 from cube.provision_store import ProvisionStore
 from cube.testing import run_debug_agent
-from cube_infra_local import LocalInfraConfig
+from cube import LocalInfraConfig
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
