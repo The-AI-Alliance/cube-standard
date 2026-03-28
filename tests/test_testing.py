@@ -10,7 +10,7 @@ from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext  # noqa:
 from cube.container import Container
 from cube.core import Action, Observation
 from cube.task import STOP_ACTION, Task, TaskConfig, TaskMetadata
-from cube.testing import assert_debug_tasks_reward_one, run_debug_episode, run_debug_suite
+from cube.testing import aggregate_profiling, assert_debug_tasks_reward_one, run_debug_episode, run_debug_suite
 from cube.tool import Tool, ToolConfig, tool_action
 
 # ── Shared test infrastructure ────────────────────────────────────────────────
@@ -315,3 +315,56 @@ def test_assert_raises_when_not_done():
     with patch("cube.testing.run_debug_suite", return_value=[report]):
         with pytest.raises(AssertionError, match="did not complete"):
             assert_debug_tasks_reward_one(mod)
+
+
+# ── aggregate_profiling ───────────────────────────────────────────────────────
+
+
+def test_aggregate_profiling_float_values():
+    # evaluate and obs_postprocess are floats → keyed as "step/<op>"
+    reports = [{"profiling": [{"evaluate": 0.04, "obs_postprocess": 0.01}]}]
+    assert aggregate_profiling(reports) == {"step/evaluate": 0.04, "step/obs_postprocess": 0.01}
+
+
+def test_aggregate_profiling_dict_values():
+    # tool_execute is a dict → sub-fields keyed as "step/tool_execute/<sub_key>"
+    reports = [{"profiling": [{"tool_execute": {"total": 0.12, "avg_per_action": 0.06, "n_actions": 2}}]}]
+    assert aggregate_profiling(reports) == {
+        "step/tool_execute/total": 0.12,
+        "step/tool_execute/avg_per_action": 0.06,
+        "step/tool_execute/n_actions": 2.0,
+    }
+
+
+def test_aggregate_profiling_legacy_tuple_values():
+    reports = [{"profiling": [{"container_exec": (1000.0, 1000.05)}]}]
+    assert aggregate_profiling(reports) == {"step/container_exec": pytest.approx(0.05)}
+
+
+def test_aggregate_profiling_averages_across_steps():
+    reports = [{"profiling": [{"evaluate": 0.02}, {"evaluate": 0.06}]}]
+    assert aggregate_profiling(reports) == {"step/evaluate": pytest.approx(0.04)}
+
+
+def test_aggregate_profiling_averages_across_episodes():
+    reports = [
+        {"profiling": [{"evaluate": 0.02}]},
+        {"profiling": [{"evaluate": 0.06}]},
+    ]
+    assert aggregate_profiling(reports) == {"step/evaluate": pytest.approx(0.04)}
+
+
+def test_aggregate_profiling_empty_returns_empty():
+    assert aggregate_profiling([]) == {}
+    assert aggregate_profiling([{"profiling": []}]) == {}
+
+
+def test_aggregate_profiling_populated_in_episode_report():
+    # Task.step() always injects profiling; run_debug_episode must collect it.
+    task = DoneTask(metadata=TaskMetadata(id="t1"), tool_config=NoopToolConfig())
+    report = run_debug_episode(task, noop_agent, max_steps=2)
+    assert len(report["profiling"]) == 2
+    for step_prof in report["profiling"]:
+        assert set(step_prof.keys()) == {"tool_execute", "obs_postprocess"}
+        assert set(step_prof["tool_execute"].keys()) == {"total", "avg_per_action", "n_actions"}
+        assert step_prof["tool_execute"]["n_actions"] == 1

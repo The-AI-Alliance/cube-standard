@@ -170,7 +170,7 @@ def test_decrement_task(task_configs):
     assert "decrement" in names
 
     task.step(INCREMENT)  # 0 → 1
-    assert task.tool._env.counter == 0
+    assert task.tool._env.counter == 1
     task.close()
 
 
