@@ -917,7 +917,7 @@ class AzureInfraConfig(InfraConfig):
         )
 
     def _create_network_resources(
-        self, run_id_short: str, uid: str, cube_tags: dict[str, str]
+        self, run_id_short: str, uid: str, cube_tags: dict[str, str] | None = None
     ) -> tuple:
         """Create a static public IP and NIC. Returns (pip, nic, pip_name, nic_name).
 
@@ -928,7 +928,7 @@ class AzureInfraConfig(InfraConfig):
         network = self._network()
         pip_name = f"cube-{run_id_short}-ip-{uid}"
         nic_name = f"cube-{run_id_short}-nic-{uid}"
-        resource_tags = {**self.tags, **cube_tags}
+        resource_tags = {**self.tags, **(cube_tags or {})}
 
         pip = network.public_ip_addresses.begin_create_or_update(  # type: ignore[call-overload]
             self.resource_group, pip_name,
@@ -1169,7 +1169,7 @@ class AzureInfraConfig(InfraConfig):
         compute = self._compute()
 
         logger.info("_launch_bootstrap_vm: creating network resources")
-        pip, nic, pip_name, nic_name = self._create_network_resources(uid)
+        pip, nic, pip_name, nic_name = self._create_network_resources(uid, uid)
 
         logger.info(
             "_launch_bootstrap_vm: launching %s (%s, %d GB OS disk)",
