@@ -109,11 +109,18 @@ class ComputerBase(Tool):
     def attach_vm(self, vm: VM) -> None:
         """Attach a live VM handle after construction (for deferred-launch patterns)."""
         self._vm = vm
-        self._connect_guest(vm)
+        self._connect_guest(vm.endpoint)
 
-    def _connect_guest(self, vm: VM) -> None:
-        """Parse the VM endpoint and create the GuestAgent HTTP client."""
-        parsed = urlparse(vm.endpoint)
+    def attach_endpoint(self, endpoint: str) -> None:
+        """Attach a guest agent endpoint URL directly (for InfraConfig-based launch).
+
+        Preferred over attach_vm() when using the new InfraConfig/ResourceHandle API.
+        """
+        self._connect_guest(endpoint)
+
+    def _connect_guest(self, endpoint: str) -> None:
+        """Parse the endpoint URL and create the GuestAgent HTTP client."""
+        parsed = urlparse(endpoint)
         host = parsed.hostname or "localhost"
         port = parsed.port or 5000
         self._guest = GuestAgent(host=host, port=port)
