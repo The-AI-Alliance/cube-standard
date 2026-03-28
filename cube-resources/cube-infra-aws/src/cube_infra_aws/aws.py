@@ -948,7 +948,7 @@ class AWSInfraConfig(InfraConfig):
 
         sg = ec2.create_security_group(
             GroupName=self.security_group_name,
-            Description="CUBE experiment — SSH inbound only",
+            Description="CUBE experiment - SSH inbound only",
             VpcId=self.vpc_id,
             TagSpecifications=[{
                 "ResourceType": "security-group",

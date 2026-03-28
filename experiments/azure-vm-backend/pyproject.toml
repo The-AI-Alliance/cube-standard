@@ -15,6 +15,7 @@ dependencies = [
     "cube-computer-tool",
     "cube-vm-backend",
     "osworld-cube",
+    "cube-infra-aws",
 ]
 
 [tool.uv.sources]
@@ -23,6 +24,7 @@ cube-infra-azure = { path = "../../cube-resources/cube-infra-azure", editable = 
 cube-computer-tool = { path = "../../cube-tools/cube-computer-tool", editable = true }
 cube-vm-backend = { path = "../../cube-resources/cube-vm-backend", editable = true }
 osworld-cube = { path = "../../../cube-harness/cubes/osworld-cube", editable = true }
+cube-infra-aws = { path = "../../cube-resources/cube-infra-aws", editable = true }
 
 [dependency-groups]
 dev = [
