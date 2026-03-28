@@ -29,7 +29,6 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Literal
 
 from cube.resource import (
     InfraConfig,
@@ -401,7 +400,6 @@ class LocalInfraConfig(InfraConfig):
         Reconstructed from ~/.cube/active.json — processes that have died are
         cleaned up and excluded from the result.
         """
-        from cube.provision_store import ProvisionStore
 
         data = _load_active()
         handles = []

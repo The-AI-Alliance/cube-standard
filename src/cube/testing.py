@@ -473,8 +473,6 @@ def run_debug_agent(
     """
     import uuid
 
-    from cube.resource import InfraConfig, ResourceConfig
-
     run_id = run_id or str(uuid.uuid4())
     report: dict = {
         "run_id": run_id,

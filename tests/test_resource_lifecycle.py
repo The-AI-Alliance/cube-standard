@@ -27,7 +27,6 @@ from cube.resource import (
     VMResourceConfig,
 )
 
-
 # ── Minimal concrete InfraConfig for testing ──────────────────────────────────
 
 

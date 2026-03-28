@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Literal
 from cube.core import TypedBaseModel
 
 if TYPE_CHECKING:
-    from cube.provision_store import ProvisionStore
+    pass
 
 logger = logging.getLogger(__name__)
 

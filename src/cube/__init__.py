@@ -21,6 +21,8 @@ def get_cache_dir(benchmark_name: str) -> Path:
 __all__ = ["__version__", "get_cache_dir"]
 
 # Resource lifecycle API (design/resource_lifecycle.md)
+from cube.infra_local import LocalInfraConfig  # noqa: E402
+from cube.provision_store import ProvisionStore  # noqa: E402
 from cube.resource import (  # noqa: E402
     DockerImageConfig,
     DockerServiceConfig,
@@ -31,8 +33,6 @@ from cube.resource import (  # noqa: E402
     UnsupportedResourceType,
     VMResourceConfig,
 )
-from cube.provision_store import ProvisionStore  # noqa: E402
-from cube.infra_local import LocalInfraConfig  # noqa: E402
 
 __all__ += [
     "ResourceConfig",

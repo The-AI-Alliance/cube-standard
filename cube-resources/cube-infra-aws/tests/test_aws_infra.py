@@ -12,14 +12,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from cube.provision_store import ProvisionStore
-from cube.resource import (
-    ResourceNotReadyError,
-    UnsupportedResourceType,
-    VMResourceConfig,
-    ResourceConfig,
-)
 from cube_infra_aws.aws import (
     AWSInfraConfig,
     AWSResourceHandle,
@@ -27,6 +19,13 @@ from cube_infra_aws.aws import (
     _ec2_tags_to_dict,
 )
 
+from cube.provision_store import ProvisionStore
+from cube.resource import (
+    ResourceConfig,
+    ResourceNotReadyError,
+    UnsupportedResourceType,
+    VMResourceConfig,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
