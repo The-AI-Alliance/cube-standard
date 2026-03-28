@@ -13,8 +13,8 @@ Steps:
   5. Unprovision: clean up the test gallery image after the run
 
 Run:
-    cd experiments/azure-vm-backend
-    .venv/bin/python test_run_debug_agent.py
+    cd cube-resources/cube-infra-azure
+    uv run python test_run_debug_agent.py
 """
 from __future__ import annotations
 
@@ -22,13 +22,19 @@ import json
 import logging
 import sys
 
-from _common import configure_logging
 from cube_infra_azure import AzureInfraConfig
 from osworld_cube.benchmark import OSWorldBenchmark
 
 from cube.testing import run_debug_agent
 
-configure_logging(debug=False)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+for _noisy in ("azure.core.pipeline.policies.http_logging_policy", "azure.identity", "urllib3.connectionpool"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────

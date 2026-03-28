@@ -12,8 +12,8 @@ Steps:
   5. Unprovision: clean up the test AMI after the run
 
 Run:
-    cd experiments/azure-vm-backend
-    .venv/bin/python test_run_debug_agent_aws.py
+    cd cube-resources/cube-infra-aws
+    uv run python test_run_debug_agent.py
 """
 from __future__ import annotations
 
@@ -21,13 +21,17 @@ import json
 import logging
 import sys
 
-from _common import configure_logging
 from cube_infra_aws import AWSInfraConfig
 from osworld_cube.benchmark import OSWorldBenchmark
 
 from cube.testing import run_debug_agent
 
-configure_logging(debug=False)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+
 log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
