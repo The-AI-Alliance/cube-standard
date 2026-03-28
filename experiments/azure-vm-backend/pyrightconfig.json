@@ -1,5 +1,12 @@
 {
   "venvPath": ".",
   "venv": ".venv",
-  "extraPaths": ["../../src"]
+  "extraPaths": [
+    ".",
+    "../../src",
+    "../../cube-resources/cube-infra-azure/src",
+    "../../cube-tools/cube-computer-tool/src",
+    "../../cube-resources/cube-vm-backend/src",
+    "../../../cube-harness/cubes/osworld-cube/src"
+  ]
 }
