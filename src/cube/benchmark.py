@@ -27,15 +27,13 @@ import logging
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Generator
-
-if TYPE_CHECKING:
-    from cube.resource import ResourceConfig
+from typing import Any, ClassVar, Generator
 
 from pydantic import ConfigDict, Field, PrivateAttr
 
 from cube.container import ContainerBackend
 from cube.core import TypedBaseModel
+from cube.resource import ResourceConfig
 from cube.seed import AbstractSeedGenerator
 from cube.task import TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
@@ -524,7 +522,7 @@ class Benchmark(TypedBaseModel, ABC):
         """
         pass
 
-    resources: "list[ResourceConfig]" = Field(default_factory=list)
+    resources: list[ResourceConfig] = Field(default_factory=list)
     """Resource dependencies declared by this benchmark.
 
     Set this on your benchmark class (or pass at construction time) to declare
