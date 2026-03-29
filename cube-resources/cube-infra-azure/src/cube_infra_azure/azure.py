@@ -573,18 +573,15 @@ class AzureInfraConfig(InfraConfig):
         store.delete(shim, self)
         logger.info("unprovision: %r removed from ProvisionStore", image_name)
 
-    def launch(
-        self,
-        resource: ResourceConfig,
-        run_id: str,
-        ttl_seconds: int | None = None,
-    ) -> AzureResourceHandle:
+    def launch(self, resource: ResourceConfig) -> AzureResourceHandle:
         """L3: launch a VM from the Compute Gallery, open SSH tunnel, return handle.
 
         Reads image_def + version from the ProvisionStore.
         Raises ResourceNotReadyError if provision() was never called.
 
-        The VM is tagged with cube-run-id and cube-infra for ARM-based cleanup.
+        run_id is generated internally. TTL resolves as:
+        self.default_ttl_seconds ?? resource.default_ttl_seconds.
+        The VM is tagged with cube: tags for ARM-based cleanup.
         SSH tunnel: localhost:{local_port} → VM:{guest_port}
         """
         if not isinstance(resource, VMResourceConfig):
@@ -599,6 +596,7 @@ class AzureInfraConfig(InfraConfig):
         image_def = resource_info["image_def"]
         version = resource_info["version"]
 
+        run_id = str(uuid.uuid4())
         uid = uuid.uuid4().hex[:6]
         run_id_short = run_id[:8]
         vm_name = f"cube-{run_id_short}-vm-{uid}"
@@ -610,7 +608,7 @@ class AzureInfraConfig(InfraConfig):
         )
 
         # Compute timestamps before creating anything so they can go into tags.
-        effective_ttl = ttl_seconds if ttl_seconds is not None else resource.default_ttl_seconds
+        effective_ttl = self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
         created_at = datetime.now(timezone.utc)
         expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
 

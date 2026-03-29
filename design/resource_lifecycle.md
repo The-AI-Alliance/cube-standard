@@ -84,10 +84,24 @@ class DockerServiceConfig(ResourceConfig):
         return {"docker"}
 
 class DockerImageConfig(ResourceConfig):
-    """Single Docker image per task (SWE-bench, MLE-bench, CTF...)."""
+    """Single Docker image per task (SWE-bench, MLE-bench, CTF...).
+
+    Replaces the legacy ContainerConfig. Resource requirement fields (ram_gb,
+    cpu_cores, disk_gb, ports) are read by DockerInfraConfig.launch() to
+    configure the container. gpu=True maps to the "gpu:nvidia" capability token.
+    """
     image: str
+    ram_gb: float = 4.0
+    cpu_cores: float = 2.0
+    disk_gb: float = 10.0
+    gpu: bool = False
+    ports: list[int] | None = None
+
     def requirements(self) -> set[str]:
-        return {"docker"}
+        reqs = {"docker"}
+        if self.gpu:
+            reqs.add("gpu:nvidia")
+        return reqs
 
 ```
 
@@ -127,6 +141,15 @@ handle = infra.launch(resource_config, run_id=run_id)
 
 ```python
 class InfraConfig(TypedBaseModel):
+    default_ttl_seconds: int | None = 86400
+    """Max lifetime for launched resources (default: 1 day).
+
+    Overrides resource.default_ttl_seconds when set. 1 day is long enough
+    to survive any realistic evaluation run without accumulating orphans for
+    weeks. Set None to disable auto-expiry — caller must use cleanup() or
+    handle.close() explicitly.
+    """
+
     def fingerprint(self) -> str:
         """Stable key for ProvisionStore.
 
@@ -150,7 +173,7 @@ class InfraConfig(TypedBaseModel):
         ...
 
     def provision(self, resource: ResourceConfig) -> None: ...  # Level 1
-    def launch(self, resource: ResourceConfig, run_id: str, ttl_seconds: int | None = None) -> ResourceHandle: ...
+    def launch(self, resource: ResourceConfig) -> ResourceHandle: ...
     def list_active(self, run_id: str | None = None) -> list[ResourceHandle]: ...
     def cleanup(self, run_id: str) -> None: ...
     def cleanup_stale(self, max_age_seconds: int | None = None) -> list[str]: ...
@@ -209,12 +232,12 @@ boundaries — instead `run_id` (a plain string) is passed, and any process can 
 
 ```python
 class ResourceHandle:
-    run_id:     str           # links this resource to a run (for cleanup)
+    run_id:     str           # generated internally by launch(); use for cleanup
     resource:   ResourceConfig
     infra:      InfraConfig
     endpoint:   str | None    # http://... if a service is exposed
     created_at: datetime
-    expires_at: datetime | None
+    expires_at: datetime | None  # set from infra.default_ttl_seconds ?? resource.default_ttl_seconds
 
     def close(self) -> None:
         """Tear down this resource (delete VM, stop server, etc.)."""
@@ -224,9 +247,13 @@ class ResourceHandle:
     def __exit__(self, *_) -> None: self.close()
 ```
 
+`run_id` is a UUID4 generated internally by `launch()` — callers never provide it.
+It is stored on the handle and embedded as a `cube:run_id` tag on every cloud resource,
+so any process that has either the handle or the run_id string can call `cleanup()`.
+
 Usage — single process (context manager):
 ```python
-with infra.launch(resource, run_id=run_id) as handle:
+with infra.launch(resource) as handle:
     result = agent.run(task, endpoint=handle.endpoint)
 # VM is deleted on exit
 ```
@@ -234,11 +261,11 @@ with infra.launch(resource, run_id=run_id) as handle:
 Usage — multi-process (manual):
 ```python
 # Coordinator process
-handle = infra.launch(resource, run_id=run_id)
-dispatch_to_workers(handle.endpoint, run_id)  # run_id is serializable
+handle = infra.launch(resource)
+dispatch_to_workers(handle.endpoint, handle.run_id)  # run_id is a plain string
 
 # Any process (including coordinator) at shutdown
-infra.cleanup(run_id=run_id)
+infra.cleanup(run_id=handle.run_id)
 ```
 
 ### ResourceConfig vs resource_info
@@ -337,11 +364,13 @@ Calling `register()` with new info overrides the existing entry and logs a warni
 
 ```python
 # Returns ResourceHandle; raises ResourceNotReadyError if register() wasn't called
-handle = infra.launch(resource, run_id=run_id, ttl_seconds=3600)
+handle = infra.launch(resource)
 ```
 
-`launch()` reads from the provision store, tags the new resource with `run_id` and
-`expires_at`, then provisions and returns the handle. Fails fast if no entry is found:
+`launch()` reads from the provision store, generates a `run_id` (UUID4) internally,
+tags the new resource with `cube:run_id` and `cube:expires_at`, then provisions and
+returns the handle. TTL is resolved as `infra.default_ttl_seconds ?? resource.default_ttl_seconds`.
+Fails fast if no provision entry is found:
 
 ```
 ResourceNotReadyError: osworld-ubuntu-vm is not registered for aws:us-east-2.
@@ -365,27 +394,32 @@ It is a **convenience wrapper around `register()`**, isolated in `cube.provision
 `register()`. As automation coverage improves, `provision()` reduces manual work —
 but it must never be the only path, and its failures must not block the core flow.
 
-### 5. Debug agent (smoke test)
+### 5. Debug episode (end-to-end smoke test)
+
+Run a full agent episode on a debug task before committing to a batch evaluation.
+The standard pattern using `get_debug_benchmark` and `run_debug_episode`:
 
 ```python
-run_debug_agent(my_cube, infra)
+# 1. Verify the resource is provisioned
+infra.provision_status(resource)   # → "ready" | "needs_provisioning"
+
+# 2. Get a benchmark scoped to the debug subset, with infra injected
+benchmark = my_cube.get_debug_benchmark(infra=infra)
+benchmark.install()
+benchmark.setup()
+
+# 3. Run the first debug task end-to-end
+tc = next(iter(benchmark.get_task_configs()))
+task = tc.make()
+agent = my_cube.make_debug_agent(tc.task_id)
+result = run_debug_episode(task, agent)   # from cube.testing
 ```
 
-Runs a quick end-to-end smoke test against a given infra before committing to a
-full evaluation run. It performs three checks in order:
+This validates the full stack — provisioning, VM launch, task reset, agent loop,
+and evaluation — using a deterministic agent and a minimal task. A passing episode
+guarantees `my_cube.run(infra)` will not fail due to infrastructure issues.
 
-1. **Resource availability** — queries the ProvisionStore. If a resource is not registered,
-   it prints actionable instructions (`register()` or `provision()`) and stops.
-2. **Infra compatibility** — attempts to launch a single task-scoped VM. If the
-   infra cannot satisfy the resource (wrong region, policy block, quota exceeded),
-   it reports the specific challenge and stops.
-3. **Functional validation** — runs a minimal debug task (screenshot + execute).
-   If this passes, the infra is considered ready for full evaluation.
-
-A clean run guarantees that `my_cube.run(infra)` will not fail due to infrastructure
-issues. Intended to be run once per (cube, infra) pair before a batch evaluation.
-`run_debug_agent` is a standalone function, not a method on the cube, since it requires
-both a cube and an infra as equal inputs.
+Intended to be run once per (cube, infra) pair before a batch evaluation.
 
 ---
 
@@ -398,7 +432,7 @@ no cloud credentials and is the default when no infra is provided.
 ```python
 # Explicit
 infra = LocalInfraConfig()
-handle = infra.launch(resource, run_id=run_id)
+handle = infra.launch(resource)
 
 # Implicit default — no infra argument
 my_cube.run(tasks)  # uses LocalInfraConfig
@@ -449,11 +483,29 @@ they are managed manually as they represent significant invested work.
 
 L2/L3 resources can outlive their harness process (crash, network loss, OOM kill).
 Cloud providers do not enforce TTL natively — deletion is driven entirely by the harness.
-`cube:expires_at` is set at `launch()` time from `ttl_seconds` (falls back to
-`resource.default_ttl_seconds`). `cleanup_stale()` deletes any resource where
-`cube:expires_at < now`. This harness-side approach is more reliable than cloud-native
-TTL because it works uniformly across all providers (including `LocalInfraConfig`) and is
-not subject to provider-specific limitations.
+`cube:expires_at` is set at `launch()` time from `infra.default_ttl_seconds`
+(falls back to `resource.default_ttl_seconds`). `cleanup_stale()` deletes any resource
+where `cube:expires_at < now`. This harness-side approach is more reliable than
+cloud-native TTL because it works uniformly across all providers (including
+`LocalInfraConfig`) and is not subject to provider-specific limitations.
+
+**TTL recovery after state loss.** If the local process crashes and `active.json` is
+lost, `cube:expires_at` tags remain on the cloud resources themselves. `cleanup_stale()`
+reads these tags directly from the cloud provider API — no dependency on local files.
+Bootstrap VMs (used only during `provision()`) are terminated immediately once the
+main image is created and registered; they are never subject to TTL-based cleanup.
+
+**Harness lifecycle hooks** (call these regardless of normal/error exit):
+```python
+# At harness startup — garbage-collect from previous crashes
+infra.cleanup_stale()
+
+# After each task (L3 scope)
+handle.close()
+
+# At harness shutdown (L2 scope + catch-all)
+infra.cleanup(run_id=benchmark_run_id)
+```
 
 ```python
 # List all live cube resources on this infra (L2 + L3 only)
@@ -555,6 +607,21 @@ for informational purposes but store-level deduplication is not implemented in v
    first-class providers. The `resource_info` schema differs per provider but the
    store and the `register()` / `launch()` interface are provider-agnostic.
    Existing Docker resources will be migrated to this schema in a follow-up PR.
+
+7. **ContainerConfig deprecation**: `ContainerConfig` (image, ram_gb, cpu_cores,
+   disk_gb, gpu, ports) is superseded by `DockerImageConfig(ResourceConfig)` which
+   carries the same fields. `TaskMetadata.container_config` is deprecated — Docker
+   benchmarks should declare their image in `benchmark.list_resources()` as a
+   `DockerImageConfig` with `scope="task"`. The `ContainerBackend` class is
+   superseded by `DockerInfraConfig(InfraConfig)`. Both will be removed once all
+   Docker benchmarks have migrated.
+
+8. **RuntimeContext evolution**: `RuntimeContext = dict[str, Any]` (set during
+   `benchmark._setup()`) transitions toward `dict[str, ResourceHandle]` — L2
+   resources launched once at benchmark setup and shared across all tasks via their
+   `.endpoint`. Tasks access the live URL as `runtime_context["webarena"].endpoint`
+   instead of storing raw strings. The type alias and passing mechanism are unchanged;
+   only the convention for what is stored in it evolves.
 
 ---
 

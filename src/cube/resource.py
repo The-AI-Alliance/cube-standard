@@ -117,12 +117,25 @@ class DockerServiceConfig(ResourceConfig):
 
 
 class DockerImageConfig(ResourceConfig):
-    """Single Docker image per task (SWE-bench, MLE-bench, CTF...)."""
+    """Single Docker image per task (SWE-bench, MLE-bench, CTF...).
+
+    Resource requirements (ram_gb, cpu_cores, disk_gb, ports) are read by
+    DockerInfraConfig.launch() to configure the container. gpu=True maps to
+    the "gpu:nvidia" capability requirement token via requirements().
+    """
 
     image: str
+    ram_gb: float = 4.0
+    cpu_cores: float = 2.0
+    disk_gb: float = 10.0
+    gpu: bool = False
+    ports: list[int] | None = None
 
     def requirements(self) -> set[str]:
-        return {"docker"}
+        reqs = {"docker"}
+        if self.gpu:
+            reqs.add("gpu:nvidia")
+        return reqs
 
 
 # ── ResourceHandle ────────────────────────────────────────────────────────────
@@ -171,6 +184,13 @@ class InfraConfig(TypedBaseModel, ABC):
 
     Credentials are never stored in fields; resolved from env vars at runtime.
 
+    Fields:
+        default_ttl_seconds: Maximum resource lifetime before auto-cleanup.
+                             Overrides resource.default_ttl_seconds when set.
+                             Default is 1 day (86400s) — long enough to survive any
+                             realistic evaluation run, short enough to avoid weeks-long
+                             orphan accumulation. Set None to disable auto-expiry.
+
     Concrete subclasses must implement:
         fingerprint()   — stable key encoding provider + region/location only
         capabilities()  — set of supported capability tokens
@@ -180,6 +200,11 @@ class InfraConfig(TypedBaseModel, ABC):
         cleanup()       — delete all resources for a run_id
         cleanup_stale() — delete resources past their expires_at
     """
+
+    default_ttl_seconds: int | None = 86400
+    """Max lifetime for launched resources. Overrides resource.default_ttl_seconds.
+    1 day default prevents orphan accumulation without killing long-running jobs.
+    Set None to disable auto-expiry (use cleanup() or handle.close() explicitly)."""
 
     # ── Abstract interface ────────────────────────────────────────────────────
 
@@ -214,19 +239,16 @@ class InfraConfig(TypedBaseModel, ABC):
         ...
 
     @abstractmethod
-    def launch(
-        self,
-        resource: ResourceConfig,
-        run_id: str,
-        ttl_seconds: int | None = None,
-    ) -> ResourceHandle:
+    def launch(self, resource: ResourceConfig) -> ResourceHandle:
         """L2/L3: instantiate a resource and return a live handle.
 
         Reads resource_info from the ProvisionStore. Raises ResourceNotReadyError
         if no entry is found (i.e. register() or provision() was never called).
 
-        Tags the resource with run_id and expires_at for cleanup.
-        ttl_seconds overrides resource.default_ttl_seconds when provided.
+        run_id is generated internally (UUID4) and stored on the returned handle.
+        TTL is resolved as: self.default_ttl_seconds ?? resource.default_ttl_seconds.
+        Both are embedded as cube:expires_at tags on the cloud resource for recovery
+        even if local state is lost.
         """
         ...
 

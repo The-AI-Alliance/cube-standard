@@ -303,19 +303,15 @@ class LocalInfraConfig(InfraConfig):
 
         self.register(resource, {"image_path": str(dest)})
 
-    def launch(
-        self,
-        resource: ResourceConfig,
-        run_id: str,
-        ttl_seconds: int | None = None,
-    ) -> LocalResourceHandle:
+    def launch(self, resource: ResourceConfig) -> LocalResourceHandle:
         """Boot a QEMU VM and return a handle with the guest agent endpoint.
 
         Reads image_path from the ProvisionStore. Raises ResourceNotReadyError
         if no entry is found.
 
         The VM is isolated via a copy-on-write overlay so the base image is
-        never modified.
+        never modified. run_id is generated internally; TTL resolves as
+        self.default_ttl_seconds ?? resource.default_ttl_seconds.
         """
         if not isinstance(resource, VMResourceConfig):
             raise UnsupportedResourceType(resource, self)
@@ -333,6 +329,7 @@ class LocalInfraConfig(InfraConfig):
                 f"Re-run infra.provision(resource) to re-download."
             )
 
+        run_id = str(uuid.uuid4())
         port = _free_port()
         overlay = _create_overlay(image_path, run_id)
         entry_id = f"cube-{run_id[:8]}-vm-{uuid.uuid4().hex[:6]}"
@@ -357,7 +354,7 @@ class LocalInfraConfig(InfraConfig):
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         endpoint = f"http://127.0.0.1:{port}"
-        effective_ttl = ttl_seconds if ttl_seconds is not None else resource.default_ttl_seconds
+        effective_ttl = self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
         created_at = datetime.utcnow()
         expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
 

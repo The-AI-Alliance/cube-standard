@@ -1,15 +1,14 @@
 """
-Integration test: full resource lifecycle + run_debug_agent(OSWorldBenchmark, AzureInfraConfig)
+Integration test: provision + run_debug_episode on OSWorld with AzureInfraConfig.
 
 Uses image_name_suffix="-test" so the test creates its own gallery image definition
-("osworld-ubuntu-vm-test") and ProvisionStore key, leaving the team's manually-created
-"osworld-ubuntu-vm/1.0.0" untouched.
+("osworld-ubuntu-vm-test"), leaving the team's "osworld-ubuntu-vm/1.0.0" untouched.
 
 Steps:
-  1. Clean up any stale "-test" VMs from previous runs (tests list_active + close)
+  1. Clean up any stale "-test" VMs from previous runs
   2. Unprovision the test image if it exists (delete gallery image + ProvisionStore entry)
   3. Provision from scratch: full ~40-min bootstrap pipeline
-  4. run_debug_agent: provision check → capability check → launch + HTTP probe
+  4. get_debug_benchmark(infra) → first task → run_debug_episode
   5. Unprovision: clean up the test gallery image after the run
 
 Run:
@@ -23,9 +22,9 @@ import logging
 import sys
 
 from cube_infra_azure import AzureInfraConfig
-from osworld_cube.benchmark import OSWorldBenchmark
+from osworld_cube.debug import get_debug_benchmark, make_debug_agent
 
-from cube.testing import run_debug_agent
+from cube.testing import run_debug_episode
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,27 +36,21 @@ for _noisy in ("azure.core.pipeline.policies.http_logging_policy", "azure.identi
 
 log = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
-
 INFRA = AzureInfraConfig(
     resource_group="ui_assist",
-    # needed because this resource group has multiple of each:
     storage_account="cubeexpvhd",
     vnet_name="vnet-westus2",
     nsg_name="osworld-nsg",
-    # isolates test from the team's manually-created "osworld-ubuntu-vm/1.0.0"
+    # isolates test from the team's "osworld-ubuntu-vm/1.0.0"
     image_name_suffix="-test",
 )
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def main() -> None:
-    log.info("=== integration test: resource lifecycle + run_debug_agent ===")
+    log.info("=== integration test: provision + run_debug_episode (Azure) ===")
     log.info("infra: %s", INFRA.fingerprint())
 
-    benchmark = OSWorldBenchmark()
-    resources = benchmark.list_resources()
+    resources = get_debug_benchmark().list_resources()
     log.info("benchmark resources: %s", [r.name for r in resources])
 
     # ── Step 1: clean up any stale test VMs from previous runs ────────────────
@@ -67,42 +60,50 @@ def main() -> None:
         for handle in active:
             log.info("  closing run_id=%s", handle.run_id[:8])
             handle.close()
-        log.info("Step 1: cleanup done")
     else:
         log.info("Step 1: no active VMs")
 
     # ── Step 2: unprovision test image (clean slate for full reprovision) ──────
     for resource in resources:
-        status = INFRA.provision_status(resource)
-        log.info("Step 2: provision_status(%s-test) = %s", resource.name, status)
-        if status == "ready":
+        if INFRA.provision_status(resource) == "ready":
             log.info("Step 2: unprovisioning stale test image for %s …", resource.name)
             INFRA.unprovision(resource)
-            log.info("Step 2: unprovision done")
 
     # ── Step 3: provision from scratch (~40 min bootstrap pipeline) ───────────
     for resource in resources:
         log.info("Step 3: provisioning %s-test (this takes ~40 min) …", resource.name)
         INFRA.provision(resource)
-        log.info("Step 3: provision_status(%s-test) = %s", resource.name, INFRA.provision_status(resource))
 
-    # ── Step 4: run_debug_agent (provision + capability + launch checks) ───────
-    log.info("Step 4: running run_debug_agent …")
-    report = run_debug_agent(benchmark, INFRA)
+    # ── Step 4: run a full debug episode via get_debug_benchmark ──────────────
+    log.info("Step 4: running debug episode …")
+    benchmark = get_debug_benchmark(infra=INFRA)
+    benchmark.install()
+    benchmark.setup()
 
-    log.info("=== Report ===")
-    print(json.dumps(report, indent=2, default=str))
+    task_configs = list(benchmark.get_task_configs())
+    if not task_configs:
+        log.error("No debug tasks found — aborting")
+        sys.exit(1)
+
+    tc = task_configs[0]
+    task = tc.make()
+    agent = make_debug_agent(tc.task_id)
+
+    result = run_debug_episode(task, agent)
+    log.info("=== Episode report ===")
+    print(json.dumps(result, indent=2, default=str))
+
+    benchmark.close()
 
     # ── Step 5: unprovision test image (cleanup) ───────────────────────────────
     for resource in resources:
         log.info("Step 5: cleaning up test image for %s …", resource.name)
         INFRA.unprovision(resource)
-    log.info("Step 5: cleanup done")
 
-    if report.get("launch_ok"):
-        log.info("SUCCESS — infra is ready for a full OSWorld evaluation run.")
+    if result.get("reward", 0) > 0 and not result.get("error"):
+        log.info("SUCCESS — Azure infra + OSWorld debug episode passed.")
     else:
-        log.error("FAILED — see 'error' field in report above.")
+        log.error("FAILED — see report above.")
         sys.exit(1)
 
 

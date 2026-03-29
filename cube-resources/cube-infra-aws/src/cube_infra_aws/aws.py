@@ -600,17 +600,14 @@ class AWSInfraConfig(InfraConfig):
         store.delete(shim, self)
         logger.info("unprovision: %r removed from ProvisionStore", image_name)
 
-    def launch(
-        self,
-        resource: ResourceConfig,
-        run_id: str,
-        ttl_seconds: int | None = None,
-    ) -> AWSResourceHandle:
+    def launch(self, resource: ResourceConfig) -> AWSResourceHandle:
         """L3: launch an EC2 instance from the AMI, open SSH tunnel, return handle.
 
         Reads ami_id from the ProvisionStore.
         Raises ResourceNotReadyError if provision() was never called.
 
+        run_id is generated internally. TTL resolves as:
+        self.default_ttl_seconds ?? resource.default_ttl_seconds.
         The instance is tagged with cube: tags for ARM-based cleanup.
         SSH tunnel: localhost:{local_port} → instance:{guest_port}
         """
@@ -624,11 +621,12 @@ class AWSInfraConfig(InfraConfig):
             raise ResourceNotReadyError(resource, self)
 
         ami_id = resource_info["ami_id"]
+        run_id = str(uuid.uuid4())
         uid = uuid.uuid4().hex[:6]
         run_id_short = run_id[:8]
         instance_name = f"cube-{run_id_short}-vm-{uid}"
 
-        effective_ttl = ttl_seconds if ttl_seconds is not None else resource.default_ttl_seconds
+        effective_ttl = self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
         created_at = datetime.now(timezone.utc)
         expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
 

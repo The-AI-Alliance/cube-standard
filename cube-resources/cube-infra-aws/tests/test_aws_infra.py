@@ -314,7 +314,7 @@ class TestAWSLaunch:
         infra = _make_infra()
         resource = ResourceConfig(name="generic")
         with pytest.raises(UnsupportedResourceType):
-            infra.launch(resource, run_id="run-1")
+            infra.launch(resource)
 
     def test_launch_raises_resource_not_ready(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -323,7 +323,7 @@ class TestAWSLaunch:
         infra = _make_infra()
         resource = VMResourceConfig(name="vm")
         with pytest.raises(ResourceNotReadyError):
-            infra.launch(resource, run_id="run-1")
+            infra.launch(resource)
 
     def test_launch_resource_not_ready_message(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -332,7 +332,7 @@ class TestAWSLaunch:
         infra = _make_infra()
         resource = VMResourceConfig(name="my-vm")
         try:
-            infra.launch(resource, run_id="run-1")
+            infra.launch(resource)
         except ResourceNotReadyError as err:
             assert "my-vm" in str(err)
             assert "aws:us-east-2" in str(err)
