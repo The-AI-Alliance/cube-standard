@@ -8,7 +8,6 @@ All tests run without cloud credentials — no Azure/AWS SDK calls.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass as _dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -85,12 +84,13 @@ class TestProvisionStore:
         assert store.get(resource, infra) == info
 
     def test_key_format(self, tmp_path: Path) -> None:
-        store = ProvisionStore(tmp_path / "provisions.json")
+        store = ProvisionStore(tmp_path)
         resource = VMResourceConfig(name="osworld-ubuntu-vm")
         infra = _StubInfra(name="westus2")
         store.put(resource, infra, {"x": 1})
-        raw = json.loads((tmp_path / "provisions.json").read_text())
-        assert "osworld-ubuntu-vm@stub:westus2" in raw
+        files = list(tmp_path.glob("*.json"))
+        assert len(files) == 1
+        assert "osworld-ubuntu-vm@stub:westus2" in files[0].stem
 
     def test_put_overwrites_existing(self, tmp_path: Path) -> None:
         store = ProvisionStore(tmp_path / "provisions.json")
@@ -284,8 +284,8 @@ class TestExceptions:
 
 
 def _patch_store_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Redirect the default ProvisionStore path to a temp dir for isolation."""
+    """Redirect the default ProvisionStore directory to a temp dir for isolation."""
     monkeypatch.setattr(
-        "cube.provision_store._DEFAULT_STORE_PATH",
-        tmp_path / "provisions.json",
+        "cube.provision_store._DEFAULT_STORE_DIR",
+        tmp_path / "provisions",
     )
