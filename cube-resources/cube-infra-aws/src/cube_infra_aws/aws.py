@@ -541,7 +541,7 @@ class AWSInfraConfig(InfraConfig):
         logger.info("provision: %r registered for %s", image_name, self.fingerprint())
 
     def unprovision(self, resource: ResourceConfig) -> None:
-        """Deregister the AMI, delete the EBS snapshot, and remove the ProvisionStore entry.
+        """Deregister the AMI, delete the EBS snapshot, VHD in S3, sentinel, and ProvisionStore entry.
 
         Safe to call when not provisioned — no-ops if not registered.
 
@@ -596,6 +596,15 @@ class AWSInfraConfig(InfraConfig):
                     logger.warning(
                         "unprovision: could not delete snapshot %s: %s", snapshot_id, exc
                     )
+
+        vhd_key = image_name + ".vhd"
+        s3 = self._s3()
+        for key in (vhd_key, vhd_key + ".bootstrap_done", vhd_key + ".bootstrap_failed"):
+            try:
+                s3.delete_object(Bucket=self.s3_bucket, Key=key)
+                logger.info("unprovision: deleted s3://%s/%s", self.s3_bucket, key)
+            except Exception as exc:
+                logger.warning("unprovision: could not delete s3://%s/%s: %s", self.s3_bucket, key, exc)
 
         store.delete(shim, self)
         logger.info("unprovision: %r removed from ProvisionStore", image_name)
@@ -1332,9 +1341,7 @@ done
 
         Returns ami_id.
         """
-        src_filename = url.rstrip("/").split("/")[-1]
-        base_name = src_filename.split(".")[0]
-        vhd_key = base_name + ".vhd"
+        vhd_key = image_name + ".vhd"
         sentinel_key = vhd_key + ".bootstrap_done"
         failed_key = vhd_key + ".bootstrap_failed"
 

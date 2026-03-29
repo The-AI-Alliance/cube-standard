@@ -533,10 +533,9 @@ class AzureInfraConfig(InfraConfig):
         logger.info("provision: %r registered for %s", image_name, self.fingerprint())
 
     def unprovision(self, resource: ResourceConfig) -> None:
-        """Delete the gallery image version and remove the ProvisionStore entry.
+        """Delete the gallery image version, VHD blob, sentinel, and ProvisionStore entry.
 
         Safe to call when not provisioned — no-ops if not registered.
-        Does NOT delete the VHD blob or managed disk (those are shared / reusable).
 
         Raises:
             UnsupportedResourceType: if resource is not VMResourceConfig.
@@ -569,6 +568,10 @@ class AzureInfraConfig(InfraConfig):
             logger.warning(
                 "unprovision: could not delete gallery image %s/%s: %s", image_def, version, exc
             )
+
+        blob_name = image_name + ".vhd"
+        for b in (blob_name, blob_name + ".bootstrap_done", blob_name + ".bootstrap_failed"):
+            self._delete_blob(b)
 
         store.delete(shim, self)
         logger.info("unprovision: %r removed from ProvisionStore", image_name)
@@ -875,6 +878,15 @@ class AzureInfraConfig(InfraConfig):
             connection_timeout=300,
             read_timeout=600,
         )
+
+    def _delete_blob(self, blob_name: str) -> None:
+        """Delete a blob from the VHD container (no-op if it doesn't exist)."""
+        try:
+            svc = self._blob_service_client()
+            svc.get_blob_client(self.container_name, blob_name).delete_blob()
+            logger.info("_delete_blob: deleted %s", blob_name)
+        except Exception as exc:
+            logger.warning("_delete_blob: could not delete %s: %s", blob_name, exc)
 
     def blob_exists(self, blob_name: str) -> bool:
         """Return True if a blob exists in the VHD container."""
@@ -1231,9 +1243,7 @@ class AzureInfraConfig(InfraConfig):
         Idempotent — skips the VM phase if the sentinel blob already exists.
         Returns the gallery image version resource ID.
         """
-        src_filename = url.rstrip("/").split("/")[-1]
-        base_name = src_filename.split(".")[0]
-        blob_name = base_name + ".vhd"
+        blob_name = image_name + ".vhd"
         sentinel_name = blob_name + ".bootstrap_done"
         failed_name = blob_name + ".bootstrap_failed"
 
