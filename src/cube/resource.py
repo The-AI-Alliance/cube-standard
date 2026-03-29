@@ -1,10 +1,12 @@
 """
 Resource lifecycle abstractions for CUBE.
 
-Three-level model:
-    L1 — Install-time:    one-time image prep per infra/region    (slow, idempotent)
-    L2 — Benchmark-wide:  shared server per benchmark run         (e.g. WebArena)
-    L3 — Task-level:      per-task ephemeral resources            (e.g. individual VMs)
+Resource lifecycle:
+    provision()  — one-time image prep per infra/region (slow, idempotent)
+    launch()     — instantiate a resource from a provisioned image, return a handle
+    close()      — release a specific live resource
+    cleanup()    — release all resources for a run_id
+    cleanup_stale() — release resources past their expiry time
 
 Core abstractions:
     ResourceConfig  — WHAT the benchmark needs (benchmark-owned, serializable)
@@ -69,9 +71,9 @@ class ResourceConfig(TypedBaseModel):
 
     Attributes:
         name:                    Stable identifier, e.g. "osworld-ubuntu-vm".
-        scope:                   "task" = per-task ephemeral (L3); "benchmark" = shared
-                                 server for the whole run (L2, e.g. WebArena).
-        max_concurrent_agents:   Capacity hint for L2 resources; None = no limit.
+        scope:                   "task" = per-task ephemeral; "benchmark" = shared
+                                 server for the whole run (e.g. WebArena).
+        max_concurrent_agents:   Capacity hint for benchmark-scoped resources; None = no limit.
         source_url:              Canonical image source (HuggingFace URL, Docker Hub, etc.).
         source_hash:             Content hash for informational purposes; not used for
                                  deduplication in v1.
@@ -194,8 +196,8 @@ class InfraConfig(TypedBaseModel, ABC):
     Concrete subclasses must implement:
         fingerprint()   — stable key encoding provider + region/location only
         capabilities()  — set of supported capability tokens
-        provision()     — L1 automated image prep (download → convert → upload → import)
-        launch()        — L2/L3 resource instantiation
+        provision()     — automated image prep (download → convert → upload → import)
+        launch()        — resource instantiation
         list_active()   — enumerate live resources
         cleanup()       — delete all resources for a run_id
         cleanup_stale() — delete resources past their expires_at
@@ -231,7 +233,7 @@ class InfraConfig(TypedBaseModel, ABC):
 
     @abstractmethod
     def provision(self, resource: ResourceConfig) -> None:
-        """L1: automated image prep (download → convert → upload → import → register).
+        """Automated image prep (download → convert → upload → import → register).
 
         Idempotent — safe to call multiple times. Calls register() on completion.
         Raises UnsupportedResourceType if this infra cannot provision the resource type.
@@ -240,7 +242,7 @@ class InfraConfig(TypedBaseModel, ABC):
 
     @abstractmethod
     def launch(self, resource: ResourceConfig) -> ResourceHandle:
-        """L2/L3: instantiate a resource and return a live handle.
+        """Instantiate a resource and return a live handle.
 
         Reads resource_info from the ProvisionStore. Raises ResourceNotReadyError
         if no entry is found (i.e. register() or provision() was never called).
@@ -254,7 +256,7 @@ class InfraConfig(TypedBaseModel, ABC):
 
     @abstractmethod
     def list_active(self, run_id: str | None = None) -> list[ResourceHandle]:
-        """List live L2/L3 resources, optionally filtered by run_id."""
+        """List live resources, optionally filtered by run_id."""
         ...
 
     @abstractmethod

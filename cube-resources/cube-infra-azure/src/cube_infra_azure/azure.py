@@ -4,7 +4,7 @@ AzureInfraConfig — InfraConfig implementation for Microsoft Azure.
 Migrated from experiments/azure-vm-backend/azure_backend.py into the
 cube-standard resource lifecycle protocol (design/resource_lifecycle.md).
 
-Provisioning pipeline (L1, ~30-90 min, idempotent):
+Provisioning pipeline (~30-90 min, idempotent):
     source_url (HuggingFace qcow2.zip)
         → bootstrap VM downloads + converts to fixed VHD  (in-cloud speed)
         → Blob Storage (PageBlob)
@@ -12,7 +12,7 @@ Provisioning pipeline (L1, ~30-90 min, idempotent):
         → Compute Gallery image definition + version
         → ProvisionStore {"image_def": ..., "version": ...}
 
-Launch (L3, ~3-5 min per VM):
+Launch (~3-5 min per VM):
     Gallery image version
         → NIC + public IP
         → VM (Specialized — no cloud-init)
@@ -477,7 +477,7 @@ class AzureInfraConfig(InfraConfig):
         return "ready" if store.get(shim, self) is not None else "needs_provisioning"
 
     def provision(self, resource: ResourceConfig) -> None:
-        """L1: bootstrap OSWorld (or any VM image) from source_url into the Compute Gallery.
+        """Bootstrap OSWorld (or any VM image) from source_url into the Compute Gallery.
 
         Pipeline (in-cloud, idempotent at every step):
             source_url → bootstrap VM (download + qemu-img convert + azcopy upload)
@@ -577,7 +577,7 @@ class AzureInfraConfig(InfraConfig):
         logger.info("unprovision: %r removed from ProvisionStore", image_name)
 
     def launch(self, resource: ResourceConfig) -> AzureResourceHandle:
-        """L3: launch a VM from the Compute Gallery, open SSH tunnel, return handle.
+        """Launch a VM from the Compute Gallery, open SSH tunnel, return handle.
 
         Reads image_def + version from the ProvisionStore.
         Raises ResourceNotReadyError if provision() was never called.
@@ -615,7 +615,7 @@ class AzureInfraConfig(InfraConfig):
         created_at = datetime.now(timezone.utc)
         expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
 
-        # Spec-required tags applied to every L2/L3 resource (VM, NIC, IP).
+        # Spec-required tags applied to every launched resource (VM, NIC, IP).
         cube_tags: dict[str, str] = {
             "cube:infra": self.fingerprint(),
             "cube:run_id": run_id,

@@ -1,7 +1,7 @@
 """
 AWSInfraConfig — InfraConfig implementation for Amazon Web Services.
 
-Provisioning pipeline (L1, ~30-90 min, idempotent):
+Provisioning pipeline (~30-90 min, idempotent):
     source_url (HuggingFace qcow2.zip)
         → bootstrap EC2 downloads + converts to fixed VHD  (in-cloud speed)
         → S3 (upload via boto3)
@@ -9,7 +9,7 @@ Provisioning pipeline (L1, ~30-90 min, idempotent):
         → ec2:register-image (AMI)
         → ProvisionStore {"ami_id": "ami-..."}
 
-Launch (L3, ~3-5 min per instance):
+Launch (~3-5 min per instance):
     AMI
         → EC2 instance (NetworkInterfaces with AssociatePublicIpAddress=True)
         → SSH tunnel localhost:{port} → instance:{guest_port}
@@ -495,7 +495,7 @@ class AWSInfraConfig(InfraConfig):
         return "ready" if store.get(shim, self) is not None else "needs_provisioning"
 
     def provision(self, resource: ResourceConfig) -> None:
-        """L1: bootstrap a VM image from source_url into an EC2 AMI.
+        """Bootstrap a VM image from source_url into an EC2 AMI.
 
         Pipeline (in-cloud, idempotent at every step):
             source_url → bootstrap EC2 (download + qemu-img convert + S3 upload)
@@ -610,7 +610,7 @@ class AWSInfraConfig(InfraConfig):
         logger.info("unprovision: %r removed from ProvisionStore", image_name)
 
     def launch(self, resource: ResourceConfig) -> AWSResourceHandle:
-        """L3: launch an EC2 instance from the AMI, open SSH tunnel, return handle.
+        """Launch an EC2 instance from the AMI, open SSH tunnel, return handle.
 
         Reads ami_id from the ProvisionStore.
         Raises ResourceNotReadyError if provision() was never called.

@@ -1,16 +1,15 @@
 """
 ProvisionStore — maps (ResourceConfig, InfraConfig) → resource_info.
 
-Backed by ~/.cube/provisions.json (v1 local).
+Each entry is stored as a separate JSON file under ~/.cube/provisions/<key>.json.
+This makes reads/writes atomic at the file level and safe for parallel provision()
+calls — two processes provisioning different resources never contend, and two
+processes provisioning the same resource will both write the same data on success
+(idempotent), so a last-writer-wins race is harmless.
+
 Key format: "{resource.name}@{infra.fingerprint()}"
 e.g.        "osworld-ubuntu-vm@aws:us-east-2"
             "osworld-ubuntu-vm@local"
-
-The store treats resource_info as an opaque dict — only the InfraConfig
-provider that wrote it knows how to interpret it. launch() reads it; the
-store never inspects its contents.
-
-v2 (deferred): team/CI sharing via CUBE_PROVISION_STORE env var → S3/GCS path.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,14 +26,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_STORE_PATH = Path(os.environ.get("CUBE_CACHE_DIR", str(Path.home() / ".cube"))) / "provisions.json"
+_DEFAULT_STORE_DIR = Path(os.environ.get("CUBE_CACHE_DIR", str(Path.home() / ".cube"))) / "provisions"
+
+# Characters safe in filenames on all platforms (keeps @, :, -, . which appear in keys).
+_SAFE_KEY_RE = re.compile(r"[^A-Za-z0-9._:@-]")
+
+
+def _key_to_filename(key: str) -> str:
+    return _SAFE_KEY_RE.sub("_", key) + ".json"
 
 
 class ProvisionStore:
-    """Local JSON-backed store mapping (resource, infra) pairs to resource_info dicts.
+    """File-per-entry store mapping (resource, infra) pairs to resource_info dicts.
 
-    Thread-safe for single-process use (read-modify-write over a small JSON file).
-    Not safe for concurrent multi-process writes — use v2 (S3/GCS) for that.
+    Each entry lives in its own JSON file under the store directory.  This makes
+    parallel provision() calls safe: different resources never contend, and
+    concurrent calls for the same resource are idempotent (same data written).
 
     Usage:
         store = ProvisionStore()
@@ -42,7 +50,7 @@ class ProvisionStore:
     """
 
     def __init__(self, path: Path | str | None = None) -> None:
-        self._path = Path(path) if path else _DEFAULT_STORE_PATH
+        self._dir = Path(path) if path else _DEFAULT_STORE_DIR
 
     # ── Key ───────────────────────────────────────────────────────────────────
 
@@ -51,26 +59,20 @@ class ProvisionStore:
         """Build the store key: "{resource.name}@{infra.fingerprint()}"."""
         return f"{resource.name}@{infra.fingerprint()}"
 
-    # ── Read / write ──────────────────────────────────────────────────────────
-
-    def _load(self) -> dict:
-        if not self._path.exists():
-            return {}
-        content = self._path.read_text().strip()
-        if not content:
-            return {}
-        return json.loads(content)
-
-    def _save(self, data: dict) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._path, "w") as f:
-            json.dump(data, f, indent=2)
+    def _path_for(self, key: str) -> Path:
+        return self._dir / _key_to_filename(key)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def get(self, resource: "ResourceConfig", infra: "InfraConfig") -> dict | None:
         """Return resource_info for (resource, infra), or None if not registered."""
-        return self._load().get(self.key(resource, infra))
+        p = self._path_for(self.key(resource, infra))
+        if not p.exists():
+            return None
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            return None
 
     def put(
         self,
@@ -79,22 +81,35 @@ class ProvisionStore:
         resource_info: dict,
     ) -> None:
         """Write or overwrite resource_info for (resource, infra)."""
-        data = self._load()
-        data[self.key(resource, infra)] = resource_info
-        self._save(data)
-        logger.debug("ProvisionStore: wrote %r", self.key(resource, infra))
+        key = self.key(resource, infra)
+        p = self._path_for(key)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Write to a temp file then rename for atomic replace.
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(resource_info, indent=2))
+        tmp.replace(p)
+        logger.debug("ProvisionStore: wrote %r", key)
 
     def delete(self, resource: "ResourceConfig", infra: "InfraConfig") -> bool:
         """Remove the entry for (resource, infra). Returns True if it existed."""
-        data = self._load()
-        k = self.key(resource, infra)
-        if k not in data:
+        key = self.key(resource, infra)
+        p = self._path_for(key)
+        if not p.exists():
             return False
-        del data[k]
-        self._save(data)
-        logger.debug("ProvisionStore: deleted %r", k)
+        p.unlink()
+        logger.debug("ProvisionStore: deleted %r", key)
         return True
 
     def list(self) -> list[tuple[str, dict]]:
         """Return all (key, resource_info) pairs in the store."""
-        return list(self._load().items())
+        if not self._dir.exists():
+            return []
+        result = []
+        for p in sorted(self._dir.glob("*.json")):
+            try:
+                data = json.loads(p.read_text())
+                # Filename is the key with .json appended (safe chars are preserved as-is).
+                result.append((p.stem, data))
+            except Exception:
+                pass
+        return result
