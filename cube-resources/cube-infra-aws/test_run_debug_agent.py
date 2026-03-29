@@ -44,7 +44,7 @@ def main() -> None:
     log.info("=== integration test: provision + run_debug_episode (AWS) ===")
     log.info("infra: %s", INFRA.fingerprint())
 
-    resources = get_debug_benchmark().list_resources()
+    resources = get_debug_benchmark().resources
     log.info("benchmark resources: %s", [r.name for r in resources])
 
     # ── Step 1: clean up any stale test instances from previous runs ──────────

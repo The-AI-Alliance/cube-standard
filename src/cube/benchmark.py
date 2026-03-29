@@ -524,28 +524,24 @@ class Benchmark(TypedBaseModel, ABC):
         """
         pass
 
-    def list_resources(self) -> "list[ResourceConfig]":
-        """Return the resource dependencies declared by this benchmark.
+    resources: "list[ResourceConfig]" = Field(default_factory=list)
+    """Resource dependencies declared by this benchmark.
 
-        Override this method to declare the ResourceConfig objects your benchmark
-        needs. The harness and run_debug_agent() use this list to check provision
-        status and capability compatibility before launching tasks.
+    Set this on your benchmark class (or pass at construction time) to declare
+    the ResourceConfig objects the benchmark needs.  The harness uses this list
+    to check provision status and capability compatibility before running tasks.
 
-        Default returns an empty list (backward-compatible — benchmarks that have
-        not yet adopted the resource lifecycle API are unaffected).
+    Example::
 
-        Example::
-
-            def list_resources(self) -> list[ResourceConfig]:
-                return [
-                    VMResourceConfig(
-                        name="osworld-ubuntu-vm",
-                        scope="task",
-                        source_url="https://huggingface.co/.../Ubuntu.qcow2.zip",
-                    )
-                ]
-        """
-        return []
+        class MyBenchmark(Benchmark):
+            resources: list[ResourceConfig] = [
+                VMResourceConfig(
+                    name="my-vm",
+                    scope="task",
+                    source_url="https://...",
+                )
+            ]
+    """
 
     def install(self) -> None:
         """
