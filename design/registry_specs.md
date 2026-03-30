@@ -333,9 +333,11 @@ Fields are split into two categories:
 | `authors` | list | Author | **Yes** | At least one entry. Populates `OWNERS.yaml` on merge. |
 | `authors[].github` | string | Author | **Yes** | GitHub handle. |
 | `authors[].name` | string | Author | No | Display name. |
-| `legal.reported_license` | string | Author | No | SPDX identifier as reported by the cube developer. See Legal section. |
-| `legal.license_url` | string | Author | No | URL to the benchmark's official license page. Preferred over `reported_license` alone. |
-| `legal.notices` | list | Author | No | Structured legal notices. See Legal section. |
+| `legal.wrapper_license` | string | Author | **Yes** | SPDX identifier for the cube wrapper code. The cube developer owns this. |
+| `legal.benchmark_license.reported` | string | Author | No | SPDX identifier as understood by the cube developer. Unverified — labelled "reported" in UI. |
+| `legal.benchmark_license.source_url` | string | Author | No | URL to the benchmark's official license page. Health check flags if dead. |
+| `legal.benchmark_license.verified_by_original_authors` | bool | **CI** | — | Set to `true` if submitter's GitHub handle matches a known original author. |
+| `legal.notices` | list | Author | No | Structured notices for risks beyond the license field. See Legal section. |
 | `paper` | string | Author | No | arXiv or venue URL. |
 | `tags` | list[string] | Author | No | Searchable: `web`, `coding`, `os`, `gui`, `mobile`, `science`, `math`, `multi-agent`. |
 | `getting_started_url` | string | Author | No | Link to docs or quick-start guide. |
@@ -381,38 +383,52 @@ is a `VMResourceConfig`, the VM provisioning path is used for that provider.
 
 ### Legal
 
-Benchmark licenses are complex: the cube developer wrapping a benchmark may not be the original
-author, license terms can change, and a wrong declaration could mislead users. The registry
-takes a lightweight approach:
+The cube developer submitting a registry entry may not be the original benchmark author. License
+terms can also change after registration. The registry therefore never claims to verify license
+information — it only surfaces what the cube developer reports, alongside a pointer to the
+authoritative source.
 
-- `legal.reported_license`: the SPDX identifier as understood by the cube developer at time of
-  submission. Explicitly labelled "reported" — not a legal claim by the registry or the
-  AI Alliance.
-- `legal.license_url`: direct URL to the benchmark's official license page. Preferred — lets
-  users check the current authoritative source rather than relying on the registry's snapshot.
-- `legal.notices`: structured list of legal notices beyond the top-level license. Each notice
-  has a `type` and a `description`, and optionally a `url`:
+**Field structure:**
+
+- `legal.wrapper_license`: SPDX identifier for the cube wrapper code. Mandatory — the cube
+  developer owns this and can declare it with certainty.
+- `legal.benchmark_license.reported`: SPDX identifier as understood by the cube developer.
+  Labelled "reported" throughout the UI to signal it is unverified.
+- `legal.benchmark_license.source_url`: URL to the benchmark's official license page.
+  If `source_url` goes dead, the health check sets `status: degraded` immediately.
+- `legal.benchmark_license.verified_by_original_authors`: CI sets this to `true` only when
+  the submitting GitHub handle matches a known original author. Surfaced as a prominent badge
+  in the UI ("License confirmed by original authors" vs "Self-reported — verify before
+  commercial use"). This creates an incentive for original authors to submit their own entry.
+- `legal.notices`: structured list for risks the license field cannot capture. Each entry has
+  a `type`, `description`, and optional `url`.
+
+Notice types:
+- `third_party_data` — benchmark contains data with its own terms (Reddit, Stack Overflow, etc.)
+- `software_registration` — tasks require a proprietary software license on the VM
+- `live_website_clone` — benchmark clones live websites; their ToS may apply
+- `attribution` — special attribution requirements beyond the standard license
 
 ```yaml
 legal:
-  reported_license: "CC-BY-NC-4.0"
-  license_url: "https://github.com/xlangai/osworld/blob/main/LICENSE"
+  wrapper_license: MIT
+  benchmark_license:
+    reported: "CC-BY-NC-4.0"
+    source_url: "https://github.com/example/benchmark/blob/main/LICENSE"
+    verified_by_original_authors: false
   notices:
-    - type: content
-      description: "Contains screenshots of copyrighted desktop applications"
-    - type: software_registration
-      description: "Tasks involving Microsoft Office require a valid Office license on the VM"
-      url: "https://www.microsoft.com/en-us/licensing"
-    - type: data_usage_restriction
-      description: "Tasks use Reddit data; subject to Reddit API terms of service"
+    - type: third_party_data
+      description: "Tasks use Reddit data; Reddit API ToS applies"
       url: "https://www.redditinc.com/policies/data-api-terms"
+    - type: software_registration
+      description: "Requires valid Microsoft Office license on the VM"
 ```
 
-Notice types: `content`, `software_registration`, `data_usage_restriction`, `attribution`.
-
-The registry and the AI Alliance do not verify license declarations and explicitly disclaim
-legal responsibility for errors. Users must consult `license_url` and the original benchmark
-authors for authoritative terms.
+**Contributor agreement:** cube developers accept a one-paragraph contributor agreement on PR
+submission (via PR template checkbox or `CONTRIBUTOR_AGREEMENT.md`). They attest that license
+information is accurate to the best of their knowledge and accept responsibility for material
+misrepresentation. This shifts liability off the AI Alliance and follows the same pattern as
+PyPI and npm. The AI Alliance should have legal draft this before the registry goes public.
 
 ---
 
@@ -436,10 +452,13 @@ authors:
     name: Author B
 
 legal:
-  reported_license: "CC-BY-4.0"
-  license_url: "https://github.com/xlangai/osworld/blob/main/LICENSE"
+  wrapper_license: MIT
+  benchmark_license:
+    reported: "CC-BY-4.0"
+    source_url: "https://github.com/xlangai/osworld/blob/main/LICENSE"
+    verified_by_original_authors: false
   notices:
-    - type: content
+    - type: software_registration
       description: "Ubuntu desktop with pre-installed commercial applications"
 
 paper: "https://arxiv.org/abs/2404.07972"
