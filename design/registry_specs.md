@@ -61,11 +61,11 @@ A machine-maintained file mapping each benchmark ID to the GitHub handles that m
 ```yaml
 # OWNERS.yaml — do not edit by hand, maintained by CI
 osworld:
-  - tianbao-xie
-  - fangchen-zhang
+  - author-a
+  - author-b
 webarena:
-  - shuyan-zhou
-  - frank-xu
+  - author-c
+  - author-d
 ```
 
 When a new entry merges **and its quick-compliance check has passed**, the `update-owners`
@@ -293,10 +293,10 @@ description: >
 package: osworld-cube
 
 authors:
-  - github: tianbao-xie
-    name: Tianbao Xie
-  - github: fangchen-zhang
-    name: Fangchen Zhang
+  - github: author-a
+    name: Author A
+  - github: author-b
+    name: Author B
 
 legal:
   reported_license: "CC-BY-4.0"
