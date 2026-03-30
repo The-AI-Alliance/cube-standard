@@ -88,6 +88,74 @@ if non-skill users are observed struggling with submissions.
 
 ---
 
+## Security
+
+### Package execution sandboxing
+
+The quick check runs `pip install <package>` and imports benchmark code. A malicious PyPI
+package could execute arbitrary code at install or import time. To prevent this from reaching
+secrets:
+
+- The quick-check job has **no cloud credentials**. Secrets are only injected into the
+  slow-check job, which is a separate GitHub Actions job that never imports the benchmark
+  package on the runner (the package runs inside the provisioned VM or container, not on the
+  runner itself).
+- Package installation and import run inside a **throwaway Docker container** with no network
+  access after install and no mounted secrets. The container is discarded after the check.
+- `pip install --no-deps` is used where possible, with explicit dependency pinning for the
+  check environment.
+
+### Cloud credential scope
+
+The slow check holds cloud credentials for provisioning infra. Credentials are scoped to the
+minimum IAM policy required:
+
+- Launch and terminate specific instance types in one designated region only.
+- Write to a single dedicated S3/Blob prefix for bootstrap artifacts.
+- No IAM actions, no cross-region operations, no access to other buckets or resources.
+
+The benchmark package is never executed on the GitHub runner that holds credentials. Only the
+cloud API calls happen on the runner; the debug agent runs entirely inside the provisioned
+instance.
+
+### OWNERS.yaml bot integrity
+
+The CI bot that writes to `OWNERS.yaml` has a narrow branch protection bypass scoped to that
+file only, enforced via a GitHub path-restricted ruleset (not just branch protection rules).
+Any direct push to `main` outside of `OWNERS.yaml` by the bot is blocked. Audit log alerting
+is enabled for all direct pushes to `main`.
+
+### Image content integrity
+
+`ResourceConfig` objects stored in `resources[]` must include a `sha256` digest of the source
+image alongside the URL. CI verifies the digest at provision time. This prevents a benchmark
+author from swapping malicious content into a URL after the entry has passed checks, and
+protects any downstream user who provisions from the registry entry.
+
+This is a **required field** in `VMResourceConfig.image_sha256` — entries without it will not
+pass the slow check.
+
+### Benchmark ID squatting
+
+The first PR to claim `entries/<id>.yaml` owns that ID permanently. To protect well-known
+benchmark IDs before their authors submit:
+
+- Maintainers can pre-populate `OWNERS.yaml` with handles for anticipated IDs (e.g. `swe-bench`,
+  `webarena`) before any PR is opened.
+- The quick check verifies the PyPI package exports a valid `Benchmark` class — a squatter must
+  publish a non-trivial package to pass.
+- The registry web UI prominently displays `authors[].github` so users can verify provenance
+  independently.
+
+### Legal disclaimer
+
+`legal.reported_license` is a declaration by the cube developer, not a verified legal claim by
+the registry or the AI Alliance. The registry does not audit license declarations. Users must
+consult `legal.license_url` and the original benchmark authors for authoritative license terms.
+This disclaimer must appear prominently in the registry README and any web UI.
+
+---
+
 ## Repository structure
 
 ```
@@ -406,74 +474,6 @@ features:
   multi_dim_reward: false
 stress_results_url: "stress-results/osworld/v1.2.0.json"
 ```
-
----
-
-## Security
-
-### Package execution sandboxing
-
-The quick check runs `pip install <package>` and imports benchmark code. A malicious PyPI
-package could execute arbitrary code at install or import time. To prevent this from reaching
-secrets:
-
-- The quick-check job has **no cloud credentials**. Secrets are only injected into the
-  slow-check job, which is a separate GitHub Actions job that never imports the benchmark
-  package on the runner (the package runs inside the provisioned VM or container, not on the
-  runner itself).
-- Package installation and import run inside a **throwaway Docker container** with no network
-  access after install and no mounted secrets. The container is discarded after the check.
-- `pip install --no-deps` is used where possible, with explicit dependency pinning for the
-  check environment.
-
-### Cloud credential scope
-
-The slow check holds cloud credentials for provisioning infra. Credentials are scoped to the
-minimum IAM policy required:
-
-- Launch and terminate specific instance types in one designated region only.
-- Write to a single dedicated S3/Blob prefix for bootstrap artifacts.
-- No IAM actions, no cross-region operations, no access to other buckets or resources.
-
-The benchmark package is never executed on the GitHub runner that holds credentials. Only the
-cloud API calls happen on the runner; the debug agent runs entirely inside the provisioned
-instance.
-
-### OWNERS.yaml bot integrity
-
-The CI bot that writes to `OWNERS.yaml` has a narrow branch protection bypass scoped to that
-file only, enforced via a GitHub path-restricted ruleset (not just branch protection rules).
-Any direct push to `main` outside of `OWNERS.yaml` by the bot is blocked. Audit log alerting
-is enabled for all direct pushes to `main`.
-
-### Image content integrity
-
-`ResourceConfig` objects stored in `resources[]` must include a `sha256` digest of the source
-image alongside the URL. CI verifies the digest at provision time. This prevents a benchmark
-author from swapping malicious content into a URL after the entry has passed checks, and
-protects any downstream user who provisions from the registry entry.
-
-This is a **required field** in `VMResourceConfig.image_sha256` — entries without it will not
-pass the slow check.
-
-### Benchmark ID squatting
-
-The first PR to claim `entries/<id>.yaml` owns that ID permanently. To protect well-known
-benchmark IDs before their authors submit:
-
-- Maintainers can pre-populate `OWNERS.yaml` with handles for anticipated IDs (e.g. `swe-bench`,
-  `webarena`) before any PR is opened.
-- The quick check verifies the PyPI package exports a valid `Benchmark` class — a squatter must
-  publish a non-trivial package to pass.
-- The registry web UI prominently displays `authors[].github` so users can verify provenance
-  independently.
-
-### Legal disclaimer
-
-`legal.reported_license` is a declaration by the cube developer, not a verified legal claim by
-the registry or the AI Alliance. The registry does not audit license declarations. Users must
-consult `legal.license_url` and the original benchmark authors for authoritative license terms.
-This disclaimer must appear prominently in the registry README and any web UI.
 
 ---
 
