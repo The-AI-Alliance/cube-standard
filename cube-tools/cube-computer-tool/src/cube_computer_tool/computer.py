@@ -188,8 +188,9 @@ class ComputerBase(Tool):
 
     @tool_action
     def wait(self) -> str:
-        """Wait one step without taking any action."""
+        """Wait one step without taking any action (sleeps 3s to let the UI settle)."""
         self._action_history.append("WAIT")
+        time.sleep(3)
         return "Success"
 
     @tool_action
