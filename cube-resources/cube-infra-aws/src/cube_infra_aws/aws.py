@@ -45,6 +45,7 @@ Usage::
     infra.provision(resource)          # ~30-90 min, idempotent
     run_debug_agent(my_benchmark, infra)
 """
+
 from __future__ import annotations
 
 import base64
@@ -371,9 +372,15 @@ class AWSInfraConfig(InfraConfig):
         VPC in the region — set ``vpc_id=`` explicitly).
         """
         # ── AWS resource discovery (requires SDK calls) ────────────────────────
-        needs_aws_discovery = not all([
-            self.region, self.account_id, self.s3_bucket, self.vpc_id, self.subnet_id,
-        ])
+        needs_aws_discovery = not all(
+            [
+                self.region,
+                self.account_id,
+                self.s3_bucket,
+                self.vpc_id,
+                self.subnet_id,
+            ]
+        )
         if needs_aws_discovery:
             import boto3
 
@@ -397,13 +404,10 @@ class AWSInfraConfig(InfraConfig):
                 raise ValueError(
                     "No AWS credentials found.  Configure via environment variables "
                     "(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY), ~/.aws/credentials, "
-                    "or an EC2 instance profile.\n"
-                    + str(exc)
+                    "or an EC2 instance profile.\n" + str(exc)
                 ) from exc
             except Exception as exc:
-                raise ValueError(
-                    f"Could not resolve AWS account ID: {exc}"
-                ) from exc
+                raise ValueError(f"Could not resolve AWS account ID: {exc}") from exc
 
             if not self.s3_bucket:
                 object.__setattr__(self, "s3_bucket", f"cube-vmimages-{self.account_id}")
@@ -411,9 +415,7 @@ class AWSInfraConfig(InfraConfig):
             ec2 = session.client("ec2", region_name=self.region)
 
             if not self.vpc_id:
-                resp = ec2.describe_vpcs(
-                    Filters=[{"Name": "isDefault", "Values": ["true"]}]
-                )
+                resp = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])
                 vpcs = resp.get("Vpcs", [])
                 if not vpcs:
                     raise ValueError(
@@ -435,10 +437,7 @@ class AWSInfraConfig(InfraConfig):
                     key=lambda s: s["AvailabilityZone"],
                 )
                 if not subnets:
-                    raise ValueError(
-                        f"No default subnets found in VPC '{self.vpc_id}'.  "
-                        "Set subnet_id= explicitly."
-                    )
+                    raise ValueError(f"No default subnets found in VPC '{self.vpc_id}'.  Set subnet_id= explicitly.")
                 object.__setattr__(self, "subnet_id", subnets[0]["SubnetId"])
 
         # ── SSH key discovery (local filesystem, no SDK needed) ───────────────
@@ -471,6 +470,7 @@ class AWSInfraConfig(InfraConfig):
     def _resource_shim(self, resource: VMResourceConfig) -> Any:
         """Minimal object with .name = _image_name(resource) for ProvisionStore keys."""
         import types
+
         return types.SimpleNamespace(name=self._image_name(resource))
 
     def fingerprint(self) -> str:
@@ -524,7 +524,8 @@ class AWSInfraConfig(InfraConfig):
         if existing:
             logger.info(
                 "provision: %r already registered for %s — skipping",
-                image_name, self.fingerprint(),
+                image_name,
+                self.fingerprint(),
             )
             return
 
@@ -532,7 +533,7 @@ class AWSInfraConfig(InfraConfig):
             raise ValueError(
                 f"Cannot provision {image_name!r}: no source_url set and "
                 f"no registration found for {self.fingerprint()!r}.\n"
-                f"  Manual: infra.register(resource, {{\"ami_id\": ...}})"
+                f'  Manual: infra.register(resource, {{"ami_id": ...}})'
             )
 
         logger.info("provision: bootstrapping %r → AMI", image_name)
@@ -593,9 +594,7 @@ class AWSInfraConfig(InfraConfig):
                     ec2.delete_snapshot(SnapshotId=snapshot_id)
                     logger.info("unprovision: deleted snapshot %s", snapshot_id)
                 except Exception as exc:
-                    logger.warning(
-                        "unprovision: could not delete snapshot %s: %s", snapshot_id, exc
-                    )
+                    logger.warning("unprovision: could not delete snapshot %s: %s", snapshot_id, exc)
 
         vhd_key = image_name + ".vhd"
         s3 = self._s3()
@@ -635,7 +634,9 @@ class AWSInfraConfig(InfraConfig):
         run_id_short = run_id[:8]
         instance_name = f"cube-{run_id_short}-vm-{uid}"
 
-        effective_ttl = self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
+        effective_ttl = (
+            self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
+        )
         created_at = datetime.now(timezone.utc)
         expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
 
@@ -662,7 +663,10 @@ class AWSInfraConfig(InfraConfig):
         ec2 = self._ec2()
         logger.info(
             "launch: starting instance from AMI %s (%s)  type=%s  name=%s",
-            ami_id, resource.name, self.instance_type, instance_name,
+            ami_id,
+            resource.name,
+            self.instance_type,
+            instance_name,
         )
         t0 = time.time()
 
@@ -675,20 +679,26 @@ class AWSInfraConfig(InfraConfig):
             MaxCount=1,
             KeyName=self.key_pair_name,
             UserData=user_data,
-            NetworkInterfaces=[{
-                "DeviceIndex": 0,
-                "SubnetId": self.subnet_id,
-                "Groups": [sg_id],
-                "AssociatePublicIpAddress": True,
-            }],
-            TagSpecifications=[{
-                "ResourceType": "instance",
-                "Tags": _dict_to_ec2_tags(all_tags),
-            }],
-            BlockDeviceMappings=[{
-                "DeviceName": "/dev/sda1",
-                "Ebs": {"VolumeType": "gp3", "DeleteOnTermination": True},
-            }],
+            NetworkInterfaces=[
+                {
+                    "DeviceIndex": 0,
+                    "SubnetId": self.subnet_id,
+                    "Groups": [sg_id],
+                    "AssociatePublicIpAddress": True,
+                }
+            ],
+            TagSpecifications=[
+                {
+                    "ResourceType": "instance",
+                    "Tags": _dict_to_ec2_tags(all_tags),
+                }
+            ],
+            BlockDeviceMappings=[
+                {
+                    "DeviceName": "/dev/sda1",
+                    "Ebs": {"VolumeType": "gp3", "DeleteOnTermination": True},
+                }
+            ],
         )
         instance_id = resp["Instances"][0]["InstanceId"]
         logger.info("launch: instance %s", instance_id)
@@ -700,18 +710,23 @@ class AWSInfraConfig(InfraConfig):
         public_ip = instance.get("PublicIpAddress", "")
         logger.info(
             "launch: running in %.0fs: %s @ %s",
-            time.time() - t0, instance_id, public_ip,
+            time.time() - t0,
+            instance_id,
+            public_ip,
         )
         logger.info(
             "launch: SSH: ssh -i %s -o IdentitiesOnly=yes user@%s",
-            self.ssh_privkey_path, public_ip,
+            self.ssh_privkey_path,
+            public_ip,
         )
 
         # SSH + tunnel — clean up instance on any failure to avoid orphaned resources.
         try:
             logger.info("launch: waiting for SSH on %s…", public_ip)
             active_user = wait_for_ssh(
-                public_ip, "user", self.ssh_privkey_path,  # type: ignore[arg-type]
+                public_ip,
+                "user",
+                self.ssh_privkey_path,  # type: ignore[arg-type]
                 fallback_users=["ubuntu", "root"],
                 timeout=600,
             )
@@ -719,12 +734,16 @@ class AWSInfraConfig(InfraConfig):
             local_port = free_port()
             logger.info(
                 "launch: opening tunnel localhost:%d → %s:%d",
-                local_port, public_ip, self.guest_port,
+                local_port,
+                public_ip,
+                self.guest_port,
             )
             tunnel = open_tunnel(
-                public_ip, active_user,
+                public_ip,
+                active_user,
                 self.ssh_privkey_path,  # type: ignore[arg-type]
-                local_port, self.guest_port,
+                local_port,
+                self.guest_port,
             )
         except Exception:
             logger.warning("launch: SSH/tunnel failed — terminating instance %s", instance_id)
@@ -772,14 +791,16 @@ class AWSInfraConfig(InfraConfig):
                 instance_run_id = tags.get("cube:run_id", "unknown")
                 resource_name = tags.get("cube:resource", "unknown")
                 instance_id = instance["InstanceId"]
-                handles.append(AWSResourceHandle(
-                    run_id=instance_run_id,
-                    resource=VMResourceConfig(name=resource_name),
-                    infra=self,
-                    endpoint=None,
-                    _instance_id=instance_id,
-                    _tunnel=None,
-                ))
+                handles.append(
+                    AWSResourceHandle(
+                        run_id=instance_run_id,
+                        resource=VMResourceConfig(name=resource_name),
+                        infra=self,
+                        endpoint=None,
+                        _instance_id=instance_id,
+                        _tunnel=None,
+                    )
+                )
 
         return handles
 
@@ -837,7 +858,8 @@ class AWSInfraConfig(InfraConfig):
                     except ValueError:
                         logger.warning(
                             "cleanup_stale: invalid cube:expires_at %r on %s",
-                            expires_at_str, instance_id,
+                            expires_at_str,
+                            instance_id,
                         )
 
                 # Priority 2: age-based fallback.
@@ -862,7 +884,8 @@ class AWSInfraConfig(InfraConfig):
             terminated.extend(to_terminate)
             logger.info(
                 "cleanup_stale: terminated %d instance(s): %s",
-                len(terminated), terminated,
+                len(terminated),
+                terminated,
             )
 
         return terminated
@@ -871,14 +894,17 @@ class AWSInfraConfig(InfraConfig):
 
     def _ec2(self) -> Any:
         import boto3
+
         return boto3.client("ec2", region_name=self.region)
 
     def _s3(self) -> Any:
         import boto3
+
         return boto3.client("s3", region_name=self.region)
 
     def _iam(self) -> Any:
         import boto3
+
         return boto3.client("iam")
 
     # ── Idempotent setup helpers ──────────────────────────────────────────────
@@ -957,20 +983,24 @@ class AWSInfraConfig(InfraConfig):
             GroupName=self.security_group_name,
             Description="CUBE experiment - SSH inbound only",
             VpcId=self.vpc_id,
-            TagSpecifications=[{
-                "ResourceType": "security-group",
-                "Tags": _dict_to_ec2_tags(self.tags),
-            }],
+            TagSpecifications=[
+                {
+                    "ResourceType": "security-group",
+                    "Tags": _dict_to_ec2_tags(self.tags),
+                }
+            ],
         )
         sg_id = sg["GroupId"]
         ec2.authorize_security_group_ingress(
             GroupId=sg_id,
-            IpPermissions=[{
-                "IpProtocol": "tcp",
-                "FromPort": 22,
-                "ToPort": 22,
-                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}],
-            }],
+            IpPermissions=[
+                {
+                    "IpProtocol": "tcp",
+                    "FromPort": 22,
+                    "ToPort": 22,
+                    "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}],
+                }
+            ],
         )
         logger.info("_ensure_security_group: created %s (%s)", sg_id, self.security_group_name)
         return sg_id
@@ -982,40 +1012,47 @@ class AWSInfraConfig(InfraConfig):
         it by this exact name (not configurable).
         """
         import json as _json
+
         iam = self._iam()
 
-        trust_policy = _json.dumps({
-            "Version": "2012-10-17",
-            "Statement": [{
-                "Effect": "Allow",
-                "Principal": {"Service": "vmie.amazonaws.com"},
-                "Action": "sts:AssumeRole",
-                "Condition": {"StringEquals": {"sts:ExternalId": "vmimport"}},
-            }],
-        })
-        role_policy = _json.dumps({
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Action": ["s3:GetBucketLocation", "s3:GetObject", "s3:ListBucket"],
-                    "Resource": [
-                        f"arn:aws:s3:::{self.s3_bucket}",
-                        f"arn:aws:s3:::{self.s3_bucket}/*",
-                    ],
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": [
-                        "ec2:ModifySnapshotAttribute",
-                        "ec2:CopySnapshot",
-                        "ec2:RegisterImage",
-                        "ec2:Describe*",
-                    ],
-                    "Resource": "*",
-                },
-            ],
-        })
+        trust_policy = _json.dumps(
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"Service": "vmie.amazonaws.com"},
+                        "Action": "sts:AssumeRole",
+                        "Condition": {"StringEquals": {"sts:ExternalId": "vmimport"}},
+                    }
+                ],
+            }
+        )
+        role_policy = _json.dumps(
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": ["s3:GetBucketLocation", "s3:GetObject", "s3:ListBucket"],
+                        "Resource": [
+                            f"arn:aws:s3:::{self.s3_bucket}",
+                            f"arn:aws:s3:::{self.s3_bucket}/*",
+                        ],
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "ec2:ModifySnapshotAttribute",
+                            "ec2:CopySnapshot",
+                            "ec2:RegisterImage",
+                            "ec2:Describe*",
+                        ],
+                        "Resource": "*",
+                    },
+                ],
+            }
+        )
 
         try:
             iam.create_role(
@@ -1042,24 +1079,33 @@ class AWSInfraConfig(InfraConfig):
         Returns the instance profile name.
         """
         import json as _json
+
         iam = self._iam()
 
-        trust_policy = _json.dumps({
-            "Version": "2012-10-17",
-            "Statement": [{
-                "Effect": "Allow",
-                "Principal": {"Service": "ec2.amazonaws.com"},
-                "Action": "sts:AssumeRole",
-            }],
-        })
-        s3_policy = _json.dumps({
-            "Version": "2012-10-17",
-            "Statement": [{
-                "Effect": "Allow",
-                "Action": ["s3:PutObject", "s3:GetObject", "s3:HeadObject"],
-                "Resource": f"arn:aws:s3:::{self.s3_bucket}/*",
-            }],
-        })
+        trust_policy = _json.dumps(
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"Service": "ec2.amazonaws.com"},
+                        "Action": "sts:AssumeRole",
+                    }
+                ],
+            }
+        )
+        s3_policy = _json.dumps(
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": ["s3:PutObject", "s3:GetObject", "s3:HeadObject"],
+                        "Resource": f"arn:aws:s3:::{self.s3_bucket}/*",
+                    }
+                ],
+            }
+        )
 
         try:
             iam.create_role(
@@ -1190,7 +1236,9 @@ done
                 snapshot_id = task["SnapshotId"]
                 logger.info(
                     "_import_snapshot: done in %dm%02ds: %s",
-                    elapsed // 60, elapsed % 60, snapshot_id,
+                    elapsed // 60,
+                    elapsed % 60,
+                    snapshot_id,
                 )
                 ec2.create_tags(
                     Resources=[snapshot_id],
@@ -1204,7 +1252,9 @@ done
             if now - last_log_t >= 60 or progress != last_pct:
                 logger.info(
                     "_import_snapshot: [%dm%02ds] %s%%",
-                    elapsed // 60, elapsed % 60, progress,
+                    elapsed // 60,
+                    elapsed % 60,
+                    progress,
                 )
                 last_log_t = now
                 last_pct = progress
@@ -1235,14 +1285,16 @@ done
             RootDeviceName="/dev/sda1",
             VirtualizationType="hvm",
             EnaSupport=True,  # required for t3+ instance families
-            BlockDeviceMappings=[{
-                "DeviceName": "/dev/sda1",
-                "Ebs": {
-                    "SnapshotId": snapshot_id,
-                    "VolumeType": "gp3",
-                    "DeleteOnTermination": True,
-                },
-            }],
+            BlockDeviceMappings=[
+                {
+                    "DeviceName": "/dev/sda1",
+                    "Ebs": {
+                        "SnapshotId": snapshot_id,
+                        "VolumeType": "gp3",
+                        "DeleteOnTermination": True,
+                    },
+                }
+            ],
         )
         ami_id = resp["ImageId"]
         ec2.create_tags(Resources=[ami_id], Tags=_dict_to_ec2_tags(self.tags))
@@ -1265,7 +1317,8 @@ done
 
         logger.info(
             "_launch_bootstrap_ec2: launching (%s, %d GB root)",
-            self.bootstrap_instance_type, self.bootstrap_root_volume_gb,
+            self.bootstrap_instance_type,
+            self.bootstrap_root_volume_gb,
         )
         t0 = time.time()
 
@@ -1278,28 +1331,36 @@ done
             KeyName=self._ensure_key_pair(),
             UserData=user_data,
             IamInstanceProfile={"Name": profile_name},
-            NetworkInterfaces=[{
-                "DeviceIndex": 0,
-                "SubnetId": self.subnet_id,
-                "Groups": [sg_id],
-                "AssociatePublicIpAddress": True,
-            }],
-            TagSpecifications=[{
-                "ResourceType": "instance",
-                "Tags": _dict_to_ec2_tags({
-                    **self.tags,
-                    "Name": f"cube-bootstrap-{uid}",
-                    "role": "bootstrap",
-                }),
-            }],
-            BlockDeviceMappings=[{
-                "DeviceName": "/dev/sda1",
-                "Ebs": {
-                    "VolumeSize": self.bootstrap_root_volume_gb,
-                    "VolumeType": "gp3",
-                    "DeleteOnTermination": True,
-                },
-            }],
+            NetworkInterfaces=[
+                {
+                    "DeviceIndex": 0,
+                    "SubnetId": self.subnet_id,
+                    "Groups": [sg_id],
+                    "AssociatePublicIpAddress": True,
+                }
+            ],
+            TagSpecifications=[
+                {
+                    "ResourceType": "instance",
+                    "Tags": _dict_to_ec2_tags(
+                        {
+                            **self.tags,
+                            "Name": f"cube-bootstrap-{uid}",
+                            "role": "bootstrap",
+                        }
+                    ),
+                }
+            ],
+            BlockDeviceMappings=[
+                {
+                    "DeviceName": "/dev/sda1",
+                    "Ebs": {
+                        "VolumeSize": self.bootstrap_root_volume_gb,
+                        "VolumeType": "gp3",
+                        "DeleteOnTermination": True,
+                    },
+                }
+            ],
         )
         instance_id = resp["Instances"][0]["InstanceId"]
         logger.info("_launch_bootstrap_ec2: instance %s", instance_id)
@@ -1310,11 +1371,14 @@ done
         public_ip = desc["Reservations"][0]["Instances"][0].get("PublicIpAddress", "")
         logger.info(
             "_launch_bootstrap_ec2: running in %ds: %s @ %s",
-            int(time.time() - t0), instance_id, public_ip,
+            int(time.time() - t0),
+            instance_id,
+            public_ip,
         )
         logger.info(
             "_launch_bootstrap_ec2: SSH: ssh -i %s -o IdentitiesOnly=yes ubuntu@%s",
-            self.ssh_privkey_path, public_ip,
+            self.ssh_privkey_path,
+            public_ip,
         )
         return {"instance_id": instance_id, "public_ip": public_ip}
 
@@ -1365,12 +1429,11 @@ done
             vm_info = self._launch_bootstrap_ec2(script)
             t0 = time.time()
             try:
-                logger.info(
-                    "_bootstrap: EC2 running, streaming logs from %s", vm_info["public_ip"]
-                )
+                logger.info("_bootstrap: EC2 running, streaming logs from %s", vm_info["public_ip"])
                 logger.info(
                     "_bootstrap: SSH: ssh -i %s -o IdentitiesOnly=yes ubuntu@%s",
-                    self.ssh_privkey_path, vm_info["public_ip"],
+                    self.ssh_privkey_path,
+                    vm_info["public_ip"],
                 )
                 with BootstrapMonitor(
                     public_ip=vm_info["public_ip"],

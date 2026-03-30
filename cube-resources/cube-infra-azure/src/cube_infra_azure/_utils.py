@@ -3,6 +3,7 @@ Shared SSH + monitoring utilities for Azure (and eventually AWS) InfraConfig.
 
 Extracted from experiments/azure-vm-backend/_common.py.
 """
+
 from __future__ import annotations
 
 import logging
@@ -43,14 +44,22 @@ def open_tunnel(
     """
     proc = subprocess.Popen(
         [
-            "ssh", "-N",
-            "-L", f"127.0.0.1:{local_port}:localhost:{remote_port}",
-            "-i", ssh_privkey,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=30",
-            "-o", "IdentitiesOnly=yes",
+            "ssh",
+            "-N",
+            "-L",
+            f"127.0.0.1:{local_port}:localhost:{remote_port}",
+            "-i",
+            ssh_privkey,
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "IdentitiesOnly=yes",
             f"{ssh_user}@{vm_ip}",
         ],
         stderr=subprocess.DEVNULL,
@@ -78,15 +87,24 @@ def wait_for_ssh(
         for user in users:
             r = subprocess.run(
                 [
-                    "ssh", "-i", ssh_privkey,
-                    "-o", "IdentitiesOnly=yes",
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "UserKnownHostsFile=/dev/null",
-                    "-o", "ConnectTimeout=5",
-                    "-o", "BatchMode=yes",
-                    f"{user}@{public_ip}", "echo OK",
+                    "ssh",
+                    "-i",
+                    ssh_privkey,
+                    "-o",
+                    "IdentitiesOnly=yes",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "UserKnownHostsFile=/dev/null",
+                    "-o",
+                    "ConnectTimeout=5",
+                    "-o",
+                    "BatchMode=yes",
+                    f"{user}@{public_ip}",
+                    "echo OK",
                 ],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             if "OK" in r.stdout:
                 log.info("SSH available as %s@%s", user, public_ip)
@@ -118,24 +136,24 @@ class BootstrapMonitor:
             monitor.wait(timeout=7200)
     """
 
-    public_ip:     str
-    ssh_privkey:   str
-    ssh_user:      str = "azureuser"
-    log_path:      str = "/var/log/cube-bootstrap.log"
-    sentinel_fn:   Callable[[], bool] | None = None
+    public_ip: str
+    ssh_privkey: str
+    ssh_user: str = "azureuser"
+    log_path: str = "/var/log/cube-bootstrap.log"
+    sentinel_fn: Callable[[], bool] | None = None
     poll_interval: int = 30
-    timeout:       int = 7200
+    timeout: int = 7200
 
-    _log:         logging.Logger = field(init=False)
+    _log: logging.Logger = field(init=False)
     _tail_thread: threading.Thread | None = field(init=False, default=None)
     _poll_thread: threading.Thread | None = field(init=False, default=None)
-    _done:        threading.Event = field(init=False, default_factory=threading.Event)
-    _failed:      threading.Event = field(init=False, default_factory=threading.Event)
+    _done: threading.Event = field(init=False, default_factory=threading.Event)
+    _failed: threading.Event = field(init=False, default_factory=threading.Event)
     _failure_msg: str | None = field(init=False, default=None)
-    _tail_proc:   subprocess.Popen | None = field(init=False, default=None)
+    _tail_proc: subprocess.Popen | None = field(init=False, default=None)
 
     _boto3_uploaded: int = field(init=False, default=0)
-    _last_pct:       float = field(init=False, default=0.0)
+    _last_pct: float = field(init=False, default=0.0)
 
     def __post_init__(self) -> None:
         self._log = logging.getLogger("cube.bootstrap.vm")
@@ -143,9 +161,9 @@ class BootstrapMonitor:
     # ── Line patterns ─────────────────────────────────────────────────────────
 
     _AZCOPY_RE = re.compile(r"([\d.]+) %.*?2-sec Throughput \(Mb/s\): ([\d.]+)")
-    _WGET_PCT  = re.compile(r"(\d+)%\s+([\d.]+[KMG])=")
-    _BOTO3_RE  = re.compile(r"uploaded (\d+) bytes")
-    _STAGE_RE  = re.compile(r"\[bootstrap\] ")
+    _WGET_PCT = re.compile(r"(\d+)%\s+([\d.]+[KMG])=")
+    _BOTO3_RE = re.compile(r"uploaded (\d+) bytes")
+    _STAGE_RE = re.compile(r"\[bootstrap\] ")
 
     def _parse_line(self, line: str) -> tuple[int, str] | None:
         """Return (log_level, message) or None to suppress."""
@@ -183,11 +201,17 @@ class BootstrapMonitor:
             try:
                 proc = subprocess.Popen(
                     [
-                        "ssh", "-i", self.ssh_privkey,
-                        "-o", "IdentitiesOnly=yes",
-                        "-o", "StrictHostKeyChecking=no",
-                        "-o", "BatchMode=yes",
-                        "-o", "ConnectTimeout=30",
+                        "ssh",
+                        "-i",
+                        self.ssh_privkey,
+                        "-o",
+                        "IdentitiesOnly=yes",
+                        "-o",
+                        "StrictHostKeyChecking=no",
+                        "-o",
+                        "BatchMode=yes",
+                        "-o",
+                        "ConnectTimeout=30",
                         f"{self.ssh_user}@{self.public_ip}",
                         f"sudo tail -f {self.log_path}",
                     ],

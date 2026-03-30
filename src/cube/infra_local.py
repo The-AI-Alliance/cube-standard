@@ -130,9 +130,7 @@ def _download(url: str, dest: Path) -> None:
     with _requests.get(url, stream=True, timeout=60) as r:
         r.raise_for_status()
         total = int(r.headers.get("content-length", 0)) or None
-        with open(tmp, "wb") as f, tqdm(
-            total=total, unit="B", unit_scale=True, desc=dest.name
-        ) as bar:
+        with open(tmp, "wb") as f, tqdm(total=total, unit="B", unit_scale=True, desc=dest.name) as bar:
             for chunk in r.iter_content(chunk_size=1 << 20):
                 f.write(chunk)
                 bar.update(len(chunk))
@@ -176,10 +174,14 @@ def _create_overlay(base_image: Path, run_id: str) -> Path:
     overlay = overlay_dir / f"{base_image.stem}_{run_id[:8]}.qcow2"
     subprocess.run(
         [
-            "qemu-img", "create",
-            "-f", "qcow2",
-            "-b", str(base_image.resolve()),
-            "-F", "qcow2",
+            "qemu-img",
+            "create",
+            "-f",
+            "qcow2",
+            "-b",
+            str(base_image.resolve()),
+            "-F",
+            "qcow2",
             str(overlay),
         ],
         check=True,
@@ -297,7 +299,7 @@ class LocalInfraConfig(InfraConfig):
             raise ValueError(
                 f"Cannot provision {resource.name!r}: no source_url provided "
                 f"and image not found at {dest}.\n"
-                f"  Call infra.register(resource, {{\"image_path\": \"/path/to/image.qcow2\"}}) "
+                f'  Call infra.register(resource, {{"image_path": "/path/to/image.qcow2"}}) '
                 f"to register an existing image."
             )
 
@@ -325,8 +327,7 @@ class LocalInfraConfig(InfraConfig):
         image_path = Path(resource_info["image_path"])
         if not image_path.exists():
             raise FileNotFoundError(
-                f"Image not found at {image_path}. "
-                f"Re-run infra.provision(resource) to re-download."
+                f"Image not found at {image_path}. Re-run infra.provision(resource) to re-download."
             )
 
         run_id = str(uuid.uuid4())
@@ -336,40 +337,49 @@ class LocalInfraConfig(InfraConfig):
 
         cmd = [
             "qemu-system-x86_64",
-            "-m", f"{self.ram_gb}G",
-            "-smp", str(self.cpu_cores),
-            "-drive", f"file={overlay},format=qcow2,if=virtio",
-            "-netdev", f"user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:5000",
-            "-device", "virtio-net-pci,netdev=net0",
-            "-vga", "virtio",
+            "-m",
+            f"{self.ram_gb}G",
+            "-smp",
+            str(self.cpu_cores),
+            "-drive",
+            f"file={overlay},format=qcow2,if=virtio",
+            "-netdev",
+            f"user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:5000",
+            "-device",
+            "virtio-net-pci,netdev=net0",
+            "-vga",
+            "virtio",
         ]
         if self.headless:
             cmd += ["-display", "none"]
         if self.enable_kvm and Path("/dev/kvm").exists():
             cmd += ["-enable-kvm", "-cpu", "host"]
 
-        logger.info(
-            "Starting QEMU VM for %r (run=%s, port=%d)", resource.name, run_id[:8], port
-        )
+        logger.info("Starting QEMU VM for %r (run=%s, port=%d)", resource.name, run_id[:8], port)
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         endpoint = f"http://127.0.0.1:{port}"
-        effective_ttl = self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
+        effective_ttl = (
+            self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
+        )
         created_at = datetime.utcnow()
         expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
 
         # Persist to active.json for cross-process cleanup.
-        _register_active(entry_id, {
-            "run_id": run_id,
-            "resource_name": resource.name,
-            "infra_fingerprint": self.fingerprint(),
-            "pid": proc.pid,
-            "overlay_path": str(overlay),
-            "port": port,
-            "endpoint": endpoint,
-            "created_at": created_at.isoformat(),
-            "expires_at": expires_at.isoformat() if expires_at else None,
-        })
+        _register_active(
+            entry_id,
+            {
+                "run_id": run_id,
+                "resource_name": resource.name,
+                "infra_fingerprint": self.fingerprint(),
+                "pid": proc.pid,
+                "overlay_path": str(overlay),
+                "port": port,
+                "endpoint": endpoint,
+                "created_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat() if expires_at else None,
+            },
+        )
 
         try:
             _wait_for_http(endpoint)
@@ -418,17 +428,19 @@ class LocalInfraConfig(InfraConfig):
             created_at = datetime.fromisoformat(entry["created_at"])
             expires_at = datetime.fromisoformat(entry["expires_at"]) if entry.get("expires_at") else None
 
-            handles.append(LocalResourceHandle(
-                run_id=entry["run_id"],
-                resource=resource,
-                infra=self,
-                endpoint=entry["endpoint"],
-                created_at=created_at,
-                expires_at=expires_at,
-                _entry_id=entry_id,
-                _qemu_proc=None,  # can't reconstruct Popen; cleanup uses PID
-                _overlay_path=Path(entry["overlay_path"]) if entry.get("overlay_path") else None,
-            ))
+            handles.append(
+                LocalResourceHandle(
+                    run_id=entry["run_id"],
+                    resource=resource,
+                    infra=self,
+                    endpoint=entry["endpoint"],
+                    created_at=created_at,
+                    expires_at=expires_at,
+                    _entry_id=entry_id,
+                    _qemu_proc=None,  # can't reconstruct Popen; cleanup uses PID
+                    _overlay_path=Path(entry["overlay_path"]) if entry.get("overlay_path") else None,
+                )
+            )
 
         # Clean up dead entries.
         if stale_ids:

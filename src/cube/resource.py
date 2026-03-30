@@ -297,9 +297,7 @@ class InfraConfig(TypedBaseModel, ABC):
         store.put(resource, self, resource_info)
         logger.info("Registered %r @ %r", resource.name, self.fingerprint())
 
-    def provision_status(
-        self, resource: ResourceConfig
-    ) -> Literal["ready", "needs_provisioning"]:
+    def provision_status(self, resource: ResourceConfig) -> Literal["ready", "needs_provisioning"]:
         """Query the ProvisionStore for this (resource, infra) pair.
 
         Returns "ready" if register() or provision() has been called,

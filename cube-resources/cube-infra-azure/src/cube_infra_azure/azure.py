@@ -51,6 +51,7 @@ Usage::
     infra.provision(resource)          # ~30-90 min, idempotent
     run_debug_agent(my_benchmark, infra)
 """
+
 from __future__ import annotations
 
 import base64
@@ -363,10 +364,15 @@ class AzureInfraConfig(InfraConfig):
         (e.g. multiple VNets in the resource group — set ``vnet_name`` explicitly).
         """
         # ── Azure resource discovery (requires SDK calls) ─────────────────────
-        needs_azure_discovery = not all([
-            self.subscription, self.storage_account,
-            self.vnet_name, self.subnet_name, self.nsg_name,
-        ])
+        needs_azure_discovery = not all(
+            [
+                self.subscription,
+                self.storage_account,
+                self.vnet_name,
+                self.subnet_name,
+                self.nsg_name,
+            ]
+        )
         if needs_azure_discovery:
             from azure.identity import AzureCliCredential
             from azure.mgmt.network import NetworkManagementClient
@@ -380,15 +386,13 @@ class AzureInfraConfig(InfraConfig):
                     raise ValueError(f"No {kind} found in resource group '{rg}'.")
                 if len(names) == 1:
                     return names[0]
-                raise ValueError(
-                    f"Multiple {kind} in '{rg}': {names}.\n"
-                    f"Set {param}= explicitly."
-                )
+                raise ValueError(f"Multiple {kind} in '{rg}': {names}.\nSet {param}= explicitly.")
 
             if not self.subscription:
                 result = subprocess.run(
                     ["az", "account", "show", "--query", "id", "-o", "tsv"],
-                    capture_output=True, text=True,
+                    capture_output=True,
+                    text=True,
                 )
                 if result.returncode != 0:
                     raise RuntimeError(
@@ -402,25 +406,48 @@ class AzureInfraConfig(InfraConfig):
             sc = StorageManagementClient(cred, self.subscription)
 
             if not self.storage_account:
-                object.__setattr__(self, "storage_account", _pick(
-                    list(sc.storage_accounts.list_by_resource_group(rg)),
-                    "storage accounts", "storage_account",
-                ))
+                object.__setattr__(
+                    self,
+                    "storage_account",
+                    _pick(
+                        list(sc.storage_accounts.list_by_resource_group(rg)),
+                        "storage accounts",
+                        "storage_account",
+                    ),
+                )
 
             if not self.vnet_name:
-                object.__setattr__(self, "vnet_name", _pick(
-                    list(nc.virtual_networks.list(rg)), "VNets", "vnet_name",
-                ))
+                object.__setattr__(
+                    self,
+                    "vnet_name",
+                    _pick(
+                        list(nc.virtual_networks.list(rg)),
+                        "VNets",
+                        "vnet_name",
+                    ),
+                )
 
             if not self.subnet_name:
-                object.__setattr__(self, "subnet_name", _pick(
-                    list(nc.subnets.list(rg, self.vnet_name)), "subnets", "subnet_name",
-                ))
+                object.__setattr__(
+                    self,
+                    "subnet_name",
+                    _pick(
+                        list(nc.subnets.list(rg, self.vnet_name)),
+                        "subnets",
+                        "subnet_name",
+                    ),
+                )
 
             if not self.nsg_name:
-                object.__setattr__(self, "nsg_name", _pick(
-                    list(nc.network_security_groups.list(rg)), "NSGs", "nsg_name",
-                ))
+                object.__setattr__(
+                    self,
+                    "nsg_name",
+                    _pick(
+                        list(nc.network_security_groups.list(rg)),
+                        "NSGs",
+                        "nsg_name",
+                    ),
+                )
 
         # ── SSH key discovery (local filesystem, no SDK needed) ───────────────
         if self.ssh_privkey_path is None:
@@ -452,6 +479,7 @@ class AzureInfraConfig(InfraConfig):
     def _resource_shim(self, resource: VMResourceConfig) -> Any:
         """Minimal object with .name = _image_name(resource) for ProvisionStore keys."""
         import types
+
         return types.SimpleNamespace(name=self._image_name(resource))
 
     def fingerprint(self) -> str:
@@ -504,7 +532,8 @@ class AzureInfraConfig(InfraConfig):
         if existing:
             logger.info(
                 "provision: %r already registered for %s — skipping",
-                image_name, self.fingerprint(),
+                image_name,
+                self.fingerprint(),
             )
             return
 
@@ -512,24 +541,29 @@ class AzureInfraConfig(InfraConfig):
             raise ValueError(
                 f"Cannot provision {image_name!r}: no source_url set and "
                 f"no registration found for {self.fingerprint()!r}.\n"
-                f"  Manual: infra.register(resource, {{\"image_def\": ..., \"version\": ...}})"
+                f'  Manual: infra.register(resource, {{"image_def": ..., "version": ...}})'
             )
 
         version = "1.0.0"
         logger.info(
             "provision: bootstrapping %r → gallery image (version %s)",
-            image_name, version,
+            image_name,
+            version,
         )
         image_id = self._bootstrap(
             url=resource.source_url,
             image_name=image_name,
             version=version,
         )
-        store.put(shim, self, {
-            "image_def": image_name,
-            "version": version,
-            "image_id": image_id,
-        })
+        store.put(
+            shim,
+            self,
+            {
+                "image_def": image_name,
+                "version": version,
+                "image_id": image_id,
+            },
+        )
         logger.info("provision: %r registered for %s", image_name, self.fingerprint())
 
     def unprovision(self, resource: ResourceConfig) -> None:
@@ -565,9 +599,7 @@ class AzureInfraConfig(InfraConfig):
             ).result()
             logger.info("unprovision: gallery image %s/%s deleted", image_def, version)
         except Exception as exc:
-            logger.warning(
-                "unprovision: could not delete gallery image %s/%s: %s", image_def, version, exc
-            )
+            logger.warning("unprovision: could not delete gallery image %s/%s: %s", image_def, version, exc)
 
         blob_name = image_name + ".vhd"
         for b in (blob_name, blob_name + ".bootstrap_done", blob_name + ".bootstrap_failed"):
@@ -611,7 +643,9 @@ class AzureInfraConfig(InfraConfig):
         )
 
         # Compute timestamps before creating anything so they can go into tags.
-        effective_ttl = self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
+        effective_ttl = (
+            self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
+        )
         created_at = datetime.now(timezone.utc)
         expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
 
@@ -628,9 +662,7 @@ class AzureInfraConfig(InfraConfig):
         compute = self._compute()
 
         logger.info("launch: creating network resources for %s", vm_name)
-        pip, nic, pip_name, nic_name = self._create_network_resources(
-            run_id_short, uid, cube_tags
-        )
+        pip, nic, pip_name, nic_name = self._create_network_resources(run_id_short, uid, cube_tags)
 
         # VM tags also record NIC/IP names so list_active() needs no string manipulation.
         vm_tags = {
@@ -639,9 +671,7 @@ class AzureInfraConfig(InfraConfig):
             "cube:nic_name": nic_name,
             "cube:ip_name": pip_name,
         }
-        logger.info(
-            "launch: creating VM %s (%s)  image=%s/%s", vm_name, self.vm_size, image_def, version
-        )
+        logger.info("launch: creating VM %s (%s)  image=%s/%s", vm_name, self.vm_size, image_def, version)
         t0 = time.time()
 
         # Specialized gallery image: no os_profile allowed.
@@ -662,9 +692,7 @@ class AzureInfraConfig(InfraConfig):
                         "delete_option": "Delete",
                     },
                 },
-                "network_profile": {
-                    "network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]
-                },
+                "network_profile": {"network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]},
             },
         )
         poller.result()
@@ -679,7 +707,9 @@ class AzureInfraConfig(InfraConfig):
         try:
             logger.info("launch: waiting for SSH on %s…", public_ip)
             active_user = wait_for_ssh(
-                public_ip, "user", self.ssh_privkey_path,
+                public_ip,
+                "user",
+                self.ssh_privkey_path,
                 fallback_users=["ubuntu", "root"],
                 timeout=600,  # OSWorld VM takes ~5-8 min to boot
             )
@@ -687,11 +717,11 @@ class AzureInfraConfig(InfraConfig):
             local_port = free_port()
             logger.info(
                 "launch: opening tunnel localhost:%d → %s:%d",
-                local_port, public_ip, self.guest_port,
+                local_port,
+                public_ip,
+                self.guest_port,
             )
-            tunnel = open_tunnel(
-                public_ip, active_user, self.ssh_privkey_path, local_port, self.guest_port
-            )
+            tunnel = open_tunnel(public_ip, active_user, self.ssh_privkey_path, local_port, self.guest_port)
         except Exception:
             logger.warning("launch: SSH/tunnel failed — cleaning up VM %s", vm_name)
             self._delete_vm(vm_name, pip_name, nic_name)
@@ -741,16 +771,18 @@ class AzureInfraConfig(InfraConfig):
             pip_name = vm_tags.get("cube:ip_name", "")
             nic_name = vm_tags.get("cube:nic_name", "")
 
-            handles.append(AzureResourceHandle(
-                run_id=vm_run_id,
-                resource=VMResourceConfig(name=resource_name),
-                infra=self,
-                endpoint=None,  # tunnel cannot be reconstructed
-                _vm_name=vm_name,
-                _pip_name=pip_name,
-                _nic_name=nic_name,
-                _tunnel=None,
-            ))
+            handles.append(
+                AzureResourceHandle(
+                    run_id=vm_run_id,
+                    resource=VMResourceConfig(name=resource_name),
+                    infra=self,
+                    endpoint=None,  # tunnel cannot be reconstructed
+                    _vm_name=vm_name,
+                    _pip_name=pip_name,
+                    _nic_name=nic_name,
+                    _tunnel=None,
+                )
+            )
 
         return handles
 
@@ -830,18 +862,22 @@ class AzureInfraConfig(InfraConfig):
 
     def _cred(self) -> Any:
         from azure.identity import AzureCliCredential
+
         return AzureCliCredential()
 
     def _compute(self) -> Any:
         from azure.mgmt.compute import ComputeManagementClient
+
         return ComputeManagementClient(self._cred(), self.subscription)
 
     def _network(self) -> Any:
         from azure.mgmt.network import NetworkManagementClient
+
         return NetworkManagementClient(self._cred(), self.subscription)
 
     def _storage(self) -> Any:
         from azure.mgmt.storage import StorageManagementClient
+
         return StorageManagementClient(self._cred(), self.subscription)
 
     def _get_storage_key(self) -> str:
@@ -866,6 +902,7 @@ class AzureInfraConfig(InfraConfig):
 
     def _blob_service_client(self) -> Any:
         from azure.storage.blob import BlobServiceClient
+
         account_key = self._get_storage_key()
         conn_str = (
             f"DefaultEndpointsProtocol=https;AccountName={self.storage_account};"
@@ -900,6 +937,7 @@ class AzureInfraConfig(InfraConfig):
     def generate_sas_url(self, blob_name: str, expiry_hours: int = 8, write: bool = True) -> str:
         """Generate a pre-authorized SAS URL for a blob (read or write)."""
         from azure.storage.blob import BlobSasPermissions, BlobServiceClient, generate_blob_sas
+
         account_key = self._get_storage_key()
         svc = BlobServiceClient(
             f"https://{self.storage_account}.blob.core.windows.net",
@@ -921,14 +959,9 @@ class AzureInfraConfig(InfraConfig):
             permission=perms,
             expiry=expiry,
         )
-        return (
-            f"https://{self.storage_account}.blob.core.windows.net"
-            f"/{self.container_name}/{blob_name}?{sas}"
-        )
+        return f"https://{self.storage_account}.blob.core.windows.net/{self.container_name}/{blob_name}?{sas}"
 
-    def _create_network_resources(
-        self, run_id_short: str, uid: str, cube_tags: dict[str, str] | None = None
-    ) -> tuple:
+    def _create_network_resources(self, run_id_short: str, uid: str, cube_tags: dict[str, str] | None = None) -> tuple:
         """Create a static public IP and NIC. Returns (pip, nic, pip_name, nic_name).
 
         cube_tags are applied alongside self.tags so all spec-required tags
@@ -941,7 +974,8 @@ class AzureInfraConfig(InfraConfig):
         resource_tags = {**self.tags, **(cube_tags or {})}
 
         pip = network.public_ip_addresses.begin_create_or_update(  # type: ignore[call-overload]
-            self.resource_group, pip_name,
+            self.resource_group,
+            pip_name,
             {  # type: ignore[arg-type]
                 "location": self.location,
                 "tags": resource_tags,
@@ -959,19 +993,22 @@ class AzureInfraConfig(InfraConfig):
             f"/providers/Microsoft.Network/networkSecurityGroups/{self.nsg_name}"
         )
         nic = network.network_interfaces.begin_create_or_update(  # type: ignore[call-overload]
-            self.resource_group, nic_name,
+            self.resource_group,
+            nic_name,
             {  # type: ignore[arg-type]
                 "location": self.location,
                 "tags": resource_tags,
                 "properties": {
                     "networkSecurityGroup": {"id": nsg_id},
-                    "ipConfigurations": [{
-                        "name": "ipconfig1",
-                        "properties": {
-                            "subnet": {"id": subnet_id},
-                            "publicIPAddress": {"id": pip.id},
-                        },
-                    }],
+                    "ipConfigurations": [
+                        {
+                            "name": "ipconfig1",
+                            "properties": {
+                                "subnet": {"id": subnet_id},
+                                "publicIPAddress": {"id": pip.id},
+                            },
+                        }
+                    ],
                 },
             },
         ).result()
@@ -990,8 +1027,8 @@ class AzureInfraConfig(InfraConfig):
             logger.warning("_delete_vm: VM delete failed: %s", e)
 
         for fn, label, name in [
-            (network.network_interfaces.begin_delete,  "NIC", nic_name),
-            (network.public_ip_addresses.begin_delete, "IP",  pip_name),
+            (network.network_interfaces.begin_delete, "NIC", nic_name),
+            (network.public_ip_addresses.begin_delete, "IP", pip_name),
         ]:
             try:
                 fn(self.resource_group, name).result()
@@ -1039,7 +1076,9 @@ class AzureInfraConfig(InfraConfig):
         disk = poller.result()
         logger.info(
             "_import_disk: done in %.0fs: %s (%s GB)",
-            time.time() - t0, disk_name, disk.disk_size_gb,
+            time.time() - t0,
+            disk_name,
+            disk.disk_size_gb,
         )
         return disk_name
 
@@ -1096,9 +1135,7 @@ class AzureInfraConfig(InfraConfig):
         """
         compute = self._compute()
         try:
-            existing = compute.gallery_image_versions.get(
-                self.resource_group, self.gallery_name, image_def, version
-            )
+            existing = compute.gallery_image_versions.get(self.resource_group, self.gallery_name, image_def, version)
             if existing.provisioning_state == "Succeeded":
                 logger.info("_create_image_version: %s/%s already exists", image_def, version)
                 return existing.id or ""
@@ -1108,7 +1145,10 @@ class AzureInfraConfig(InfraConfig):
         disk = compute.disks.get(self.resource_group, disk_name)
         logger.info(
             "_create_image_version: publishing %s/%s from %s (%s GB)…",
-            image_def, version, disk_name, disk.disk_size_gb,
+            image_def,
+            version,
+            disk_name,
+            disk.disk_size_gb,
         )
         t0 = time.time()
         poller = compute.gallery_image_versions.begin_create_or_update(  # type: ignore[call-overload]
@@ -1122,11 +1162,13 @@ class AzureInfraConfig(InfraConfig):
                 "publishing_profile": {
                     "replica_count": 1,
                     "storage_account_type": "Standard_LRS",
-                    "target_regions": [{
-                        "name": self.location,
-                        "regional_replica_count": 1,
-                        "storage_account_type": "Standard_LRS",
-                    }],
+                    "target_regions": [
+                        {
+                            "name": self.location,
+                            "regional_replica_count": 1,
+                            "storage_account_type": "Standard_LRS",
+                        }
+                    ],
                     "exclude_from_latest": False,
                 },
                 "storage_profile": {
@@ -1138,9 +1180,7 @@ class AzureInfraConfig(InfraConfig):
             },
         )
         version_obj = poller.result()
-        logger.info(
-            "_create_image_version: done in %.0fs: %s", time.time() - t0, version_obj.id
-        )
+        logger.info("_create_image_version: done in %.0fs: %s", time.time() - t0, version_obj.id)
         return version_obj.id or ""
 
     def _ensure_resource_from_blob(self, vhd_blob_name: str, name: str, version: str = "1.0.0") -> str:
@@ -1148,10 +1188,7 @@ class AzureInfraConfig(InfraConfig):
 
         Idempotent at each step. Returns the gallery image version resource ID.
         """
-        blob_url = (
-            f"https://{self.storage_account}.blob.core.windows.net"
-            f"/{self.container_name}/{vhd_blob_name}"
-        )
+        blob_url = f"https://{self.storage_account}.blob.core.windows.net/{self.container_name}/{vhd_blob_name}"
         disk_name = f"cube-disk-{name}"
         self._import_disk(blob_url, disk_name)
         self._create_image_definition(name)
@@ -1183,11 +1220,14 @@ class AzureInfraConfig(InfraConfig):
 
         logger.info(
             "_launch_bootstrap_vm: launching %s (%s, %d GB OS disk)",
-            vm_name, self.bootstrap_vm_size, self.bootstrap_os_disk_gb,
+            vm_name,
+            self.bootstrap_vm_size,
+            self.bootstrap_os_disk_gb,
         )
         t0 = time.time()
         poller = compute.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
-            self.resource_group, vm_name,
+            self.resource_group,
+            vm_name,
             {  # type: ignore[arg-type]
                 "location": self.location,
                 "tags": {**self.tags, "role": "bootstrap"},
@@ -1214,15 +1254,17 @@ class AzureInfraConfig(InfraConfig):
                     "custom_data": custom_data_b64,
                     "linux_configuration": {
                         "disable_password_authentication": True,
-                        "ssh": {"public_keys": [{
-                            "path": "/home/azureuser/.ssh/authorized_keys",
-                            "key_data": pubkey,
-                        }]},
+                        "ssh": {
+                            "public_keys": [
+                                {
+                                    "path": "/home/azureuser/.ssh/authorized_keys",
+                                    "key_data": pubkey,
+                                }
+                            ]
+                        },
                     },
                 },
-                "network_profile": {
-                    "network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]
-                },
+                "network_profile": {"network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]},
             },
         )
         poller.result()
@@ -1232,7 +1274,9 @@ class AzureInfraConfig(InfraConfig):
         public_ip = pip_info.ip_address
         logger.info(
             "_launch_bootstrap_vm: VM ready in %ds: %s @ %s",
-            int(time.time() - t0), vm_name, public_ip,
+            int(time.time() - t0),
+            vm_name,
+            public_ip,
         )
         logger.info("_launch_bootstrap_vm: SSH: ssh -i %s azureuser@%s", self.ssh_privkey_path, public_ip)
         return {"vm_name": vm_name, "pip_name": pip_name, "nic_name": nic_name, "public_ip": public_ip}
@@ -1251,9 +1295,9 @@ class AzureInfraConfig(InfraConfig):
         logger.info("_bootstrap: blob=%s", blob_name)
 
         if not self.blob_exists(sentinel_name):
-            vhd_sas_url      = self.generate_sas_url(blob_name,      expiry_hours=8, write=True)
-            sentinel_sas_url = self.generate_sas_url(sentinel_name,  expiry_hours=8, write=True)
-            failed_sas_url   = self.generate_sas_url(failed_name,    expiry_hours=8, write=True)
+            vhd_sas_url = self.generate_sas_url(blob_name, expiry_hours=8, write=True)
+            sentinel_sas_url = self.generate_sas_url(sentinel_name, expiry_hours=8, write=True)
+            failed_sas_url = self.generate_sas_url(failed_name, expiry_hours=8, write=True)
             script = _AZURE_BOOTSTRAP_SCRIPT.format(
                 hf_url=url,
                 vhd_sas_url=vhd_sas_url,
@@ -1264,12 +1308,8 @@ class AzureInfraConfig(InfraConfig):
             vm_info = self._launch_bootstrap_vm(script)
             t0 = time.time()
             try:
-                logger.info(
-                    "_bootstrap: VM running, streaming logs from %s", vm_info["public_ip"]
-                )
-                logger.info(
-                    "_bootstrap: SSH: ssh -i %s azureuser@%s", self.ssh_privkey_path, vm_info["public_ip"]
-                )
+                logger.info("_bootstrap: VM running, streaming logs from %s", vm_info["public_ip"])
+                logger.info("_bootstrap: SSH: ssh -i %s azureuser@%s", self.ssh_privkey_path, vm_info["public_ip"])
                 with BootstrapMonitor(
                     public_ip=vm_info["public_ip"],
                     ssh_privkey=self.ssh_privkey_path,
@@ -1304,13 +1344,8 @@ class AzureInfraConfig(InfraConfig):
             }
             if d.name:
                 versions = list(
-                    compute.gallery_image_versions.list_by_gallery_image(
-                        self.resource_group, self.gallery_name, d.name
-                    )
+                    compute.gallery_image_versions.list_by_gallery_image(self.resource_group, self.gallery_name, d.name)
                 )
-                entry["versions"] = [
-                    {"version": v.name, "state": v.provisioning_state}
-                    for v in versions
-                ]
+                entry["versions"] = [{"version": v.name, "state": v.provisioning_state} for v in versions]
             result.append(entry)
         return result
