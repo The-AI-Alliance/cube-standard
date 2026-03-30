@@ -496,6 +496,73 @@ stress_results_url: "stress-results/osworld/v1.2.0.json"
 
 ---
 
+## Implementation notes
+
+### GitHub repo
+
+Registry lives at `https://github.com/The-AI-Alliance/cube-registry`. The spec repo
+(`cube-standard`) and registry repo are separate by design — they have incompatible access
+models (curated vs open submissions) and different contributor populations.
+
+### Branch protection setup (one-time)
+
+On `main` in cube-registry:
+- Require status checks: `ownership-check`, `quick-compliance`
+- No required reviewers
+- Enable auto-merge
+- Add the CI bot as a bypass actor scoped to `OWNERS.yaml` only via a GitHub path-restricted
+  ruleset (Settings → Rules → Rulesets, not the classic branch protection UI)
+
+### Slow check re-trigger logic
+
+Re-run slow check when any of these fields change: `version`, `package`,
+`runtime_details.image_url`, `supported_infra`. Do **not** re-run for changes to `tags`,
+`description`, `paper`, `getting_started_url`, `legal`, or `authors`.
+
+The CI workflow compares the changed YAML fields against the previous commit to decide.
+
+### `image_sha256` requirement
+
+`VMResourceConfig` must include an `image_sha256` field (SHA-256 of the source image file).
+CI verifies this digest at provision time. Entries missing this field fail the slow check.
+This is a cube-standard API requirement — `VMResourceConfig` needs this field added in PR #72
+follow-up work.
+
+### `verified_by_original_authors` detection
+
+CI cross-references `authors[].github` in the submitted YAML against a manually curated
+`known-authors.yaml` file in the registry, mapping benchmark IDs to their original paper
+authors' GitHub handles. Maintainers populate this file for well-known benchmarks. When the
+PR author appears in both `authors[]` and `known-authors.yaml` for that benchmark, the flag
+is set to `true`.
+
+### PR template
+
+Add `.github/pull_request_template.md` to cube-registry with:
+- Contributor agreement checkbox (required for merge)
+- Reminder that CI-derived fields will be overwritten
+- Link to the entry template in the README
+
+### Skill integration
+
+The CUBE submission skill (to be built) should:
+1. Generate the complete author-provided portion of the YAML from the local package
+2. Fork cube-registry and create `entries/<id>.yaml`
+3. Open a PR — the user never touches the registry repo manually
+
+The skill can introspect `benchmark.resources`, `benchmark.tasks()`, and the `Task` class
+locally before submission, pre-populating CI-derived fields as a preview (CI will overwrite
+them, but it gives the author a chance to verify).
+
+### `CONTRIBUTOR_AGREEMENT.md`
+
+Needs to be created in cube-registry before the registry goes public. Should be drafted by
+legal (AI Alliance). Key clause: submitter attests that license information is accurate to
+the best of their knowledge and accepts responsibility for material misrepresentation.
+Reference: PyPI and npm contributor terms as models.
+
+---
+
 ## Open questions
 
 1. **`parallelization_mode`**: could be derived from whether the benchmark declares shared
