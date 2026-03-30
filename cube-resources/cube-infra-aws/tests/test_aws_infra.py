@@ -4,6 +4,7 @@ All tests run without AWS credentials — no boto3/EC2 API calls.
 AWSInfraConfig instances are constructed with model_construct() to bypass
 the _autodiscover validator, which requires live AWS credentials.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass as _dataclass
@@ -74,8 +75,7 @@ class TestTagHelpers:
         assert _dict_to_ec2_tags({}) == []
 
     def test_ec2_tags_to_dict_basic(self) -> None:
-        tags = [{"Key": "cube:infra", "Value": "aws:us-east-2"},
-                {"Key": "cube:run_id", "Value": "run-abc"}]
+        tags = [{"Key": "cube:infra", "Value": "aws:us-east-2"}, {"Key": "cube:run_id", "Value": "run-abc"}]
         result = _ec2_tags_to_dict(tags)
         assert result == {"cube:infra": "aws:us-east-2", "cube:run_id": "run-abc"}
 
@@ -129,26 +129,20 @@ class TestAWSInfraConfigBasic:
 
 
 class TestAWSProvisionStatus:
-    def test_needs_provisioning_when_empty(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_needs_provisioning_when_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_store_path(monkeypatch, tmp_path)
         infra = _make_infra()
         resource = VMResourceConfig(name="osworld-ubuntu-vm")
         assert infra.provision_status(resource) == "needs_provisioning"
 
-    def test_ready_after_register(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_ready_after_register(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_store_path(monkeypatch, tmp_path)
         infra = _make_infra()
         resource = VMResourceConfig(name="osworld-ubuntu-vm")
         infra.register(resource, {"ami_id": "ami-abc123"})
         assert infra.provision_status(resource) == "ready"
 
-    def test_image_name_suffix_isolates_provision_status(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_image_name_suffix_isolates_provision_status(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_store_path(monkeypatch, tmp_path)
         infra_prod = _make_infra()
         infra_test = _make_infra(image_name_suffix="-test")
@@ -164,11 +158,10 @@ class TestAWSProvisionStatus:
         resource = ResourceConfig(name="generic")
         assert infra.provision_status(resource) == "needs_provisioning"
 
-    def test_provision_store_key_format(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_provision_store_key_format(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """ProvisionStore key must be {image_name}@{fingerprint}."""
         import json
+
         _patch_store_path(monkeypatch, tmp_path)
         infra = _make_infra(image_name_suffix="-test")
         resource = VMResourceConfig(name="osworld-ubuntu-vm")
@@ -177,9 +170,7 @@ class TestAWSProvisionStatus:
         raw = json.loads((tmp_path / "provisions.json").read_text())
         assert "osworld-ubuntu-vm-test@aws:us-east-2" in raw
 
-    def test_different_regions_are_isolated(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_different_regions_are_isolated(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_store_path(monkeypatch, tmp_path)
         infra_east = _make_infra(region="us-east-2")
         infra_west = _make_infra(region="us-west-2")
@@ -198,18 +189,14 @@ class TestAWSProvision:
         with pytest.raises(UnsupportedResourceType):
             infra.provision(resource)
 
-    def test_provision_raises_without_source_url(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_provision_raises_without_source_url(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_store_path(monkeypatch, tmp_path)
         infra = _make_infra()
         resource = VMResourceConfig(name="vm")  # no source_url
         with pytest.raises(ValueError, match="source_url"):
             infra.provision(resource)
 
-    def test_provision_skips_if_already_registered(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_provision_skips_if_already_registered(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_store_path(monkeypatch, tmp_path)
         infra = _make_infra()
         resource = VMResourceConfig(name="vm", source_url="http://example.com/img.qcow2.zip")
@@ -220,18 +207,14 @@ class TestAWSProvision:
             infra.provision(resource)
             mock_bootstrap.assert_not_called()
 
-    def test_provision_calls_bootstrap_and_stores_result(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_provision_calls_bootstrap_and_stores_result(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_store_path(monkeypatch, tmp_path)
         infra = _make_infra()
         resource = VMResourceConfig(name="vm", source_url="http://example.com/img.qcow2.zip")
 
         with patch.object(infra, "_bootstrap", return_value="ami-new123") as mock_bootstrap:
             infra.provision(resource)
-            mock_bootstrap.assert_called_once_with(
-                url="http://example.com/img.qcow2.zip", image_name="vm"
-            )
+            mock_bootstrap.assert_called_once_with(url="http://example.com/img.qcow2.zip", image_name="vm")
 
         assert infra.provision_status(resource) == "ready"
         store = ProvisionStore()
@@ -244,9 +227,7 @@ class TestAWSProvision:
         with pytest.raises(UnsupportedResourceType):
             infra.unprovision(resource)
 
-    def test_unprovision_noop_when_not_registered(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_unprovision_noop_when_not_registered(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_store_path(monkeypatch, tmp_path)
         infra = _make_infra()
         resource = VMResourceConfig(name="vm")
@@ -263,11 +244,13 @@ class TestAWSProvision:
 
         mock_ec2 = MagicMock()
         mock_ec2.describe_images.return_value = {
-            "Images": [{
-                "BlockDeviceMappings": [
-                    {"DeviceName": "/dev/sda1", "Ebs": {"SnapshotId": "snap-12345"}},
-                ]
-            }]
+            "Images": [
+                {
+                    "BlockDeviceMappings": [
+                        {"DeviceName": "/dev/sda1", "Ebs": {"SnapshotId": "snap-12345"}},
+                    ]
+                }
+            ]
         }
 
         with patch.object(infra, "_ec2", return_value=mock_ec2):
@@ -291,11 +274,8 @@ class TestAWSProvision:
         call_order: list[str] = []
         mock_ec2 = MagicMock()
         mock_ec2.describe_images.side_effect = lambda **_: (
-            call_order.append("describe") or {
-                "Images": [{"BlockDeviceMappings": [
-                    {"Ebs": {"SnapshotId": "snap-abc"}}
-                ]}]
-            }
+            call_order.append("describe")
+            or {"Images": [{"BlockDeviceMappings": [{"Ebs": {"SnapshotId": "snap-abc"}}]}]}
         )
         mock_ec2.deregister_image.side_effect = lambda **_: call_order.append("deregister")
         mock_ec2.delete_snapshot.side_effect = lambda **_: call_order.append("delete_snap")
@@ -316,18 +296,14 @@ class TestAWSLaunch:
         with pytest.raises(UnsupportedResourceType):
             infra.launch(resource)
 
-    def test_launch_raises_resource_not_ready(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_launch_raises_resource_not_ready(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_store_path(monkeypatch, tmp_path)
         infra = _make_infra()
         resource = VMResourceConfig(name="vm")
         with pytest.raises(ResourceNotReadyError):
             infra.launch(resource)
 
-    def test_launch_resource_not_ready_message(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_launch_resource_not_ready_message(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_store_path(monkeypatch, tmp_path)
         infra = _make_infra()
         resource = VMResourceConfig(name="my-vm")
@@ -353,11 +329,13 @@ class TestAWSListActive:
         return {
             "InstanceId": instance_id,
             "State": {"Name": state},
-            "Tags": _dict_to_ec2_tags({
-                "cube:infra": infra_fp,
-                "cube:run_id": run_id,
-                "cube:resource": resource_name,
-            }),
+            "Tags": _dict_to_ec2_tags(
+                {
+                    "cube:infra": infra_fp,
+                    "cube:run_id": run_id,
+                    "cube:resource": resource_name,
+                }
+            ),
         }
 
     def test_list_active_empty_when_no_instances(self) -> None:
@@ -372,12 +350,14 @@ class TestAWSListActive:
         infra = _make_infra()
         mock_ec2 = MagicMock()
         mock_ec2.describe_instances.return_value = {
-            "Reservations": [{
-                "Instances": [
-                    self._make_ec2_instance("i-111", run_id="run-abc"),
-                    self._make_ec2_instance("i-222", run_id="run-def"),
-                ]
-            }]
+            "Reservations": [
+                {
+                    "Instances": [
+                        self._make_ec2_instance("i-111", run_id="run-abc"),
+                        self._make_ec2_instance("i-222", run_id="run-def"),
+                    ]
+                }
+            ]
         }
         with patch.object(infra, "_ec2", return_value=mock_ec2):
             handles = infra.list_active()
@@ -389,9 +369,7 @@ class TestAWSListActive:
     def test_list_active_endpoint_is_none(self) -> None:
         infra = _make_infra()
         mock_ec2 = MagicMock()
-        mock_ec2.describe_instances.return_value = {
-            "Reservations": [{"Instances": [self._make_ec2_instance("i-111")]}]
-        }
+        mock_ec2.describe_instances.return_value = {"Reservations": [{"Instances": [self._make_ec2_instance("i-111")]}]}
         with patch.object(infra, "_ec2", return_value=mock_ec2):
             handles = infra.list_active()
         assert handles[0].endpoint is None
@@ -439,9 +417,7 @@ class TestAWSListActive:
 
 
 class TestAWSCleanupStale:
-    def _make_instance_with_tags(
-        self, instance_id: str, tags: dict[str, str]
-    ) -> dict:
+    def _make_instance_with_tags(self, instance_id: str, tags: dict[str, str]) -> dict:
         return {
             "InstanceId": instance_id,
             "Tags": _dict_to_ec2_tags({"cube:infra": "aws:us-east-2", **tags}),
@@ -454,11 +430,13 @@ class TestAWSCleanupStale:
 
         mock_ec2 = MagicMock()
         mock_ec2.describe_instances.return_value = {
-            "Reservations": [{
-                "Instances": [
-                    self._make_instance_with_tags("i-expired", {"cube:expires_at": expired}),
-                ]
-            }]
+            "Reservations": [
+                {
+                    "Instances": [
+                        self._make_instance_with_tags("i-expired", {"cube:expires_at": expired}),
+                    ]
+                }
+            ]
         }
 
         with patch.object(infra, "_ec2", return_value=mock_ec2):
@@ -474,11 +452,13 @@ class TestAWSCleanupStale:
 
         mock_ec2 = MagicMock()
         mock_ec2.describe_instances.return_value = {
-            "Reservations": [{
-                "Instances": [
-                    self._make_instance_with_tags("i-live", {"cube:expires_at": future}),
-                ]
-            }]
+            "Reservations": [
+                {
+                    "Instances": [
+                        self._make_instance_with_tags("i-live", {"cube:expires_at": future}),
+                    ]
+                }
+            ]
         }
 
         with patch.object(infra, "_ec2", return_value=mock_ec2):
@@ -494,11 +474,13 @@ class TestAWSCleanupStale:
 
         mock_ec2 = MagicMock()
         mock_ec2.describe_instances.return_value = {
-            "Reservations": [{
-                "Instances": [
-                    self._make_instance_with_tags("i-old", {"cube:created_at": old_created}),
-                ]
-            }]
+            "Reservations": [
+                {
+                    "Instances": [
+                        self._make_instance_with_tags("i-old", {"cube:created_at": old_created}),
+                    ]
+                }
+            ]
         }
 
         with patch.object(infra, "_ec2", return_value=mock_ec2):
@@ -515,17 +497,19 @@ class TestAWSCleanupStale:
 
         mock_ec2 = MagicMock()
         mock_ec2.describe_instances.return_value = {
-            "Reservations": [{
-                "Instances": [
-                    self._make_instance_with_tags(
-                        "i-not-expired",
-                        {
-                            "cube:expires_at": future_expiry,
-                            "cube:created_at": old_created,
-                        },
-                    ),
-                ]
-            }]
+            "Reservations": [
+                {
+                    "Instances": [
+                        self._make_instance_with_tags(
+                            "i-not-expired",
+                            {
+                                "cube:expires_at": future_expiry,
+                                "cube:created_at": old_created,
+                            },
+                        ),
+                    ]
+                }
+            ]
         }
 
         with patch.object(infra, "_ec2", return_value=mock_ec2):

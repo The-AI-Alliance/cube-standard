@@ -15,6 +15,7 @@ Run:
     cd cube-resources/cube-infra-azure
     uv run python test_run_debug_agent.py
 """
+
 from __future__ import annotations
 
 import json

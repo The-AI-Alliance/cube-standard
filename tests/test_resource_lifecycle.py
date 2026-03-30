@@ -184,7 +184,9 @@ class TestResourceConfig:
 
 
 class TestInfraConfigBase:
-    def test_provision_status_needs_provisioning_when_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_provision_status_needs_provisioning_when_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         _patch_store_path(monkeypatch, tmp_path)
         infra = _StubInfra(name="x")
         resource = VMResourceConfig(name="my-vm")
@@ -197,7 +199,9 @@ class TestInfraConfigBase:
         infra.register(resource, {"image_path": "/tmp/img.qcow2"})
         assert infra.provision_status(resource) == "ready"
 
-    def test_provision_status_values_are_exactly_spec_strings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_provision_status_values_are_exactly_spec_strings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         _patch_store_path(monkeypatch, tmp_path)
         infra = _StubInfra(name="x")
         resource = VMResourceConfig(name="my-vm")
