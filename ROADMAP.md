@@ -15,7 +15,7 @@ Goal: stable core protocol, first wave of cubes, compliance tooling.
   - *Computer use (CUA):* OSWorld ✅
   - *SWE:* SWE-bench Verified + Live ✅, TerminalBench 2 ✅, LiveCodeBench ✅
 - [ ] Benchmark metadata schema — `BenchmarkMetadata` fields: homepage, citation, license, task count, modality ([`benchmark.py`](src/cube/benchmark.py))
-- [x] CUBE Stress Test — compliance checks and latency suite (`cube test --compliance`) — nearly complete, see [PR #22](https://github.com/The-AI-Alliance/cube-standard/pull/22)
+- [x] CUBE Stress Test — compliance checks and latency suite (`cube test cube-name) — nearly complete, see [PR #22](https://github.com/The-AI-Alliance/cube-standard/pull/22)
 - [ ] Unified resource backend — `VMBackend` / `VM` abstraction for cloud and local VM provisioning ([`design/vm_backend.md`](design/vm_backend.md))
 - [ ] Stable `v0.1` API — freeze core interfaces, tag release
 - [x] PyPI publication (`cube-standard`)
