@@ -462,6 +462,19 @@ CDN) is sufficient for a polished result.
 Point `registry.cube-benchmark.org` (or similar) at GitHub Pages via a CNAME. Free TLS via
 GitHub's Let's Encrypt integration.
 
+### Submission form (nice to have)
+
+A `submit.html` page hosted alongside the landing page could help users who submit without the
+CUBE skill. It would render a form from `registry-schema.json` (staying in sync automatically),
+accept paste-in of an incomplete YAML to pre-fill fields, validate client-side, and on submit
+call the GitHub API to fork the repo and open a PR — no backend needed. Roughly 250 lines of
+vanilla HTML + JS.
+
+In practice, the CUBE skill is the better primary submission path: it already knows the
+package structure, what `benchmark.resources` returns, and the author's GitHub handle, so it
+can generate a complete valid YAML and open the PR in one shot. The form is worth adding later
+if non-skill users are observed struggling with submissions.
+
 ---
 
 ## Open questions
