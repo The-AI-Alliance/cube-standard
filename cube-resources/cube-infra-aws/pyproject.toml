@@ -2,7 +2,7 @@
 name = "cube-infra-aws"
 version = "0.1.0"
 description = "AWS InfraConfig for CUBE resource lifecycle"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "cube-standard",
     "boto3>=1.34",
@@ -17,7 +17,12 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest>=9.0",
+    "osworld-cube",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cube_infra_aws"]
+
+[tool.uv.sources]
+cube-standard = { path = "../..", editable = true }
+osworld-cube = { path = "../../../cube-harness/cubes/osworld-cube", editable = true }

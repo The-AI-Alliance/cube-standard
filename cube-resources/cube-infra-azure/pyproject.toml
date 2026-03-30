@@ -2,7 +2,7 @@
 name = "cube-infra-azure"
 version = "0.1.0"
 description = "Azure InfraConfig for CUBE resource lifecycle"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "cube-standard",
     "azure-identity>=1.15",
@@ -20,3 +20,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cube_infra_azure"]
+
+[dependency-groups]
+dev = [
+    "osworld-cube",
+]
+
+[tool.uv.sources]
+cube-standard = { path = "../..", editable = true }
+osworld-cube = { path = "../../../cube-harness/cubes/osworld-cube", editable = true }
