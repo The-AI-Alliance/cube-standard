@@ -46,8 +46,6 @@ Ownership is tracked in `OWNERS.yaml`, which CI updates automatically after a su
 
 ---
 
----
-
 ## Access control: fully automated
 
 Branch protection on `main`:
@@ -98,8 +96,6 @@ itself ownership by modifying `OWNERS.yaml`.
 | PR touches OWNERS.yaml or stress-results/ | quick-compliance ✗ → blocked |
 
 No human maintainer needed in any of these paths.
-
----
 
 ---
 
@@ -162,8 +158,6 @@ are $0.
 
 ---
 
----
-
 ## Periodic health checks
 
 A scheduled workflow (e.g. weekly) runs against all entries to detect decay:
@@ -177,8 +171,6 @@ A scheduled workflow (e.g. weekly) runs against all entries to detect decay:
 A `status` field (`active | degraded | archived`) in the YAML is controlled exclusively by CI.
 Authors can request `archived` via PR (just changing that field); CI sets `degraded`
 automatically on health check failure.
-
----
 
 ---
 
@@ -251,8 +243,6 @@ if non-skill users are observed struggling with submissions.
 
 ---
 
----
-
 ## Security
 
 ### Package execution sandboxing
@@ -318,8 +308,6 @@ benchmark IDs before their authors submit:
 the registry or the AI Alliance. The registry does not audit license declarations. Users must
 consult `legal.license_url` and the original benchmark authors for authoritative license terms.
 This disclaimer must appear prominently in the registry README and any web UI.
-
----
 
 ---
 
@@ -428,8 +416,6 @@ authors for authoritative terms.
 
 ---
 
----
-
 ## Example entry
 
 ```yaml
@@ -488,8 +474,6 @@ features:
   multi_dim_reward: false
 stress_results_url: "stress-results/osworld/v1.2.0.json"
 ```
-
----
 
 ---
 
