@@ -37,12 +37,12 @@ cube-registry/
       quick-check.yml
       slow-check.yml
       update-owners.yml
+      periodic-health-check.yml
   registry-schema.json
 ```
 
 Flat `entries/` directory — benchmark IDs are globally unique, no author namespacing needed.
-Ownership is tracked in `OWNERS.yaml`, which CI updates automatically when new entries merge.
-There is no `CODEOWNERS` file — GitHub's human-review mechanism is not used at all.
+Ownership is tracked in `OWNERS.yaml`, which CI updates automatically after a successful merge.
 
 ---
 
@@ -66,13 +66,12 @@ osworld:
 webarena:
   - shuyan-zhou
   - frank-xu
-swe-bench:
-  - carlos-jimenez
 ```
 
-When a new entry merges, the `update-owners` workflow reads `authors[].github` from the new
-YAML and appends the mapping to `OWNERS.yaml` via a direct commit to `main` (the bot has a
-narrow bypass permission for this file only).
+When a new entry merges **and its quick-compliance check has passed**, the `update-owners`
+workflow reads `authors[].github` from the merged YAML and appends the mapping to `OWNERS.yaml`
+via a direct commit to `main`. The bot has a narrow bypass permission scoped to `OWNERS.yaml`
+only.
 
 ### `ownership-check` status check
 
@@ -82,9 +81,10 @@ A CI job that runs on every PR. It never involves a human:
 - **Modified existing entry**: passes only if the PR author appears in `OWNERS.yaml` for that
   benchmark ID.
 - **Fails with a PR comment** if someone tries to modify another author's entry.
+- **Any PR touching `OWNERS.yaml` or `stress-results/` directly**: blocked by the schema check.
 
 The check reads `OWNERS.yaml` from `main` (not from the PR branch), so a PR cannot grant
-itself ownership by also modifying `OWNERS.yaml` — that file is append-only via the bot.
+itself ownership by modifying `OWNERS.yaml`.
 
 ### Result
 
@@ -93,7 +93,7 @@ itself ownership by also modifying `OWNERS.yaml` — that file is append-only vi
 | Author submits new entry | ownership-check ✓ → quick-compliance ✓ → auto-merge → bot updates OWNERS.yaml |
 | Author updates own entry | ownership-check ✓ → quick-compliance ✓ → auto-merge |
 | Stranger modifies someone's entry | ownership-check ✗ → blocked, comment posted |
-| PR tries to modify OWNERS.yaml directly | quick-compliance ✗ → blocked (schema check rejects it) |
+| PR touches OWNERS.yaml or stress-results/ | quick-compliance ✗ → blocked |
 
 No human maintainer needed in any of these paths.
 
@@ -106,164 +106,176 @@ No human maintainer needed in any of these paths.
 Runs entirely on the GitHub Actions runner. Free for public repos.
 
 1. Validate YAML against `registry-schema.json`.
-2. Reject any PR that touches `OWNERS.yaml` or `stress-results/` directly.
-3. `pip install <package>` from PyPI.
-4. Import the package, verify the `Benchmark` class exists.
-5. Instantiate `Benchmark()`, call `cube/info`, validate response schema.
-6. Call `cube/tasks`, validate response.
-7. Call `cube/debug_tasks`, verify at least one debug task is declared (required).
+2. `pip install <package>` from PyPI.
+3. Import the package, verify the `Benchmark` class exists.
+4. Instantiate `Benchmark()`, call `cube/info`, validate response schema.
+5. Call `cube/tasks`, validate response.
+6. Call `cube/debug_tasks`, verify at least one debug task is declared (required).
+7. Introspect `benchmark.resources` to populate the `resources` field (see Fields section).
 8. Inspect the `Task` class to auto-detect feature flags (see Fields section).
-9. If all pass: auto-merge PR, set `compliance: [quick-verified]`.
+9. If all pass: auto-merge PR, CI writes back the derived fields to the YAML.
 
-For Docker-based cubes, the quick check also pulls the declared image and verifies it is
-reachable. This is still free on GitHub-hosted runners (Docker is pre-installed).
+### Tier 2 — Slow check (runs post-merge, async)
 
-### Tier 2 — Slow check (runs post-merge, async, ~30–90 min)
+Triggered after merge, and re-triggered on any change to `version`, `package`, or any
+author-provided field (metadata-only changes like `tags` or `description` do not re-trigger).
 
-Triggered after merge. The GitHub Actions job is a thin orchestrator: it provisions infra
-via cloud SDK (credentials injected from repository secrets), waits for results, then terminates
-everything. Because the runner is idle during cloud provisioning, even long VM-based checks
-use minimal GitHub Actions minutes — negligible on a public repo.
+The slow check runs on **every provider declared in `supported_infra`**. Each provider run is
+an independent GitHub Actions job. The GitHub runner is a thin orchestrator — it calls the
+cloud SDK with credentials from repository secrets, waits for results, then terminates
+everything. Runner idle time on a public repo is free.
 
-**Docker-based cubes:**
-
-Runs entirely on the GitHub-hosted runner:
-1. `docker pull <image>`.
-2. Instantiate benchmark, call `cube/spawn` for the declared debug task.
-3. Run the benchmark's `make_debug_agent()` for one full episode.
+**For each provider:**
+1. Provision infra from `benchmark.resources` using the corresponding `InfraConfig`.
+   - Docker resources: run directly on the GitHub-hosted runner (free).
+   - VM resources: spin up ephemeral spot instances via cloud SDK; bootstrap, convert image,
+     launch debug VM, run check, terminate and deregister everything (no storage left behind).
+2. Instantiate benchmark, call `cube/spawn` for each declared debug task.
+3. Run `make_debug_agent()` for one full episode per debug task.
 4. Verify `cube/evaluation` returns valid reward and termination.
 5. Call `cube/close`, verify clean teardown.
-6. Run stress-test profiling: capture setup time, step latency p50/p95/p99, memory delta.
+6. Run stress-test profiling: capture setup time, step latency p50/p95/p99, memory delta,
+   episode time. Record the instance type alongside the numbers.
 
-Cost: $0 (public repo, Docker, GitHub runner).
-
-**VM-based cubes:**
-
-The GitHub job uses cloud credentials (AWS or Azure, via `secrets.REGISTRY_AWS_KEY` etc.) to:
-1. Spin up a spot bootstrap VM (t3.medium or equivalent).
-2. Download the declared `image_url` (qcow2 or equivalent), convert, import as cloud image.
-3. Launch a spot debug VM from the imported image (`m5.xlarge` or equivalent for 16GB RAM).
-4. Run the same debug episode as Docker tier above.
-5. Capture profiling metrics with the instance type recorded.
-6. Terminate all instances and deregister the cloud image (fully ephemeral, no storage).
-
-Cost: ~$0.04–0.06 per VM cube check (spot pricing, ephemeral).
+Cost: ~$0.04–0.06 per VM-based provider check (spot pricing, fully ephemeral). Docker checks
+are $0.
 
 ### Slow check outcomes
 
-- **Pass**: entry's `compliance` field updated to include `slow-verified` via automated commit.
-  Stress results saved to `stress-results/<id>/v<version>.json`.
-- **Fail**: GitHub issue opened tagging the authors from `OWNERS.yaml`, `compliance` remains
-  `quick-verified` only. Entry stays in the registry — platforms can decide whether to accept
-  `quick-verified` entries.
+- **Pass**: stress results saved to `stress-results/<id>/v<version>.json` per provider.
+  `stress_results_url` updated in the YAML entry.
+- **Fail**: GitHub issue opened tagging the authors from `OWNERS.yaml`. Entry stays in the
+  registry — platforms can filter on whether a slow check has passed.
 
 ### Cost summary at 50 checks/month (public repo)
 
 | Tier | Runtime | GitHub cost | Cloud cost | Monthly |
 |---|---|---|---|---|
 | Quick check (all 50) | GitHub runner | $0 | $0 | $0 |
-| Slow check — Docker (~60%) | GitHub runner | $0 | $0 | $0 |
-| Slow check — VM (~40%) | GitHub runner + AWS/Azure | $0 | ~$0.05/check | ~$1 |
+| Slow check — Docker resources | GitHub runner | $0 | $0 | $0 |
+| Slow check — VM resources (~40% of cubes) | GitHub runner + AWS/Azure | $0 | ~$0.05/check | ~$1 |
 | **Total** | | | | **~$1/month** |
+
+---
+
+## Periodic health checks
+
+A scheduled workflow (e.g. weekly) runs against all entries to detect decay:
+
+1. `pip install <package>` — if this fails, the package has been yanked or removed from PyPI.
+2. For each URL in `resources[].image_url` — HTTP HEAD request to verify the resource is still
+   reachable. Permanent storage locations (HuggingFace datasets, GitHub releases) can disappear.
+3. On failure: open or update a GitHub issue tagging the authors from `OWNERS.yaml`, and set
+   `status: degraded` in the entry.
+
+A `status` field (`active | degraded | archived`) in the YAML is controlled exclusively by CI.
+Authors can request `archived` via PR (just changing that field); CI sets `degraded`
+automatically on health check failure.
 
 ---
 
 ## Registry entry schema
 
-An entry is a YAML file at `entries/<benchmark-id>.yaml`.
+An entry is a YAML file at `entries/<benchmark-id>.yaml`. The `id` field must match the
+filename (enforced by the schema check).
 
-Fields are split into three categories:
-- **Author-provided**: set by the benchmark author in the YAML, validated at quick-check time.
-- **CI-derived**: populated automatically by the quick or slow check CI; authors must not set
-  these manually (CI will overwrite them).
-- **API-updateable**: currently author-provided, but a future CUBE API update could make them
-  derivable. Noted where applicable.
+Fields are split into two categories:
+- **Author-provided**: set by the benchmark author, validated at quick-check time.
+- **CI-derived**: populated automatically by quick or slow check CI; the schema check rejects
+  any PR where an author has modified a CI-derived field.
 
 ### Full field table
 
 | Field | Type | Category | Mandatory | Notes |
 |---|---|---|---|---|
-| `id` | string | Author | **Yes** | Unique across registry. Slug format: `osworld`, `webarena-lite`. Must match the filename. |
+| `id` | string | Author | **Yes** | Unique slug: `osworld`, `webarena-lite`. Must match filename. |
 | `name` | string | Author | **Yes** | Human-readable display name. |
 | `version` | string | Author | **Yes** | Must match the PyPI package version exactly. |
 | `description` | string | Author | **Yes** | One-paragraph summary of what the benchmark tests. |
 | `package` | string | Author | **Yes** | PyPI package name for `pip install`. |
-| `runtime` | enum | Author | **Yes** | `docker \| vm \| apptainer \| live \| docker-in-docker`. Determines which CI tier runs. |
 | `authors` | list | Author | **Yes** | At least one entry. Populates `OWNERS.yaml` on merge. |
-| `authors[].github` | string | Author | **Yes** | GitHub handle. Used to populate `OWNERS.yaml`. |
+| `authors[].github` | string | Author | **Yes** | GitHub handle. |
 | `authors[].name` | string | Author | No | Display name. |
-| `benchmark_license` | string | Author | **Yes** | SPDX identifier for task/data license (e.g. `CC-BY-NC-4.0`). |
-| `package_license` | string | Author | No | License of the wrapper code. Often different from benchmark license. |
-| `content_notice` | string | Author | No | Copyright or legal warning (e.g. `"Contains cloned websites"`). |
+| `legal.reported_license` | string | Author | No | SPDX identifier as reported by the cube developer. See Legal section. |
+| `legal.license_url` | string | Author | No | URL to the benchmark's official license page. Preferred over `reported_license` alone. |
+| `legal.notices` | list | Author | No | Structured legal notices. See Legal section. |
 | `paper` | string | Author | No | arXiv or venue URL. |
 | `tags` | list[string] | Author | No | Searchable: `web`, `coding`, `os`, `gui`, `mobile`, `science`, `math`, `multi-agent`. |
 | `getting_started_url` | string | Author | No | Link to docs or quick-start guide. |
-| `runtime_details.image_url` | string | Author | VM/Docker | Source image URL (HuggingFace qcow2, Docker Hub image name). Required for CI provisioning. |
-| `runtime_details.image_format` | string | Author | VM only | `qcow2 \| vhd \| vmdk \| oci`. Feeds `qemu-img convert` in bootstrap step. |
-| `runtime_details.image_size_gb` | float | Author | No | Helps CI select instance storage. Guideline, not enforced. |
-| `hardware.ram_gb` | int | Author | No | Minimum RAM required. Enables filtering for resource-constrained researchers. |
-| `hardware.gpu` | bool | Author | No | Whether a GPU is required. |
-| `hardware.disk_gb` | int | Author | No | Minimum disk space. |
-| `hardware.network` | bool | Author | No | Whether live internet access is required (GAIA pattern). |
+| `supported_infra` | list[string] | Author | No | Cloud providers the slow check should run on: `aws`, `azure`, `gcp`, `local`. Defaults to `[aws]`. |
 | `max_concurrent_tasks` | int | Author | No | Guideline for parallel task cap. Default: 1. |
-| `reset_mechanism` | enum | **API-updateable** | No | `snapshot-restore \| container-restart \| stateless`. Currently author-provided. Could be exposed via `cube/info`. |
-| `parallelization_mode` | enum | **API-updateable** | No | `sequential \| task-parallel \| benchmark-parallel`. Currently author-provided. Could be exposed via `cube/info`. |
-| `compliance` | list[string] | **CI** | — | Set by CI only. Values: `quick-verified`, `slow-verified`, `stress-tested`. |
-| `task_count` | int | **CI** | — | Derived from `benchmark.tasks()` at quick-check time. Not author-provided (would drift). |
-| `has_debug_task` | bool | **CI** | — | Derived from `cube/debug_tasks` endpoint. Must be `true` for slow-check to run. |
-| `has_debug_agent` | bool | **CI** | — | Derived from presence of `make_debug_agent()` on the `Benchmark` class. |
-| `seed_support` | bool | **CI** | — | Derived by calling `cube/reset({seed: 42})` and checking for no error. |
-| `action_space` | list | **CI** | — | Derived from `tools/list` response on a reset task. Tool names and signatures. |
-| `features.async` | bool | **CI** | — | Detected by inspecting whether `Task` overrides `async_step()` / `async_reset()`. |
+| `parallelization_mode` | enum | Author | No | `sequential \| task-parallel \| benchmark-parallel`. |
+| `status` | enum | **CI** | — | `active \| degraded \| archived`. Set by CI health checks or archived by author request. |
+| `resources` | list | **CI** | — | JSON-serialized `ResourceConfig` objects from `benchmark.resources`. One entry per declared resource. CI overwrites on every check. |
+| `task_count` | int | **CI** | — | Derived from `benchmark.tasks()`. |
+| `has_debug_task` | bool | **CI** | — | Derived from `cube/debug_tasks` endpoint. Must be `true` for slow check to run. |
+| `has_debug_agent` | bool | **CI** | — | Derived from presence of `make_debug_agent()` on `Benchmark`. |
+| `action_space` | list | **CI** | — | Derived from `tools/list` on a reset task. Tool names and schemas. |
+| `features.async` | bool | **CI** | — | Detected from `async_step()` / `async_reset()` override. |
 | `features.streaming` | bool | **CI** | — | Detected from `stream_action()` override. |
 | `features.multi_agent` | bool | **CI** | — | Detected from `MultiAgentTask` subclass. |
 | `features.multi_dim_reward` | bool | **CI** | — | Detected from `reward_breakdown` in `cube/evaluation` response. |
-| `stress_results_url` | string | **CI** | — | Path to latest stress-results JSON. Set by slow check. |
+| `stress_results_url` | string | **CI** | — | Path to latest stress-results JSON per provider. Set by slow check. |
 
-### On `task_count`
+### On `resources`
 
-Do not ask authors to declare `task_count`. It will drift as benchmarks add or remove tasks
-across versions. CI derives it by calling `benchmark.tasks()` (with a timeout for very large
-task sets — call with `filter={limit: 1}` and use the `total` field from the response if the
-API supports it). If `benchmark.tasks()` is too slow to call in CI, this is a signal the API
-needs a `cube/info` field for task count — update the spec accordingly.
+CI derives this by calling `benchmark.resources` (the field introduced in PR #72) and
+serializing each `ResourceConfig` to JSON. A benchmark can declare multiple resources — e.g.
+a VM image plus a Docker service for a shared API server. The full `ResourceConfig` objects are
+stored so that platforms can use them directly to provision infra without re-introspecting the
+package.
 
-### On performance metrics
+Example of a CI-derived `resources` entry for OSWorld:
 
-Performance numbers are hardware-dependent and must not live in the registry YAML (they would
-immediately become stale on the next version bump). Instead:
-
-- CI writes results to `stress-results/<id>/v<version>.json` alongside the instance type used.
-- All Docker cubes are profiled on the same GitHub-hosted runner spec (2-core, 7GB RAM,
-  Ubuntu 22.04) — numbers are comparable across Docker cubes.
-- All VM cubes are profiled on the same instance type (e.g. `m5.xlarge`, 4 vCPU, 16GB) —
-  numbers are comparable across VM cubes.
-- The YAML entry links to the latest result file via `stress_results_url`.
-- Platforms can read the result JSON for absolute numbers, or use it for relative comparison
-  across cubes tested on the same reference hardware.
-
-```json
-// stress-results/osworld/v1.2.0.json
-{
-  "cube_id": "osworld",
-  "version": "1.2.0",
-  "tested_at": "2026-03-30T12:00:00Z",
-  "infra": {
-    "type": "vm",
-    "instance_type": "m5.xlarge",
-    "region": "us-east-1",
-    "cloud": "aws"
-  },
-  "benchmark_setup_time_s": 46.2,
-  "task_setup_time_s": 8.1,
-  "step_latency_p50_ms": 210,
-  "step_latency_p95_ms": 890,
-  "step_latency_p99_ms": 1400,
-  "teardown_time_s": 3.2,
-  "memory_delta_gb": 0.4,
-  "episode_time_s": 94.0
-}
+```yaml
+resources:
+  - type: VMResourceConfig
+    name: ubuntu-desktop
+    image_url: "https://huggingface.co/datasets/xlangai/osworld/resolve/main/ubuntu.qcow2"
+    image_format: qcow2
+    image_size_gb: 18.5
+    ram_gb: 16
+    disk_gb: 40
+    gpu: false
 ```
+
+The CI also uses the resource types to determine which slow-check tier to run: if any resource
+is a `VMResourceConfig`, the VM provisioning path is used for that provider.
+
+### Legal
+
+Benchmark licenses are complex: the cube developer wrapping a benchmark may not be the original
+author, license terms can change, and a wrong declaration could mislead users. The registry
+takes a lightweight approach:
+
+- `legal.reported_license`: the SPDX identifier as understood by the cube developer at time of
+  submission. Explicitly labelled "reported" — not a legal claim by the registry or the
+  AI Alliance.
+- `legal.license_url`: direct URL to the benchmark's official license page. Preferred — lets
+  users check the current authoritative source rather than relying on the registry's snapshot.
+- `legal.notices`: structured list of legal notices beyond the top-level license. Each notice
+  has a `type` and a `description`, and optionally a `url`:
+
+```yaml
+legal:
+  reported_license: "CC-BY-NC-4.0"
+  license_url: "https://github.com/xlangai/osworld/blob/main/LICENSE"
+  notices:
+    - type: content
+      description: "Contains screenshots of copyrighted desktop applications"
+    - type: software_registration
+      description: "Tasks involving Microsoft Office require a valid Office license on the VM"
+      url: "https://www.microsoft.com/en-us/licensing"
+    - type: data_usage_restriction
+      description: "Tasks use Reddit data; subject to Reddit API terms of service"
+      url: "https://www.redditinc.com/policies/data-api-terms"
+```
+
+Notice types: `content`, `software_registration`, `data_usage_restriction`, `attribution`.
+
+The registry and the AI Alliance do not verify license declarations and explicitly disclaim
+legal responsibility for errors. Users must consult `license_url` and the original benchmark
+authors for authoritative terms.
 
 ---
 
@@ -279,7 +291,6 @@ description: >
   Benchmarks multimodal agents on open-ended tasks in a real Ubuntu desktop
   environment. Tasks span file management, web browsing, coding, and GUI interaction.
 package: osworld-cube
-runtime: vm
 
 authors:
   - github: tianbao-xie
@@ -287,34 +298,35 @@ authors:
   - github: fangchen-zhang
     name: Fangchen Zhang
 
-benchmark_license: CC-BY-4.0
-package_license: MIT
-content_notice: "Ubuntu desktop with pre-installed applications"
+legal:
+  reported_license: "CC-BY-4.0"
+  license_url: "https://github.com/xlangai/osworld/blob/main/LICENSE"
+  notices:
+    - type: content
+      description: "Ubuntu desktop with pre-installed commercial applications"
+
 paper: "https://arxiv.org/abs/2404.07972"
 tags: [os, gui, desktop, multimodal]
 getting_started_url: "https://os-world.github.io"
 
-runtime_details:
-  image_url: "https://huggingface.co/datasets/xlangai/osworld/resolve/main/ubuntu.qcow2"
-  image_format: qcow2
-  image_size_gb: 18.5
-
-hardware:
-  ram_gb: 16
-  gpu: false
-  disk_gb: 40
-  network: false
-
+supported_infra: [aws, azure]
 max_concurrent_tasks: 1
-reset_mechanism: snapshot-restore       # API-updateable: expose via cube/info in future
 parallelization_mode: benchmark-parallel
 
 # --- Fields below are set by CI. Do not edit manually. ---
-compliance: [quick-verified, slow-verified, stress-tested]
+status: active
+resources:
+  - type: VMResourceConfig
+    name: ubuntu-desktop
+    image_url: "https://huggingface.co/datasets/xlangai/osworld/resolve/main/ubuntu.qcow2"
+    image_format: qcow2
+    image_size_gb: 18.5
+    ram_gb: 16
+    disk_gb: 40
+    gpu: false
 task_count: 369
 has_debug_task: true
 has_debug_agent: true
-seed_support: false
 action_space:
   - name: computer
     description: "Mouse, keyboard, and screenshot tool"
@@ -328,33 +340,15 @@ stress_results_url: "stress-results/osworld/v1.2.0.json"
 
 ---
 
-## API changes required
-
-The following fields are currently author-provided but should be exposed via the CUBE API to
-eliminate drift. These are proposals for `cube/info` extensions:
-
-| Field | Proposed `cube/info` key | Rationale |
-|---|---|---|
-| `reset_mechanism` | `reset_mechanism` | The benchmark knows how it resets; no reason to ask the author. |
-| `parallelization_mode` | `parallelization_mode` | Derivable from whether the benchmark uses shared infra. |
-| `max_concurrent_tasks` | `max_concurrent_tasks` | Default 1; benchmark can expose a recommended cap. |
-| `task_count` | already in `cube/tasks` response | Needs a `total` field on the response for large task sets. |
-
-Once these are in the API, the corresponding registry YAML fields become CI-derived and are
-removed from the author-provided section.
-
----
-
 ## Open questions
 
-1. **Multi-cloud**: The slow check currently assumes AWS. Should the registry support benchmarks
-   that only work on specific cloud providers (e.g. Azure-only images)? A `supported_clouds`
-   field could let CI skip unsupported providers rather than fail.
+1. **`parallelization_mode`**: could be derived from whether the benchmark declares shared
+   resources vs task-level resources. Worth making explicit in the `ResourceConfig` API before
+   asking authors to self-report.
 
-2. **Version pinning**: When an author bumps `version` in their YAML, should the slow check
-   re-run automatically? Yes — any change to `version`, `runtime_details.image_url`, or
-   `package` should trigger a new slow check. Changes to `description`, `tags`, etc. should not.
+2. **`supported_infra` default**: defaulting to `[aws]` keeps initial setup simple. Benchmarks
+   that declare `azure` in addition will have the slow check run twice. Should there be a
+   registry-wide default that can be overridden per entry, or should it always be explicit?
 
-3. **Deprecation**: What happens when a benchmark is abandoned or its PyPI package becomes
-   unavailable? A `status` field (`active | deprecated | archived`) controlled by CI
-   (checks if `pip install` still works) would let platforms filter stale entries.
+3. **Legal disclaimer placement**: the disclaimer that `reported_license` is not a legal claim
+   should appear prominently in the registry README and any web UI, not just in this spec.
