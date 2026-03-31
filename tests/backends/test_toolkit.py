@@ -11,6 +11,8 @@ import urllib.request
 
 import pytest
 
+pytest.importorskip("tenacity")  # skip whole module if tenacity not installed
+
 from cube.backends.toolkit import ToolkitContainerBackend
 from cube.container import ContainerConfig
 from tests.backends.test_harness import log, make_container_common_tests, make_container_health_check_tests
