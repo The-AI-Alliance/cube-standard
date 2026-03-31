@@ -918,10 +918,14 @@ class AzureInfraConfig(InfraConfig):
 
     def _delete_blob(self, blob_name: str) -> None:
         """Delete a blob from the VHD container (no-op if it doesn't exist)."""
+        from azure.core.exceptions import ResourceNotFoundError
+
         try:
             svc = self._blob_service_client()
             svc.get_blob_client(self.container_name, blob_name).delete_blob()
             logger.info("_delete_blob: deleted %s", blob_name)
+        except ResourceNotFoundError:
+            logger.debug("_delete_blob: %s not found, skipping", blob_name)
         except Exception as exc:
             logger.warning("_delete_blob: could not delete %s: %s", blob_name, exc)
 
