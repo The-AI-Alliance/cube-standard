@@ -85,6 +85,9 @@ extend-select = ["I"] # sort imports
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-rs"
+markers = [
+    "integration: end-to-end tests that hit GitHub (run with -m integration)",
+]
 
 [dependency-groups]
 dev = [
