@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -204,7 +203,7 @@ class TestRegistryAdd:
         yaml_path.write_text(content)
 
         remaining_todos = [ln for ln in content.splitlines() if "<TODO:" in ln and not ln.strip().startswith("#")]
-        assert not remaining_todos, f"TODOs still present:\n" + "\n".join(remaining_todos)
+        assert not remaining_todos, "TODOs still present:\n" + "\n".join(remaining_todos)
 
         # 3. Submit
         result = _run_cube("registry", "add", "--submit", str(COUNTER_CUBE_PATH))
@@ -228,7 +227,6 @@ class TestRegistryAdd:
             resp = _gh_api("GET", f"/repos/{REGISTRY}/commits/{head_sha}/check-runs")
             check_runs = resp.get("check_runs", []) if isinstance(resp, dict) else []
             statuses = {cr["name"]: cr["status"] for cr in check_runs}
-            conclusions = {cr["name"]: cr["conclusion"] for cr in check_runs if cr["conclusion"]}
             print(f"  checks: {statuses}")
             all_done = all(cr["status"] == "completed" for cr in check_runs) and len(check_runs) >= 2
             if all_done:
@@ -245,4 +243,4 @@ class TestRegistryAdd:
             and cr.get("conclusion") not in ("success", "skipped")
         ]
         assert not failed, f"CI checks failed: {failed}\nCheck: {pr_url}/checks"
-        print(f"All CI checks passed.")
+        print("All CI checks passed.")
