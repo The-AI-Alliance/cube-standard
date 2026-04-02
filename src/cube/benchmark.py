@@ -113,6 +113,15 @@ class BenchmarkMetadata(TypedBaseModel):
             "same VM is unsafe). See ResetIsolation for possible values."
         ),
     )
+    named_subsets: dict[str, tuple[str, str]] = Field(
+        default_factory=dict,
+        description=(
+            "Named subsets of this benchmark, as a mapping from subset name to "
+            "(glob_key, glob_pattern) passed to Benchmark.subset_from_glob(). "
+            "Lets users obtain a pre-defined filtered view without writing glob expressions manually. "
+            "Example: {'lite': ('extra_info', '*\"lite\"*'), 'verified': ('extra_info', '*\"verified\"*')}"
+        ),
+    )
     extra_info: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     # TODO: discuss adding / removing fields such as homepage, repository, citation, etc.
 
@@ -509,6 +518,32 @@ class Benchmark(TypedBaseModel, ABC):
         object.__setattr__(new_instance, "benchmark_metadata", new_bm)
         object.__setattr__(new_instance, "task_metadata", {tm.id: tm for tm in task_subset})
         return new_instance
+
+    @classmethod
+    def named_subsets(cls) -> list[str]:
+        """Return the names of all pre-defined subsets for this benchmark.
+
+        Callable without instantiation: ``MyBenchmark.named_subsets()``.
+        Subsets are defined in ``benchmark_metadata.named_subsets``.
+        """
+        return list(cls.benchmark_metadata.named_subsets.keys())
+
+    def named_subset(self, name: str) -> "Benchmark":
+        """Return a filtered benchmark containing only the tasks in the named subset.
+
+        Equivalent to ``subset_from_glob(*benchmark_metadata.named_subsets[name])``.
+
+        Args:
+            name: A key from ``benchmark_metadata.named_subsets``.
+
+        Raises:
+            KeyError: If ``name`` is not a known subset.
+        """
+        if name not in self.benchmark_metadata.named_subsets:
+            available = list(self.benchmark_metadata.named_subsets.keys())
+            raise KeyError(f"Unknown subset {name!r}. Available: {available}")
+        glob_key, glob_pattern = self.benchmark_metadata.named_subsets[name]
+        return self.subset_from_glob(glob_key, glob_pattern)
 
     def spawn(self, task_config: TaskConfig) -> str:
         """
