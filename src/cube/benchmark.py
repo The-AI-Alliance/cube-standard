@@ -16,6 +16,10 @@ Abstract classes:
     are placed next to the benchmark module file — they will be loaded automatically:
         benchmark_metadata: BenchmarkMetadata
         task_metadata: dict[str, TaskMetadata]
+    For benchmarks whose task list is determined at install time (e.g. downloaded datasets),
+    define ``task_metadata: ClassVar[dict[str, TaskMetadata]] = {}`` as a placeholder and
+    implement ``install()`` to populate and save ``task_metadata.json``. The empty dict
+    signals to ``__init_subclass__`` that install-time population is expected.
 """
 
 import copy
@@ -314,8 +318,9 @@ class Benchmark(TypedBaseModel, ABC):
             module_file = getattr(sys.modules.get(cls.__module__), "__file__", None)
             module_dir = Path(module_file).resolve().parent if module_file else None
 
-            # Auto-load benchmark_metadata from a file next to your benchmark file if not explicitly defined
-            if "benchmark_metadata" not in cls.__dict__:
+            # Auto-load benchmark_metadata from a file next to your benchmark file.
+            # Triggers when benchmark_metadata is missing or an empty {} placeholder.
+            if not cls.__dict__.get("benchmark_metadata"):
                 loaded = None
                 if module_dir:
                     for fname, loader in [
@@ -339,8 +344,9 @@ class Benchmark(TypedBaseModel, ABC):
                     f"'benchmark_metadata' in {cls.__name__} must be a BenchmarkMetadata instance, not {type(bench_meta).__name__}"
                 )
 
-            # Auto-load task_metadata from a file next to your benchmark file if not explicitly defined
-            if "task_metadata" not in cls.__dict__:
+            # Auto-load task_metadata from a file next to your benchmark file.
+            # Triggers when task_metadata is missing or an empty {} placeholder
+            if not cls.__dict__.get("task_metadata"):
                 loaded = None
                 if module_dir:
                     for fname, loader in [
@@ -351,12 +357,16 @@ class Benchmark(TypedBaseModel, ABC):
                         if candidate.exists():
                             loaded = loader(candidate)
                             break
-                if loaded is None:
-                    raise TypeError(
-                        f"Concrete benchmark class {cls.__name__} must define 'task_metadata' as a class attribute, "
-                        f"or provide a 'task_metadata.json' / 'task_metadata.csv' file next to your benchmark file"
+                if loaded is not None:
+                    cls.task_metadata = loaded
+                else:
+                    # if no task_metadata file is found, assume install-time population via install().
+                    cls.task_metadata = {}
+                    logger.warning(
+                        f"{cls.__name__}.task_metadata is empty — no task_metadata.json/.csv found "
+                        f"next to the benchmark module. Call `{cls.__name__}.install()` to download "
+                        f"and cache task metadata before using this benchmark."
                     )
-                cls.task_metadata = loaded
 
             task_meta = cls.__dict__["task_metadata"]
             if not isinstance(task_meta, dict):
@@ -386,6 +396,11 @@ class Benchmark(TypedBaseModel, ABC):
         """
         Public method to setup the benchmark. Calls the internal _setup() implemented by the concrete subclass.
         """
+        if not self.task_metadata:
+            raise RuntimeError(
+                f"{type(self).__name__}.task_metadata is empty. "
+                f"Run `{type(self).__name__}.install()` first to download and cache task metadata."
+            )
         self._setup()
         # One debug line instead of four warnings — optional fields are unset for many minimal benchmarks.
         missing_optional: list[str] = []
@@ -521,16 +536,27 @@ class Benchmark(TypedBaseModel, ABC):
         """
         pass
 
-    def install(self) -> None:
+    @classmethod
+    def install(cls) -> None:
         """
-        Optional method to install any dependencies required by the benchmark.
-        By default, does nothing. Override this method in your benchmark if you need to perform installation steps before setup().
+        Optional classmethod to install dependencies and cache task metadata for this benchmark.
+
+        Override this in your benchmark to:
+          1. Download any required datasets or assets.
+          2. Build the full task_metadata dict (all tasks, all splits — no filtering).
+          3. Save it as ``task_metadata.json`` next to the benchmark module file.
+          4. Update ``cls.task_metadata`` in memory so it takes effect immediately.
+
+        By default does nothing. Can be called without instantiating the benchmark:
+        ``MyBenchmark.install()``
         """
         pass
 
-    def uninstall(self) -> None:
+    @classmethod
+    def uninstall(cls) -> None:
         """
-        Optional method to uninstall any dependencies installed by the benchmark.
-        By default, does nothing. Override this method in your benchmark if you need to perform cleanup steps after close().
+        Optional classmethod to remove any assets downloaded by install().
+        By default does nothing. Can be called without instantiating the benchmark:
+        ``MyBenchmark.uninstall()``
         """
         pass
