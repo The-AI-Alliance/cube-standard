@@ -60,8 +60,8 @@ docker run -d \\
     -p 7780:80 \\
     -p 7781:8877 \\
     am1n3e/webarena-verified-shopping_admin
-# Wait for the container to be healthy (up to 60s)
-for i in $(seq 1 30); do
+# Wait for shopping_admin web UI (Magento) — can take 3-5 min to initialise (up to 300s)
+for i in $(seq 1 150); do
     curl -sf http://localhost:7780/ > /dev/null 2>&1 && echo "healthy" && break
     sleep 2
 done
@@ -80,15 +80,26 @@ INFRA = AzureInfraConfig(
 SKIP_PROVISION = os.environ.get("SKIP_PROVISION", "").strip() in ("1", "true", "yes")
 
 
-def _healthcheck(name: str, url: str, timeout: int = 10) -> bool:
-    """Try a GET request; return True if we get any HTTP response."""
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            log.info("  %s → HTTP %d ✓", name, resp.status)
-            return True
-    except Exception as exc:
-        log.warning("  %s → %s", name, exc)
-        return False
+def _healthcheck(name: str, url: str, timeout: int = 30, retries: int = 6, retry_delay: float = 10.0) -> bool:
+    """Try a GET request with retries; return True if we get any HTTP response.
+
+    Magento (shopping_admin web UI) can take 3-5 min to fully initialise even
+    after the container reports healthy, so we retry up to retries times.
+    """
+    import time
+
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                log.info("  %s → HTTP %d ✓", name, resp.status)
+                return True
+        except Exception as exc:
+            if attempt < retries:
+                log.info("  %s → %s (attempt %d/%d, retrying in %.0fs…)", name, exc, attempt, retries, retry_delay)
+                time.sleep(retry_delay)
+            else:
+                log.warning("  %s → %s (all %d attempts failed)", name, exc, retries)
+    return False
 
 
 def main() -> None:
