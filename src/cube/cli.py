@@ -339,8 +339,14 @@ def cmd_test(
     *,
     max_steps: int = 20,
     output_path: str | None = None,
+    ci_mode: bool = False,
 ) -> None:
-    """Import *module_name* (or resolve an entry-point name) and run the debug compliance suite."""
+    """Import *module_name* (or resolve an entry-point name) and run the debug compliance suite.
+
+    When *ci_mode* is True (or ``CUBE_CI=1`` is set), the Rich terminal dashboard is suppressed
+    and only plain-text compliance results are printed — suitable for GitHub Actions logs.
+    """
+    ci_mode = ci_mode or bool(os.environ.get("CUBE_CI"))
     from cube.testing import (
         aggregate_profiling,
         build_stress_test_report,
@@ -477,6 +483,23 @@ def cmd_test(
     _eff_bar_w = min(14, max(8, _display_width // 7))
 
     profiling_agg = aggregate_profiling(results)
+
+    # ── CI mode: plain-text output, no terminal dashboard ────────────────────
+    if ci_mode:
+        print(f"cube test  benchmark={resolved}  tasks={len(results)}  failures={len(failures)}")
+        for name in compliance_passed:
+            print(f"  PASS  {name}")
+        for name in compliance_failed:
+            print(f"  FAIL  {name}")
+        report = build_stress_test_report(resolved, results, compliance_passed, compliance_failed)
+        if output_path:
+            report.save(output_path)
+            print(f"  JSON  {output_path}")
+        if failures:
+            print(f"\nFAILED — {len(failures)}/{len(results)} tasks did not reach reward 1.0")
+            sys.exit(1)
+        print("\nPASSED")
+        return
 
     # ── Stress-test dashboard (header → compliance → latency → throughput → profiling → tasks)
     status_str = "Passed" if not failures else "Failed"
@@ -751,8 +774,10 @@ def _print_help() -> None:
     )
     table.add_row(
         "cube test NAME",
-        "Run the debug compliance suite — NAME is a benchmark entry-point name or a dotted module path",
-        "cube test counter-cube",
+        "Run the debug compliance suite — NAME is a benchmark entry-point name or a dotted module path. "
+        "Options: [cmd]--ci[/cmd] (plain-text CI output, also set via CUBE_CI=1), "
+        "[cmd]--output=PATH[/cmd] (save JSON report), [cmd]--max-steps=N[/cmd]",
+        "cube test counter-cube --ci --output=results.json",
     )
 
     console.print(
@@ -760,7 +785,7 @@ def _print_help() -> None:
             table,
             title=f"[brand]cube[/brand] [dim]v{__version__}[/dim]",
             subtitle="[dim]Common Unified Benchmark Environments[/dim]\n"
-            "[dim]Set NO_COLOR=1 or use --no-color for plain output.[/dim]",
+            "[dim]Set NO_COLOR=1 or use --no-color for plain output. Set CUBE_CI=1 for CI mode.[/dim]",
             border_style="blue",
             padding=(0, 1),
         )
@@ -801,6 +826,7 @@ def main() -> None:
             sys.exit(1)
         max_steps = 20
         output_path = None
+        ci_mode = False
         remaining = args[2:]
         for opt in remaining:
             if opt.startswith("--max-steps="):
@@ -809,7 +835,9 @@ def main() -> None:
                 output_path = opt.split("=", 1)[1]
             elif opt == "--save-baseline":
                 output_path = "cube_stress_test_baseline.json"
-        cmd_test(args[1], max_steps=max_steps, output_path=output_path)
+            elif opt == "--ci":
+                ci_mode = True
+        cmd_test(args[1], max_steps=max_steps, output_path=output_path, ci_mode=ci_mode)
     else:
         err_console.print(f"[error]Unknown command:[/error] [cmd]{command}[/cmd]")
         _print_help()
