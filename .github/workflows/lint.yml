@@ -11,5 +11,8 @@ jobs:
       - name: Install dev dependencies
         run: make ci-install
 
+      - name: Install dev dependencies
+        run: uv sync --extra dev
+
       - name: Run Ruff linting and formatting checks
         run: make lint-check
