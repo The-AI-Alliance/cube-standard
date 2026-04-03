@@ -212,7 +212,7 @@ echo "[bootstrap] Done at $(date)"
 
 # ── Docker-host bootstrap script ──────────────────────────────────────────────
 # Placeholders: {docker_pull_commands}, {sentinel_sas_url}, {failed_sas_url}, {ssh_pubkey}
-# Runs via cloud-init (custom_data) on a marketplace Ubuntu 22.04 VM.
+# Runs via cloud-init (custom_data) on the gallery bootstrap Ubuntu VM.
 # Installs Docker, pre-pulls all images, injects SSH key, writes sentinel blob.
 
 _DOCKER_BOOTSTRAP_SCRIPT = """\
@@ -1608,8 +1608,10 @@ class AzureInfraConfig(InfraConfig):
         return image_id
 
     def _launch_docker_host_vm(self, script: str, disk_name: str) -> dict:
-        """Launch a marketplace Ubuntu 22.04 VM for Docker image bootstrapping.
+        """Launch a gallery-image Ubuntu VM for Docker image bootstrapping.
 
+        Uses the same bootstrap_gallery_image as _launch_bootstrap_vm (subscription
+        policy requires gallery images — marketplace images are blocked).
         Uses cloud-init (custom_data) to run the bootstrap script.
         OS disk is named explicitly and created with delete_option=Detach so it
         persists after VM deletion for snapshotting into a gallery image.
@@ -1625,7 +1627,19 @@ class AzureInfraConfig(InfraConfig):
         logger.info("_launch_docker_host_vm: creating network resources")
         pip, nic, pip_name, nic_name = self._create_network_resources(uid, uid)
 
-        logger.info("_launch_docker_host_vm: launching %s (Standard_D4s_v3, 64 GB OS disk)", vm_name)
+        image_id = (
+            f"/subscriptions/{self.subscription}/resourceGroups/{self.resource_group}"
+            f"/providers/Microsoft.Compute/galleries/{self.gallery_name}"
+            f"/images/{self.bootstrap_gallery_image}"
+            f"/versions/{self.bootstrap_gallery_image_ver}"
+        )
+        logger.info(
+            "_launch_docker_host_vm: launching %s (%s, 64 GB OS disk)  image=%s/%s",
+            vm_name,
+            self.bootstrap_vm_size,
+            self.bootstrap_gallery_image,
+            self.bootstrap_gallery_image_ver,
+        )
         t0 = time.time()
         poller = compute.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
             self.resource_group,
@@ -1633,19 +1647,13 @@ class AzureInfraConfig(InfraConfig):
             {  # type: ignore[arg-type]
                 "location": self.location,
                 "tags": {**self.tags, "role": "docker-bootstrap"},
-                "hardware_profile": {"vm_size": "Standard_D4s_v3"},
+                "hardware_profile": {"vm_size": self.bootstrap_vm_size},
                 "storage_profile": {
-                    "image_reference": {
-                        # Marketplace Ubuntu 22.04 Gen1 — no gallery dependency.
-                        "publisher": "Canonical",
-                        "offer": "0001-com-ubuntu-server-jammy",
-                        "sku": "22_04-lts",
-                        "version": "latest",
-                    },
+                    "image_reference": {"id": image_id},
                     "os_disk": {
                         "name": disk_name,
                         "create_option": "FromImage",
-                        "managed_disk": {"storage_account_type": "Standard_LRS"},
+                        "managed_disk": {"storage_account_type": self.bootstrap_disk_sku},
                         "disk_size_gb": 64,
                         # Detach keeps the disk after VM deletion — required for snapshotting.
                         "delete_option": "Detach",
