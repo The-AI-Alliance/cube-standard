@@ -498,7 +498,7 @@ def cmd_test(
         if failures:
             print(f"\nFAILED — {len(failures)}/{len(results)} tasks did not reach reward 1.0")
             sys.exit(1)
-        print(f"\nPASSED")
+        print("\nPASSED")
         return
 
     # ── Stress-test dashboard (header → compliance → latency → throughput → profiling → tasks)
