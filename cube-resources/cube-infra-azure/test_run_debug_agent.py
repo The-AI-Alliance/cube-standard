@@ -54,7 +54,7 @@ def main() -> None:
     resources = get_debug_benchmark(infra=INFRA).resources
     log.info("benchmark resources: %s", [r.name for r in resources])
 
-    # ── Step 1: clean up any stale test VMs from previous runs ────────────────
+    # ── Step 1: clean up any stale test VMs + orphaned NICs/IPs/disks ───────────
     active = INFRA.list_active()
     if active:
         log.info("Step 1: found %d active VM(s) — cleaning up", len(active))
@@ -63,6 +63,7 @@ def main() -> None:
             handle.close()
     else:
         log.info("Step 1: no active VMs")
+    INFRA.cleanup_orphaned_resources()
 
     # ── Step 2: unprovision test image (clean slate for full reprovision) ──────
     for resource in resources:

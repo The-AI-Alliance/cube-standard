@@ -75,6 +75,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from pydantic import Field, model_validator
+
 from cube.resource import (
     InfraConfig,
     ResourceConfig,
@@ -84,7 +86,6 @@ from cube.resource import (
     VMResourceConfig,
 )
 from cube_infra_azure._utils import BootstrapMonitor, free_port, open_tunnel, wait_for_ssh
-from pydantic import Field, model_validator
 
 if TYPE_CHECKING:
     pass
@@ -918,6 +919,83 @@ class AzureInfraConfig(InfraConfig):
             logger.info("cleanup_stale: removed %d VM(s): %s", len(deleted), deleted)
         return deleted
 
+    def cleanup_orphaned_resources(self) -> dict[str, list[str]]:
+        """Delete NICs, public IPs, and managed disks left behind by crashed runs.
+
+        These are not reachable via cleanup_stale() because cleanup_stale() finds
+        resources through their parent VM — once the VM is gone the NIC/IP/disk
+        becomes invisible to tag-based queries.
+
+        Identifies orphans by naming convention:
+          - NICs:   cube-*-nic-*  with no VM attached
+          - IPs:    cube-*-ip-*   with no NIC attached
+          - Disks:  cube-disk-*   that are Unattached
+
+        Returns dict with keys "nics", "ips", "disks" listing deleted resource names.
+        """
+        from azure.core.exceptions import ResourceNotFoundError
+
+        compute = self._compute()
+        network = self._network()
+        rg = self.resource_group
+        result: dict[str, list[str]] = {"nics": [], "ips": [], "disks": []}
+
+        # Orphaned NICs — no VM attached, name matches cube convention
+        try:
+            for nic in network.network_interfaces.list(rg):
+                if not (nic.name and "nic" in nic.name and nic.name.startswith("cube-")):
+                    continue
+                if nic.virtual_machine:
+                    continue  # still attached to a VM
+                logger.info("cleanup_orphaned_resources: deleting NIC %s", nic.name)
+                try:
+                    network.network_interfaces.begin_delete(rg, nic.name).result()
+                    result["nics"].append(nic.name)
+                except (ResourceNotFoundError, Exception) as exc:
+                    logger.warning("cleanup_orphaned_resources: NIC %s: %s", nic.name, exc)
+        except Exception as exc:
+            logger.warning("cleanup_orphaned_resources: failed to list NICs: %s", exc)
+
+        # Orphaned IPs — no NIC attached (NIC deletion above may free them),
+        # name matches cube convention
+        try:
+            for pip in network.public_ip_addresses.list(rg):
+                if not (pip.name and "ip" in pip.name and pip.name.startswith("cube-")):
+                    continue
+                if pip.ip_configuration:
+                    continue  # still attached to a NIC
+                logger.info("cleanup_orphaned_resources: deleting IP %s", pip.name)
+                try:
+                    network.public_ip_addresses.begin_delete(rg, pip.name).result()
+                    result["ips"].append(pip.name)
+                except (ResourceNotFoundError, Exception) as exc:
+                    logger.warning("cleanup_orphaned_resources: IP %s: %s", pip.name, exc)
+        except Exception as exc:
+            logger.warning("cleanup_orphaned_resources: failed to list IPs: %s", exc)
+
+        # Orphaned intermediate disks — Unattached, name matches cube-disk-* pattern
+        try:
+            for disk in compute.disks.list_by_resource_group(rg):
+                if not (disk.name and disk.name.startswith("cube-disk-")):
+                    continue
+                if disk.disk_state != "Unattached":
+                    continue
+                logger.info("cleanup_orphaned_resources: deleting disk %s (%dGB)", disk.name, disk.disk_size_gb or 0)
+                try:
+                    compute.disks.begin_delete(rg, disk.name).result()
+                    result["disks"].append(disk.name)
+                except (ResourceNotFoundError, Exception) as exc:
+                    logger.warning("cleanup_orphaned_resources: disk %s: %s", disk.name, exc)
+        except Exception as exc:
+            logger.warning("cleanup_orphaned_resources: failed to list disks: %s", exc)
+
+        total = sum(len(v) for v in result.values())
+        if total:
+            logger.info("cleanup_orphaned_resources: deleted %d resource(s): %s", total, result)
+        else:
+            logger.info("cleanup_orphaned_resources: nothing to clean up")
+        return result
+
     # ── Private Azure SDK methods ─────────────────────────────────────────────
 
     def _cred(self) -> Any:
@@ -1094,11 +1172,13 @@ class AzureInfraConfig(InfraConfig):
             (network.network_interfaces.begin_delete, "NIC", nic_name),
             (network.public_ip_addresses.begin_delete, "IP", pip_name),
         ]:
+            if not name:
+                continue
             try:
                 fn(self.resource_group, name).result()
                 logger.info("_delete_vm: %s deleted: %s", label, name)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("_delete_vm: %s deletion failed for %s: %s", label, name, exc)
 
     # ── Provisioning internals ────────────────────────────────────────────────
 
