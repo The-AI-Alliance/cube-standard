@@ -19,6 +19,17 @@ Launch (~3-5 min per VM):
         → SSH tunnel localhost:{port} → VM:{guest_port}
         → AzureResourceHandle(endpoint="http://localhost:{port}")
 
+Resource lifetime hierarchy:
+    Gallery image (long-lived, manual):
+        osworld-ubuntu-vm/1.0.0 — created by provision(), persists until
+        unprovision() is called explicitly.  Shared across all task runs.
+        Represented in ProvisionStore as "osworld-ubuntu-vm@azure:westus2".
+
+    VM instances (short-lived, automatic):
+        cube-<run_id>-vm-<uid> — created by launch() at task start, deleted
+        by handle.close() at task end.  Orphaned VMs (process crash, timeout)
+        are swept by cleanup_stale() using the cube:expires_at ARM tag.
+
 Authentication:
     Uses AzureCliCredential — run `az login` once before using.
     Credentials are never stored in Pydantic fields.
@@ -64,8 +75,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import Field, model_validator
-
 from cube.resource import (
     InfraConfig,
     ResourceConfig,
@@ -75,6 +84,7 @@ from cube.resource import (
     VMResourceConfig,
 )
 from cube_infra_azure._utils import BootstrapMonitor, free_port, open_tunnel, wait_for_ssh
+from pydantic import Field, model_validator
 
 if TYPE_CHECKING:
     pass
@@ -250,6 +260,37 @@ class AzureInfraConfig(InfraConfig):
         infra.provision(resource)       # ~30-90 min, idempotent
         run_debug_agent(benchmark, infra)
 
+    ── Prerequisites (must exist before calling provision()) ─────────────────
+    The following Azure resources must be created once per resource group.
+    They are never created automatically.
+
+    Resource group:
+        az group create --name <rg> --location westus2
+
+    Storage account (must be in the same region as location=):
+        az storage account create --name <sa> --resource-group <rg> \
+            --location westus2 --sku Standard_LRS --kind StorageV2
+        az storage container create --name vhds --account-name <sa>
+        # List existing: az storage account list --resource-group <rg> -o table
+
+    VNet + Subnet:
+        az network vnet create --name <vnet> --resource-group <rg> \
+            --location westus2 --address-prefix 10.0.0.0/16 \
+            --subnet-name default --subnet-prefix 10.0.0.0/24
+        # List existing: az network vnet list --resource-group <rg> -o table
+
+    NSG (must allow inbound SSH from your IP or 0.0.0.0/0 for testing):
+        az network nsg create --name <nsg> --resource-group <rg>
+        az network nsg rule create --nsg-name <nsg> --resource-group <rg> \
+            --name AllowSSH --priority 1000 --protocol Tcp \
+            --destination-port-ranges 22 --access Allow
+        # List existing: az network nsg list --resource-group <rg> -o table
+
+    Compute Gallery + bootstrap image:
+        az sig create --gallery-name cube_exp_gallery --resource-group <rg>
+        # The bootstrap image definition (cube-ubuntu-22-04) must exist in the
+        # gallery.  Contact your team admin if provisioning in a new account.
+
     ── Required ──────────────────────────────────────────────────────────────
     resource_group  str
         Resource group for all managed Azure resources.
@@ -260,6 +301,7 @@ class AzureInfraConfig(InfraConfig):
         Azure subscription ID.  Auto-populated via ``az account show``.
     storage_account str | None = None
         Storage account used for intermediate VHD blobs during provisioning.
+        Must be in the same region as location=.
         Auto-populated if only one storage account exists in the resource group.
     vnet_name       str | None = None
         VNet for launched VMs.
@@ -448,6 +490,24 @@ class AzureInfraConfig(InfraConfig):
                         "nsg_name",
                     ),
                 )
+
+            # ── P1: validate storage account is in the same region as location ─
+            try:
+                sa = sc.storage_accounts.get_properties(rg, self.storage_account)
+                sa_location = (sa.location or "").replace(" ", "").lower()
+                cfg_location = self.location.replace(" ", "").lower()
+                if sa_location != cfg_location:
+                    raise ValueError(
+                        f"Storage account '{self.storage_account}' is in region "
+                        f"'{sa.location}' but AzureInfraConfig.location='{self.location}'.\n"
+                        f"VHD blobs and managed disks must be in the same region.\n"
+                        f"Either use a storage account in '{self.location}' or set "
+                        f"location='{sa.location}'."
+                    )
+            except ValueError:
+                raise
+            except Exception:
+                pass  # storage account doesn't exist yet — will be created by provision()
 
         # ── SSH key discovery (local filesystem, no SDK needed) ───────────────
         if self.ssh_privkey_path is None:

@@ -32,6 +32,8 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
+for _noisy in ("botocore", "urllib3.connectionpool"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 log = logging.getLogger(__name__)
 
