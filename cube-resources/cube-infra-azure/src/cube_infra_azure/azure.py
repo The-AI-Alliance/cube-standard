@@ -1046,10 +1046,13 @@ class AzureInfraConfig(InfraConfig):
         except Exception as exc:
             logger.warning("cleanup_orphaned_resources: failed to list IPs: %s", exc)
 
-        # Orphaned intermediate disks — Unattached, name matches cube-disk-* pattern
+        # Orphaned intermediate disks — Unattached, name matches cube-disk-* or
+        # cube-dockerhost-disk-* (bootstrap OS disks left after interrupted provision).
         try:
             for disk in compute.disks.list_by_resource_group(rg):
-                if not (disk.name and disk.name.startswith("cube-disk-")):
+                if not (
+                    disk.name and (disk.name.startswith("cube-disk-") or disk.name.startswith("cube-dockerhost-disk-"))
+                ):
                     continue
                 if disk.disk_state != "Unattached":
                     continue
@@ -1593,6 +1596,17 @@ class AzureInfraConfig(InfraConfig):
                 ssh_pubkey=Path(self.ssh_pubkey_path).read_text().strip(),
             )
             disk_name = f"cube-dockerhost-disk-{image_name}"
+            # If a stale disk exists from a previous interrupted run (sentinel absent
+            # but disk persisted via delete_option=Detach), delete it so the new VM
+            # can be created with create_option=FromImage.
+            compute = self._compute()
+            try:
+                existing = compute.disks.get(self.resource_group, disk_name)
+                if existing:
+                    logger.info("_provision_docker_service: deleting stale disk %s (no sentinel)", disk_name)
+                    compute.disks.begin_delete(self.resource_group, disk_name).result()
+            except Exception:
+                pass  # disk doesn't exist — expected
             vm_info = self._launch_docker_host_vm(script, disk_name)
             t0 = time.time()
             try:
