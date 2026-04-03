@@ -238,6 +238,9 @@ apt-get install -y -qq docker.io curl
 systemctl enable docker
 systemctl start docker
 
+# ── add azureuser to docker group (no sudo needed at launch time) ─────────────
+usermod -aG docker azureuser
+
 # ── inject SSH key (bake into disk so task VMs can be reached at launch time) ─
 SSH_PUBKEY='{ssh_pubkey}'
 for USER_HOME in /home/azureuser /root; do
@@ -588,8 +591,8 @@ class AzureInfraConfig(InfraConfig):
         return f"azure:{self.location}"
 
     def capabilities(self) -> set[str]:
-        """Azure can satisfy any VMResourceConfig (native hypervisor = KVM-equivalent)."""
-        return {"kvm"}
+        """Azure can satisfy VM and Docker resources (native hypervisor + Docker in VM)."""
+        return {"kvm", "docker"}
 
     def provision(self, resource: ResourceConfig) -> None:
         """Bootstrap OSWorld (or any VM image) from source_url into the Compute Gallery.
@@ -807,7 +810,7 @@ class AzureInfraConfig(InfraConfig):
                 public_ip,
                 "user",
                 self.ssh_privkey_path,
-                fallback_users=["ubuntu", "root"],
+                fallback_users=["ubuntu", "azureuser", "root"],
                 timeout=600,  # OSWorld VM takes ~5-8 min to boot
             )
 
