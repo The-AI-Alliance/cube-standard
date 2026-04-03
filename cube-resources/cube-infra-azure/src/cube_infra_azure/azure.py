@@ -701,9 +701,14 @@ class AzureInfraConfig(InfraConfig):
         except Exception as exc:
             logger.warning("unprovision: could not delete gallery image %s/%s: %s", image_def, version, exc)
 
-        blob_name = image_name + ".vhd"
-        for b in (blob_name, blob_name + ".bootstrap_done", blob_name + ".bootstrap_failed"):
-            self._delete_blob(b)
+        if isinstance(resource, DockerServiceConfig):
+            # Docker-host bootstrap uses different sentinel names (no .vhd blob).
+            for b in (image_name + ".docker_bootstrap_done", image_name + ".docker_bootstrap_failed"):
+                self._delete_blob(b)
+        else:
+            blob_name = image_name + ".vhd"
+            for b in (blob_name, blob_name + ".bootstrap_done", blob_name + ".bootstrap_failed"):
+                self._delete_blob(b)
 
         store.delete(shim, self)
         logger.info("unprovision: %r removed from ProvisionStore", image_name)
