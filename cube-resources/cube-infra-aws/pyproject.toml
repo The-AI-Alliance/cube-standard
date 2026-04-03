@@ -2,6 +2,11 @@
 name = "cube-infra-aws"
 version = "0.1.0"
 description = "AWS InfraConfig for CUBE resource lifecycle"
+authors = [
+    { name = "Nicolas Gontier", email = "nicolas.gontier@servicenow.com" },
+    { name = "Aman Jaiswal", email = "amanjaiswal73892@gmail.com" },
+    { name = "Alexandre Lacoste", email = "alexandre.lacoste@servicenow.com" },
+]
 requires-python = ">=3.12"
 dependencies = [
     "cube-standard",
