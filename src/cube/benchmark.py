@@ -20,6 +20,7 @@ Abstract classes:
 
 import copy
 import csv
+import enum
 import fnmatch
 import json
 import logging
@@ -37,6 +38,26 @@ from cube.task import TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
 
 logger = logging.getLogger(__name__)
+
+
+class ResetIsolation(str, enum.Enum):
+    """Describes the isolation guarantee provided by a benchmark's reset mechanism.
+
+    Declared on BenchmarkMetadata so harness users can reason about safe parallelism
+    and reproducibility before running tasks.
+
+    Values:
+        SNAPSHOT:     VM reverted to a saved savestate (~5s). Strongest isolation.
+        RESTART:      Container/VM stopped and restarted (~30s). No state leakage.
+        APP_LEVEL:    Application state reset via scripts; VM stays running (~5s).
+                      Risk of OS-level state leakage between tasks on the same VM.
+        NEW_INSTANCE: Fresh VM per task (~2-4 min). Strongest guarantee, slowest.
+    """
+
+    SNAPSHOT = "snapshot"
+    RESTART = "restart"
+    APP_LEVEL = "app_level"
+    NEW_INSTANCE = "new_instance"
 
 
 RuntimeContext = dict[str, Any]
@@ -79,6 +100,15 @@ class BenchmarkMetadata(TypedBaseModel):
     )
     num_tasks: int = Field(default=0, description="Total number of tasks")
     tags: list[str] = Field(default_factory=list, description="Benchmark tags")
+    reset_isolation: ResetIsolation | None = Field(
+        default=None,
+        description=(
+            "Isolation guarantee provided by this benchmark's reset mechanism. "
+            "None means unspecified. Set by benchmark authors to let harness users "
+            "reason about safe parallelism (e.g. APP_LEVEL + multiple workers on the "
+            "same VM is unsafe). See ResetIsolation for possible values."
+        ),
+    )
     extra_info: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     # TODO: discuss adding / removing fields such as homepage, repository, citation, etc.
 
@@ -357,16 +387,23 @@ class Benchmark(TypedBaseModel, ABC):
         Public method to setup the benchmark. Calls the internal _setup() implemented by the concrete subclass.
         """
         self._setup()
+        # One debug line instead of four warnings — optional fields are unset for many minimal benchmarks.
+        missing_optional: list[str] = []
         if not self._runtime_context:
-            logger.warning(
-                "Benchmark setup did not define any runtime context. If your tasks require shared infrastructure, please ensure that self._runtime_context is populated."
-            )
+            missing_optional.append("_runtime_context")
         if self.container_backend is None:
-            logger.warning("Benchmark initialization did not define a container backend.")
+            missing_optional.append("container_backend")
         if self.default_tool_config is None:
-            logger.warning("Benchmark initialization did not define a default tool config.")
+            missing_optional.append("default_tool_config")
         if self.seed_generator is None:
-            logger.warning("Benchmark initialization did not define a seed generator.")
+            missing_optional.append("seed_generator")
+        if missing_optional:
+            logger.debug(
+                "%s: optional benchmark fields not set (%s). Normal for simple examples; "
+                "define them when tasks need shared infra, containers, or seeds.",
+                type(self).__name__,
+                ", ".join(missing_optional),
+            )
 
     def get_task_configs(self) -> Generator[TaskConfig, None, None]:
         """Returns the list of TaskConfig objects for this benchmark."""

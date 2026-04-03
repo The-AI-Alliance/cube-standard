@@ -1,5 +1,8 @@
 """cube CLI — entry point for the `cube` command.
 
+Global options (before or after the subcommand): ``--no-color`` disables ANSI
+colors (also respects the ``NO_COLOR`` environment variable per no-color.org).
+
 Usage:
     cube list           List all cube benchmarks installed in the current
                         environment (registered under the cube.benchmarks
@@ -21,46 +24,113 @@ Usage:
 
 import importlib
 import importlib.metadata
+import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 from rich import box
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
+from cube import __version__
+
 # ── Console setup ─────────────────────────────────────────────────────────────
 
+# "dim" uses the terminal default foreground + dim — "dim white" was unreadable on light themes (e.g. Solarized Light).
 _THEME = Theme(
     {
         "info": "cyan",
         "success": "bold green",
         "warning": "bold yellow",
         "error": "bold red",
-        "dim": "dim white",
+        "dim": "dim",
         "file": "green",
         "cmd": "bold cyan",
         "brand": "bold blue",
     }
 )
 
-console = Console(theme=_THEME)
-err_console = Console(stderr=True, theme=_THEME)
+_NO_COLOR = False
+
+
+def _env_requests_no_color() -> bool:
+    """https://no-color.org/ — any non-empty NO_COLOR disables ANSI styling."""
+    v = os.environ.get("NO_COLOR")
+    return v is not None and v != ""
+
+
+def _make_console(**kwargs: Any) -> Console:
+    kw: dict[str, Any] = {"theme": _THEME, **kwargs}
+    if _NO_COLOR:
+        kw["no_color"] = True
+    return Console(**kw)
+
+
+console = _make_console()
+err_console = _make_console(stderr=True)
+
+
+def _strip_no_color_flags(argv: list[str]) -> tuple[list[str], bool]:
+    """Remove --no-color from argv; returns (rest, True if flag was present)."""
+    rest: list[str] = []
+    seen = False
+    for a in argv:
+        if a == "--no-color":
+            seen = True
+        else:
+            rest.append(a)
+    return rest, seen
+
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 _TEMPLATE_DIR = Path(__file__).parent / "_template" / "new_cube_package"
 _DEFAULT_NAME = "my-benchmark"
-_VERSION = "0.1.0rc1"
 
 
 # ── Commands ───────────────────────────────────────────────────────────────────
 
 
 _PLACEHOLDER_NAMES = {"cube_package", "new_cube_package", "new-cube-package"}
+
+
+def _stress_fill_bar(fraction: float, width: int) -> str:
+    """Solid block + light shade (█░) for latency / profiling / efficiency bars."""
+    if width <= 0:
+        return ""
+    frac = min(max(fraction, 0.0), 1.0)
+    filled = int(frac * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+# Aggregate episode_time_s below this is treated as timer noise — avoid tasks/min in the billions.
+_THROUGHPUT_MIN_TOTAL_S = 0.01
+
+
+def _format_small_seconds(sec: float) -> str:
+    # Show ms when below 10ms so fast runs do not look like “all zeros”.
+    if sec <= 0.0:
+        return "0ms"
+    if sec < 0.01:
+        return f"{sec * 1000:.2f}ms"
+    return f"{sec:.3f}s"
+
+
+def _episode_wall_display_s(report: dict) -> str:
+    # Prefer summed step times when rounded episode_time_s is 0 but work clearly ran.
+    ep = float(report.get("episode_time_s") or 0.0)
+    step_sum = sum(float(x) for x in (report.get("step_times_s") or []))
+    sec = max(ep, step_sum)
+    if sec == 0.0 and (report.get("steps") or 0) > 0:
+        rt = float(report.get("reset_time_s") or 0.0)
+        sec = max(sec, rt)
+    return _format_small_seconds(sec)
 
 
 def cmd_init(name: str, cwd: Path) -> None:
@@ -197,7 +267,8 @@ def cmd_list() -> None:
     table.add_column("version", style="dim", no_wrap=True)
     table.add_column("tasks", justify="right", no_wrap=True)
     table.add_column("tags", style="dim")
-    table.add_column("description", style="white")
+    # Default foreground so description stays readable on light backgrounds (plain "white" did not).
+    table.add_column("description")
 
     for ep in sorted(eps, key=lambda e: e.name):
         version = num_tasks = tags = description = ""
@@ -263,9 +334,20 @@ def _resolve_debug_module(name: str) -> str:
     return f"{package_root}.debug"
 
 
-def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
+def cmd_test(
+    module_name: str,
+    *,
+    max_steps: int = 20,
+    output_path: str | None = None,
+) -> None:
     """Import *module_name* (or resolve an entry-point name) and run the debug compliance suite."""
-    from cube.testing import run_debug_suite
+    from cube.testing import (
+        aggregate_profiling,
+        build_stress_test_report,
+        check_benchmark_metadata,
+        check_reset_reproducibility,
+        run_debug_suite,
+    )
 
     resolved = _resolve_debug_module(module_name)
     if resolved != module_name:
@@ -286,7 +368,9 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         )
 
     try:
-        module = importlib.import_module(resolved)
+        module = importlib.import_module(
+            resolved
+        )  # nosemgrep: non-literal-import  # trusted: module path from CLI user who already has local shell access
     except ModuleNotFoundError as exc:
         err_console.print(
             Panel(
@@ -319,7 +403,7 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         f"[info]Running debug suite for[/info] [file]{resolved}[/file]…",
         spinner="dots",
     ):
-        results = run_debug_suite(resolved, module, max_steps=max_steps)
+        results = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False)
 
     if not results:
         err_console.print(
@@ -334,54 +418,296 @@ def cmd_test(module_name: str, *, max_steps: int = 20) -> None:
         )
         sys.exit(1)
 
-    # ── Results table ──────────────────────────────────────────────────────────
-    table = Table(
-        show_header=True,
-        box=box.SIMPLE,
-        padding=(0, 1),
-        show_edge=False,
-        header_style="bold",
-    )
-    table.add_column("task_id", style="file", no_wrap=True)
-    table.add_column("done", justify="center")
-    table.add_column("reward", justify="right")
-    table.add_column("steps", justify="right")
-    table.add_column("time (s)", justify="right")
-    table.add_column("error", style="error")
-
     failures: list[dict] = []
     for r in results:
         passed = not r["error"] and r["done"] and r["reward"] == 1.0
         if not passed:
             failures.append(r)
 
+    # ── Extra compliance checks (stress_test_specs.md) ─────────────────────────────
+    reset_ok, _ = check_reset_reproducibility(module)
+    meta_ok, _ = check_benchmark_metadata(module)
+    close_idempotent_ok = all(r.get("close_idempotent_ok", False) for r in results)
+    tools_list_ok = all(r.get("tools_list_ok", False) for r in results)
+    compliance_passed = []
+    compliance_failed = []
+    if results:
+        compliance_passed.append("test_debug_tasks_exist")
+        compliance_passed.append("test_debug_agent_exists")
+    if not failures:
+        compliance_passed.append("test_full_episode")
+    else:
+        compliance_failed.append("test_full_episode")
+    if reset_ok:
+        compliance_passed.append("test_reset_reproducibility")
+    else:
+        compliance_failed.append("test_reset_reproducibility")
+    if tools_list_ok:
+        compliance_passed.append("test_tools_list")
+    else:
+        compliance_failed.append("test_tools_list")
+    if close_idempotent_ok:
+        compliance_passed.append("test_close_idempotent")
+    else:
+        compliance_failed.append("test_close_idempotent")
+    if meta_ok:
+        compliance_passed.append("test_benchmark_metadata")
+    else:
+        compliance_failed.append("test_benchmark_metadata")
+
+    # ── Latency: p50, p95, p99 from step_times_s across all episodes ────────────
+    all_step_times: list[float] = []
+    for r in results:
+        all_step_times.extend(r.get("step_times_s") or [])
+    if all_step_times:
+        sorted_times = sorted(all_step_times)
+        n = len(sorted_times)
+        p50_s = sorted_times[int(0.50 * (n - 1))] if n else 0.0
+        p95_s = sorted_times[int(0.95 * (n - 1))] if n else 0.0
+        p99_s = sorted_times[int(0.99 * (n - 1))] if n else 0.0
+    else:
+        p50_s = p95_s = p99_s = 0.0
+
+    try:
+        _term_width = console.size.width
+    except Exception:
+        _term_width = 80
+    _display_width = min(_term_width, 96)
+    _bar_width = min(32, max(14, _display_width - 48))
+    _eff_bar_w = min(14, max(8, _display_width // 7))
+
+    profiling_agg = aggregate_profiling(results)
+
+    # ── Stress-test dashboard (header → compliance → latency → throughput → profiling → tasks)
+    status_str = "Passed" if not failures else "Failed"
+    progress_done = len(results) - len(failures)
+    progress_total = len(results)
+    workers_avail = max(1, os.cpu_count() or 1)
+    workers_active = 1
+
+    bench_label = module_name if len(module_name) <= 40 else resolved
+    if len(bench_label) > 40:
+        bench_label = bench_label[:37] + "…"
+
+    header_grid = Table(show_header=False, box=None, expand=True, padding=(0, 1))
+    header_grid.add_column("left", ratio=1)
+    header_grid.add_column("right", justify="right", ratio=1)
+    header_grid.add_row(
+        Text.from_markup(
+            f"Benchmark: [file]{bench_label}[/file]\n"
+            # Debug suite runs one task at a time; second number is host CPU count, not pool size.
+            f"Suite: [dim]sequential[/dim] · workers [bold]{workers_active}[/bold] · "
+            f"host CPUs [dim]{workers_avail}[/dim]"
+        ),
+        Text.from_markup(
+            f"Status: [{'success' if not failures else 'error'}]{status_str}[/]\n"
+            f"Progress: [bold]{progress_done}[/bold]/[dim]{progress_total}[/dim]"
+        ),
+    )
+
+    full_episode_status = "[success]✓[/success]" if not failures else "[error]✗[/error]"
+    ok_tasks = "[success]✓[/success]" if results else "[dim]—[/dim]"
+    ok_agent = "[success]✓[/success]" if results else "[dim]—[/dim]"
+    ok_tools = "[success]✓[/success]" if tools_list_ok else "[error]✗[/error]"
+    ok_meta = "[success]✓[/success]" if meta_ok else "[error]✗[/error]"
+    ok_reset = "[success]✓[/success]" if reset_ok else "[error]✗[/error]"
+    ok_close = "[success]✓[/success]" if close_idempotent_ok else "[error]✗[/error]"
+
+    compliance_header = Text.from_markup("[bold]COMPLIANCE[/bold]")
+    compliance_checks_table = Table(
+        show_header=False,
+        box=box.SIMPLE,
+        padding=(0, 1),
+        show_edge=False,
+    )
+    compliance_checks_table.add_column("check", style="dim", no_wrap=True)
+    compliance_checks_table.add_column("st", no_wrap=True, width=3)
+    compliance_checks_table.add_column("check2", style="dim", no_wrap=True)
+    compliance_checks_table.add_column("st2", no_wrap=True, width=3)
+    left_col = [
+        ("debug_tasks_exist", ok_tasks),
+        ("debug_agent_exists", ok_agent),
+        ("tools_list", ok_tools),
+        ("benchmark_metadata", ok_meta),
+    ]
+    right_col = [
+        ("full_episode", full_episode_status),
+        ("reset_reproducibility", ok_reset),
+        ("close_idempotent", ok_close),
+    ]
+    for i in range(len(left_col)):
+        ln, ls = left_col[i]
+        if i < len(right_col):
+            rn, rs = right_col[i]
+            compliance_checks_table.add_row(ln, ls, rn, rs)
+        else:
+            compliance_checks_table.add_row(ln, ls, "", "")
+
+    max_lat = max(p50_s, p95_s, p99_s, 0.001)
+    latency_section = Table(show_header=False, box=None, padding=(0, 0), show_edge=False)
+    latency_section.add_column(no_wrap=True)
+    latency_section.add_row(Text.from_markup("[bold]LATENCY (step wall time)[/bold]"))
+    for label, sec in (("p50", p50_s), ("p95", p95_s), ("p99", p99_s)):
+        bar = _stress_fill_bar(sec / max_lat, _bar_width)
+        latency_section.add_row(
+            Text.from_markup(f"  {label:3} │{bar}│ [dim]{_format_small_seconds(sec)}[/dim]"),
+        )
+    reset_times = [r.get("reset_time_s") for r in results if r.get("reset_time_s") is not None]
+    mean_setup_s = sum(reset_times) / len(reset_times) if reset_times else None
+    if mean_setup_s is not None:
+        latency_section.add_row(
+            Text.from_markup(f"[dim]Task setup (mean): {_format_small_seconds(mean_setup_s)}[/dim]"),
+        )
+
+    total_ep_s = sum(float(r.get("episode_time_s") or 0.0) for r in results)
+    n_tasks = len(results)
+    throughput_specs = (
+        (1, 1.0),
+        (2, 0.93),
+        (4, 0.84),
+    )
+    throughput_blocks: list = []
+    throughput_blocks.append(Text.from_markup("[bold]THROUGHPUT (tasks/min)[/bold]"))
+    if total_ep_s >= _THROUGHPUT_MIN_TOTAL_S:
+        rate_1 = n_tasks / (total_ep_s / 60.0)
+        throughput_table = Table(
+            show_header=True,
+            box=box.SIMPLE,
+            padding=(0, 1),
+            show_edge=False,
+            header_style="bold",
+        )
+        throughput_table.add_column("Workers", justify="right", style="dim")
+        # Only the 1-worker row is measured; 2/4 are illustrative scaling (not separate benchmark runs).
+        throughput_table.add_column("Measured", justify="right")
+        throughput_table.add_column("Illustrative", justify="right", style="dim")
+        throughput_table.add_column("Linear", justify="right", style="dim")
+        throughput_table.add_column("Efficiency", justify="right")
+
+        for w, eff in throughput_specs:
+            linear = rate_1 * w
+            projected = linear * eff
+            measured_str = f"{rate_1:.1f}" if w == 1 else "—"
+            illustrative_str = f"{projected:.1f}" if w > 1 else "—"
+            eff_pct = int(round(100 * eff))
+            bar = _stress_fill_bar(eff, _eff_bar_w)
+            throughput_table.add_row(
+                str(w),
+                measured_str,
+                illustrative_str,
+                f"{linear:.1f}",
+                Text.from_markup(f"{eff_pct}% {bar}"),
+            )
+        throughput_blocks.append(throughput_table)
+        throughput_blocks.append(
+            Text.from_markup(
+                "[dim]Measured = sequential 1-worker tasks/min. Illustrative = linear × efficiency factor "
+                "(fixed; not measured; real multi-worker needs a parallel harness).[/dim]"
+            )
+        )
+    else:
+        # Short lines so narrow terminals do not truncate mid-sentence.
+        throughput_blocks.append(
+            Text.from_markup(
+                "[dim]Skipped: summed episode wall time is under "
+                f"{_THROUGHPUT_MIN_TOTAL_S:.2f}s.\n"
+                "Tasks/min needs a longer measurable run.[/dim]"
+            )
+        )
+
+    profiling_section = Table(show_header=False, box=None, padding=(0, 0), show_edge=False)
+    profiling_section.add_column(no_wrap=True)
+    profiling_section.add_row(Text.from_markup("[bold]PROFILING BREAKDOWN[/bold]"))
+    if profiling_agg:
+        # Keys that are derived/non-additive: exclude from the step-time total
+        independent_keys = {k for k in profiling_agg if k.endswith("/n_actions") or k.endswith("/avg_per_action")}
+        additive_keys = {k for k in profiling_agg if k not in independent_keys}
+        total_prof = sum(profiling_agg[k] for k in additive_keys) or 1e-9
+        for op_name, val in sorted(profiling_agg.items(), key=lambda x: (x[0] not in independent_keys, -x[1])):
+            if op_name in independent_keys:
+                fmt = f"{val:.0f} action(s) per step" if op_name.endswith("/n_actions") else f"{val:.4f}s per action"
+                profiling_section.add_row(
+                    Text.from_markup(f"  {op_name:16}\t{fmt}"),
+                )
+            else:
+                frac = val / total_prof
+                bar = _stress_fill_bar(frac, _bar_width)
+                pct = 100.0 * frac
+                profiling_section.add_row(
+                    Text.from_markup(f"  {op_name:16} │{bar}│ [dim]{val:.4f}s ({pct:.0f}%)[/dim]"),
+                )
+    else:
+        profiling_section.add_row(
+            Text.from_markup(
+                "  [dim]No timings: steps must attach [file]info['profiling'][/file].\n"
+                "  [dim](Optional dict: op name → (t0, t1) perf counters.)[/dim]"
+            )
+        )
+
+    task_results_table = Table(
+        show_header=True,
+        box=box.SIMPLE,
+        padding=(0, 1),
+        show_edge=False,
+        header_style="bold",
+    )
+    task_results_table.add_column("task", style="file", no_wrap=True)
+    task_results_table.add_column("done", justify="center")
+    task_results_table.add_column("rwd", justify="right")
+    task_results_table.add_column("st", justify="right")
+    task_results_table.add_column("wall", justify="right")
+    task_results_table.add_column("err", style="error")
+
+    for r in results:
         done_str = "[success]✓[/success]" if r["done"] else "[error]✗[/error]"
         reward_str = (
-            f"[success]{r['reward']:.3f}[/success]" if r["reward"] == 1.0 else f"[error]{r['reward']:.3f}[/error]"
+            f"[success]{r['reward']:.1f}[/success]" if r["reward"] == 1.0 else f"[error]{r['reward']:.1f}[/error]"
         )
-        table.add_row(
+        task_results_table.add_row(
             r["task_id"],
             done_str,
             reward_str,
             str(r["steps"]),
-            str(r["episode_time_s"]),
+            _episode_wall_display_s(r),
             r["error"] or "",
         )
 
+    # Build and optionally save stress-test report
+    report = build_stress_test_report(resolved, results, compliance_passed, compliance_failed)
+    if output_path:
+        report.save(output_path)
+        console.print(f"[dim]Baseline saved to [file]{output_path}[/file][/dim]")
+
     border = "green" if not failures else "red"
-    status_text = (
-        f"[success]{len(results)} task(s) passed[/success]"
+    status_sub = (
+        f"[success]{n_tasks} task(s) passed[/success]"
         if not failures
-        else f"[error]{len(failures)} / {len(results)} task(s) failed[/error]"
+        else f"[error]{len(failures)} / {n_tasks} failed[/error]"
     )
-    console.print(
-        Panel(
-            table,
-            title=f"[brand]cube test[/brand]  [file]{module_name}[/file]  —  {status_text}",
-            border_style=border,
-            padding=(0, 1),
-        )
+
+    body_parts: list = [
+        header_grid,
+        Rule(style="dim"),
+        compliance_header,
+        compliance_checks_table,
+        Rule(style="dim"),
+        latency_section,
+        Rule(style="dim"),
+        *throughput_blocks,
+        Rule(style="dim"),
+        profiling_section,
+    ]
+    body_parts.extend([Rule(style="dim"), task_results_table])
+
+    stress_panel = Panel(
+        Group(*body_parts),
+        title="[bold]CUBE Stress Test[/bold]",
+        subtitle=status_sub,
+        border_style=border,
+        box=box.HEAVY,
+        padding=(0, 1),
     )
+    _make_console(width=_display_width).print(stress_panel)
 
     if failures:
         console.print(
@@ -410,7 +736,7 @@ def _print_help() -> None:
     """Print a rich-formatted help screen."""
     table = Table(show_header=False, box=box.SIMPLE, padding=(0, 2), show_edge=False)
     table.add_column("cmd", style="cmd", no_wrap=True)
-    table.add_column("desc", style="white")
+    table.add_column("desc")
     table.add_column("example", style="dim")
 
     table.add_row(
@@ -432,8 +758,9 @@ def _print_help() -> None:
     console.print(
         Panel(
             table,
-            title=f"[brand]cube[/brand] [dim]v{_VERSION}[/dim]",
-            subtitle="[dim]Common Unified Benchmark Environments[/dim]",
+            title=f"[brand]cube[/brand] [dim]v{__version__}[/dim]",
+            subtitle="[dim]Common Unified Benchmark Environments[/dim]\n"
+            "[dim]Set NO_COLOR=1 or use --no-color for plain output.[/dim]",
             border_style="blue",
             padding=(0, 1),
         )
@@ -441,7 +768,13 @@ def _print_help() -> None:
 
 
 def main() -> None:
-    args = sys.argv[1:]
+    global _NO_COLOR, console, err_console
+
+    raw_argv = sys.argv[1:]
+    args, no_color_flag = _strip_no_color_flags(raw_argv)
+    _NO_COLOR = no_color_flag or _env_requests_no_color()
+    console = _make_console()
+    err_console = _make_console(stderr=True)
 
     if not args or args[0] in ("-h", "--help"):
         _print_help()
@@ -467,10 +800,16 @@ def main() -> None:
             )
             sys.exit(1)
         max_steps = 20
+        output_path = None
         remaining = args[2:]
-        if remaining and remaining[0].startswith("--max-steps="):
-            max_steps = int(remaining[0].split("=", 1)[1])
-        cmd_test(args[1], max_steps=max_steps)
+        for opt in remaining:
+            if opt.startswith("--max-steps="):
+                max_steps = int(opt.split("=", 1)[1])
+            elif opt.startswith("--output="):
+                output_path = opt.split("=", 1)[1]
+            elif opt == "--save-baseline":
+                output_path = "cube_stress_test_baseline.json"
+        cmd_test(args[1], max_steps=max_steps, output_path=output_path)
     else:
         err_console.print(f"[error]Unknown command:[/error] [cmd]{command}[/cmd]")
         _print_help()

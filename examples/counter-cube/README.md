@@ -33,8 +33,8 @@ CounterBenchmark          (Benchmark)     — registry; holds metadata; vends Ta
 ## Install
 
 ```bash
-cd example_cube/counter-cube
-uv pip install -e ".[dev]"
+cd examples/counter-cube
+uv sync
 ```
 
 This installs `counter-cube` and picks up `cube-standard` as an editable

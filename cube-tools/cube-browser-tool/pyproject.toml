@@ -1,10 +1,11 @@
 [project]
 name = "cube-browser-tool"
-version = "0.1.0"
+version = "0.2.0"
 description = "Concrete browser tool implementations for cube-standard benchmarks"
 requires-python = ">=3.12"
 dependencies = [
     "cube-standard",
+    "cube-browser-playwright",
     "playwright",
     "pillow>=9.0",
     "beautifulsoup4",
@@ -41,4 +42,5 @@ extend-select = ["I"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-rs"
+asyncio_mode = "auto"
 markers = ["integration: requires a live Playwright/Chromium install"]

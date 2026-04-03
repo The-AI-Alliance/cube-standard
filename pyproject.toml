@@ -1,6 +1,6 @@
 [project]
 name = "cube-standard"
-version = "0.1.0rc1"
+version = "0.1.0rc4"
 description = "Common Unified Benchmark Environments"
 readme = "README.md"
 urls = { Repository = "https://github.com/The-AI-Alliance/cube-standard" }
@@ -31,6 +31,7 @@ dev = [
     "httpx>=0.28.0",  # For testing FastAPI
     "pre-commit>=3.6.0",
     "ruff>=0.8.0",
+    "counter-cube",  # example benchmark → registers cube.benchmarks entry point for `cube test counter-cube`
 ]
 docker = [
     "docker>=7.1.0",
@@ -51,6 +52,9 @@ toolkit = [
 [build-system]
 requires = ["uv_build>=0.6.0,<0.7.0"]
 build-backend = "uv_build"
+
+[tool.uv.sources]
+counter-cube = { path = "examples/counter-cube", editable = true }
 
 [tool.uv.build-backend]
 module-name = "cube"

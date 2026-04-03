@@ -11,14 +11,14 @@ Goal: stable core protocol, first wave of cubes, compliance tooling.
 - [x] Reference implementation: `counter-cube`
 - [x] Container backends (Docker, Modal, Daytona)
 - [x] First cubes landing:
-  - *Web agents:* MiniWob ✅, WebArena ✅, WorkArena ✅
+  - *Web agents:* MiniWob ✅, WebArena-Verified ✅ ([cube-harness#214](https://github.com/The-AI-Alliance/cube-harness/pull/214)), WorkArena ✅
   - *Computer use (CUA):* OSWorld ✅
   - *SWE:* SWE-bench Verified + Live ✅, TerminalBench 2 ✅, LiveCodeBench ✅
-- [ ] **Benchmark metadata schema — `BenchmarkMetadata` fields: homepage, citation, license, task count, modality ([`benchmark.py`](src/cube/benchmark.py))
-- [ ] CUBE Stress Test — compliance checks and latency suite (`cube test --compliance`) — nearly complete, see [PR #22](https://github.com/The-AI-Alliance/cube-standard/pull/22)
+- [ ] Benchmark metadata schema — `BenchmarkMetadata` fields: homepage, citation, license, task count, modality ([`benchmark.py`](src/cube/benchmark.py))
+- [x] CUBE Stress Test — compliance checks and latency suite (`cube test cube-name) — nearly complete, see [PR #22](https://github.com/The-AI-Alliance/cube-standard/pull/22)
 - [ ] Unified resource backend — `VMBackend` / `VM` abstraction for cloud and local VM provisioning ([`design/vm_backend.md`](design/vm_backend.md))
 - [ ] Stable `v0.1` API — freeze core interfaces, tag release
-- [ ] PyPI publication (`cube-standard`)
+- [x] PyPI publication (`cube-standard`)
 - [ ] Published documentation site
 
 ## Phase 2 — Platform Integrations & Cube Growth
@@ -54,4 +54,5 @@ Have an idea that changes the core protocol? Open a GitHub Discussion or file a 
 - Comment on existing [GitHub Issues](https://github.com/The-AI-Alliance/cube-standard/issues) or open a new one
 - Start a [GitHub Discussion](https://github.com/The-AI-Alliance/cube-standard/discussions)
 - Submit an RFC draft in `design/` via PR
+- [Propose a benchmark for wrapping](https://docs.google.com/forms/d/e/1FAIpQLSddMFyRXZJPpD0I2K27OEmIPUpj57w--u2NuMscrjNlkqy8rQ/viewform) — flag a benchmark you'd like to see as a CUBE, or contribute one yourself
 - [Apply as a core contributor](https://forms.gle/JFiBi4ynfVLMghAH8) to help shape priorities directly
