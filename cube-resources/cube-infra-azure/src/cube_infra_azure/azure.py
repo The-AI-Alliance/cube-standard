@@ -1062,6 +1062,33 @@ class AzureInfraConfig(InfraConfig):
         except Exception as exc:
             logger.warning("cleanup_orphaned_resources: failed to list disks: %s", exc)
 
+        # Stale docker-host bootstrap VMs (cube-dockerhost-*) — these should
+        # have been deleted by _provision_docker_service() but can linger if the
+        # process crashed mid-provision.  Delete VM + NIC + IP; keep the OS disk
+        # (delete_option=Detach) so that a re-provision can continue.
+        result["bootstrap_vms"] = []
+        try:
+            for vm in compute.virtual_machines.list(rg):
+                if not (vm.name and vm.name.startswith("cube-dockerhost-")):
+                    continue
+                logger.info("cleanup_orphaned_resources: deleting stale bootstrap VM %s", vm.name)
+                try:
+                    # Deallocate first so NIC/IP can be freed
+                    compute.virtual_machines.begin_deallocate(rg, vm.name).result()
+                    compute.virtual_machines.begin_delete(rg, vm.name).result()
+                    result["bootstrap_vms"].append(vm.name)
+                    # Best-effort network cleanup using naming convention.
+                    # _create_network_resources(uid, uid) → "cube-{uid}-ip-{uid}"
+                    uid = vm.name[len("cube-dockerhost-") :]
+                    self._delete_network_resources(
+                        f"cube-{uid}-ip-{uid}",
+                        f"cube-{uid}-nic-{uid}",
+                    )
+                except Exception as exc:
+                    logger.warning("cleanup_orphaned_resources: VM %s: %s", vm.name, exc)
+        except Exception as exc:
+            logger.warning("cleanup_orphaned_resources: failed to list VMs: %s", exc)
+
         total = sum(len(v) for v in result.values())
         if total:
             logger.info("cleanup_orphaned_resources: deleted %d resource(s): %s", total, result)
