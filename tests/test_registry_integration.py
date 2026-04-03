@@ -239,8 +239,7 @@ class TestRegistryAdd:
         failed = [
             cr["name"]
             for cr in check_runs
-            if cr["name"] in required_checks
-            and cr.get("conclusion") not in ("success", "skipped")
+            if cr["name"] in required_checks and cr.get("conclusion") not in ("success", "skipped")
         ]
         assert not failed, f"CI checks failed: {failed}\nCheck: {pr_url}/checks"
         print("All CI checks passed.")
