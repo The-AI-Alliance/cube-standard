@@ -208,6 +208,12 @@ class InfraConfig(TypedBaseModel, ABC):
     1 day default prevents orphan accumulation without killing long-running jobs.
     Set None to disable auto-expiry (use cleanup() or handle.close() explicitly)."""
 
+    image_name_suffix: str = ""
+    """Suffix appended to image/AMI names and ProvisionStore keys.
+    Use "-test" to isolate CI/test runs from production images without changing
+    the resource name.  E.g. image_name_suffix="-test" and resource.name="foo"
+    → image named "foo-test", store key "foo-test@<fingerprint>"."""
+
     # ── Abstract interface ────────────────────────────────────────────────────
 
     @abstractmethod
@@ -274,6 +280,22 @@ class InfraConfig(TypedBaseModel, ABC):
         """
         ...
 
+    # ── Concrete helpers ──────────────────────────────────────────────────────
+
+    def _image_name(self, resource: "ResourceConfig") -> str:
+        """Effective image/AMI name: resource.name + image_name_suffix."""
+        return resource.name + self.image_name_suffix
+
+    def _resource_shim(self, resource: "ResourceConfig") -> "ResourceConfig":
+        """Minimal shim with .name = _image_name(resource) for ProvisionStore keys.
+
+        Allows image_name_suffix to redirect provision() and launch() to a
+        suffixed store entry without changing the resource's own name.
+        """
+        import types
+
+        return types.SimpleNamespace(name=self._image_name(resource))  # type: ignore[return-value]
+
     # ── Concrete store-backed methods ─────────────────────────────────────────
 
     def register(self, resource: ResourceConfig, resource_info: dict) -> None:
@@ -302,11 +324,12 @@ class InfraConfig(TypedBaseModel, ABC):
 
         Returns "ready" if register() or provision() has been called,
         "needs_provisioning" otherwise.
+        Respects image_name_suffix via _resource_shim().
         """
         from cube.provision_store import ProvisionStore
 
         store = ProvisionStore()
-        return "ready" if store.get(resource, self) is not None else "needs_provisioning"
+        return "ready" if store.get(self._resource_shim(resource), self) is not None else "needs_provisioning"
 
     def can_serve(self, resource: ResourceConfig) -> bool:
         """Return True if this infra's capabilities satisfy the resource's requirements."""

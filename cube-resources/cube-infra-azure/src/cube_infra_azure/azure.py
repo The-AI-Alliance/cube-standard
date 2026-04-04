@@ -354,13 +354,6 @@ class AzureInfraConfig(InfraConfig):
     bootstrap_os_disk_gb        int = 128
         OS disk size for the bootstrap VM (must fit the qcow2 + VHD in /data).
 
-    ── Testing ───────────────────────────────────────────────────────────────
-    image_name_suffix   str = ""
-        Suffix appended to gallery image definition names and ProvisionStore
-        keys.  Use "-test" to isolate CI/test runs from manually-created
-        production images without touching the production ProvisionStore entry.
-        E.g. image_name_suffix="-test" → gallery def "osworld-ubuntu-vm-test",
-        key "osworld-ubuntu-vm-test@azure:westus2".
     """
 
     # ── Required ──────────────────────────────────────────────────────────────
@@ -389,9 +382,6 @@ class AzureInfraConfig(InfraConfig):
     bootstrap_gallery_image: str = "cube-ubuntu-22-04"
     bootstrap_gallery_image_ver: str = "1.0.0"
     bootstrap_os_disk_gb: int = 128
-
-    # ── Testing ───────────────────────────────────────────────────────────────
-    image_name_suffix: str = ""
 
     # ── Auto-discovery ────────────────────────────────────────────────────────
 
@@ -533,16 +523,6 @@ class AzureInfraConfig(InfraConfig):
 
     # ── InfraConfig interface ─────────────────────────────────────────────────
 
-    def _image_name(self, resource: VMResourceConfig) -> str:
-        """Gallery image definition name (resource.name + image_name_suffix)."""
-        return resource.name + self.image_name_suffix
-
-    def _resource_shim(self, resource: VMResourceConfig) -> Any:
-        """Minimal object with .name = _image_name(resource) for ProvisionStore keys."""
-        import types
-
-        return types.SimpleNamespace(name=self._image_name(resource))
-
     def fingerprint(self) -> str:
         """Stable key: provider + region only (not VM size or storage SKU).
 
@@ -554,16 +534,6 @@ class AzureInfraConfig(InfraConfig):
     def capabilities(self) -> set[str]:
         """Azure can satisfy any VMResourceConfig (native hypervisor = KVM-equivalent)."""
         return {"kvm"}
-
-    def provision_status(self, resource: ResourceConfig) -> Literal["ready", "needs_provisioning"]:
-        """Query ProvisionStore using the effective image name (respects image_name_suffix)."""
-        from cube.provision_store import ProvisionStore
-
-        if not isinstance(resource, VMResourceConfig):
-            return "needs_provisioning"
-        shim = self._resource_shim(resource)
-        store = ProvisionStore()
-        return "ready" if store.get(shim, self) is not None else "needs_provisioning"
 
     def provision(self, resource: ResourceConfig) -> None:
         """Bootstrap OSWorld (or any VM image) from source_url into the Compute Gallery.

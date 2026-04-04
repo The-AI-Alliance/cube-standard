@@ -27,10 +27,7 @@ build-backend = "hatchling.build"
 packages = ["src/cube_infra_azure"]
 
 [dependency-groups]
-dev = [
-    "osworld-cube",
-]
+dev = []
 
 [tool.uv.sources]
 cube-standard = { path = "../..", editable = true }
-osworld-cube = { path = "../../../cube-harness/cubes/osworld-cube", editable = true }
