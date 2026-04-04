@@ -174,6 +174,16 @@ class DockerServiceConfig(ResourceConfig):
     docker_images: list[str] = []
     services: dict[str, int] = {}
     launch_script: str = ""
+    endpoint_to_site: dict[str, str] = {}
+    """Maps service names (keys in ``services``) to benchmark-specific site identifiers.
+
+    The benchmark interprets this mapping; ``DockerServiceConfig`` itself does not.
+    Only web-UI endpoints should appear here — control/API endpoints are omitted.
+
+    Example for WebArena::
+
+        endpoint_to_site={"shopping_admin": "shopping_admin"}
+    """
 
     def requirements(self) -> set[str]:
         return {"docker"}
