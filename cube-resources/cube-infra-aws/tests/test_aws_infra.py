@@ -565,7 +565,7 @@ class TestAWSResourceHandle:
     def test_close_terminates_tunnel(self) -> None:
         handle = self._make_handle()
         tunnel = MagicMock()
-        handle._tunnel = tunnel
+        handle._tunnels = [tunnel]
 
         with patch.object(handle.infra, "_terminate_instance"):
             handle.close()
@@ -574,12 +574,12 @@ class TestAWSResourceHandle:
 
     def test_close_clears_tunnel_reference(self) -> None:
         handle = self._make_handle()
-        handle._tunnel = MagicMock()
+        handle._tunnels = [MagicMock()]
 
         with patch.object(handle.infra, "_terminate_instance"):
             handle.close()
 
-        assert handle._tunnel is None
+        assert handle._tunnels == []
 
     def test_close_no_instance_id_skips_terminate(self) -> None:
         handle = self._make_handle()

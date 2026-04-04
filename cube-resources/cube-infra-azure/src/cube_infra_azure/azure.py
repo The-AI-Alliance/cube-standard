@@ -86,7 +86,7 @@ from cube.resource import (
     UnsupportedResourceType,
     VMResourceConfig,
 )
-from cube_infra_azure._utils import BootstrapMonitor, free_port, open_tunnel, open_tunnels, wait_for_ssh
+from cube_infra_azure._utils import BootstrapMonitor, free_port, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
 
 if TYPE_CHECKING:
     pass
@@ -275,19 +275,15 @@ class AzureResourceHandle(ResourceHandle):
     _vm_name: str = field(default="", repr=False)
     _pip_name: str = field(default="", repr=False)
     _nic_name: str = field(default="", repr=False)
-    # Single-port tunnel (VMResourceConfig path)
-    _tunnel: subprocess.Popen | None = field(default=None, repr=False)
-    # Multi-port tunnels (DockerServiceConfig path)
     _tunnels: list[subprocess.Popen] = field(default_factory=list, repr=False)
 
     def close(self) -> None:
         """Terminate SSH tunnel(s) and delete the Azure VM + network resources."""
-        for proc in ([self._tunnel] if self._tunnel else []) + self._tunnels:
+        for proc in self._tunnels:
             try:
                 proc.terminate()
             except Exception:
                 pass
-        self._tunnel = None
         self._tunnels = []
         if self._vm_name:
             logger.info("SSH tunnel(s) closed for run %s", self.run_id[:8])
@@ -840,38 +836,24 @@ class AzureInfraConfig(InfraConfig):
                 tunnel = open_tunnel(public_ip, active_user, self.ssh_privkey_path, local_port, self.guest_port)
                 endpoint = f"http://localhost:{local_port}"
                 endpoints = {}
-                tunnels = []
+                tunnels = [tunnel]
         except Exception:
             logger.warning("launch: SSH/tunnel failed — cleaning up VM %s", vm_name)
             self._delete_vm(vm_name, pip_name, nic_name)
             raise
-
-        if isinstance(resource, DockerServiceConfig):
-            return AzureResourceHandle(
-                run_id=run_id,
-                resource=resource,
-                infra=self,
-                endpoint=endpoint,
-                endpoints=endpoints,
-                created_at=created_at,
-                expires_at=expires_at,
-                _vm_name=vm_name,
-                _pip_name=pip_name,
-                _nic_name=nic_name,
-                _tunnels=tunnels,
-            )
 
         return AzureResourceHandle(
             run_id=run_id,
             resource=resource,
             infra=self,
             endpoint=endpoint,
+            endpoints=endpoints,
             created_at=created_at,
             expires_at=expires_at,
             _vm_name=vm_name,
             _pip_name=pip_name,
             _nic_name=nic_name,
-            _tunnel=tunnel,
+            _tunnels=tunnels,
         )
 
     def list_active(self, run_id: str | None = None) -> list[AzureResourceHandle]:
@@ -912,7 +894,7 @@ class AzureInfraConfig(InfraConfig):
                     _vm_name=vm_name,
                     _pip_name=pip_name,
                     _nic_name=nic_name,
-                    _tunnel=None,
+                    _tunnels=[],
                 )
             )
 
@@ -1529,39 +1511,8 @@ class AzureInfraConfig(InfraConfig):
         return {"vm_name": vm_name, "pip_name": pip_name, "nic_name": nic_name, "public_ip": public_ip}
 
     def _ssh_run(self, public_ip: str, ssh_user: str, script: str) -> None:
-        """Run a shell script on the VM over SSH and wait for it to finish.
-
-        Raises subprocess.CalledProcessError on non-zero exit code.
-        Stdout/stderr are forwarded to the logger at DEBUG level.
-        """
-        result = subprocess.run(
-            [
-                "ssh",
-                "-i",
-                self.ssh_privkey_path,
-                "-o",
-                "IdentitiesOnly=yes",
-                "-o",
-                "StrictHostKeyChecking=no",
-                "-o",
-                "UserKnownHostsFile=/dev/null",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=30",
-                f"{ssh_user}@{public_ip}",
-                "bash -s",
-            ],
-            input=script,
-            capture_output=True,
-            text=True,
-        )
-        for line in result.stdout.splitlines():
-            logger.debug("[ssh] %s", line)
-        if result.returncode != 0:
-            for line in result.stderr.splitlines():
-                logger.warning("[ssh stderr] %s", line)
-            raise subprocess.CalledProcessError(result.returncode, "ssh", result.stdout, result.stderr)
+        """Run a shell script on the VM over SSH and wait for it to finish."""
+        ssh_run(public_ip, ssh_user, self.ssh_privkey_path, script)
 
     def _provision_docker_service(
         self, resource: "DockerServiceConfig", image_name: str, version: str = "1.0.0"

@@ -70,7 +70,7 @@ from cube.resource import (
     UnsupportedResourceType,
     VMResourceConfig,
 )
-from cube_infra_aws._utils import BootstrapMonitor, free_port, open_tunnel, open_tunnels, wait_for_ssh
+from cube_infra_aws._utils import BootstrapMonitor, free_port, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
 
 if TYPE_CHECKING:
     pass
@@ -305,17 +305,15 @@ class AWSResourceHandle(ResourceHandle):
     """ResourceHandle for a running EC2 instance with open SSH tunnel(s)."""
 
     _instance_id: str = field(default="", repr=False)
-    _tunnel: subprocess.Popen | None = field(default=None, repr=False)
     _tunnels: list[subprocess.Popen] = field(default_factory=list, repr=False)
 
     def close(self) -> None:
         """Terminate SSH tunnel(s) and stop the EC2 instance."""
-        for proc in ([self._tunnel] if self._tunnel else []) + self._tunnels:
+        for proc in self._tunnels:
             try:
                 proc.terminate()
             except Exception:
                 pass
-        self._tunnel = None
         self._tunnels = []
         logger.info("SSH tunnel(s) closed for run %s", self.run_id[:8])
 
@@ -831,7 +829,7 @@ class AWSInfraConfig(InfraConfig):
             created_at=created_at,
             expires_at=expires_at,
             _instance_id=instance_id,
-            _tunnel=tunnel,
+            _tunnels=[tunnel],
         )
 
     def list_active(self, run_id: str | None = None) -> list[AWSResourceHandle]:
@@ -869,7 +867,7 @@ class AWSInfraConfig(InfraConfig):
                         infra=self,
                         endpoint=None,
                         _instance_id=instance_id,
-                        _tunnel=None,
+                        _tunnels=[],
                     )
                 )
 
@@ -1558,30 +1556,7 @@ done
 
     def _ssh_run(self, public_ip: str, ssh_user: str, script: str) -> None:
         """Run a bash script on the remote host via SSH. Raises on non-zero exit."""
-        result = subprocess.run(
-            [
-                "ssh",
-                "-i",
-                self.ssh_privkey_path,  # type: ignore[arg-type]
-                "-o",
-                "IdentitiesOnly=yes",
-                "-o",
-                "StrictHostKeyChecking=no",
-                "-o",
-                "UserKnownHostsFile=/dev/null",
-                f"{ssh_user}@{public_ip}",
-                "bash -s",
-            ],
-            input=script,
-            capture_output=True,
-            text=True,
-        )
-        for line in result.stdout.splitlines():
-            logger.debug("[ssh] %s", line)
-        if result.returncode != 0:
-            for line in result.stderr.splitlines():
-                logger.warning("[ssh stderr] %s", line)
-            raise subprocess.CalledProcessError(result.returncode, "ssh", result.stdout, result.stderr)
+        ssh_run(public_ip, ssh_user, self.ssh_privkey_path, script)  # type: ignore[arg-type]
 
     def _terminate_instance(self, instance_id: str) -> None:
         """Terminate an EC2 instance and wait for it to be fully terminated."""
