@@ -1546,7 +1546,10 @@ done
             NoReboot=True,
         )
         ami_id = resp["ImageId"]
-        ec2.get_waiter("image_available").wait(ImageIds=[ami_id])
+        # Default waiter: 40 × 15s = 10 min — too short for large disks.
+        # Extend to 120 × 15s = 30 min.
+        waiter = ec2.get_waiter("image_available")
+        waiter.wait(ImageIds=[ami_id], WaiterConfig={"MaxAttempts": 120})
         ec2.create_tags(Resources=[ami_id], Tags=_dict_to_ec2_tags({**self.tags, "role": "docker-host"}))
         logger.info("_provision_docker_service: AMI ready: %s", ami_id)
 
