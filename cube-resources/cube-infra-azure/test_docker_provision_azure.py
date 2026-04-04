@@ -29,8 +29,9 @@ import os
 import sys
 import urllib.request
 
-from cube.resource import DockerServiceConfig
 from cube_infra_azure import AzureInfraConfig
+
+from cube.resource import DockerServiceConfig
 
 logging.basicConfig(
     level=logging.INFO,
