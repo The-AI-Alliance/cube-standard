@@ -30,6 +30,7 @@ Example usage in a test file::
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import platform
@@ -173,23 +174,48 @@ def run_debug_episode(
     return report
 
 
-def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str]:
+def _observation_repr_for_diff(dump: object) -> str:
+    """Stable text for difflib (JSON for dict-like dumps, str otherwise)."""
+    if isinstance(dump, dict):
+        return json.dumps(dump, indent=2, sort_keys=True, default=str) + "\n"
+    return str(dump) + "\n"
+
+
+def _unified_observation_diff(dump_a: object, dump_b: object) -> str:
+    lines_a = _observation_repr_for_diff(dump_a).splitlines(keepends=True)
+    lines_b = _observation_repr_for_diff(dump_b).splitlines(keepends=True)
+    return "".join(
+        difflib.unified_diff(
+            lines_a,
+            lines_b,
+            fromfile="observation (first reset)",
+            tofile="observation (second reset)",
+        )
+    )
+
+
+def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str, str]:
     """
     Same seed → identical first observation (stress_test_specs.md).
     Uses first task config only: make() twice, reset() each, compare first obs.
     Calls benchmark.install() and .setup() before get_task_configs(), and
     .close() when done, so the benchmark is in a consistent state.
+
+    Returns:
+        (ok, message, diff): ``diff`` is a unified diff of the two first
+        observations when they differ; otherwise ``""``. ``message`` is empty
+        when ``ok`` is True.
     """
     bench_fn = getattr(module, "get_debug_benchmark", None)
     if not callable(bench_fn):
-        return False, "no get_debug_benchmark"
+        return False, "no get_debug_benchmark", ""
     benchmark = bench_fn()
     try:
         benchmark.install()
         benchmark.setup()
         configs = list(benchmark.get_task_configs())
         if not configs:
-            return False, "no debug task configs"
+            return False, "no debug task configs", ""
         tc = configs[0]
         t1 = t2 = None
         try:
@@ -203,11 +229,12 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str]:
             )
             obs1, _ = t1.reset()
             obs2, _ = t2.reset()
-            dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else str(obs1)
-            dump2 = obs2.model_dump() if hasattr(obs2, "model_dump") else str(obs2)
+            dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else obs1
+            dump2 = obs2.model_dump() if hasattr(obs2, "model_dump") else obs2
             ok = dump1 == dump2
+            diff_str = "" if ok else _unified_observation_diff(dump1, dump2)
         except Exception as e:
-            return False, str(e)
+            return False, str(e), ""
         finally:
             for t in (t1, t2):
                 if t is not None:
@@ -215,7 +242,9 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str]:
                         t.close()
                     except Exception:
                         pass
-        return ok, "" if ok else "first observation differed between two resets"
+        if ok:
+            return True, "", ""
+        return False, "first observation differed between two resets", diff_str
     finally:
         try:
             benchmark.close()

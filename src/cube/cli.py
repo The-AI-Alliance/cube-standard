@@ -34,6 +34,7 @@ from rich import box
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
@@ -111,6 +112,7 @@ def _stress_fill_bar(fraction: float, width: int) -> str:
 
 # Aggregate episode_time_s below this is treated as timer noise — avoid tasks/min in the billions.
 _THROUGHPUT_MIN_TOTAL_S = 0.01
+_RESET_DIFF_DISPLAY_MAX = 24_000
 
 
 def _format_small_seconds(sec: float) -> str:
@@ -425,7 +427,7 @@ def cmd_test(
             failures.append(r)
 
     # ── Extra compliance checks (stress_test_specs.md) ─────────────────────────────
-    reset_ok, _ = check_reset_reproducibility(module)
+    reset_ok, reset_msg, reset_diff = check_reset_reproducibility(module)
     meta_ok, _ = check_benchmark_metadata(module)
     close_idempotent_ok = all(r.get("close_idempotent_ok", False) for r in results)
     tools_list_ok = all(r.get("tools_list_ok", False) for r in results)
@@ -542,6 +544,31 @@ def cmd_test(
             compliance_checks_table.add_row(ln, ls, rn, rs)
         else:
             compliance_checks_table.add_row(ln, ls, "", "")
+
+    reset_repro_warning: list = []
+    if not reset_ok:
+        warn_bits: list = [
+            Text.from_markup(
+                "[warning]test_reset_reproducibility[/warning] "
+                "[dim](first task, two fresh Task instances)[/dim]: "
+                f"[bold]{reset_msg}[/bold]. "
+                "[dim]A mismatch is not always a bug (e.g. time-dependent observations).[/dim]"
+            ),
+        ]
+        if reset_diff.strip():
+            d = reset_diff
+            if len(d) > _RESET_DIFF_DISPLAY_MAX:
+                d = d[:_RESET_DIFF_DISPLAY_MAX] + "\n... [diff truncated]\n"
+            warn_bits.append(Text.from_markup("[dim]Observation diff (unified — first reset vs second):[/dim]"))
+            warn_bits.append(Syntax(d.rstrip("\n"), lexer="diff", word_wrap=True, line_numbers=False))
+        reset_repro_warning = [
+            Panel(
+                Group(*warn_bits),
+                title="[warning]Reset reproducibility[/warning]",
+                border_style="yellow",
+                padding=(0, 1),
+            ),
+        ]
 
     max_lat = max(p50_s, p95_s, p99_s, 0.001)
     latency_section = Table(show_header=False, box=None, padding=(0, 0), show_edge=False)
@@ -690,6 +717,7 @@ def cmd_test(
         Rule(style="dim"),
         compliance_header,
         compliance_checks_table,
+        *reset_repro_warning,
         Rule(style="dim"),
         latency_section,
         Rule(style="dim"),

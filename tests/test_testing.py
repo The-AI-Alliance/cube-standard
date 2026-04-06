@@ -10,7 +10,13 @@ from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext  # noqa:
 from cube.container import Container
 from cube.core import Action, Observation
 from cube.task import STOP_ACTION, Task, TaskConfig, TaskMetadata
-from cube.testing import aggregate_profiling, assert_debug_tasks_reward_one, run_debug_episode, run_debug_suite
+from cube.testing import (
+    aggregate_profiling,
+    assert_debug_tasks_reward_one,
+    check_reset_reproducibility,
+    run_debug_episode,
+    run_debug_suite,
+)
 from cube.tool import Tool, ToolConfig, tool_action
 
 # ── Shared test infrastructure ────────────────────────────────────────────────
@@ -368,3 +374,99 @@ def test_aggregate_profiling_populated_in_episode_report():
         assert set(step_prof.keys()) == {"tool_execute", "obs_postprocess"}
         assert set(step_prof["tool_execute"].keys()) == {"total", "avg_per_action", "n_actions"}
         assert step_prof["tool_execute"]["n_actions"] == 1
+
+
+# ── check_reset_reproducibility ───────────────────────────────────────────────
+
+
+class _FakeObs:
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    def model_dump(self):
+        return dict(self._payload)
+
+
+class _FakeTaskForReset:
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    def reset(self):
+        return _FakeObs(self._payload), {}
+
+    def close(self):
+        pass
+
+
+class _FakeTaskConfig:
+    def __init__(self):
+        self._makes = 0
+
+    def make(self, **kwargs):
+        self._makes += 1
+        payload = {"token": self._makes}
+        return _FakeTaskForReset(payload)
+
+
+class _FakeBenchForReset:
+    def __init__(self):
+        self._tc = _FakeTaskConfig()
+
+    def install(self):
+        pass
+
+    def setup(self):
+        pass
+
+    def close(self):
+        pass
+
+    def get_task_configs(self):
+        return [self._tc]
+
+
+def test_check_reset_reproducibility_returns_unified_diff_when_obs_differ():
+    mod = ModuleType("fake_reset")
+    mod.get_debug_benchmark = lambda: _FakeBenchForReset()
+
+    ok, msg, diff = check_reset_reproducibility(mod)
+    assert ok is False
+    assert "differed" in msg
+    assert "observation (first reset)" in diff
+    assert "observation (second reset)" in diff
+    assert "- " in diff or "+" in diff
+
+
+def test_check_reset_reproducibility_ok_and_empty_diff_when_matching():
+    class _SameTC:
+        def make(self, **kwargs):
+            return _FakeTaskForReset({"x": 1})
+
+    class _SameBench:
+        def install(self):
+            pass
+
+        def setup(self):
+            pass
+
+        def close(self):
+            pass
+
+        def get_task_configs(self):
+            return [_SameTC()]
+
+    mod = ModuleType("fake_reset_ok")
+    mod.get_debug_benchmark = lambda: _SameBench()
+
+    ok, msg, diff = check_reset_reproducibility(mod)
+    assert ok is True
+    assert msg == ""
+    assert diff == ""
+
+
+def test_check_reset_reproducibility_errors_return_empty_diff():
+    mod = ModuleType("no_bench")
+    ok, msg, diff = check_reset_reproducibility(mod)
+    assert ok is False
+    assert "get_debug_benchmark" in msg
+    assert diff == ""
