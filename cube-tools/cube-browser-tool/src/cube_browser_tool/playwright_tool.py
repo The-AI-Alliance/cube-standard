@@ -130,7 +130,13 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
             # All browser actions return None, so super() always produces a
             # spurious "Success" content item. Discard it and return the page
             # observation directly — that is the real result for browser tools.
-            return self.page_obs()
+            obs = self.page_obs()
+            # Propagate tool_call_id so the observation maps back to the
+            # assistant's tool_call, keeping the message sequence valid for
+            # APIs that require tool responses after tool_calls.
+            if action.id and obs.contents:
+                obs.contents[0].tool_call_id = action.id
+            return obs
         except Exception as e:
             logger.exception("Error while capturing page_obs after action %s", action.name)
             return StepError.from_exception(e)
@@ -449,7 +455,13 @@ class AsyncPlaywrightTool(AsyncBrowserTool, AsyncBrowserActionSpace):
             # All browser actions return None, so super() always produces a
             # spurious "Success" content item. Discard it and return the page
             # observation directly — that is the real result for browser tools.
-            return await self.page_obs()
+            obs = await self.page_obs()
+            # Propagate tool_call_id so the observation maps back to the
+            # assistant's tool_call, keeping the message sequence valid for
+            # APIs that require tool responses after tool_calls.
+            if action.id and obs.contents:
+                obs.contents[0].tool_call_id = action.id
+            return obs
         except Exception as e:
             logger.exception("Error while capturing page_obs after action %s", action.name)
             return StepError.from_exception(e)
