@@ -58,6 +58,41 @@ def test_action_schema_as_dict_llm_format():
     }
 
 
+# --- Action.from_openai_tool_call ---
+
+
+def test_action_from_openai_tool_call_flat_format():
+    """Parse flat/Responses API format."""
+    action = Action.from_openai_tool_call({"id": "call_1", "name": "click", "arguments": '{"x": 10, "y": 20}'})
+    assert action.id == "call_1"
+    assert action.name == "click"
+    assert action.arguments == {"x": 10, "y": 20}
+
+
+def test_action_from_openai_tool_call_chat_completions_format():
+    """Parse nested Chat Completions format."""
+    action = Action.from_openai_tool_call({
+        "id": "call_2",
+        "type": "function",
+        "function": {"name": "type_text", "arguments": '{"text": "hello"}'},
+    })
+    assert action.id == "call_2"
+    assert action.name == "type_text"
+    assert action.arguments == {"text": "hello"}
+
+
+def test_action_from_openai_tool_call_dict_arguments():
+    """Arguments can be a dict (already parsed) instead of a JSON string."""
+    action = Action.from_openai_tool_call({"id": "call_3", "name": "greet", "arguments": {"name": "World"}})
+    assert action.arguments == {"name": "World"}
+
+
+def test_action_from_openai_tool_call_call_id():
+    """Responses API uses call_id instead of id."""
+    action = Action.from_openai_tool_call({"call_id": "resp_call_1", "name": "click", "arguments": "{}"})
+    assert action.id == "resp_call_1"
+
+
 # --- Content.from_data dispatch ---
 
 

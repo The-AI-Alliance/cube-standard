@@ -139,6 +139,26 @@ class Action(TypedBaseModel):
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
 
+    @classmethod
+    def from_openai_tool_call(cls, tool_call: dict) -> Self:
+        """Create an Action from an OpenAI tool call dict.
+
+        Supports both Chat Completions format:
+            {"id": "call_xxx", "type": "function", "function": {"name": "click", "arguments": "{...}"}}
+        and flat/Responses API format:
+            {"id": "call_xxx", "name": "click", "arguments": "{...}"}
+        """
+        if "function" in tool_call:
+            func = tool_call["function"]
+            name = func["name"]
+            raw_args = func.get("arguments", "{}")
+        else:
+            name = tool_call["name"]
+            raw_args = tool_call.get("arguments", "{}")
+
+        arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+        return cls(id=tool_call.get("id") or tool_call.get("call_id"), name=name, arguments=arguments)
+
 
 class Content(TypedBaseModel, ABC):
     """
