@@ -351,6 +351,8 @@ class TaskConfig(ABC, TypedBaseModel):
 
         Example:
         >>> task_metadata = MyBenchmark.task_metadata[self.task_id]
+        >>> task_execution_info = MyBenchmark.load_task_execution_info(self.task_id)
+        >>> task_metadata = task_metadata.model_copy(update={"extra_info": task_execution_info})
         >>> return MyTask(
         ...     metadata=task_metadata,
         ...     tool_config=self.tool_config,
