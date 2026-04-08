@@ -617,6 +617,15 @@ class Benchmark(TypedBaseModel, ABC):
         pass
 
     @classmethod
+    def cache_dir(cls) -> Path:
+        """Return the directory where this benchmark can store files.
+
+        By default, this is ``~/.cube/<benchmark_name>/``.  You can override
+        this method if your benchmark needs a different caching strategy.
+        """
+        return get_cache_dir(cls.benchmark_metadata.name)
+
+    @classmethod
     def task_execution_cache_dir(cls) -> Path:
         """Return the directory where per-task execution data is cached.
 
