@@ -331,10 +331,10 @@ Team/CI sharing deferred to v2 (`CUBE_PROVISION_STORE` env var → S3/GCS path).
 ### 1. Inspect what a benchmark needs
 
 ```python
-resources = my_cube.list_resources()
+resources = my_cube.resources  # list[ResourceConfig]
 ```
 
-Returns a list of `ResourceConfig`. To query provision state, call into `infra`:
+To query provision state, call into `infra`:
 
 ```python
 infra.provision_status(resource)  # → "ready" | "needs_provisioning" | "unknown"
@@ -569,7 +569,7 @@ acting.
 
 ## Meta-benchmarks
 
-A meta-benchmark's `list_resources()` is the union of all sub-benchmarks'.
+A meta-benchmark's `resources` is the union of all sub-benchmarks'.
 Each resource provisions independently. If two benchmarks declare the same underlying
 image under different names, they will provision it twice — `source_hash` is recorded
 for informational purposes but store-level deduplication is not implemented in v1.
@@ -611,7 +611,7 @@ for informational purposes but store-level deduplication is not implemented in v
 7. **ContainerConfig deprecation**: `ContainerConfig` (image, ram_gb, cpu_cores,
    disk_gb, gpu, ports) is superseded by `DockerImageConfig(ResourceConfig)` which
    carries the same fields. `TaskMetadata.container_config` is deprecated — Docker
-   benchmarks should declare their image in `benchmark.list_resources()` as a
+   benchmarks should declare their image in `benchmark.resources` as a
    `DockerImageConfig` with `scope="task"`. The `ContainerBackend` class is
    superseded by `DockerInfraConfig(InfraConfig)`. Both will be removed once all
    Docker benchmarks have migrated.

@@ -128,6 +128,24 @@ class Benchmark(TypedBaseModel, ABC):
     )  # track shared runtime resources created in setup()
 
     # these optional fields should be set by benchmark *users* (constructor params).
+    resources: list[ResourceConfig] = Field(default_factory=list)
+    """Resource dependencies declared by this benchmark.
+
+    Set this on your benchmark class (or pass at construction time) to declare
+    the ResourceConfig objects the benchmark needs.  The harness uses this list
+    to check provision status and capability compatibility before running tasks.
+
+    Example::
+
+        class MyBenchmark(Benchmark):
+            resources: list[ResourceConfig] = [
+                VMResourceConfig(
+                    name="my-vm",
+                    scope="task",
+                    source_url="https://...",
+                )
+            ]
+    """
     container_backend: ContainerBackend | None = Field(
         default=None
     )  # optional container backend to be used for all tasks in this benchmark
@@ -521,25 +539,6 @@ class Benchmark(TypedBaseModel, ABC):
         Clean up runtime resources that were created during setup().
         """
         pass
-
-    resources: list[ResourceConfig] = Field(default_factory=list)
-    """Resource dependencies declared by this benchmark.
-
-    Set this on your benchmark class (or pass at construction time) to declare
-    the ResourceConfig objects the benchmark needs.  The harness uses this list
-    to check provision status and capability compatibility before running tasks.
-
-    Example::
-
-        class MyBenchmark(Benchmark):
-            resources: list[ResourceConfig] = [
-                VMResourceConfig(
-                    name="my-vm",
-                    scope="task",
-                    source_url="https://...",
-                )
-            ]
-    """
 
     def install(self) -> None:
         """
