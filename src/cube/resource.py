@@ -1,18 +1,67 @@
 """
 Resource lifecycle abstractions for CUBE.
 
-Resource lifecycle:
-    provision()  — one-time image prep per infra/region (slow, idempotent)
-    launch()     — instantiate a resource from a provisioned image, return a handle
-    close()      — release a specific live resource
-    cleanup()    — release all resources for a run_id
-    cleanup_stale() — release resources past their expiry time
+Resource Lifetime Levels
+------------------------
+Resources in CUBE have three distinct lifetime levels. Harness developers must
+understand which level each cleanup method targets:
 
-Core abstractions:
+    Level 1 — Provisioned images (long-lived, manual teardown)
+        Created once per (resource, infra) pair by provision() or register().
+        Examples: AWS AMI, Azure Compute Gallery image version, local qcow2 file.
+        Persist indefinitely — shared across all runs on the same infra.
+        Tracked in ProvisionStore (~/.cube/provisions/).
+        Teardown: unprovision() — explicit and intentional only.
+
+    Level 2 — Benchmark-scoped resources (mid-lived, automatic teardown)
+        Shared server launched once for an entire benchmark run.
+        Examples: WebArena server, WorkArena ServiceNow instance.
+        Declared with scope="benchmark" on ResourceConfig.
+        Created at benchmark.setup(), torn down at benchmark.close().
+        Teardown: handle.close() at run end, or infra.cleanup(run_id) as catch-all.
+
+    Level 3 — Task-scoped resources (short-lived, automatic teardown)
+        Ephemeral resource created fresh for each individual task.
+        Examples: individual OSWorld VMs, per-task Docker containers.
+        Declared with scope="task" on ResourceConfig.
+        Created by launch() at task start, deleted at task end.
+        Teardown: handle.close() after each task, swept by cleanup_stale() on crash.
+
+Cleanup Method Summary (for harness developers)
+------------------------------------------------
+    handle.close()              — L2/L3. Tear down one specific live resource.
+                                  Call after each task (L3) or at run end (L2).
+
+    infra.cleanup(run_id)       — L2/L3. Delete all resources for a run_id.
+                                  Call at harness shutdown as a catch-all.
+
+    infra.cleanup_stale()       — L2/L3. Delete expired resources across all runs
+                                  by reading cloud tags. No local state needed.
+                                  Call at harness startup to GC crashed runs.
+
+    infra.unprovision(resource) — L1 only. Tear down the provisioned image and
+                                  its ProvisionStore entry. Manual, intentional.
+                                  Use when retiring a benchmark or re-provisioning.
+
+Recommended harness lifecycle
+------------------------------
+    infra.cleanup_stale()                    # startup: GC orphans from prior crashes
+    benchmark.setup()                        # creates L2 resource if needed
+    for task in tasks:
+        handle = infra.launch(resource)      # creates L3 resource
+        try:
+            run_episode(task, handle)
+        finally:
+            handle.close()                   # tears down L3 resource immediately
+    infra.cleanup(run_id=run_id)             # shutdown: catch-all for the run
+    benchmark.close()                        # tears down L2 resource
+
+Core abstractions
+-----------------
     ResourceConfig  — WHAT the benchmark needs (benchmark-owned, serializable)
     InfraConfig     — HOW to provision it (harness-owned, serializable + executable)
     ResourceHandle  — Live runtime object (not serializable, returned by launch())
-    ProvisionStore  — Maps (resource, infra) → resource_info (~/.cube/provisions.json)
+    ProvisionStore  — Maps (resource, infra) → resource_info (~/.cube/provisions/)
 
 Design reference: cube-standard/design/resource_lifecycle.md
 """
@@ -149,9 +198,78 @@ class ResourceHandle(ABC):
 
     Returned by InfraConfig.launch(). Holds live state (subprocess, cloud client, etc.).
 
-    close() is the primary API. The context manager is a convenience wrapper.
-    For multi-process use cases, pass run_id (a plain string) across process
-    boundaries and call infra.cleanup(run_id) from any process.
+    Resource lifetime hierarchy
+    ---------------------------
+    Level 1 — Long-lived (L1):
+        Provisioned images (AMI, Gallery image, local qcow2). Created once per
+        (resource, infra) pair by provision() or register(). Persist indefinitely
+        until explicitly removed by unprovision(). Shared across all runs.
+        Tracked in ProvisionStore (~/.cube/provisions/).
+
+    Level 2 — Benchmark-scoped (L2):
+        Shared server for an entire benchmark run (e.g. WebArena, WorkArena).
+        Created once at benchmark.setup(), shared across all tasks in the run.
+        scope="benchmark" on ResourceConfig.
+        Teardown: handle.close() or infra.cleanup(run_id) at run end.
+
+    Level 3 — Task-scoped (L3):
+        Per-task ephemeral resource (e.g. individual OSWorld VMs).
+        Created by launch() at task start, deleted at task end.
+        scope="task" on ResourceConfig.
+        Teardown: handle.close() after each task.
+
+    Cleanup method guide for harness developers
+    -------------------------------------------
+    handle.close()
+        WHAT:    Tears down this specific live resource (VM + tunnel + NIC/IP).
+        WHEN:    Call immediately after each task completes (L3), or once at
+                 run end (L2). Use as a context manager for single-process flows.
+        RECOVERS: If skipped, the orphaned resource is caught by cleanup_stale()
+                 at the next harness startup via the cube:expires_at cloud tag.
+
+    infra.cleanup(run_id)
+        WHAT:    Deletes all live cloud resources tagged with run_id, regardless
+                 of whether handle.close() was called.
+        WHEN:    Call at harness shutdown (normal exit and signal handlers).
+                 Safe to call even if all handles were already closed — no-ops
+                 on already-deleted resources.
+        RECOVERS: If skipped, resources linger until cleanup_stale() expires them
+                 by TTL. Use this as the catch-all at run end.
+
+    infra.cleanup_stale(max_age_seconds)
+        WHAT:    Reads cube:expires_at tags directly from the cloud API and deletes
+                 any resource past its TTL. No dependency on local state — works
+                 after a full process crash or across machines.
+        WHEN:    Call at harness STARTUP, before launching any new work, to GC
+                 orphans left by previous crashed runs.
+        RECOVERS: If never called, orphaned resources accumulate indefinitely,
+                 causing cost leaks and quota exhaustion.
+
+    infra.unprovision(resource)
+        WHAT:    Tears down Level 1 long-lived artifacts: provisioned image
+                 (AMI/Gallery image), VHD blobs, sentinels, and the ProvisionStore
+                 entry. Does NOT affect any running VMs.
+        WHEN:    Manual only. Use when retiring a benchmark from an infra, switching
+                 regions, or forcing a full re-provision (e.g. new base image).
+        RECOVERS: If skipped after retiring a benchmark, L1 artifacts (images,
+                 blobs) remain in cloud storage and incur ongoing storage costs.
+
+    Recommended harness lifecycle
+    ------------------------------
+        infra.cleanup_stale()                    # startup: GC from previous crashes
+        benchmark.setup()                        # launches L2 resource if needed
+        for task in tasks:
+            handle = infra.launch(resource)      # L3: per-task VM
+            try:
+                run_episode(task, handle)
+            finally:
+                handle.close()                   # L3: delete VM immediately
+        infra.cleanup(run_id=run_id)             # shutdown: catch-all for the run
+        benchmark.close()                        # teardown L2 resource
+
+    For multi-process use (e.g. Ray workers): pass run_id (a plain string) across
+    process boundaries and call infra.cleanup(run_id) from any process — the handle
+    itself is not serializable and must not be passed to workers.
     """
 
     run_id: str
@@ -163,7 +281,18 @@ class ResourceHandle(ABC):
 
     @abstractmethod
     def close(self) -> None:
-        """Tear down this resource (delete VM, stop container, etc.)."""
+        """Tear down this specific live resource (delete VM, stop container, etc.).
+
+        Deletes all cloud sub-resources associated with this handle (VM instance,
+        SSH tunnel, NIC, public IP, etc.). Idempotent — safe to call more than once.
+
+        For single-process flows, prefer the context manager form:
+            with infra.launch(resource) as handle:
+                run_episode(task, handle.endpoint)
+
+        If close() is not called (e.g. process crash), the orphaned resource will
+        be swept by infra.cleanup_stale() at the next harness startup.
+        """
         ...
 
     def __enter__(self) -> "ResourceHandle":
@@ -196,11 +325,17 @@ class InfraConfig(TypedBaseModel, ABC):
     Concrete subclasses must implement:
         fingerprint()   — stable key encoding provider + region/location only
         capabilities()  — set of supported capability tokens
-        provision()     — automated image prep (download → convert → upload → import)
-        launch()        — resource instantiation
-        list_active()   — enumerate live resources
-        cleanup()       — delete all resources for a run_id
-        cleanup_stale() — delete resources past their expires_at
+        provision()     — L1: automated image prep (download → convert → upload → import)
+        launch()        — L2/L3: resource instantiation from a provisioned image
+        list_active()   — L2/L3: enumerate live resources
+        cleanup()       — L2/L3: delete all resources for a run_id (call at shutdown)
+        cleanup_stale() — L2/L3: delete expired resources across all runs (call at startup)
+
+    Subclasses may optionally override:
+        unprovision()   — L1: tear down provisioned image and ProvisionStore entry
+                          Defaults to no-op. Override for infras that support it.
+
+    See module docstring for the full level hierarchy and recommended harness lifecycle.
     """
 
     default_ttl_seconds: int | None = 86400
@@ -267,18 +402,58 @@ class InfraConfig(TypedBaseModel, ABC):
 
     @abstractmethod
     def cleanup(self, run_id: str) -> None:
-        """Delete all resources associated with run_id."""
+        """L2/L3: Delete all live resources associated with run_id.
+
+        Targets all cloud resources tagged with cube:run_id=run_id, regardless
+        of whether handle.close() was already called. Safe to call on already-deleted
+        resources — implementations must no-op gracefully.
+
+        When to call: at harness shutdown (normal exit and signal handlers) as a
+        catch-all for any resources not explicitly closed via handle.close().
+        Does NOT affect L1 provisioned images.
+        """
         ...
 
     @abstractmethod
     def cleanup_stale(self, max_age_seconds: int | None = None) -> list[str]:
-        """Delete resources past their expires_at.
+        """L2/L3: Delete expired resources across all runs by reading cloud tags.
 
-        If max_age_seconds is set, also deletes resources older than that
-        even if they have no expires_at tag.
-        Returns list of deleted resource identifiers.
+        Reads cube:expires_at tags directly from the cloud provider API — no
+        dependency on local state. Works after a full process crash or across
+        machines. If max_age_seconds is set, also deletes resources older than
+        that even if they have no cube:expires_at tag.
+
+        When to call: at harness STARTUP, before launching any new work, to GC
+        orphans left by previous crashed or abandoned runs.
+        Does NOT affect L1 provisioned images.
+
+        Returns: list of deleted resource identifiers (e.g. VM names or instance IDs).
         """
         ...
+
+    def unprovision(self, resource: ResourceConfig) -> None:  # noqa: ARG002
+        """L1: Tear down the provisioned image and its ProvisionStore entry.
+
+        Deletes all Level 1 artifacts created by provision() for this
+        (resource, infra) pair: the cloud image (AMI, Gallery image version, etc.),
+        any intermediate blobs or snapshots, and the ProvisionStore entry.
+
+        This is a manual, intentional operation — never called automatically by
+        the harness. Use when:
+          - Retiring a benchmark from this infra (free up storage costs)
+          - Switching regions (unprovision here, provision in the new region)
+          - Forcing a full re-provision of a new base image
+
+        Does NOT affect any running L2/L3 resources (VMs, containers). To stop
+        live resources use handle.close(), cleanup(run_id), or cleanup_stale().
+
+        Default implementation is a no-op. Override in infras that manage L1 images
+        (e.g. AWSInfraConfig, AzureInfraConfig). Infras where images are externally
+        managed (e.g. public Docker Hub images) should leave this as a no-op.
+
+        Raises:
+            UnsupportedResourceType: if the resource type is not supported by this infra.
+        """
 
     # ── Concrete helpers ──────────────────────────────────────────────────────
 
