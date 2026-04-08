@@ -14,13 +14,33 @@ Screenshot each labeled block (or one tall scroll) and attach to the pull reques
 
 from __future__ import annotations
 
+import json
+import sys
+
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.text import Text
 
+from cube.core import Observation
 from cube.testing import format_observation_unified_diff
+
+
+def _load_two_obs_from_jsonl(path: str) -> tuple[Observation, Observation]:
+    obs_list = []
+    with open(path) as f:
+        for line in f:
+            step = json.loads(line)
+            output = step.get("output", {})
+            if output.get("_type", "").endswith("EnvironmentOutput"):
+                obs_list.append(Observation.model_validate(output["obs"]))
+                if len(obs_list) == 2:
+                    break
+    if len(obs_list) < 2:
+        raise ValueError(f"Need at least 2 EnvironmentOutput entries, found {len(obs_list)}")
+    return obs_list[0], obs_list[1]
+
 
 _RESET_MSG = "first observation differed between two resets"
 _RESET_DIFF_DISPLAY_MAX = 24_000
@@ -85,5 +105,14 @@ def main() -> None:
     )
 
 
+def main_from_jsonl(path: str) -> None:
+    obs_a, obs_b = _load_two_obs_from_jsonl(path)
+    _warning_panel(
+        label=f"From trajectory — {path}",
+        reset_diff=format_observation_unified_diff(obs_a, obs_b),
+    )
+
+
 if __name__ == "__main__":
-    main()
+    path = sys.argv[1] if len(sys.argv) > 1 else "scripts/sample_trajectory.jsonl"
+    main_from_jsonl(path)
