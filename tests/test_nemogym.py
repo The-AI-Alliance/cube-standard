@@ -46,9 +46,7 @@ class _TaskConfig(TaskConfig):
 
 
 class _Benchmark(Benchmark):
-    benchmark_metadata = BenchmarkMetadata(
-        name="test-bench", version="0.1.0", description="test", num_tasks=2
-    )
+    benchmark_metadata = BenchmarkMetadata(name="test-bench", version="0.1.0", description="test", num_tasks=2)
     task_metadata = {
         "t1": TaskMetadata(id="t1"),
         "t2": TaskMetadata(id="t2"),
@@ -114,10 +112,13 @@ def test_step():
         seed = c.post("/seed_session", json={"task_idx": 0}).json()
         env_id = seed["env_id"]
 
-        r = c.post("/step", json={
-            "env_id": env_id,
-            "action": {"id": "call_1", "name": "greet", "arguments": "{\"name\": \"World\"}"},
-        })
+        r = c.post(
+            "/step",
+            json={
+                "env_id": env_id,
+                "action": {"id": "call_1", "name": "greet", "arguments": '{"name": "World"}'},
+            },
+        )
         assert r.status_code == 200
         data = r.json()
         assert "observation" in data
@@ -130,14 +131,17 @@ def test_step_chat_completions_format():
     with _make_client() as c:
         seed = c.post("/seed_session", json={"task_idx": 0}).json()
 
-        r = c.post("/step", json={
-            "env_id": seed["env_id"],
-            "action": {
-                "id": "call_2",
-                "type": "function",
-                "function": {"name": "greet", "arguments": "{\"name\": \"World\"}"},
+        r = c.post(
+            "/step",
+            json={
+                "env_id": seed["env_id"],
+                "action": {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {"name": "greet", "arguments": '{"name": "World"}'},
+                },
             },
-        })
+        )
         assert r.status_code == 200
 
 
@@ -161,10 +165,13 @@ def test_close():
         assert r.status_code == 200
 
         # Subsequent step should return 404
-        r = c.post("/step", json={
-            "env_id": env_id,
-            "action": {"id": "call_1", "name": "greet", "arguments": "{}"},
-        })
+        r = c.post(
+            "/step",
+            json={
+                "env_id": env_id,
+                "action": {"id": "call_1", "name": "greet", "arguments": "{}"},
+            },
+        )
         assert r.status_code == 404
 
 
@@ -178,10 +185,13 @@ def test_full_episode():
         assert len(seed["tools"]) > 0
 
         # Step
-        step = c.post("/step", json={
-            "env_id": env_id,
-            "action": {"id": "call_1", "name": "greet", "arguments": "{\"name\": \"CUBE\"}"},
-        }).json()
+        step = c.post(
+            "/step",
+            json={
+                "env_id": env_id,
+                "action": {"id": "call_1", "name": "greet", "arguments": '{"name": "CUBE"}'},
+            },
+        ).json()
         assert isinstance(step["reward"], (int, float))
 
         # Verify
@@ -201,13 +211,19 @@ def test_multiple_concurrent_sessions():
         assert s1["env_id"] != s2["env_id"]
 
         # Both can step independently
-        r1 = c.post("/step", json={
-            "env_id": s1["env_id"],
-            "action": {"id": "c1", "name": "greet", "arguments": "{\"name\": \"A\"}"},
-        })
-        r2 = c.post("/step", json={
-            "env_id": s2["env_id"],
-            "action": {"id": "c2", "name": "greet", "arguments": "{\"name\": \"B\"}"},
-        })
+        r1 = c.post(
+            "/step",
+            json={
+                "env_id": s1["env_id"],
+                "action": {"id": "c1", "name": "greet", "arguments": '{"name": "A"}'},
+            },
+        )
+        r2 = c.post(
+            "/step",
+            json={
+                "env_id": s2["env_id"],
+                "action": {"id": "c2", "name": "greet", "arguments": '{"name": "B"}'},
+            },
+        )
         assert r1.status_code == 200
         assert r2.status_code == 200

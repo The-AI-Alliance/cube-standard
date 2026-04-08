@@ -71,11 +71,13 @@ def test_action_from_openai_tool_call_flat_format():
 
 def test_action_from_openai_tool_call_chat_completions_format():
     """Parse nested Chat Completions format."""
-    action = Action.from_openai_tool_call({
-        "id": "call_2",
-        "type": "function",
-        "function": {"name": "type_text", "arguments": '{"text": "hello"}'},
-    })
+    action = Action.from_openai_tool_call(
+        {
+            "id": "call_2",
+            "type": "function",
+            "function": {"name": "type_text", "arguments": '{"text": "hello"}'},
+        }
+    )
     assert action.id == "call_2"
     assert action.name == "type_text"
     assert action.arguments == {"text": "hello"}

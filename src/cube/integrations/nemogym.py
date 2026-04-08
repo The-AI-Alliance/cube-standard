@@ -119,7 +119,9 @@ class CubeResourcesServer:
 
     def seed_session(self, body: SeedSessionRequest) -> SeedSessionResponse:
         if body.task_idx < 0 or body.task_idx >= len(self._task_configs):
-            raise HTTPException(status_code=400, detail=f"task_idx {body.task_idx} out of range [0, {len(self._task_configs)})")
+            raise HTTPException(
+                status_code=400, detail=f"task_idx {body.task_idx} out of range [0, {len(self._task_configs)})"
+            )
 
         task_config = self._task_configs[body.task_idx]
         task = task_config.make(
