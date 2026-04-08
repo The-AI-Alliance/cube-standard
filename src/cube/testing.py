@@ -194,6 +194,11 @@ def _unified_observation_diff(dump_a: object, dump_b: object) -> str:
     )
 
 
+def format_observation_unified_diff(obs_a: object, obs_b: object) -> str:
+    """Same unified diff text the CLI shows when reset reproducibility fails."""
+    return _unified_observation_diff(obs_a, obs_b)
+
+
 def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str, str]:
     """
     Same seed → identical first observation (stress_test_specs.md).
