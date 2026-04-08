@@ -174,7 +174,7 @@ class Benchmark(TypedBaseModel, ABC):
         """
         with open(path) as f:
             data = json.load(f)
-        return BenchmarkMetadata(**data)
+        return BenchmarkMetadata.model_validate(data)
 
     @staticmethod
     def benchmark_metadata_from_csv(path: str | Path) -> "BenchmarkMetadata":
@@ -211,7 +211,7 @@ class Benchmark(TypedBaseModel, ABC):
                 data[field] = json.loads(data[field])
         if "num_tasks" in data:
             data["num_tasks"] = int(data["num_tasks"])
-        return BenchmarkMetadata(**data)
+        return BenchmarkMetadata.model_validate(data)
 
     @staticmethod
     def task_metadata_from_json(path: str | Path) -> "dict[str, TaskMetadata]":
@@ -234,7 +234,7 @@ class Benchmark(TypedBaseModel, ABC):
             items = list(data.values())
         else:
             raise ValueError(f"task_metadata JSON must be a list or dict, got {type(data).__name__}")
-        tasks = [TaskMetadata(**item) for item in items]
+        tasks = [TaskMetadata.model_validate(item) for item in items]
         return {t.id: t for t in tasks}
 
     @staticmethod
@@ -264,7 +264,7 @@ class Benchmark(TypedBaseModel, ABC):
                         data[field] = json.loads(data[field])
                 if "recommended_max_steps" in data:
                     data["recommended_max_steps"] = int(data["recommended_max_steps"])
-                tasks.append(TaskMetadata(**data))
+                tasks.append(TaskMetadata.model_validate(data))
         return {t.id: t for t in tasks}
 
     @property
