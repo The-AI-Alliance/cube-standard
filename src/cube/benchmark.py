@@ -35,6 +35,7 @@ from typing import Any, ClassVar, Generator
 
 from pydantic import ConfigDict, Field, PrivateAttr
 
+from cube import get_cache_dir
 from cube.container import ContainerBackend
 from cube.core import TypedBaseModel
 from cube.resource import ResourceConfig
@@ -614,3 +615,29 @@ class Benchmark(TypedBaseModel, ABC):
         ``MyBenchmark.uninstall()``
         """
         pass
+
+    @classmethod
+    def task_execution_cache_dir(cls) -> Path:
+        """Return the directory where per-task execution data is cached.
+
+        Per-task execution files are written here by ``install()`` and read
+        lazily by ``TaskConfig.make()`` at execution time.  The directory is
+        benchmark-specific: ``~/.cube/<benchmark_name>/tasks_execution_info/``.
+        """
+        return get_cache_dir(cls.benchmark_metadata.name) / "tasks_execution_info"
+
+    @classmethod
+    def load_task_execution_info(cls, task_id: str) -> dict[str, Any]:
+        """Load per-task execution data for *task_id* from the local cache.
+
+        Raises ``RuntimeError`` if the cache file is missing (i.e. ``install()``
+        has not been run yet).  Cube ``TaskConfig.make()`` implementations call
+        this to obtain heavy fields (e.g. ``problem_statement``, ``patch``) that
+        are excluded from the shipped ``task_metadata.json``.
+        """
+        cache_file = cls.task_execution_cache_dir() / f"{task_id}.json"
+        if not cache_file.exists():
+            raise RuntimeError(
+                f"No execution data for {task_id!r}. Run `{cls.__name__}.install()` to populate the execution cache."
+            )
+        return json.loads(cache_file.read_text())
