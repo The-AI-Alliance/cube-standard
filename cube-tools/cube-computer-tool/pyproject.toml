@@ -5,6 +5,7 @@ description = "Generic desktop computer tool for CUBE VM-based benchmarks"
 authors = [
     { name = "Nicolas Gontier", email = "nicolas.gontier@servicenow.com" },
     { name = "Aman Jaiswal", email = "amanjaiswal73892@gmail.com" },
+    { name = "Kusha Sareen", email = "kushasareen24@gmail.com" },
     { name = "Alexandre Lacoste", email = "alexandre.lacoste@servicenow.com" },
 ]
 requires-python = ">=3.12"
