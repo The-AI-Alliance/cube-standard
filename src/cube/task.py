@@ -252,13 +252,17 @@ class Task(TypedBaseModel, ABC):
                 )
         done = done or self.finished(obs)
         # TODO: Add truncation logic based on step limits or time limits
-        profiling: dict[str, Any] = {
-            "tool_execute": {
-                "total": sum(action_times),
-                "avg_per_action": sum(action_times) / len(action_times) if action_times else 0.0,
-                "n_actions": len(action_times),
+        profiling: dict[str, Any] = (
+            {
+                "tool_execute": {
+                    "total": sum(action_times),
+                    "avg_per_action": sum(action_times) / len(action_times),
+                    "n_actions": len(action_times),
+                }
             }
-        }
+            if action_times
+            else {}
+        )
         if done or self.validate_per_step:
             t_eval_start = time.perf_counter()
             reward, info = self.evaluate(obs)
