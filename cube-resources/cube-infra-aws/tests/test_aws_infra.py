@@ -57,8 +57,8 @@ def _make_infra(image_name_suffix: str = "", region: str = "us-east-2") -> AWSIn
 def _patch_store_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Redirect the default ProvisionStore path to a temp dir for isolation."""
     monkeypatch.setattr(
-        "cube.provision_store._DEFAULT_STORE_PATH",
-        tmp_path / "provisions.json",
+        "cube.provision_store._DEFAULT_STORE_DIR",
+        tmp_path / "provisions",
     )
 
 
@@ -160,15 +160,15 @@ class TestAWSProvisionStatus:
 
     def test_provision_store_key_format(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """ProvisionStore key must be {image_name}@{fingerprint}."""
-        import json
-
         _patch_store_path(monkeypatch, tmp_path)
         infra = _make_infra(image_name_suffix="-test")
         resource = VMResourceConfig(name="osworld-ubuntu-vm")
-        infra.register(resource, {"ami_id": "ami-test"})
+        shim = infra._resource_shim(resource)
+        ProvisionStore().put(shim, infra, {"ami_id": "ami-test"})
 
-        raw = json.loads((tmp_path / "provisions.json").read_text())
-        assert "osworld-ubuntu-vm-test@aws:us-east-2" in raw
+        store_dir = tmp_path / "provisions"
+        stored_keys = [p.stem for p in store_dir.glob("*.json")]
+        assert any("osworld-ubuntu-vm-test@aws:us-east-2" in k for k in stored_keys)
 
     def test_different_regions_are_isolated(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_store_path(monkeypatch, tmp_path)
