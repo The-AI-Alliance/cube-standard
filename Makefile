@@ -10,10 +10,10 @@ help:
 	@echo "make test       - Run unit tests"
 
 install:
-	uv sync --all-extras
+	uv sync --all-extras --all-packages
 
 ci-install:
-	uv sync --frozen --all-extras
+	uv sync --frozen --all-extras --all-packages
 
 update:
 	uv sync --all-extras --upgrade
@@ -27,4 +27,4 @@ lint-check:
 	uv run ruff format --diff .
 
 test:
-	uv run pytest tests/
+	uv run pytest -n 10

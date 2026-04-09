@@ -28,6 +28,7 @@ cube = "cube.cli:main"
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
+    "pytest-xdist>=3.0.0",
     "httpx>=0.28.0",  # For testing FastAPI
     "pre-commit>=3.6.0",
     "ruff>=0.8.0",
@@ -52,6 +53,9 @@ toolkit = [
 [build-system]
 requires = ["uv_build>=0.6.0,<0.7.0"]
 build-backend = "uv_build"
+
+[tool.uv.workspace]
+members = ["cube-resources/*"]
 
 [tool.uv.sources]
 counter-cube = { path = "examples/counter-cube", editable = true }
@@ -81,8 +85,12 @@ extend-select = ["I"] # sort imports
 "tests/test_toolkit.py" = ["E402"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-rs"
+testpaths = ["tests", "cube-resources"]
+addopts = "-rs -m 'not integration'"
+asyncio_mode = "auto"
+markers = [
+    "integration: end-to-end tests that hit GitHub (run with -m integration)",
+]
 
 [dependency-groups]
 dev = [
