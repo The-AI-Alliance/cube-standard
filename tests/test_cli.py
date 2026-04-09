@@ -210,28 +210,32 @@ def test_cmd_test_passes_on_all_tasks_passing(fake_debug_in_sys_modules):
     results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
 
     with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
-        with patch("cube.testing.run_debug_suite", return_value=results):
+        with patch("cube.testing.run_debug_suite", return_value=results) as mock_suite:
             cmd_test("fake_debug.debug")  # Should not raise
+    assert mock_suite.call_count == 3
+    assert [c.kwargs.get("workers") for c in mock_suite.call_args_list] == [1, 2, 4]
 
 
 def test_cmd_test_exits_1_on_failure(fake_debug_in_sys_modules):
     results = [{"task_id": "t1", "done": False, "reward": 0.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
 
     with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
-        with patch("cube.testing.run_debug_suite", return_value=results):
+        with patch("cube.testing.run_debug_suite", return_value=results) as mock_suite:
             with pytest.raises(SystemExit) as exc:
                 cmd_test("fake_debug.debug")
     assert exc.value.code == 1
+    assert mock_suite.call_count == 3
 
 
 def test_cmd_test_exits_1_on_task_with_error(fake_debug_in_sys_modules):
     results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": "boom"}]
 
     with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
-        with patch("cube.testing.run_debug_suite", return_value=results):
+        with patch("cube.testing.run_debug_suite", return_value=results) as mock_suite:
             with pytest.raises(SystemExit) as exc:
                 cmd_test("fake_debug.debug")
     assert exc.value.code == 1
+    assert mock_suite.call_count == 3
 
 
 def test_cmd_test_import_error_exits_1():
@@ -274,7 +278,13 @@ def test_cmd_test_passes_max_steps(fake_debug_in_sys_modules):
         with patch("cube.testing.run_debug_suite", return_value=results) as mock_suite:
             cmd_test("fake_debug.debug", max_steps=5)
 
-    mock_suite.assert_called_once_with("fake_debug.debug", fake_debug_in_sys_modules, max_steps=5, print_json=False)
+    mock_suite.assert_called_once_with(
+        "fake_debug.debug",
+        fake_debug_in_sys_modules,
+        max_steps=5,
+        print_json=False,
+        workers=1,
+    )
 
 
 def test_cmd_test_ci_mode_passes(fake_debug_in_sys_modules, capsys):

@@ -416,7 +416,9 @@ def cmd_test(
         f"[info]Running debug suite for[/info] [file]{resolved}[/file]…",
         spinner="dots",
     ):
-        results = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False)
+        t_suite0 = time.perf_counter()
+        results = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False, workers=1)
+        elapsed_suite_s = time.perf_counter() - t_suite0
 
     if not results:
         err_console.print(
@@ -591,15 +593,25 @@ def cmd_test(
 
     total_ep_s = sum(float(r.get("episode_time_s") or 0.0) for r in results)
     n_tasks = len(results)
-    throughput_specs = (
-        (1, 1.0),
-        (2, 0.93),
-        (4, 0.84),
-    )
+    throughput_rows: list[tuple[int, float, float, float]] = []
     throughput_blocks: list = []
     throughput_blocks.append(Text.from_markup("[bold]THROUGHPUT (tasks/min)[/bold]"))
     if total_ep_s >= _THROUGHPUT_MIN_TOTAL_S:
-        rate_1 = n_tasks / (total_ep_s / 60.0)
+        rate_1 = n_tasks / (elapsed_suite_s / 60.0) if elapsed_suite_s > 0 else 0.0
+        throughput_rows = [(1, rate_1, rate_1, 1.0)]
+        with console.status(
+            "[info]Measuring multi-worker throughput[/info] [dim](2 and 4 workers)…[/dim]",
+            spinner="dots",
+        ):
+            for w in (2, 4):
+                t0 = time.perf_counter()
+                run_debug_suite(resolved, module, max_steps=max_steps, print_json=False, workers=w)
+                elapsed_w = time.perf_counter() - t0
+                actual_rate = n_tasks / (elapsed_w / 60.0) if elapsed_w > 0 else 0.0
+                linear_rate = rate_1 * w
+                eff = actual_rate / linear_rate if linear_rate > 0 else 1.0
+                throughput_rows.append((w, actual_rate, linear_rate, eff))
+
         throughput_table = Table(
             show_header=True,
             box=box.SIMPLE,
@@ -608,31 +620,26 @@ def cmd_test(
             header_style="bold",
         )
         throughput_table.add_column("Workers", justify="right", style="dim")
-        # Only the 1-worker row is measured; 2/4 are illustrative scaling (not separate benchmark runs).
         throughput_table.add_column("Measured", justify="right")
-        throughput_table.add_column("Illustrative", justify="right", style="dim")
         throughput_table.add_column("Linear", justify="right", style="dim")
         throughput_table.add_column("Efficiency", justify="right")
 
-        for w, eff in throughput_specs:
-            linear = rate_1 * w
-            projected = linear * eff
-            measured_str = f"{rate_1:.1f}" if w == 1 else "—"
-            illustrative_str = f"{projected:.1f}" if w > 1 else "—"
+        for w, actual_rate, linear_rate, eff in throughput_rows:
             eff_pct = int(round(100 * eff))
-            bar = _stress_fill_bar(eff, _eff_bar_w)
+            bar = _stress_fill_bar(min(eff, 1.0), _eff_bar_w)
             throughput_table.add_row(
                 str(w),
-                measured_str,
-                illustrative_str,
-                f"{linear:.1f}",
+                f"{actual_rate:.1f}",
+                f"{linear_rate:.1f}",
                 Text.from_markup(f"{eff_pct}% {bar}"),
             )
         throughput_blocks.append(throughput_table)
         throughput_blocks.append(
             Text.from_markup(
-                "[dim]Measured = sequential 1-worker tasks/min. Illustrative = linear × efficiency factor "
-                "(fixed; not measured; real multi-worker needs a parallel harness).[/dim]"
+                "[dim]Measured = wall-clock suite throughput (tasks/min) for separate runs at 1, 2, and 4 "
+                "workers. Linear = 1-worker rate × workers. Efficiency = Measured / Linear. "
+                "Compliance and latency above use the 1-worker run only; parallel runs share "
+                "[file]_runtime_context[/file] and must not mutate it after [file]setup()[/file].[/dim]"
             )
         )
     else:

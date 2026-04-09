@@ -191,6 +191,20 @@ def test_suite_reports_contain_task_ids():
     assert {r["task_id"] for r in results} == {"alpha", "beta"}
 
 
+def test_suite_workers_preserves_get_task_configs_order():
+    mod, _ = _make_module(task_ids=("t1", "t2", "t3"))
+    seq = run_debug_suite("bench", mod, print_json=False, workers=1)
+    par = run_debug_suite("bench", mod, print_json=False, workers=2)
+    assert [r["task_id"] for r in seq] == ["t1", "t2", "t3"]
+    assert [r["task_id"] for r in par] == ["t1", "t2", "t3"]
+
+
+def test_suite_workers_must_be_positive():
+    mod, _ = _make_module()
+    with pytest.raises(ValueError, match="workers must be >= 1"):
+        run_debug_suite("bench", mod, print_json=False, workers=0)
+
+
 # ── run_debug_suite — benchmark lifecycle ────────────────────────────────────
 
 
