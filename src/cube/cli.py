@@ -559,8 +559,13 @@ def cmd_test(
             d = reset_diff
             if len(d) > _RESET_DIFF_DISPLAY_MAX:
                 d = d[:_RESET_DIFF_DISPLAY_MAX] + "\n... [diff truncated]\n"
-            warn_bits.append(Text.from_markup("[dim]Observation diff (unified — first reset vs second):[/dim]"))
-            warn_bits.append(Syntax(d.rstrip("\n"), lexer="diff", word_wrap=True, line_numbers=False))
+            warn_bits.append(Text.from_markup("[dim]Observation mismatch (key paths; values truncated):[/dim]"))
+            warn_bits.append(Syntax(d.rstrip("\n"), lexer="text", word_wrap=True, line_numbers=False))
+            warn_bits.append(
+                Text.from_markup(
+                    "[dim]Paths use dotted keys and \\[i\\] indices; large fields show a short prefix only.[/dim]"
+                )
+            )
         reset_repro_warning = [
             Panel(
                 Group(*warn_bits),

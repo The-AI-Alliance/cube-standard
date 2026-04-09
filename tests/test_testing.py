@@ -14,6 +14,7 @@ from cube.testing import (
     aggregate_profiling,
     assert_debug_tasks_reward_one,
     check_reset_reproducibility,
+    format_observation_unified_diff,
     run_debug_episode,
     run_debug_suite,
 )
@@ -432,9 +433,9 @@ def test_check_reset_reproducibility_returns_unified_diff_when_obs_differ():
     ok, msg, diff = check_reset_reproducibility(mod)
     assert ok is False
     assert "differed" in msg
-    assert "observation (first reset)" in diff
-    assert "observation (second reset)" in diff
-    assert "- " in diff or "+" in diff
+    assert "Observation differences" in diff
+    assert "token" in diff
+    assert "first:" in diff and "second:" in diff
 
 
 def test_check_reset_reproducibility_ok_and_empty_diff_when_matching():
@@ -470,3 +471,21 @@ def test_check_reset_reproducibility_errors_return_empty_diff():
     assert ok is False
     assert "get_debug_benchmark" in msg
     assert diff == ""
+
+
+def test_format_observation_diff_key_paths_and_truncates_leaves():
+    a = {"hint": "ok", "html": "<div>" + "x" * 500 + "</div>"}
+    b = {"hint": "ok", "html": "<div>" + "y" * 500 + "</div>"}
+    diff = format_observation_unified_diff(a, b)
+    assert "html" in diff
+    assert "Observation differences" in diff
+    assert len(diff) < 900
+    assert "x" * 200 not in diff
+
+
+def test_format_observation_diff_truncates_long_data_urls():
+    a = {"screenshot": "data:image/png;base64," + "A" * 300}
+    b = {"screenshot": "data:image/png;base64," + "B" * 300}
+    diff = format_observation_unified_diff(a, b)
+    assert "screenshot" in diff
+    assert len(diff) < 700

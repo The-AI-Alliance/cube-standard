@@ -30,7 +30,6 @@ Example usage in a test file::
 
 from __future__ import annotations
 
-import difflib
 import json
 import logging
 import platform
@@ -174,29 +173,77 @@ def run_debug_episode(
     return report
 
 
-def _observation_repr_for_diff(dump: object) -> str:
-    """Stable text for difflib (JSON for dict-like dumps, str otherwise)."""
-    if isinstance(dump, dict):
-        return json.dumps(dump, indent=2, sort_keys=True, default=str) + "\n"
-    return str(dump) + "\n"
+def _truncate_leaf_value(val: object, max_len: int) -> str:
+    """Short single-line preview for mismatch reporting."""
+    if val is None:
+        return "null"
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    if isinstance(val, int | float):
+        return repr(val)
+    if isinstance(val, str):
+        if len(val) <= max_len:
+            return val
+        return val[:max_len] + f"… (+{len(val) - max_len} chars)"
+    if isinstance(val, (dict, list, tuple)):
+        s = json.dumps(val, sort_keys=True, default=str)
+    else:
+        s = repr(val)
+    if len(s) <= max_len:
+        return s
+    return s[:max_len] + f"… (+{len(s) - max_len} chars)"
 
 
-def _unified_observation_diff(dump_a: object, dump_b: object) -> str:
-    lines_a = _observation_repr_for_diff(dump_a).splitlines(keepends=True)
-    lines_b = _observation_repr_for_diff(dump_b).splitlines(keepends=True)
-    return "".join(
-        difflib.unified_diff(
-            lines_a,
-            lines_b,
-            fromfile="observation (first reset)",
-            tofile="observation (second reset)",
-        )
-    )
+def _structural_mismatch_lines(
+    path: str,
+    a: object,
+    b: object,
+    lines: list[str],
+    max_len: int,
+) -> None:
+    if a == b:
+        return
+    if isinstance(a, dict) and isinstance(b, dict):
+        for k in sorted(set(a) | set(b)):
+            p = f"{path}.{k}" if path else str(k)
+            if k not in a:
+                lines.append(f"{p}\n  first:  <missing>\n  second: {_truncate_leaf_value(b[k], max_len)}")
+            elif k not in b:
+                lines.append(f"{p}\n  first:  {_truncate_leaf_value(a[k], max_len)}\n  second: <missing>")
+            else:
+                _structural_mismatch_lines(p, a[k], b[k], lines, max_len)
+        return
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        la, lb = list(a), list(b)
+        if len(la) != len(lb):
+            lp = f"{path}.__len__" if path else "__len__"
+            lines.append(f"{lp}\n  first:  len={len(la)}\n  second: len={len(lb)}")
+        for i in range(min(len(la), len(lb))):
+            p = f"{path}[{i}]" if path else f"[{i}]"
+            _structural_mismatch_lines(p, la[i], lb[i], lines, max_len)
+        return
+    p = path or "<observation>"
+    lines.append(f"{p}\n  first:  {_truncate_leaf_value(a, max_len)}\n  second: {_truncate_leaf_value(b, max_len)}")
+
+
+def _observation_key_path_diff_report(
+    dump_a: object,
+    dump_b: object,
+    *,
+    max_value_len: int = 120,
+) -> str:
+    """Human-readable mismatches: dotted key paths and [i] indices; leaf values truncated."""
+    out: list[str] = []
+    _structural_mismatch_lines("", dump_a, dump_b, out, max_value_len)
+    if not out:
+        return ""
+    header = "Observation differences (key paths; values truncated):\n\n"
+    return header + "\n\n".join(out)
 
 
 def format_observation_unified_diff(obs_a: object, obs_b: object) -> str:
-    """Same unified diff text the CLI shows when reset reproducibility fails."""
-    return _unified_observation_diff(obs_a, obs_b)
+    """Same observation mismatch text the CLI shows when reset reproducibility fails."""
+    return _observation_key_path_diff_report(obs_a, obs_b)
 
 
 def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str, str]:
@@ -207,9 +254,9 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str, st
     .close() when done, so the benchmark is in a consistent state.
 
     Returns:
-        (ok, message, diff): ``diff`` is a unified diff of the two first
-        observations when they differ; otherwise ``""``. ``message`` is empty
-        when ``ok`` is True.
+        (ok, message, diff): ``diff`` lists mismatched key paths with truncated
+        leaf values when the two first observations differ; otherwise ``""``.
+        Equality uses the full raw payloads. ``message`` is empty when ``ok``.
     """
     bench_fn = getattr(module, "get_debug_benchmark", None)
     if not callable(bench_fn):
@@ -237,7 +284,7 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str, st
             dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else obs1
             dump2 = obs2.model_dump() if hasattr(obs2, "model_dump") else obs2
             ok = dump1 == dump2
-            diff_str = "" if ok else _unified_observation_diff(dump1, dump2)
+            diff_str = "" if ok else _observation_key_path_diff_report(dump1, dump2)
         except Exception as e:
             return False, str(e), ""
         finally:
