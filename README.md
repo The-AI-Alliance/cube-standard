@@ -20,7 +20,7 @@ Principal developer: [ServiceNow AI Research](https://servicenow.com/research).
 
 ## Installation
 
-Requires Python 3.12+. Install with [uv](https://docs.astral.sh/uv/):
+Requires Python 3.13+. Install with [uv](https://docs.astral.sh/uv/):
 
 ```sh
 uv add cube-standard
@@ -74,6 +74,9 @@ cd my-bench && uv sync
 # expose get_debug_benchmark and get_debug_agent in src/*/debug.py
 cube test my-bench
 ```
+
+> [!NOTE]
+> `cube test` discovers benchmarks via the `cube.benchmarks` entry point group. The benchmark package must be installed (e.g. `uv sync` or `pip install -e .`) before running `cube test`, otherwise the benchmark will not be found.
 
 Or scaffold from the template:
 

@@ -5,6 +5,8 @@ import urllib.request
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from cube.backends.local import LocalContainerBackend
 from cube.container import ContainerConfig, ContainerError
 from tests.backends.test_harness import log, make_container_common_tests, make_container_health_check_tests
