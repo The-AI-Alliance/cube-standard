@@ -819,12 +819,14 @@ class AWSInfraConfig(InfraConfig):
                 instance_id = instance["InstanceId"]
 
                 should_delete = False
+                has_valid_expires_at = False
 
                 # Priority 1: explicit TTL tag written at launch time.
                 expires_at_str = tags.get("cube:expires_at")
                 if expires_at_str:
                     try:
                         expires_at = datetime.fromisoformat(expires_at_str)
+                        has_valid_expires_at = True
                         if expires_at < now:
                             should_delete = True
                     except ValueError:
@@ -834,8 +836,8 @@ class AWSInfraConfig(InfraConfig):
                             instance_id,
                         )
 
-                # Priority 2: age-based fallback.
-                if not should_delete and max_age_seconds is not None:
+                # Priority 2: age-based fallback (skipped if expires_at is set).
+                if not has_valid_expires_at and not should_delete and max_age_seconds is not None:
                     created_at_str = tags.get("cube:created_at")
                     try:
                         if created_at_str:
