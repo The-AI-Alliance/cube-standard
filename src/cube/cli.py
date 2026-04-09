@@ -22,11 +22,18 @@ Usage:
                         registered benchmark module.
 """
 
+import base64
 import importlib
 import importlib.metadata
+import json
 import os
+import re
 import shutil
+import subprocess
 import sys
+import textwrap
+import time
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -339,8 +346,14 @@ def cmd_test(
     *,
     max_steps: int = 20,
     output_path: str | None = None,
+    ci_mode: bool = False,
 ) -> None:
-    """Import *module_name* (or resolve an entry-point name) and run the debug compliance suite."""
+    """Import *module_name* (or resolve an entry-point name) and run the debug compliance suite.
+
+    When *ci_mode* is True (or ``CUBE_CI=1`` is set), the Rich terminal dashboard is suppressed
+    and only plain-text compliance results are printed — suitable for GitHub Actions logs.
+    """
+    ci_mode = ci_mode or bool(os.environ.get("CUBE_CI"))
     from cube.testing import (
         aggregate_profiling,
         build_stress_test_report,
@@ -477,6 +490,23 @@ def cmd_test(
     _eff_bar_w = min(14, max(8, _display_width // 7))
 
     profiling_agg = aggregate_profiling(results)
+
+    # ── CI mode: plain-text output, no terminal dashboard ────────────────────
+    if ci_mode:
+        print(f"cube test  benchmark={resolved}  tasks={len(results)}  failures={len(failures)}")
+        for name in compliance_passed:
+            print(f"  PASS  {name}")
+        for name in compliance_failed:
+            print(f"  FAIL  {name}")
+        report = build_stress_test_report(resolved, results, compliance_passed, compliance_failed)
+        if output_path:
+            report.save(output_path)
+            print(f"  JSON  {output_path}")
+        if failures:
+            print(f"\nFAILED — {len(failures)}/{len(results)} tasks did not reach reward 1.0")
+            sys.exit(1)
+        print("\nPASSED")
+        return
 
     # ── Stress-test dashboard (header → compliance → latency → throughput → profiling → tasks)
     status_str = "Passed" if not failures else "Failed"
@@ -732,6 +762,332 @@ def cmd_test(
 # ── Help / entrypoint ──────────────────────────────────────────────────────────
 
 
+# ── cube registry add ────────────────────────────────────────────────────────
+
+_TODO = "<TODO: {}>"
+_REGISTRY_DEFAULT = "The-AI-Alliance/cube-registry"
+
+
+def _guess_display_name(package_name: str) -> str:
+    """arithmetic-cube → 'Arithmetic Cube', miniwob-cube → 'Miniwob Cube'."""
+    return " ".join(p.capitalize() for p in package_name.replace("_", "-").split("-"))
+
+
+def _detect_dev_install_url(path: Path) -> str | None:
+    """Construct a git+ install URL from the directory's git remote and relative path."""
+    r = subprocess.run(["git", "remote", "get-url", "origin"], cwd=path, capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    remote = r.stdout.strip()
+    if remote.startswith("git@github.com:"):
+        remote = "https://github.com/" + remote[len("git@github.com:") :].removesuffix(".git")
+    elif remote.endswith(".git"):
+        remote = remote.removesuffix(".git")
+    if not remote.startswith("https://github.com/"):
+        return None
+    root_r = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=path, capture_output=True, text=True)
+    if root_r.returncode != 0:
+        return None
+    git_root = Path(root_r.stdout.strip())
+    try:
+        subdir = path.resolve().relative_to(git_root)
+        return f"git+{remote}" if str(subdir) == "." else f"git+{remote}#subdirectory={subdir}"
+    except ValueError:
+        return None
+
+
+def _parse_pyproject_license(project: dict) -> str | None:
+    """Extract SPDX license string from pyproject.toml [project.license] if possible."""
+    lic = project.get("license")
+    if lic is None:
+        return None
+    if isinstance(lic, str):
+        return lic  # PEP 639: license = "MIT"
+    if isinstance(lic, dict):
+        return lic.get("text")  # PEP 517: license = {text = "MIT"}
+    return None
+
+
+def _build_registry_yaml(
+    *,
+    id: str,
+    name: str,
+    name_is_guessed: bool,
+    version: str,
+    description: str,
+    package: str,
+    dev_install_url: str | None,
+    authors: list[dict],
+    wrapper_license: str | None,
+) -> str:
+    lines: list[str] = []
+
+    lines.append(f"id: {id}")
+
+    name_comment = "  # auto-guessed — verify" if name_is_guessed else ""
+    lines.append(f'name: "{name}"{name_comment}')
+
+    lines.append(f'version: "{version}"')
+
+    # description as YAML block scalar, wrapped at 78 chars
+    wrapped = textwrap.fill(description.strip(), width=78, break_long_words=False, break_on_hyphens=False)
+    desc_lines = ["description: >"] + ["  " + ln for ln in wrapped.splitlines()]
+    lines.extend(desc_lines)
+
+    lines.append(f"package: {package}")
+
+    if dev_install_url:
+        lines.append(f'dev_install_url: "{dev_install_url}"')
+    else:
+        lines.append(f'# dev_install_url: "{_TODO.format("git+https://github.com/ORG/REPO#subdirectory=PATH")}"')
+
+    lines.append("")
+    lines.append("authors:")
+    for author in authors:
+        github = author.get("github") or _TODO.format("github-handle")
+        name_val = author.get("name") or _TODO.format("Full Name")
+        lines.append(f"  - github: {github}")
+        lines.append(f"    name: {name_val}")
+
+    lines.append("")
+    lines.append("legal:")
+    lic = wrapper_license or _TODO.format("MIT|Apache-2.0|BSD-3-Clause|...")
+    lines.append(f"  wrapper_license: {lic}")
+    lines.append("  # benchmark_license:")
+    lines.append(f"  #   reported: {_TODO.format('SPDX-id of the underlying benchmark')}")
+    lines.append(f'  #   source_url: "{_TODO.format("https://...")}"')
+
+    lines.append("")
+    lines.append("tags:")
+    lines.append(f"  - {_TODO.format('math|web|gui|desktop')}")
+
+    lines.append("")
+    lines.append("# Optional fields — uncomment and fill as needed:")
+    lines.append(f'# paper: "{_TODO.format("https://arxiv.org/abs/...")}"')
+    lines.append(f'# getting_started_url: "{_TODO.format("https://...")}"')
+    lines.append("# parallelization_mode: task-parallel")
+    lines.append("# max_concurrent_tasks: 64")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+# ── gh helpers ────────────────────────────────────────────────────────────────
+
+
+def _gh_available() -> bool:
+    r = subprocess.run(["gh", "auth", "status", "--active"], capture_output=True)
+    return r.returncode == 0
+
+
+def _gh_get(endpoint: str) -> dict | list:
+    r = subprocess.run(["gh", "api", endpoint], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip())
+    return json.loads(r.stdout) if r.stdout.strip() else {}
+
+
+def _gh_post(endpoint: str, **fields: str) -> dict:
+    cmd = ["gh", "api", "--method", "POST", endpoint]
+    for k, v in fields.items():
+        cmd.extend(["--field", f"{k}={v}"])
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip())
+    return json.loads(r.stdout) if r.stdout.strip() else {}
+
+
+def _gh_put_json(endpoint: str, body: dict) -> dict:
+    """PUT with a JSON body via a temp file (avoids stdin/capture_output interaction)."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(body, f)
+        tmp = f.name
+    try:
+        r = subprocess.run(["gh", "api", "--method", "PUT", endpoint, "--input", tmp], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip())
+        return json.loads(r.stdout) if r.stdout.strip() else {}
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
+def _gh_submit_pr(entry_id: str, yaml_text: str, registry: str) -> str:
+    """Fork registry, create branch, upload YAML, open PR. Returns PR URL."""
+    repo_name = registry.split("/")[1]
+
+    user_info = _gh_get("/user")
+    user = user_info["login"]
+    user_id = user_info.get("id", "")
+    # Use GitHub's noreply email so DCO sign-off matches the API commit author.
+    user_email = f"{user_id}+{user}@users.noreply.github.com"
+
+    # Fork (idempotent)
+    _gh_post(f"/repos/{registry}/forks")
+
+    # Wait for fork's main branch to be ready (up to 30s)
+    sha = None
+    for _ in range(15):
+        try:
+            ref = _gh_get(f"/repos/{user}/{repo_name}/git/refs/heads/main")
+            # API returns either a single object or a list
+            obj = ref[0] if isinstance(ref, list) else ref
+            sha = obj["object"]["sha"]
+            break
+        except Exception:
+            time.sleep(2)
+    if sha is None:
+        raise RuntimeError(f"Fork {user}/{repo_name} not ready after 30s — try again.")
+
+    branch = f"add/{entry_id}"
+
+    # Create branch (ignore if already exists)
+    try:
+        _gh_post(f"/repos/{user}/{repo_name}/git/refs", ref=f"refs/heads/{branch}", sha=sha)
+    except RuntimeError as e:
+        if "already exists" not in str(e):
+            raise
+
+    # Upload file — if the file already exists on the branch (e.g. updating an entry),
+    # GitHub requires the existing blob sha.
+    content_b64 = base64.b64encode(yaml_text.encode()).decode()
+    commit_msg = f"feat: add {entry_id} entry\n\nSigned-off-by: {user} <{user_email}>"
+    committer = {"name": user, "email": user_email}
+    file_body: dict = {
+        "message": commit_msg,
+        "content": content_b64,
+        "branch": branch,
+        "author": committer,
+        "committer": committer,
+    }
+    try:
+        existing = _gh_get(f"/repos/{user}/{repo_name}/contents/entries/{entry_id}.yaml?ref={branch}")
+        if isinstance(existing, dict) and "sha" in existing:
+            file_body["sha"] = existing["sha"]
+    except Exception:
+        pass
+    _gh_put_json(f"/repos/{user}/{repo_name}/contents/entries/{entry_id}.yaml", file_body)
+
+    # Open PR
+    pr = _gh_post(
+        f"/repos/{registry}/pulls",
+        title=f"feat: add {entry_id} entry",
+        head=f"{user}:{branch}",
+        base="main",
+        body=f"Adds the `{entry_id}` benchmark entry.\n\n> Generated by `cube registry add --submit`",
+    )
+    return pr["html_url"]
+
+
+def _manual_submit_commands(entry_id: str, yaml_path: Path, registry: str) -> str:
+    return (
+        f"  git clone https://github.com/{registry}\n"
+        f"  cd {registry.split('/')[1]}\n"
+        f"  git checkout -b add/{entry_id}\n"
+        f"  cp {yaml_path} entries/\n"
+        f"  git add entries/{entry_id}.yaml\n"
+        f"  git commit -s -m 'feat: add {entry_id} entry'\n"
+        f"  git push origin add/{entry_id}\n"
+        f"  gh pr create --repo {registry} --title 'feat: add {entry_id} entry'"
+    )
+
+
+# ── cmd_registry_add ──────────────────────────────────────────────────────────
+
+
+def cmd_registry_add(path: Path, submit: bool, registry: str) -> None:
+    out_path = path / "cube-registry-entry.yaml"
+
+    if submit and out_path.exists():
+        # --submit with an existing file: the user already edited the TODOs — use it as-is.
+        yaml_text = out_path.read_text()
+        m = re.search(r"^id:\s*(\S+)", yaml_text, re.MULTILINE)
+        if not m:
+            err_console.print(f"[error]Cannot parse 'id:' from[/error] [file]{out_path}[/file]")
+            sys.exit(1)
+        entry_id = m.group(1)
+        console.print(f"[info]Using existing[/info] [file]{out_path}[/file]")
+    else:
+        # Generate (or regenerate) from pyproject.toml.
+        pyproject_path = path / "pyproject.toml"
+        if not pyproject_path.exists():
+            err_console.print(f"[error]No pyproject.toml found in[/error] [file]{path}[/file]")
+            sys.exit(1)
+
+        with open(pyproject_path, "rb") as f:
+            pyproject = tomllib.load(f)
+
+        project = pyproject.get("project", {})
+        package = project.get("name", "")
+        version = project.get("version", "")
+        description = project.get("description", "")
+
+        if not package:
+            err_console.print("[error]pyproject.toml is missing [cmd]project.name[/cmd][/error]")
+            sys.exit(1)
+        if not version:
+            err_console.print("[error]pyproject.toml is missing [cmd]project.version[/cmd][/error]")
+            sys.exit(1)
+
+        entry_id = package
+        raw_authors = project.get("authors", [])
+        authors = [{"github": None, "name": a.get("name")} for a in raw_authors] or [{}]
+
+        yaml_text = _build_registry_yaml(
+            id=entry_id,
+            name=_guess_display_name(package),
+            name_is_guessed=True,
+            version=version,
+            description=description,
+            package=package,
+            dev_install_url=_detect_dev_install_url(path),
+            authors=authors,
+            wrapper_license=_parse_pyproject_license(project),
+        )
+
+        out_path.write_text(yaml_text)
+        console.print(f"[success]✓[/success] Generated [file]{out_path}[/file]")
+
+    todos = [ln.strip() for ln in yaml_text.splitlines() if "<TODO:" in ln and not ln.strip().startswith("#")]
+
+    if todos:
+        console.print("")
+        console.print("[warning]Fill in the following before submitting:[/warning]")
+        for t in todos:
+            console.print(f"  [dim]{t}[/dim]")
+        console.print("")
+
+    if not submit:
+        console.print(
+            f"[dim]Edit [file]{out_path}[/file], then run:[/dim]\n"
+            f"  [cmd]cube registry add --submit[/cmd]\n"
+            f"[dim]or submit the YAML manually as a PR to[/dim] [cmd]{registry}[/cmd]"
+        )
+        return
+
+    if todos:
+        err_console.print("[error]Cannot submit: fill in all <TODO:...> fields first.[/error]")
+        sys.exit(1)
+
+    if not _gh_available():
+        console.print(
+            "[warning]gh CLI not found or not authenticated.[/warning]\n"
+            "[dim]Install: https://cli.github.com  then run: gh auth login[/dim]\n\n"
+            "[dim]Manual commands:[/dim]\n" + _manual_submit_commands(entry_id, out_path, registry)
+        )
+        sys.exit(1)
+
+    console.print(f"[info]Submitting PR to[/info] [cmd]{registry}[/cmd] ...")
+    try:
+        pr_url = _gh_submit_pr(entry_id, yaml_text, registry)
+    except Exception as e:
+        err_console.print(f"[error]PR creation failed:[/error] {e}")
+        sys.exit(1)
+
+    console.print(f"[success]✓ PR opened:[/success] {pr_url}")
+
+
 def _print_help() -> None:
     """Print a rich-formatted help screen."""
     table = Table(show_header=False, box=box.SIMPLE, padding=(0, 2), show_edge=False)
@@ -751,8 +1107,15 @@ def _print_help() -> None:
     )
     table.add_row(
         "cube test NAME",
-        "Run the debug compliance suite — NAME is a benchmark entry-point name or a dotted module path",
-        "cube test counter-cube",
+        "Run the debug compliance suite — NAME is a benchmark entry-point name or a dotted module path. "
+        "Options: [cmd]--ci[/cmd] (plain-text CI output, also set via CUBE_CI=1), "
+        "[cmd]--output=PATH[/cmd] (save JSON report), [cmd]--max-steps=N[/cmd]",
+        "cube test counter-cube --ci --output=results.json",
+    )
+    table.add_row(
+        "cube registry add [PATH]",
+        "Generate a cube-registry YAML entry for the cube package at PATH (default: cwd).  Use --submit to open a PR automatically.",
+        "cube registry add --submit",
     )
 
     console.print(
@@ -760,7 +1123,7 @@ def _print_help() -> None:
             table,
             title=f"[brand]cube[/brand] [dim]v{__version__}[/dim]",
             subtitle="[dim]Common Unified Benchmark Environments[/dim]\n"
-            "[dim]Set NO_COLOR=1 or use --no-color for plain output.[/dim]",
+            "[dim]Set NO_COLOR=1 or use --no-color for plain output. Set CUBE_CI=1 for CI mode.[/dim]",
             border_style="blue",
             padding=(0, 1),
         )
@@ -801,6 +1164,7 @@ def main() -> None:
             sys.exit(1)
         max_steps = 20
         output_path = None
+        ci_mode = False
         remaining = args[2:]
         for opt in remaining:
             if opt.startswith("--max-steps="):
@@ -809,7 +1173,33 @@ def main() -> None:
                 output_path = opt.split("=", 1)[1]
             elif opt == "--save-baseline":
                 output_path = "cube_stress_test_baseline.json"
-        cmd_test(args[1], max_steps=max_steps, output_path=output_path)
+            elif opt == "--ci":
+                ci_mode = True
+        cmd_test(args[1], max_steps=max_steps, output_path=output_path, ci_mode=ci_mode)
+    elif command == "registry":
+        subcmd = args[1] if len(args) > 1 else ""
+        if subcmd != "add":
+            err_console.print(
+                Panel(
+                    "[error]Usage:[/error] [cmd]cube registry add [PATH] [--submit] [--registry=REPO][/cmd]",
+                    title="[error]Error[/error]",
+                    border_style="red",
+                    padding=(0, 1),
+                )
+            )
+            sys.exit(1)
+        remaining = args[2:]
+        path = Path.cwd()
+        submit = False
+        registry = _REGISTRY_DEFAULT
+        for opt in remaining:
+            if opt == "--submit":
+                submit = True
+            elif opt.startswith("--registry="):
+                registry = opt.split("=", 1)[1]
+            elif not opt.startswith("--"):
+                path = Path(opt)
+        cmd_registry_add(path=path, submit=submit, registry=registry)
     else:
         err_console.print(f"[error]Unknown command:[/error] [cmd]{command}[/cmd]")
         _print_help()

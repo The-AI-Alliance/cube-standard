@@ -39,3 +39,6 @@ extend-select = ["I"]
 testpaths = ["tests"]
 addopts = "-rs"
 asyncio_mode = "auto"
+
+[tool.uv.sources]
+cube-standard = { workspace = true }
