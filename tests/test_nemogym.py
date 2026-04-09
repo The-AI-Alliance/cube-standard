@@ -61,9 +61,7 @@ class _Benchmark(Benchmark):
 
 
 def _make_server() -> CubeResourcesServer:
-    bench = _Benchmark()
-    bench.setup()
-    return CubeResourcesServer(benchmark=bench)
+    return CubeResourcesServer(benchmark=_Benchmark())
 
 
 def _make_client() -> TestClient:

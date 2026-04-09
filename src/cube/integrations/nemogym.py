@@ -91,14 +91,16 @@ class CubeResourcesServer:
     """Wraps a CUBE Benchmark as a NeMo Gym-compatible HTTP resource server.
 
     Manages multiple concurrent sessions (env_id -> Task), each corresponding
-    to one episode. The benchmark must be set up before constructing this server.
+    to one episode. Calls benchmark.install() and benchmark.setup() automatically.
 
     Args:
-        benchmark: A CUBE Benchmark instance (already set up via benchmark.setup()).
+        benchmark: A CUBE Benchmark instance (not yet set up).
     """
 
     def __init__(self, benchmark: Benchmark) -> None:
         self.benchmark = benchmark
+        benchmark.install()
+        benchmark.setup()
         self._task_configs: list[TaskConfig] = list(benchmark.get_task_configs())
         self._sessions: dict[str, Task] = {}
         self._last_obs: dict[str, object] = {}  # env_id -> last Observation for verify
@@ -182,9 +184,6 @@ class CubeResourcesServer:
             raise HTTPException(status_code=404, detail=f"Unknown env_id: {body.env_id}")
 
         obs = self._last_obs.get(body.env_id)
-        if obs is None:
-            raise HTTPException(status_code=400, detail=f"No observation recorded for env_id: {body.env_id}")
-
         reward, info = task.evaluate(obs)
         return VerifyResponse(reward=reward, reward_info=info)
 
