@@ -30,4 +30,4 @@ packages = ["src/cube_infra_azure"]
 dev = []
 
 [tool.uv.sources]
-cube-standard = { path = "../..", editable = true }
+cube-standard = { workspace = true }

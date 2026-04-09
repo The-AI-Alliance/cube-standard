@@ -28,4 +28,4 @@ dev = [
 packages = ["src/cube_infra_aws"]
 
 [tool.uv.sources]
-cube-standard = { path = "../..", editable = true }
+cube-standard = { workspace = true }
