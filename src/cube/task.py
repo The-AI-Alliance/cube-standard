@@ -281,8 +281,15 @@ class Task(TypedBaseModel, ABC):
         return obs
 
     @abstractmethod
-    def evaluate(self, obs: Observation) -> Tuple[float, dict]:
-        """Validate the current state of the task and return (reward, info)."""
+    def evaluate(self, obs: Observation | None = None) -> Tuple[float, dict]:
+        """Validate the current state of the task and return (reward, info).
+
+        ``obs`` is optional because many tasks derive the score entirely from
+        internal tool state (e.g. a counter value, a VM screenshot taken inside
+        the tool) and do not need the last observation passed back.  Callers
+        that rely on observation content should pass it explicitly; callers
+        that don't can omit it: act, act, evaluate.
+        """
         pass
 
     def get_privileged_info(self) -> Content:
@@ -302,7 +309,7 @@ class Task(TypedBaseModel, ABC):
         # TODO: figure out if we want to provide some standard for this?
         return ""
 
-    def finished(self, obs: Observation) -> bool:
+    def finished(self, obs: Observation | None = None) -> bool:
         """(Optional) Check if the task is finished."""
         return False
 
