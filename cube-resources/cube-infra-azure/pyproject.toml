@@ -1,0 +1,33 @@
+[project]
+name = "cube-infra-azure"
+version = "0.1.0"
+description = "Azure InfraConfig for CUBE resource lifecycle"
+authors = [
+    { name = "Nicolas Gontier", email = "nicolas.gontier@servicenow.com" },
+    { name = "Aman Jaiswal", email = "amanjaiswal73892@gmail.com" },
+    { name = "Alexandre Lacoste", email = "alexandre.lacoste@servicenow.com" },
+]
+requires-python = ">=3.13"
+dependencies = [
+    "cube-standard",
+    "azure-identity>=1.15",
+    "azure-mgmt-compute>=31.0",
+    "azure-mgmt-network>=25.0",
+    "azure-mgmt-storage>=21.0",
+    "azure-storage-blob>=12.28.0",
+    "requests>=2.28",
+    "tqdm>=4.60",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cube_infra_azure"]
+
+[dependency-groups]
+dev = []
+
+[tool.uv.sources]
+cube-standard = { workspace = true }
