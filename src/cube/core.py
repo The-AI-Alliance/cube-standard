@@ -155,10 +155,10 @@ class Action(TypedBaseModel):
         if "function" in tool_call:
             func = tool_call["function"]
             name = func["name"]
-            raw_args = func.get("arguments", "{}")
+            raw_args = func.get("arguments") or "{}"
         else:
             name = tool_call["name"]
-            raw_args = tool_call.get("arguments", "{}")
+            raw_args = tool_call.get("arguments") or "{}"
 
         arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
         return cls(id=tool_call.get("id") or tool_call.get("call_id"), name=name, arguments=arguments)

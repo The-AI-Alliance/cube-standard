@@ -85,6 +85,16 @@ def test_health():
         assert data["num_tasks"] == 2
 
 
+def test_list_tasks():
+    with _make_client() as c:
+        r = c.get("/tasks")
+        assert r.status_code == 200
+        tasks = r.json()
+        assert len(tasks) == 2
+        assert tasks[0] == {"idx": 0, "task_id": "t1"}
+        assert tasks[1] == {"idx": 1, "task_id": "t2"}
+
+
 def test_seed_session_returns_obs_and_tools():
     with _make_client() as c:
         r = c.post("/seed_session", json={"task_idx": 0})
