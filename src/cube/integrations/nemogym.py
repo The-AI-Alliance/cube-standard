@@ -3,13 +3,14 @@ NeMo Gym integration for CUBE.
 
 Provides a CubeResourcesServer that wraps any CUBE Benchmark as an HTTP server
 compatible with NeMo Gym's resource server protocol. NeMo Gym's CubeAgent calls
-these endpoints over HTTP — no NeMo Gym Python dependency required.
+these endpoints over HTTP -- no NeMo Gym Python dependency required.
 
 Endpoints:
-    POST /seed_session  — pick a task, reset it, return initial observation + tools
-    POST /step          — execute an action, return next observation + reward + done
-    POST /verify        — evaluate the current task state, return reward
-    POST /close         — close a task and free resources
+    POST /seed_session  -- pick a task, reset it, return initial observation + tools
+    POST /step          -- execute an action, return next observation + reward + done
+    POST /verify        -- evaluate the current task state, return reward
+    POST /close         -- close a task and free resources
+    GET  /tasks         -- list available tasks and their indices
 
 Usage:
     from cube.integrations.nemogym import CubeResourcesServer
@@ -21,7 +22,6 @@ Or programmatically:
     app = server.make_app()  # returns a FastAPI instance
 """
 
-import atexit
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -61,6 +61,7 @@ class StepResponse(BaseModel):
     observation: list[dict]
     reward: float
     done: bool
+    error: str | None = None
 
 
 class VerifyRequest(BaseModel):
@@ -76,6 +77,11 @@ class CloseRequest(BaseModel):
     env_id: str
 
 
+class TaskListItem(BaseModel):
+    idx: int
+    task_id: str
+
+
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
@@ -84,7 +90,7 @@ class CloseRequest(BaseModel):
 class CubeResourcesServer:
     """Wraps a CUBE Benchmark as a NeMo Gym-compatible HTTP resource server.
 
-    Manages multiple concurrent sessions (env_id → Task), each corresponding
+    Manages multiple concurrent sessions (env_id -> Task), each corresponding
     to one episode. The benchmark must be set up before constructing this server.
 
     Args:
@@ -95,7 +101,7 @@ class CubeResourcesServer:
         self.benchmark = benchmark
         self._task_configs: list[TaskConfig] = list(benchmark.get_task_configs())
         self._sessions: dict[str, Task] = {}
-        self._last_obs: dict[str, object] = {}  # env_id → last Observation for verify
+        self._last_obs: dict[str, object] = {}  # env_id -> last Observation for verify
 
         if not self._task_configs:
             raise ValueError(f"Benchmark '{benchmark.name}' has no task configs")
@@ -117,6 +123,9 @@ class CubeResourcesServer:
 
     # -- Endpoints -----------------------------------------------------------
 
+    def list_tasks(self) -> list[TaskListItem]:
+        return [TaskListItem(idx=i, task_id=tc.task_id) for i, tc in enumerate(self._task_configs)]
+
     def seed_session(self, body: SeedSessionRequest) -> SeedSessionResponse:
         if body.task_idx < 0 or body.task_idx >= len(self._task_configs):
             raise HTTPException(
@@ -128,10 +137,13 @@ class CubeResourcesServer:
             runtime_context=self.benchmark._runtime_context,
             container_backend=self.benchmark.container_backend,
         )
+        try:
+            obs, _info = task.reset()
+        except Exception:
+            task.close()
+            raise
 
-        obs, _info = task.reset()
         env_id = str(uuid.uuid4())
-
         self._sessions[env_id] = task
         self._last_obs[env_id] = obs
 
@@ -149,12 +161,19 @@ class CubeResourcesServer:
         action = Action.from_openai_tool_call(body.action)
         env_output = task.step(action)
 
+        # Note: env_output.obs is already post-processed by task.obs_postprocess().
+        # task.step() calls evaluate() on the raw obs (before postprocessing), so
+        # calling task.evaluate(env_output.obs) in /verify is slightly inconsistent
+        # for tasks whose obs_postprocess mutates the observation. In practice most
+        # evaluate() implementations inspect the environment state rather than the
+        # obs argument, so this is rarely observable.
         self._last_obs[body.env_id] = env_output.obs
 
         return StepResponse(
             observation=env_output.obs.to_llm_messages(),
             reward=env_output.reward,
             done=env_output.done,
+            error=str(env_output.error) if env_output.error else None,
         )
 
     def verify(self, body: VerifyRequest) -> VerifyResponse:
@@ -188,17 +207,16 @@ class CubeResourcesServer:
             server._close_all()
 
         app = FastAPI(
-            title=f"CUBE Resources Server — {self.benchmark.name}",
+            title=f"CUBE Resources Server -- {self.benchmark.name}",
             lifespan=lifespan,
         )
-        atexit.register(self._close_all)
 
+        app.get("/tasks", response_model=list[TaskListItem])(self.list_tasks)
         app.post("/seed_session", response_model=SeedSessionResponse)(self.seed_session)
         app.post("/step", response_model=StepResponse)(self.step)
         app.post("/verify", response_model=VerifyResponse)(self.verify)
         app.post("/close")(self.close_session)
 
-        # Health check
         @app.get("/health")
         def health():
             return {"status": "ok", "benchmark": self.benchmark.name, "num_tasks": len(self._task_configs)}

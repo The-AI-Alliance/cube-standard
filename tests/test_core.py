@@ -95,6 +95,12 @@ def test_action_from_openai_tool_call_call_id():
     assert action.id == "resp_call_1"
 
 
+def test_action_from_openai_tool_call_null_arguments():
+    """Explicit null arguments falls back to empty dict."""
+    action = Action.from_openai_tool_call({"id": "call_4", "name": "stop", "arguments": None})
+    assert action.arguments == {}
+
+
 # --- Content.from_data dispatch ---
 
 
