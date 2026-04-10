@@ -2,7 +2,7 @@
 
 Provides ``ChatToolConfig`` and ``ChatTool``, a concrete implementation of the
 ``Tool`` base class that wraps a ``ChatSession`` and exposes ``send_message``
-as the single agent-facing action.
+and ``report_infeasible`` as the agent-facing actions.
 """
 
 import datetime
@@ -123,4 +123,20 @@ class ChatTool(Tool):
             Message content to send.
         """
         self._session.send_message(text)
+        return self.chat_obs()
+
+    @tool_action
+    def report_infeasible(self, reason: str) -> str:
+        """Report that the current task instructions are infeasible.
+
+        Use this action when the task cannot be completed as described,
+        for example due to missing information, contradictory instructions,
+        or unavailable resources.
+
+        Parameters
+        ----------
+        reason : str
+            Explanation of why the task is infeasible.
+        """
+        self._session.add_message("infeasible", reason)
         return self.chat_obs()
