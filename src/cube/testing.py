@@ -145,9 +145,12 @@ def run_debug_episode(
             if isinstance(env_out.info, dict) and "profiling" in env_out.info:
                 report["profiling"].append(env_out.info["profiling"])
             extra = f"error={env_out.error!r}  " if env_out.error else ""
+            obs_md = env_out.obs.to_markdown()
+            if len(obs_md) > 500:
+                obs_md = obs_md[:250] + " ... [truncated] ... " + obs_md[-250:]
             logger.info(
                 f"[run_debug_episode] task={task_id!r}  step={report['steps']}  action={action.name}  "
-                f"reward={env_out.reward:.3f}  done={env_out.done}  step_time={step_time:.3f}s  {extra}obs={obs.to_markdown()}"
+                f"reward={env_out.reward:.3f}  done={env_out.done}  step_time={step_time:.3f}s  {extra}obs={obs_md}"
             )
 
             if env_out.done:
