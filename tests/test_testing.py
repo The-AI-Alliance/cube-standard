@@ -37,7 +37,7 @@ class DoneTask(Task):
     def reset(self):
         return Observation.from_text("ready"), {}
 
-    def evaluate(self, obs: Observation):
+    def evaluate(self, obs: Observation | None = None):
         return 1.0, {}
 
     def close(self):
@@ -53,7 +53,7 @@ class FailOnResetTask(Task):
     def reset(self):
         raise RuntimeError("reset failed")
 
-    def evaluate(self, obs: Observation):
+    def evaluate(self, obs: Observation | None = None):
         return 0.0, {}
 
     def close(self):
