@@ -68,12 +68,12 @@ class ReachTargetTask(Task):
         obs = Observation.from_text(f"Counter starts at 0. Use 'increment' to reach {self.target}.")
         return obs, {"target": self.target}
 
-    def evaluate(self, obs: Observation) -> Tuple[float, Dict[str, Any]]:
+    def evaluate(self, obs: Observation | None = None) -> Tuple[float, Dict[str, Any]]:
         assert isinstance(self.tool, ConfigurableCounterTool)
         solved = self.tool.counter == self.target
         return (1.0 if solved else 0.0), {"solved": solved, "value": self.tool.counter}
 
-    def finished(self, obs: Observation) -> bool:
+    def finished(self, obs: Observation | None = None) -> bool:
         assert isinstance(self.tool, ConfigurableCounterTool)
         return self.tool.counter == self.target
 

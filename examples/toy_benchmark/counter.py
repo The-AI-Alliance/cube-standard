@@ -128,7 +128,7 @@ class ReachTargetTask(Task):
         obs = Observation.from_text(f"Counter starts at 0. Use 'increment' action to reach {self.target}.")
         return obs, {"task_type": "reach_target", "target": self.target}
 
-    def evaluate(self, obs: Observation) -> Tuple[float, Dict[str, Any]]:
+    def evaluate(self, obs: Observation | None = None) -> Tuple[float, Dict[str, Any]]:
         """Validate if counter reached target."""
         assert isinstance(self.tool, ConfigurableCounterTool)
         counter_value = self.tool.counter
@@ -150,7 +150,7 @@ class ReachTargetTask(Task):
             "steps": steps_taken,
         }
 
-    def finished(self, obs: Observation) -> bool:
+    def finished(self, obs: Observation | None = None) -> bool:
         """Check if task is complete."""
         assert isinstance(self.tool, ConfigurableCounterTool)
         return self.tool.counter == self.target

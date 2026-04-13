@@ -1,6 +1,6 @@
 [project]
 name = "cube-standard"
-version = "0.1.0rc3"
+version = "0.1.0rc5"
 description = "Common Unified Benchmark Environments"
 readme = "README.md"
 urls = { Repository = "https://github.com/The-AI-Alliance/cube-standard" }
@@ -17,7 +17,9 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.8.0",
     "python-dotenv>=1.2.1",
+    "requests>=2.28",
     "rich>=13.0",
+    "tqdm>=4.60",
     "uvicorn[standard]>=0.34.0",
 ]
 
@@ -28,9 +30,11 @@ cube = "cube.cli:main"
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
+    "pytest-xdist>=3.0.0",
     "httpx>=0.28.0",  # For testing FastAPI
     "pre-commit>=3.6.0",
     "ruff>=0.8.0",
+    "counter-cube",  # example benchmark → registers cube.benchmarks entry point for `cube test counter-cube`
 ]
 docker = [
     "docker>=7.1.0",
@@ -51,6 +55,12 @@ toolkit = [
 [build-system]
 requires = ["uv_build>=0.6.0,<0.7.0"]
 build-backend = "uv_build"
+
+[tool.uv.workspace]
+members = ["cube-resources/*"]
+
+[tool.uv.sources]
+counter-cube = { path = "examples/counter-cube", editable = true }
 
 [tool.uv.build-backend]
 module-name = "cube"
@@ -77,8 +87,12 @@ extend-select = ["I"] # sort imports
 "tests/test_toolkit.py" = ["E402"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-rs"
+testpaths = ["tests", "cube-resources"]
+addopts = "-rs -m 'not integration'"
+asyncio_mode = "auto"
+markers = [
+    "integration: end-to-end tests that hit GitHub (run with -m integration)",
+]
 
 [dependency-groups]
 dev = [

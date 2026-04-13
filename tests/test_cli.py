@@ -277,6 +277,43 @@ def test_cmd_test_passes_max_steps(fake_debug_in_sys_modules):
     mock_suite.assert_called_once_with("fake_debug.debug", fake_debug_in_sys_modules, max_steps=5, print_json=False)
 
 
+def test_cmd_test_ci_mode_passes(fake_debug_in_sys_modules, capsys):
+    results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results):
+            cmd_test("fake_debug.debug", ci_mode=True)
+
+    out = capsys.readouterr().out
+    assert "PASSED" in out
+    assert "PASS" in out
+
+
+def test_cmd_test_ci_mode_fails_exits_1(fake_debug_in_sys_modules, capsys):
+    results = [{"task_id": "t1", "done": False, "reward": 0.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results):
+            with pytest.raises(SystemExit) as exc:
+                cmd_test("fake_debug.debug", ci_mode=True)
+
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "FAILED" in out
+
+
+def test_cmd_test_ci_mode_via_env_var(fake_debug_in_sys_modules, monkeypatch, capsys):
+    monkeypatch.setenv("CUBE_CI", "1")
+    results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results):
+            cmd_test("fake_debug.debug")  # no ci_mode kwarg — activated via env var
+
+    out = capsys.readouterr().out
+    assert "PASSED" in out
+
+
 # ── main() ────────────────────────────────────────────────────────────────────
 
 
@@ -329,11 +366,11 @@ def test_main_test_dispatches_with_default_max_steps():
     with patch("cube.cli.cmd_test") as mock_test:
         with patch.object(sys, "argv", ["cube", "test", "counter-cube"]):
             main()
-    mock_test.assert_called_once_with("counter-cube", max_steps=20, output_path=None)
+    mock_test.assert_called_once_with("counter-cube", max_steps=20, output_path=None, ci_mode=False)
 
 
 def test_main_test_dispatches_with_custom_max_steps():
     with patch("cube.cli.cmd_test") as mock_test:
         with patch.object(sys, "argv", ["cube", "test", "counter-cube", "--max-steps=5"]):
             main()
-    mock_test.assert_called_once_with("counter-cube", max_steps=5, output_path=None)
+    mock_test.assert_called_once_with("counter-cube", max_steps=5, output_path=None, ci_mode=False)

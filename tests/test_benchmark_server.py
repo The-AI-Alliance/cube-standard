@@ -36,7 +36,7 @@ class MinimalTask(Task):
         self.tool.reset()
         return Observation.from_text("Test observation"), {}
 
-    def evaluate(self, obs: Observation):
+    def evaluate(self, obs: Observation | None = None):
         """Minimal validation."""
         return 0.0, {}
 

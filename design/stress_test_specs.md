@@ -114,26 +114,26 @@ The stress test provides a minimal evaluation harness so CUBE-Developers don't n
 def run_debug_episode(benchmark, task_config, debug_agent):
     """Run one full episode of a debug task."""
     task = task_config.make(metadata=..., runtime_context=benchmark.runtime_context)
-    
+
     obs, info = task.setup()
     steps = 0
     profiling = []
-    
+
     while steps < 20:  # Safety limit
         action = debug_agent.get_action(obs)
         result = task.step(action)
         obs = result.obs
-        
+
         if "profiling" in result.info:
             profiling.append(result.info["profiling"])
-        
+
         if result.done:
             break
         steps += 1
-    
+
     reward, eval_info = task.evaluate(obs)
     task.close()
-    
+
     return {
         "done": result.done,
         "reward": reward,
@@ -329,7 +329,7 @@ cube stress-test my_cube --live
 │ p99 │████████████████████░░░░░░░░░░│ 0.134s                  │
 ├───────────────────────────────────────────────────────────────┤
 │ THROUGHPUT (tasks/min)                                         │
-│ Workers │ Actual │ Linear │ Efficiency                         │
+│ Workers │ Measured │ Illustrative │ Linear │ Efficiency         │
 │    1    │  12.4  │  12.4  │ █████████████████████████ 100%    │
 │    2    │  23.1  │  24.8  │ ███████████████████████░░  93%    │
 │    4    │  41.8  │  49.6  │ █████████████████████░░░░  84%    │

@@ -19,6 +19,7 @@ Abstract classes:
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Tuple
 
@@ -216,7 +217,11 @@ class Task(TypedBaseModel, ABC):
             reward: reward signal (0.0 is not available)
             terminated: Task completed successfully
             truncated: Task hit limit (time, steps)
-            info: Additional metadata
+            info: Additional metadata, always includes a "profiling" key with wall-clock
+                  timings (in seconds) for each phase:
+                    - "tool_execute": dict with "total", "avg_per_action", "n_actions"
+                    - "evaluate": float (only present when evaluate() was called)
+                    - "obs_postprocess": float
             error: if there was an exception executing this step
         """
         actions = [action] if isinstance(action, Action) else action
@@ -225,12 +230,15 @@ class Task(TypedBaseModel, ABC):
         info = {}
         error = None
         obs = Observation()  # will populate list of content after each action
+        action_times: list[float] = []
         for action in actions:
             if action.name == STOP_ACTION.name and self.accept_agent_stop:
                 obs += Observation.from_text("Task finished by the agent.")
                 done = True
                 break
+            t0 = time.perf_counter()
             result = self.tool.execute_action(action)
+            action_times.append(time.perf_counter() - t0)
             if isinstance(result, Observation):
                 obs += result
             elif isinstance(result, StepError):
@@ -244,9 +252,25 @@ class Task(TypedBaseModel, ABC):
                 )
         done = done or self.finished(obs)
         # TODO: Add truncation logic based on step limits or time limits
+        profiling: dict[str, Any] = (
+            {
+                "tool_execute": {
+                    "total": sum(action_times),
+                    "avg_per_action": sum(action_times) / len(action_times),
+                    "n_actions": len(action_times),
+                }
+            }
+            if action_times
+            else {}
+        )
         if done or self.validate_per_step:
+            t_eval_start = time.perf_counter()
             reward, info = self.evaluate(obs)
+            profiling["evaluate"] = time.perf_counter() - t_eval_start
+        t_post_start = time.perf_counter()
         obs = self.obs_postprocess(obs)
+        profiling["obs_postprocess"] = time.perf_counter() - t_post_start
+        info["profiling"] = profiling
         return EnvironmentOutput(obs=obs, reward=reward, done=done, info=info, error=error)
 
     def obs_postprocess(self, obs: Observation) -> Observation:
@@ -257,15 +281,22 @@ class Task(TypedBaseModel, ABC):
         return obs
 
     @abstractmethod
-    def evaluate(self, obs: Observation) -> Tuple[float, dict]:
-        """Validate the current state of the task and return (reward, info)."""
+    def evaluate(self, obs: Observation | None = None) -> Tuple[float, dict]:
+        """Validate the current state of the task and return (reward, info).
+
+        ``obs`` is optional because many tasks derive the score entirely from
+        internal tool state (e.g. a counter value, a VM screenshot taken inside
+        the tool) and do not need the last observation passed back.  Callers
+        that rely on observation content should pass it explicitly; callers
+        that don't can omit it: act, act, evaluate.
+        """
         pass
 
     def get_privileged_info(self) -> Content:
         """
         (Optional) Return privileged information about the task such as:
         - solution: list[Action] = Solve the task using a pre-defined solution.
-        - evaluation_function_soruce_code: str
+        - evaluation_function_source_code: str
         - environment internal state summaries
         """
         return StructuredContent(data={})  # empty content by default, override to provide something else
@@ -278,7 +309,7 @@ class Task(TypedBaseModel, ABC):
         # TODO: figure out if we want to provide some standard for this?
         return ""
 
-    def finished(self, obs: Observation) -> bool:
+    def finished(self, obs: Observation | None = None) -> bool:
         """(Optional) Check if the task is finished."""
         return False
 
@@ -327,6 +358,8 @@ class TaskConfig(ABC, TypedBaseModel):
 
         Example:
         >>> task_metadata = MyBenchmark.task_metadata[self.task_id]
+        >>> task_execution_info = MyBenchmark.load_task_execution_info(self.task_id)
+        >>> task_metadata = task_metadata.model_copy(update={"extra_info": task_execution_info})
         >>> return MyTask(
         ...     metadata=task_metadata,
         ...     tool_config=self.tool_config,

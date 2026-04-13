@@ -28,7 +28,7 @@ class SimpleTask(Task):
     def reset(self):
         return Observation.from_text("ready"), {}
 
-    def evaluate(self, obs: Observation):
+    def evaluate(self, obs: Observation | None = None):
         return 0.5, {"score": 0.5}
 
 
@@ -88,7 +88,8 @@ def test_task_step_action_error_sets_done_and_error():
 def test_task_validate_per_step_triggers_evaluate():
     out = make_task(validate_per_step=True).step(Action(name="greet", arguments={"name": "Alice"}))
     assert out.reward == 0.5
-    assert out.info == {"score": 0.5}
+    assert out.info["score"] == 0.5
+    assert "profiling" in out.info
 
 
 def test_task_action_set_comes_from_tool():
