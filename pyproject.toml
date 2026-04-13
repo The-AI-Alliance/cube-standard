@@ -1,6 +1,6 @@
 [project]
 name = "cube-standard"
-version = "0.1.0rc4"
+version = "0.1.0rc5"
 description = "Common Unified Benchmark Environments"
 readme = "README.md"
 urls = { Repository = "https://github.com/The-AI-Alliance/cube-standard" }
@@ -9,7 +9,7 @@ authors = [
     { name = "Aman Jaiswal", email = "amanjaiswal73892@gmail.com" },
     { name = "Alexandre Lacoste", email = "alexandre.lacoste@servicenow.com" },
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
     "docstring_parser>=0.16",

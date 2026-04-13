@@ -42,7 +42,7 @@ class CubeTask(Task):
         obs = Observation.from_text("Episode started. Use available actions to complete the task.")
         return obs, {}
 
-    def evaluate(self, obs: Observation) -> tuple[float, dict[str, Any]]:
+    def evaluate(self, obs: Observation | None = None) -> tuple[float, dict[str, Any]]:
         """Score the current state.
 
         Returns
@@ -56,7 +56,7 @@ class CubeTask(Task):
         solved = False  # replace with real check
         return (1.0 if solved else 0.0), {"solved": solved}
 
-    def finished(self, obs: Observation) -> bool:
+    def finished(self, obs: Observation | None = None) -> bool:
         """Return True to end the episode early (before max steps).
 
         Called automatically by Task.step() after each action.
