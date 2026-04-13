@@ -410,6 +410,246 @@ class GuestAgent:
         return None
 
     # ------------------------------------------------------------------
+    # VM state queries (used by WAA evaluation getters)
+    # ------------------------------------------------------------------
+
+    def get_vm_documents_path(self) -> str | None:
+        """Return the Documents directory path inside the VM."""
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(self._base_url + "/documents_path", timeout=30)
+                if resp.status_code == 200:
+                    return resp.json()["documents_path"]
+            except Exception as exc:
+                logger.error("Documents path error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return None
+
+    def get_vm_folder_exists_in_path(self, folder_name: str, path: str) -> bool:
+        """Return True if *folder_name* exists inside *path* on the VM."""
+        payload = json.dumps({"folder_name": folder_name, "path": path})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/folder_exists",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return True
+                return False
+            except Exception as exc:
+                logger.error("Folder exists error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return False
+
+    def get_vm_file_exists_in_path(self, file_name: str, path: str) -> bool:
+        """Return True if *file_name* exists inside *path* on the VM."""
+        payload = json.dumps({"file_name": file_name, "path": path})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/file_exists",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return True
+                return False
+            except Exception as exc:
+                logger.error("File exists error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return False
+
+    def get_vm_are_files_sorted_by_modified_time(self, directory: str) -> bool:
+        """Return True if files in *directory* are sorted by modified time."""
+        payload = json.dumps({"directory": directory})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/are_files_sorted_by_modified_time",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return True
+                return False
+            except Exception as exc:
+                logger.error("Files sorted check error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return False
+
+    def get_file_as_text(self, file_path: str) -> str | None:
+        """Download a file from the VM and return its contents as text."""
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(self._base_url + "/file", data={"file_path": file_path}, timeout=30)
+                if resp.status_code == 200:
+                    return resp.text
+            except Exception as exc:
+                logger.error("Get file as text error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return None
+
+    def get_vm_file_explorer_is_details_view(self, path: str) -> bool:
+        """Return True if File Explorer is in details view for *path*."""
+        payload = json.dumps({"path": path})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/is_details_view",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return True
+                return False
+            except Exception as exc:
+                logger.error("Details view check error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return False
+
+    def get_file_hidden_status(self, file_path: str) -> int:
+        """Return 1 if the file is hidden (dotfile or Windows hidden attribute), 0 otherwise."""
+        command = (
+            f"import os; print(1 if os.path.basename(r'{file_path}').startswith('.') "
+            f"or (os.name == 'nt' and bool(os.stat(r'{file_path}').st_file_attributes & 2)) else 0)"
+        )
+        response = self.execute_python_command(command)
+        if response and response.get("status") == "success" and response.get("returncode") == 0:
+            try:
+                return int(response["output"].strip())
+            except (ValueError, KeyError):
+                return 0
+        return 0
+
+    def get_vm_is_directory_read_only_for_user(self, directory: str, user: str) -> bool:
+        """Return True if *directory* is read-only for *user* on the VM."""
+        payload = json.dumps({"directory": directory, "user": user})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/is_directory_read_only_for_user",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return True
+                return False
+            except Exception as exc:
+                logger.error("Directory read-only check error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return False
+
+    def get_vm_are_all_images_tagged(self, directory: str, tag: str) -> bool:
+        """Return True if all images in *directory* are tagged with *tag*."""
+        payload = json.dumps({"directory": directory, "tag": tag})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/are_all_images_tagged",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return True
+                return False
+            except Exception as exc:
+                logger.error("Images tagged check error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return False
+
+    def get_vm_library_folders(self, library_name: str) -> str | None:
+        """Return the library folders output for *library_name*."""
+        payload = json.dumps({"library_name": library_name})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/library_folders",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return resp.json()["output"]
+            except Exception as exc:
+                logger.error("Library folders error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return None
+
+    def get_vm_check_if_timer_started(self, hours: int, minutes: int, seconds: int) -> str:
+        """Return 'True' if a timer with the given duration exists in the Clock app."""
+        payload = json.dumps({"hours": hours, "minutes": minutes, "seconds": seconds})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/check_if_timer_started",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return "True"
+                return "False"
+            except Exception as exc:
+                logger.error("Timer check error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return "False"
+
+    def get_vm_check_if_world_clock_exists(self, city: str, country: str) -> str:
+        """Return 'True' if a world clock for *city*, *country* exists in the Clock app."""
+        payload = json.dumps({"city": city, "country": country})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/check_if_world_clock_exists",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return "True"
+                return "False"
+            except Exception as exc:
+                logger.error("World clock check error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return "False"
+
+    def execute_shell_command(self, command: str) -> dict[str, Any] | None:
+        """Execute a shell command inside the VM via the /execute endpoint."""
+        payload = json.dumps({"command": command})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/execute",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=90,
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+            except Exception as exc:
+                logger.error("Shell command error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return None
+
+    def get_registry_key(self, path: str, value: str) -> dict[str, Any] | None:
+        """Read a Windows registry key via PowerShell."""
+        command = f"powershell -Command \"Get-ItemPropertyValue -Path '{path}' -Name '{value}'\""
+        return self.execute_shell_command(command)
+
+    def get_all_installed_apps(self) -> dict[str, Any] | None:
+        """Return JSON of all installed Windows apps via PowerShell."""
+        command = 'powershell -Command "Get-AppxPackage | Select-Object Name,PackageFullName | ConvertTo-Json"'
+        return self.execute_shell_command(command)
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
