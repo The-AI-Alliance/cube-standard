@@ -769,11 +769,7 @@ _REGISTRY_DEFAULT = "The-AI-Alliance/cube-registry"
 
 
 def _guess_display_name(package_name: str) -> str:
-    """arithmetic-cube → 'Arithmetic Cube', miniwob-cube → 'Miniwob Cube'.
-
-    # TODO(standardization): replace with BenchmarkMetadata.name once cube registry add
-    # reads from the installed package (3-layer metadata merge, introspection_redesign.md §4).
-    """
+    """arithmetic-cube → 'Arithmetic Cube', miniwob-cube → 'Miniwob Cube'."""
     return " ".join(p.capitalize() for p in package_name.replace("_", "-").split("-"))
 
 
@@ -801,13 +797,7 @@ def _detect_dev_install_url(path: Path) -> str | None:
 
 
 def _parse_pyproject_license(project: dict) -> str | None:
-    """Extract SPDX license string from pyproject.toml [project.license] if possible.
-
-    # TODO(standardization): wrapper_license should be read from cube-metadata.yaml
-    # (legal.wrapper_license) instead of pyproject.toml once the 3-layer metadata merge
-    # is implemented (introspection_redesign.md §4, Layer B field ownership table).
-    # pyproject.toml is used as a best-effort fallback for cubes that lack cube-metadata.yaml.
-    """
+    """Extract SPDX license string from pyproject.toml [project.license] if possible."""
     lic = project.get("license")
     if lic is None:
         return None
@@ -868,8 +858,6 @@ def _build_registry_yaml(
     lines.append(f'  #   source_url: "{_TODO.format("https://...")}"')
 
     lines.append("")
-    # TODO(standardization): populate tags from BenchmarkMetadata.tags instead of a placeholder
-    # once cube registry add reads from the installed package (introspection_redesign.md §4).
     lines.append("tags:")
     lines.append(f"  - {_TODO.format('math|web|gui|desktop')}")
 
@@ -1051,16 +1039,9 @@ def cmd_registry_add(path: Path, submit: bool, registry: str) -> None:
             sys.exit(1)
 
         entry_id = package
-        # TODO(standardization): merge authors from cube-metadata.yaml (which has github handles)
-        # instead of falling back to pyproject.toml authors (which have names only, no github handles).
-        # See introspection_redesign.md §4, Layer B field ownership table.
         raw_authors = project.get("authors", [])
         authors = [{"github": None, "name": a.get("name")} for a in raw_authors] or [{}]
 
-        # TODO(standardization): once cube registry add reads from the installed package,
-        # replace _guess_display_name() with BenchmarkMetadata.name, populate tags from
-        # BenchmarkMetadata.tags, and read legal/authors from cube-metadata.yaml.
-        # See introspection_redesign.md §4 (3-layer metadata merge).
         yaml_text = _build_registry_yaml(
             id=entry_id,
             name=_guess_display_name(package),
