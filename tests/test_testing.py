@@ -1,6 +1,7 @@
 """Tests for cube.testing — run_debug_episode, run_debug_suite, assert_debug_tasks_reward_one."""
 
 from types import ModuleType
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -36,7 +37,7 @@ class DoneTask(Task):
     def reset(self):
         return Observation.from_text("ready"), {}
 
-    def evaluate(self, obs: Observation):
+    def evaluate(self, obs: Observation | None = None):
         return 1.0, {}
 
     def close(self):
@@ -52,7 +53,7 @@ class FailOnResetTask(Task):
     def reset(self):
         raise RuntimeError("reset failed")
 
-    def evaluate(self, obs: Observation):
+    def evaluate(self, obs: Observation | None = None):
         return 0.0, {}
 
     def close(self):
@@ -75,12 +76,13 @@ class DoneBenchmark(Benchmark):
     task_metadata = {}
     task_config_class = DoneTaskConfig
 
-    _install_calls: int = PrivateAttr(default=0)
+    _install_calls: ClassVar[int] = 0  # class-level: install() is a classmethod
     _setup_calls: int = PrivateAttr(default=0)
     _close_calls: int = PrivateAttr(default=0)
 
-    def install(self) -> None:
-        self._install_calls += 1
+    @classmethod
+    def install(cls) -> None:
+        cls._install_calls += 1
 
     def _setup(self) -> None:
         self._setup_calls += 1
@@ -204,21 +206,18 @@ def test_double_setup_metadata_preserved():
         task_config_class = DoneTaskConfig
         _setup_calls: int = PrivateAttr(default=0)
 
+        @classmethod
+        def install(cls) -> None:
+            cls.task_metadata = {tid: TaskMetadata(id=tid) for tid in task_ids}
+
         def _setup(self) -> None:
             self._setup_calls += 1
-            # Idempotent:Only populate if not already set (correct pattern for multiple setup() calls)
-            if not self.task_metadata:
-                object.__setattr__(
-                    self,
-                    "task_metadata",
-                    {tid: TaskMetadata(id=tid) for tid in task_ids},
-                )
 
         def close(self) -> None:
             pass
 
+    DoubleSetupBenchmark.install()
     benchmark = DoubleSetupBenchmark()
-    benchmark.install()
     benchmark.setup()
     configs_first = list(benchmark.get_task_configs())
     assert len(configs_first) == 2
@@ -238,9 +237,10 @@ def test_double_setup_metadata_preserved():
 
 
 def test_suite_benchmark_setup_and_close_called():
+    DoneBenchmark._install_calls = 0  # reset class-level counter before this test
     mod, benchmark = _make_module()
     run_debug_suite("bench", mod)
-    assert benchmark._install_calls == 1
+    assert DoneBenchmark._install_calls == 1
     assert benchmark._setup_calls == 1
     assert benchmark._close_calls == 1
 
@@ -248,7 +248,7 @@ def test_suite_benchmark_setup_and_close_called():
 def test_suite_benchmark_closed_even_when_get_task_configs_raises():
     class FailingTaskConfigsBenchmark(Benchmark):
         benchmark_metadata = BenchmarkMetadata(name="test-bench", version="0.1", description="test")
-        task_metadata = {}
+        task_metadata = {"t1": TaskMetadata(id="t1")}
         task_config_class = DoneTaskConfig
         _close_calls: int = PrivateAttr(default=0)
 

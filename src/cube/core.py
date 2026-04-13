@@ -63,6 +63,10 @@ class TypedBaseModel(BaseModel):
             actual_cls = getattr(module, class_name)
             if not (isinstance(actual_cls, type) and issubclass(actual_cls, TypedBaseModel)):
                 raise ValueError(f"Refusing to deserialize '{type_path}': class must be a TypedBaseModel subclass.")
+            # If _type matches the current class, proceed normally via handler to avoid
+            # Pydantic v2's "returning non-self from __init__" warning and broken __init__ path.
+            if actual_cls is cls:
+                return handler(value)
             return actual_cls.model_validate(value)
         if isinstance(value, dict) and inspect.isabstract(cls):
             raise ValueError(
@@ -387,6 +391,10 @@ class Observation(TypedBaseModel):
     def to_llm_messages(self) -> list[dict]:
         """Convert observation to a list of messages suitable for sending to LLM."""
         return [content.to_llm_message() for content in self.contents]
+
+    def to_markdown(self) -> str:
+        """Render the entire observation as a single Markdown string."""
+        return "\n\n".join(content.to_markdown() for content in self.contents)
 
     def __add__(self, other: Self) -> Self:
         self.contents += other.contents

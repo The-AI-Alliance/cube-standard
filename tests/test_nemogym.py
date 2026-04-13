@@ -31,7 +31,7 @@ class _Task(Task):
         self.tool.reset()
         return Observation.from_text("Welcome! What would you like to do?"), {}
 
-    def evaluate(self, obs: Observation):
+    def evaluate(self, obs: Observation | None = None):
         return 0.5, {"score": 0.5}
 
 
