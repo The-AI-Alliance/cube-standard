@@ -30,6 +30,10 @@ def find_benchmark_class(package: str) -> tuple[Any | None, str]:
     except Exception:
         pass  # fall through to import-based discovery
 
+    # TODO(standardization): this fallback exists because existing cubes don't all register
+    # a [project.entry-points.'cube.benchmarks'] entry point in their pyproject.toml.
+    # Once all cubes are standardized (see introspection_redesign.md §4), this block can be
+    # replaced with a hard failure: "no entry point registered → reject".
     # 2. Import the package module and look for a class named Benchmark.
     try:
         mod = importlib.import_module(package.replace("-", "_"))

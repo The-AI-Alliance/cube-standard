@@ -10,7 +10,6 @@ except PackageNotFoundError:
     __version__ = "unknown"
 
 _CUBE_CACHE_ROOT = Path(os.environ.get("CUBE_CACHE_DIR", str(Path.home() / ".cube")))
-# TODO: ad helper function to clear cache, get cache size, etc.
 
 
 def get_cache_dir(benchmark_name: str) -> Path:

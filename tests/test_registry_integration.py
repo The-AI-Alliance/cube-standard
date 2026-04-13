@@ -32,10 +32,10 @@ import pytest
 # ---------------------------------------------------------------------------
 
 CUBE_STANDARD_ROOT = Path(__file__).parent.parent
+# arithmetic-cube: used for YAML generation tests (no GitHub)
+ARITHMETIC_CUBE_PATH = CUBE_STANDARD_ROOT.parent / "cube-harness" / "cubes" / "arithmetic-cube"
 # counter-cube: ships with cube-standard, not yet in the registry → open submission (passes ownership-check)
 COUNTER_CUBE_PATH = CUBE_STANDARD_ROOT / "examples" / "counter-cube"
-# arithmetic-cube: used for YAML generation tests only (no GitHub)
-ARITHMETIC_CUBE_PATH = CUBE_STANDARD_ROOT.parent / "cube-harness" / "cubes" / "arithmetic-cube"
 REGISTRY = "The-AI-Alliance/cube-registry"
 ENTRY_ID = "counter-cube"
 BRANCH = f"add/{ENTRY_ID}"
@@ -173,12 +173,10 @@ class TestRegistryAdd:
         assert "TODO" in result.stderr or "TODO" in result.stdout
 
     def test_rerun_preserves_edited_file(self):
-        """Running --submit uses the existing file without regenerating it."""
+        """Running without --submit regenerates (overwrites) the existing file."""
         _run_cube("registry", "add", str(ARITHMETIC_CUBE_PATH))
         yaml_path = ARITHMETIC_CUBE_PATH / "cube-registry-entry.yaml"
-        # Inject a sentinel comment
         yaml_path.write_text(yaml_path.read_text() + "\n# SENTINEL\n")
-        # Running again without --submit should regenerate (overwrite)
         _run_cube("registry", "add", str(ARITHMETIC_CUBE_PATH))
         assert "SENTINEL" not in yaml_path.read_text(), "Generate should overwrite existing file"
 
