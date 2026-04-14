@@ -633,7 +633,7 @@ class Benchmark(TypedBaseModel, ABC):
         lazily by ``TaskConfig.make()`` at execution time.  The directory is
         benchmark-specific: ``~/.cube/<benchmark_name>/tasks_execution_info/``.
         """
-        return get_cache_dir(cls.benchmark_metadata.name) / "tasks_execution_info"
+        return cls.cache_dir() / "tasks_execution_info"
 
     @classmethod
     def load_task_execution_info(cls, task_id: str) -> dict[str, Any]:
