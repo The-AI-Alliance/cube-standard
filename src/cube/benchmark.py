@@ -526,12 +526,13 @@ class Benchmark(TypedBaseModel, ABC):
         if not task_subset:
             raise ValueError("The resulting task list cannot be empty.")
 
-        # Deep-copy self to preserve the exact concrete class and all instance state (including
-        # subclass __init__ args, private attrs, etc.), then override the relevant attributes.
-        # ClassVars are not copied by deepcopy (they live on the class), so we deepcopy them
-        # explicitly and use object.__setattr__ to set instance-level shadows without triggering
-        # Pydantic's ClassVar protection.
-        new_instance = copy.deepcopy(self)
+        # model_copy copies only Pydantic model fields, leaving PrivateAttrs at their defaults.
+        # This is intentional: the subset has not been set up yet (.setup() must be called by
+        # the caller), so runtime state like open file handles or subprocess objects must not
+        # be inherited from the parent.  ClassVars are not touched by model_copy (they live on
+        # the class), so we deep-copy them explicitly and use object.__setattr__ to set
+        # instance-level shadows without triggering Pydantic's ClassVar protection.
+        new_instance = self.model_copy(deep=True)
         new_bm = copy.deepcopy(type(new_instance).benchmark_metadata)
         new_bm.name = f"{self.benchmark_metadata.name}_{benchmark_name_suffix}"
         new_bm.num_tasks = len(task_subset)
