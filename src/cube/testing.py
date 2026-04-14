@@ -237,12 +237,12 @@ def _observation_key_path_diff_report(
     _structural_mismatch_lines("", dump_a, dump_b, out, max_value_len)
     if not out:
         return ""
-    header = "Observation differences (key paths; values truncated):\n\n"
+    header = "Observation differences\n\n"
     return header + "\n\n".join(out)
 
 
 def format_observation_unified_diff(obs_a: object, obs_b: object) -> str:
-    """Same observation mismatch text the CLI shows when reset reproducibility fails."""
+    """Same observation key-path diff text the CLI shows when reset reproducibility fails."""
     return _observation_key_path_diff_report(obs_a, obs_b)
 
 

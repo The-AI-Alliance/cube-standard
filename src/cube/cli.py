@@ -122,6 +122,37 @@ _THROUGHPUT_MIN_TOTAL_S = 0.01
 _RESET_DIFF_DISPLAY_MAX = 24_000
 
 
+def _print_reset_reproducibility_error_block(
+    out: Console,
+    *,
+    reset_ok: bool,
+    reset_msg: str,
+    reset_diff: str,
+    panel_width: int | None,
+) -> None:
+    """Print reset-repro mismatch before the main stress-test panel (pytest-style ordering)."""
+    if reset_ok:
+        return
+    intro = f"(first task, two fresh Task instances): {reset_msg}".strip()
+    parts: list = [
+        Text.from_markup(f"{intro} [dim]A mismatch is not always a bug (e.g. time-dependent observations).[/dim]")
+    ]
+    if reset_diff.strip():
+        d = reset_diff.rstrip("\n")
+        if len(d) > _RESET_DIFF_DISPLAY_MAX:
+            d = d[:_RESET_DIFF_DISPLAY_MAX] + "\n... [diff truncated]\n"
+        parts.append(Syntax(d, lexer="text", word_wrap=True, line_numbers=False))
+    panel_kw: dict[str, Any] = {
+        "title": "[bold]Reset reproducibility error[/bold]",
+        "border_style": "yellow",
+        "padding": (0, 1),
+    }
+    if panel_width is not None:
+        panel_kw["width"] = panel_width
+    out.print(Panel(Group(*parts), **panel_kw))
+    out.print()
+
+
 def _format_small_seconds(sec: float) -> str:
     # Show ms when below 10ms so fast runs do not look like “all zeros”.
     if sec <= 0.0:
@@ -500,6 +531,14 @@ def cmd_test(
             print(f"  PASS  {name}")
         for name in compliance_failed:
             print(f"  FAIL  {name}")
+        if not reset_ok:
+            print("\nReset reproducibility error:")
+            print(
+                f"  (first task, two fresh Task instances): {reset_msg} "
+                "A mismatch is not always a bug (e.g. time-dependent observations)."
+            )
+            if reset_diff.strip():
+                print(reset_diff.rstrip("\n"))
         report = build_stress_test_report(resolved, results, compliance_passed, compliance_failed)
         if output_path:
             report.save(output_path)
@@ -575,35 +614,14 @@ def cmd_test(
         else:
             compliance_checks_table.add_row(ln, ls, "", "")
 
-    reset_repro_warning: list = []
-    if not reset_ok:
-        warn_bits: list = [
-            Text.from_markup(
-                "[warning]test_reset_reproducibility[/warning] "
-                "[dim](first task, two fresh Task instances)[/dim]: "
-                f"[bold]{reset_msg}[/bold]. "
-                "[dim]A mismatch is not always a bug (e.g. time-dependent observations).[/dim]"
-            ),
-        ]
-        if reset_diff.strip():
-            d = reset_diff
-            if len(d) > _RESET_DIFF_DISPLAY_MAX:
-                d = d[:_RESET_DIFF_DISPLAY_MAX] + "\n... [diff truncated]\n"
-            warn_bits.append(Text.from_markup("[dim]Observation mismatch (key paths; values truncated):[/dim]"))
-            warn_bits.append(Syntax(d.rstrip("\n"), lexer="text", word_wrap=True, line_numbers=False))
-            warn_bits.append(
-                Text.from_markup(
-                    "[dim]Paths use dotted keys and \\[i\\] indices; large fields show a short prefix only.[/dim]"
-                )
-            )
-        reset_repro_warning = [
-            Panel(
-                Group(*warn_bits),
-                title="[warning]Reset reproducibility[/warning]",
-                border_style="yellow",
-                padding=(0, 1),
-            ),
-        ]
+    n_comp_pass = len(compliance_passed)
+    n_comp_fail = len(compliance_failed)
+    if n_comp_fail:
+        compliance_banner = Text.from_markup(
+            f"[bold]COMPLIANCE[/bold]  [dim]{n_comp_pass} passed[/dim]  [error]· {n_comp_fail} failed[/error]"
+        )
+    else:
+        compliance_banner = Text.from_markup(f"[bold]COMPLIANCE[/bold]  [dim]{n_comp_pass} passed[/dim]")
 
     max_lat = max(p50_s, p95_s, p99_s, 0.001)
     latency_section = Table(show_header=False, box=None, padding=(0, 0), show_edge=False)
@@ -740,9 +758,17 @@ def cmd_test(
         report.save(output_path)
         console.print(f"[dim]Baseline saved to [file]{output_path}[/file][/dim]")
 
-    border = "green" if not failures else "red"
+    if failures:
+        border = "red"
+    elif compliance_failed:
+        border = "yellow"
+    else:
+        border = "green"
+    comp_sub = ""
+    if compliance_failed and not failures:
+        comp_sub = f"  [warning]· {len(compliance_failed)} compliance failed[/warning]"
     status_sub = (
-        f"[success]{n_tasks} task(s) passed[/success]"
+        f"[success]{n_tasks} task(s) passed[/success]{comp_sub}"
         if not failures
         else f"[error]{len(failures)} / {n_tasks} failed[/error]"
     )
@@ -751,8 +777,8 @@ def cmd_test(
         header_grid,
         Rule(style="dim"),
         compliance_header,
+        compliance_banner,
         compliance_checks_table,
-        *reset_repro_warning,
         Rule(style="dim"),
         latency_section,
         Rule(style="dim"),
@@ -770,7 +796,16 @@ def cmd_test(
         box=box.HEAVY,
         padding=(0, 1),
     )
-    _make_console(width=_display_width).print(stress_panel)
+    dash_console = _make_console(width=_display_width)
+    _print_reset_reproducibility_error_block(
+        dash_console,
+        reset_ok=reset_ok,
+        reset_msg=reset_msg,
+        reset_diff=reset_diff,
+        panel_width=_display_width,
+    )
+    dash_console.print(Rule("[bold]CUBE Stress Test[/bold]", style="dim"))
+    dash_console.print(stress_panel)
 
     if failures:
         console.print(

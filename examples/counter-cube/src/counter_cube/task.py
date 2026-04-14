@@ -8,6 +8,8 @@ Store per-task parameters in metadata.extra_info — don't add new Pydantic fiel
 TaskConfig is serializable; implement make() to produce a Task.
 """
 
+import os
+import uuid
 from typing import Any
 
 from cube.benchmark import RuntimeContext
@@ -31,7 +33,12 @@ class ReachTargetTask(Task):
     def reset(self) -> tuple[Observation, dict[str, Any]]:
         """Reset tool state and return the opening observation."""
         self.tool.reset()
-        obs = Observation.from_text(f"Counter starts at 0. Use 'increment' action to reach {self.target}.")
+        text = f"Counter starts at 0. Use 'increment' action to reach {self.target}."
+        # Opt-in only: two fresh Task instances then get different first observations, so
+        # `cube test` can surface the reset-reproducibility panel for screenshots / demos.
+        if os.environ.get("CUBE_RESET_REPRO_SNAPSHOT_DEMO"):
+            text = f"{text} (demo token: {uuid.uuid4().hex[:12]})"
+        obs = Observation.from_text(text)
         return obs, {"task_type": "reach_target", "target": self.target}
 
     def evaluate(self, obs: Observation) -> tuple[float, dict[str, Any]]:
