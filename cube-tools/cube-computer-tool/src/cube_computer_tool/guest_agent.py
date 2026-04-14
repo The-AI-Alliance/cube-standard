@@ -85,11 +85,20 @@ class GuestAgent:
         logger.error("Failed to get screenshot after %d attempts", _RETRY_TIMES)
         return None
 
-    def get_accessibility_tree(self) -> str | None:
-        """Return the XML accessibility tree string, or None on failure."""
+    def get_accessibility_tree(self, backend: str = "uia") -> str | None:
+        """Return the XML accessibility tree string, or None on failure.
+
+        Parameters
+        ----------
+        backend : str
+            Accessibility backend passed as ``?backend=`` query param.
+            ``"uia"`` (default) returns semantic element types and child
+            controls; ``"win32"`` is faster but only returns top-level
+            window handles without child UI elements.
+        """
         for _ in range(_RETRY_TIMES):
             try:
-                resp = requests.get(self._base_url + "/accessibility")
+                resp = requests.get(self._base_url + "/accessibility", params={"backend": backend}, timeout=300)
                 if resp.status_code == 200:
                     return resp.json()["AT"]
                 logger.error("Accessibility tree error: %d", resp.status_code)
