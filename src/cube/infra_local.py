@@ -5,15 +5,18 @@ No cloud credentials required. This is the default infra and the reference
 implementation of the InfraConfig interface.
 
 Supported resource types:
-    VMResourceConfig  — boots a QEMU VM from a local qcow2 image.
-    (DockerImageConfig / DockerServiceConfig — deferred to a later phase.)
+    VMResourceConfig      — boots a QEMU VM from a local qcow2 image.
+    DockerServiceConfig   — pulls images, sets up volumes, runs launch_script locally.
 
 Image storage: CUBE_LOCAL_IMAGE_DIR env var, defaults to ~/.cube/images/.
 Active resource tracking: ~/.cube/active.json (PID + port per run_id entry).
 
-System requirements:
+System requirements (VM):
     qemu-img             — image conversion (brew install qemu / apt install qemu-utils)
     qemu-system-x86_64  — VM execution  (brew install qemu / apt install qemu-system-x86)
+
+System requirements (Docker):
+    docker               — container runtime (docker.com/get-started)
 """
 
 from __future__ import annotations
@@ -30,7 +33,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from cube.infra_utils import build_volume_setup_script
 from cube.resource import (
+    DockerServiceConfig,
     InfraConfig,
     ResourceConfig,
     ResourceHandle,
@@ -224,6 +229,34 @@ class LocalResourceHandle(ResourceHandle):
         _deregister_active(self._entry_id)
 
 
+# ── LocalDockerServiceHandle ──────────────────────────────────────────────────
+
+
+@dataclass
+class LocalDockerServiceHandle(ResourceHandle):
+    """ResourceHandle for a locally-running DockerServiceConfig.
+
+    Tracks the containers started by the launch_script so close() can stop them.
+    ``endpoints`` maps service names (from DockerServiceConfig.services) to
+    ``http://127.0.0.1:{port}`` URLs — the same ports declared in the resource,
+    since the launch_script binds them directly on the host.
+    """
+
+    _entry_id: str = field(default="", repr=False)
+    _container_ids: list[str] = field(default_factory=list, repr=False)
+
+    def close(self) -> None:
+        """Stop and remove all containers started by the launch_script."""
+        for cid in self._container_ids:
+            for cmd in (["docker", "stop", cid], ["docker", "rm", cid]):
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0 and "No such container" not in result.stderr:
+                    logger.warning("%s failed: %s", " ".join(cmd), result.stderr.strip())
+        if self._container_ids:
+            logger.info("Stopped %d container(s) for run %s", len(self._container_ids), self.run_id[:8])
+        _deregister_active(self._entry_id)
+
+
 # ── LocalInfraConfig ──────────────────────────────────────────────────────────
 
 
@@ -272,12 +305,19 @@ class LocalInfraConfig(InfraConfig):
         return caps
 
     def provision(self, resource: ResourceConfig) -> None:
-        """Download and convert the image locally, then register it.
+        """Download/prepare the resource locally, then register it.
 
         For VMResourceConfig: downloads the qcow2 (or zip of qcow2) from
         source_url and stores it at image_dir/{resource.name}.qcow2.
         Idempotent — skips download/convert if the image already exists.
+
+        For DockerServiceConfig: pulls all declared images and runs
+        build_volume_setup_script() to download + extract any VolumeSpec data.
+        Idempotent — docker pull is a no-op when images are already present.
         """
+        if isinstance(resource, DockerServiceConfig):
+            return self._provision_docker_service(resource)
+
         if not isinstance(resource, VMResourceConfig):
             raise UnsupportedResourceType(resource, self)
 
@@ -305,16 +345,15 @@ class LocalInfraConfig(InfraConfig):
 
         self.register(resource, {"image_path": str(dest)})
 
-    def launch(self, resource: ResourceConfig) -> LocalResourceHandle:
-        """Boot a QEMU VM and return a handle with the guest agent endpoint.
+    def launch(self, resource: ResourceConfig) -> ResourceHandle:
+        """Instantiate a resource locally and return a live handle.
 
-        Reads image_path from the ProvisionStore. Raises ResourceNotReadyError
-        if no entry is found.
-
-        The VM is isolated via a copy-on-write overlay so the base image is
-        never modified. run_id is generated internally; TTL resolves as
-        self.default_ttl_seconds ?? resource.default_ttl_seconds.
+        For VMResourceConfig: boots a QEMU VM with a copy-on-write overlay.
+        For DockerServiceConfig: runs the launch_script locally via bash and
+        returns a handle whose endpoints map service names to localhost URLs.
         """
+        if isinstance(resource, DockerServiceConfig):
+            return self._launch_docker_service(resource)
         if not isinstance(resource, VMResourceConfig):
             raise UnsupportedResourceType(resource, self)
 
@@ -399,6 +438,89 @@ class LocalInfraConfig(InfraConfig):
             _entry_id=entry_id,
             _qemu_proc=proc,
             _overlay_path=overlay,
+        )
+
+    def _provision_docker_service(self, resource: DockerServiceConfig) -> None:
+        """Pull images and set up VolumeSpec data for a DockerServiceConfig."""
+        from cube.provision_store import ProvisionStore
+
+        for image in resource.docker_images:
+            logger.info("Pulling Docker image %r…", image)
+            subprocess.run(["docker", "pull", image], check=True)
+
+        volume_script = build_volume_setup_script(resource.volumes)
+        if volume_script:
+            logger.info("Setting up volumes for %r…", resource.name)
+            subprocess.run(["bash", "-c", volume_script], check=True)
+
+        ProvisionStore().set(resource, self, {"provisioned": True})
+
+    def _launch_docker_service(self, resource: DockerServiceConfig) -> LocalDockerServiceHandle:
+        """Run the launch_script locally and return a handle tracking started containers.
+
+        The launch_script is executed via bash on the local machine — it handles
+        ``docker run``, health checks, and warmup exactly as it would on a cloud VM.
+
+        Endpoints: ``{service_name: "http://127.0.0.1:{port}"}`` using the ports
+        declared in ``resource.services``.  These are the host ports the launch_script
+        binds directly (no SSH tunneling needed locally).
+
+        Container tracking: containers running before the script are snapshotted;
+        new containers that appear after are stored in the handle for cleanup.
+        """
+        from cube.provision_store import ProvisionStore
+
+        if ProvisionStore().get(resource, self) is None:
+            raise ResourceNotReadyError(resource, self)
+
+        run_id = str(uuid.uuid4())
+        entry_id = f"cube-{run_id[:8]}-dss-{uuid.uuid4().hex[:6]}"
+
+        # Snapshot containers before launch to identify which ones we started.
+        before = set(subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True).stdout.split())
+
+        if resource.launch_script:
+            logger.info("Running launch_script for %r (run=%s)…", resource.name, run_id[:8])
+            subprocess.run(["bash", "-c", resource.launch_script], check=True)
+
+        after = set(subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True).stdout.split())
+        container_ids = list(after - before)
+        logger.info("launch_script started %d container(s) for %r", len(container_ids), resource.name)
+
+        endpoints = {name: f"http://127.0.0.1:{port}" for name, port in resource.services.items()}
+        primary_endpoint = next(iter(endpoints.values()), None) if endpoints else None
+
+        effective_ttl = (
+            self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
+        )
+        created_at = datetime.utcnow()
+        expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
+
+        _register_active(
+            entry_id,
+            {
+                "type": "docker_service",
+                "run_id": run_id,
+                "resource_name": resource.name,
+                "infra_fingerprint": self.fingerprint(),
+                "container_ids": container_ids,
+                "endpoints": endpoints,
+                "endpoint": primary_endpoint,
+                "created_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat() if expires_at else None,
+            },
+        )
+
+        return LocalDockerServiceHandle(
+            run_id=run_id,
+            resource=resource,
+            infra=self,
+            endpoint=primary_endpoint,
+            endpoints=endpoints,
+            created_at=created_at,
+            expires_at=expires_at,
+            _entry_id=entry_id,
+            _container_ids=container_ids,
         )
 
     def list_active(self, run_id: str | None = None) -> list[LocalResourceHandle]:
