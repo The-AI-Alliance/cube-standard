@@ -22,6 +22,7 @@ from cube_infra_aws.aws import (
 
 from cube.provision_store import ProvisionStore
 from cube.resource import (
+    DockerServiceConfig,
     ResourceConfig,
     ResourceNotReadyError,
     UnsupportedResourceType,
@@ -55,7 +56,7 @@ def _make_infra(image_name_suffix: str = "", region: str = "us-east-2") -> AWSIn
 
 
 def _patch_store_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Redirect the default ProvisionStore path to a temp dir for isolation."""
+    """Redirect the default ProvisionStore directory to a temp dir for isolation."""
     monkeypatch.setattr(
         "cube.provision_store._DEFAULT_STORE_DIR",
         tmp_path / "provisions",
@@ -564,7 +565,7 @@ class TestAWSResourceHandle:
     def test_close_terminates_tunnel(self) -> None:
         handle = self._make_handle()
         tunnel = MagicMock()
-        handle._tunnel = tunnel
+        handle._tunnels = [tunnel]
 
         with patch.object(handle.infra, "_terminate_instance"):
             handle.close()
@@ -573,12 +574,12 @@ class TestAWSResourceHandle:
 
     def test_close_clears_tunnel_reference(self) -> None:
         handle = self._make_handle()
-        handle._tunnel = MagicMock()
+        handle._tunnels = [MagicMock()]
 
         with patch.object(handle.infra, "_terminate_instance"):
             handle.close()
 
-        assert handle._tunnel is None
+        assert handle._tunnels == []
 
     def test_close_no_instance_id_skips_terminate(self) -> None:
         handle = self._make_handle()
@@ -588,3 +589,109 @@ class TestAWSResourceHandle:
             handle.close()
 
         mock_terminate.assert_not_called()
+
+    def test_close_terminates_multiple_tunnels(self) -> None:
+        handle = self._make_handle()
+        t1, t2 = MagicMock(), MagicMock()
+        handle._tunnels = [t1, t2]
+
+        with patch.object(handle.infra, "_terminate_instance"):
+            handle.close()
+
+        t1.terminate.assert_called_once()
+        t2.terminate.assert_called_once()
+        assert handle._tunnels == []
+
+
+# ── DockerServiceConfig support ───────────────────────────────────────────────
+
+
+class TestAWSDockerServiceConfig:
+    def test_capabilities_includes_docker(self) -> None:
+        assert "docker" in _make_infra().capabilities()
+
+    def test_can_serve_docker_resource(self) -> None:
+        resource = DockerServiceConfig(name="wav", docker_images=["img"])
+        assert _make_infra().can_serve(resource) is True
+
+    def test_provision_status_needs_provisioning(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_store_path(monkeypatch, tmp_path)
+        resource = DockerServiceConfig(name="wav", docker_images=["img"])
+        assert _make_infra().provision_status(resource) == "needs_provisioning"
+
+    def test_provision_status_ready_after_register(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_store_path(monkeypatch, tmp_path)
+        infra = _make_infra()
+        resource = DockerServiceConfig(name="wav", docker_images=["img"])
+        infra.register(resource, {"ami_id": "ami-docker"})
+        assert infra.provision_status(resource) == "ready"
+
+    def test_provision_raises_for_empty_docker_images(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_store_path(monkeypatch, tmp_path)
+        resource = DockerServiceConfig(name="wav", docker_images=[])
+        with pytest.raises(ValueError, match="docker_images"):
+            _make_infra().provision(resource)
+
+    def test_provision_skips_if_already_registered(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_store_path(monkeypatch, tmp_path)
+        infra = _make_infra()
+        resource = DockerServiceConfig(name="wav", docker_images=["img"])
+        infra.register(resource, {"ami_id": "ami-existing"})
+        with patch.object(infra, "_provision_docker_service") as mock:
+            infra.provision(resource)
+            mock.assert_not_called()
+
+    def test_provision_calls_provision_docker_service(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_store_path(monkeypatch, tmp_path)
+        infra = _make_infra()
+        resource = DockerServiceConfig(name="wav", docker_images=["img"])
+        with patch.object(infra, "_provision_docker_service", return_value="ami-docker") as mock:
+            infra.provision(resource)
+            mock.assert_called_once_with(resource, "wav")
+        assert infra.provision_status(resource) == "ready"
+
+    def test_unprovision_raises_for_generic_resource(self) -> None:
+        with pytest.raises(UnsupportedResourceType):
+            _make_infra().unprovision(ResourceConfig(name="x"))
+
+    def test_unprovision_noop_when_not_registered(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_store_path(monkeypatch, tmp_path)
+        # Should not raise
+        _make_infra().unprovision(DockerServiceConfig(name="wav", docker_images=["img"]))
+
+    def test_unprovision_deletes_docker_sentinel_keys(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_store_path(monkeypatch, tmp_path)
+        infra = _make_infra()
+        resource = DockerServiceConfig(name="wav", docker_images=["img"])
+        infra.register(resource, {"ami_id": "ami-docker"})
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_images.return_value = {"Images": [{"BlockDeviceMappings": []}]}
+        mock_s3 = MagicMock()
+
+        with patch.object(infra, "_ec2", return_value=mock_ec2), patch.object(infra, "_s3", return_value=mock_s3):
+            infra.unprovision(resource)
+
+        deleted_keys = [call.kwargs["Key"] for call in mock_s3.delete_object.call_args_list]
+        assert "wav.docker_bootstrap_done" in deleted_keys
+        assert "wav.docker_bootstrap_failed" in deleted_keys
+        # Must NOT delete a .vhd key for Docker resources
+        assert not any(".vhd" in k for k in deleted_keys)
+
+    def test_launch_raises_resource_not_ready(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_store_path(monkeypatch, tmp_path)
+        resource = DockerServiceConfig(name="wav", docker_images=["img"])
+        with pytest.raises(ResourceNotReadyError):
+            _make_infra().launch(resource)
+
+    def test_image_name_suffix_applies_to_docker_resource(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_store_path(monkeypatch, tmp_path)
+        infra = _make_infra(image_name_suffix="-test")
+        resource = DockerServiceConfig(name="wav", docker_images=["img"])
+        assert infra._image_name(resource) == "wav-test"
+        # provision() stores via _resource_shim (includes suffix); verify round-trip
+        with patch.object(infra, "_provision_docker_service", return_value="ami-docker"):
+            infra.provision(resource)
+        assert infra.provision_status(resource) == "ready"

@@ -1,4 +1,4 @@
-<img alt="CUBE Standard banner" src="docs/assets/images/cube_standard_banner.png" />
+![CUBE Standard banner](docs/assets/images/cube_standard_banner.png)
 
 # CUBE Standard
 
