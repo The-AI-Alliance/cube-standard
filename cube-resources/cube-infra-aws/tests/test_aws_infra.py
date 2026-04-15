@@ -695,3 +695,17 @@ class TestAWSDockerServiceConfig:
         with patch.object(infra, "_provision_docker_service", return_value="ami-docker"):
             infra.provision(resource)
         assert infra.provision_status(resource) == "ready"
+
+
+class TestAWSDockerBootstrapScript:
+    def test_no_ssh_pubkey_placeholder(self) -> None:
+        """Docker bootstrap script must not contain {ssh_pubkey} — key injected at launch via EC2 key pair."""
+        from cube_infra_aws.aws import _AWS_DOCKER_BOOTSTRAP_SCRIPT
+
+        assert "{ssh_pubkey}" not in _AWS_DOCKER_BOOTSTRAP_SCRIPT
+
+    def test_no_authorized_keys_injection(self) -> None:
+        """Docker bootstrap script must not write to authorized_keys — EC2 injects key via cloud-init."""
+        from cube_infra_aws.aws import _AWS_DOCKER_BOOTSTRAP_SCRIPT
+
+        assert "authorized_keys" not in _AWS_DOCKER_BOOTSTRAP_SCRIPT

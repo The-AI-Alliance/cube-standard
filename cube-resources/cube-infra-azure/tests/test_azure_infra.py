@@ -320,6 +320,36 @@ class TestBootstrapScript:
         assert "authorized_keys" not in _AZURE_BOOTSTRAP_SCRIPT
 
 
+class TestDockerBootstrapScript:
+    def test_no_ssh_pubkey_placeholder(self) -> None:
+        """Docker bootstrap script must not contain {ssh_pubkey} — key injected at launch."""
+        from cube_infra_azure.azure import _DOCKER_BOOTSTRAP_SCRIPT
+
+        assert "{ssh_pubkey}" not in _DOCKER_BOOTSTRAP_SCRIPT
+
+    def test_no_authorized_keys_injection(self) -> None:
+        """Docker bootstrap script must not append to authorized_keys — key injected via os_profile."""
+        from cube_infra_azure.azure import _DOCKER_BOOTSTRAP_SCRIPT
+
+        # Check for the actual write operation, not just the word in a comment.
+        assert ">> " not in _DOCKER_BOOTSTRAP_SCRIPT or not any(
+            "authorized_keys" in part for part in _DOCKER_BOOTSTRAP_SCRIPT.split(">> ")[1:]
+        )
+
+    def test_walinuxagent_installed(self) -> None:
+        """Docker bootstrap script must install walinuxagent for Generalized image support."""
+        from cube_infra_azure.azure import _DOCKER_BOOTSTRAP_SCRIPT
+
+        assert "walinuxagent" in _DOCKER_BOOTSTRAP_SCRIPT
+
+    def test_waagent_deprovision_called(self) -> None:
+        """Docker bootstrap script must deprovision so Azure can inject caller's key at launch."""
+        from cube_infra_azure.azure import _DOCKER_BOOTSTRAP_SCRIPT
+
+        assert "waagent" in _DOCKER_BOOTSTRAP_SCRIPT
+        assert "deprovision" in _DOCKER_BOOTSTRAP_SCRIPT
+
+
 # ── AzureResourceHandle ───────────────────────────────────────────────────────
 
 

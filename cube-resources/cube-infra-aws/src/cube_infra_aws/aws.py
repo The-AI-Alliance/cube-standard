@@ -229,9 +229,11 @@ echo "[bootstrap] Done at $(date)"
 
 # ── Docker-host bootstrap script ─────────────────────────────────────────────
 # Placeholders: {s3_bucket}, {sentinel_key}, {failed_key}, {region},
-#               {ssh_pubkey}, {docker_pull_commands}
+#               {docker_pull_commands}
 # Runs as root via EC2 user-data (cloud-init).
 # Writes sentinel to S3 when done; reads by _provision_docker_service().
+# No SSH key is baked in — EC2 injects the key pair at launch time via
+# cloud-init (same mechanism as all standard AMIs).
 
 _AWS_DOCKER_BOOTSTRAP_SCRIPT = """\
 #!/bin/bash
@@ -264,17 +266,6 @@ pip3 install boto3 -q
 systemctl enable docker
 systemctl start docker
 usermod -aG docker ubuntu
-
-SSH_PUBKEY='{ssh_pubkey}'
-for USER_HOME in /home/ubuntu /root; do
-    [ -d "$USER_HOME" ] || continue
-    mkdir -p "$USER_HOME/.ssh"
-    grep -qxF "$SSH_PUBKEY" "$USER_HOME/.ssh/authorized_keys" 2>/dev/null \\
-        || echo "$SSH_PUBKEY" >> "$USER_HOME/.ssh/authorized_keys"
-    chmod 700 "$USER_HOME/.ssh"
-    chmod 600 "$USER_HOME/.ssh/authorized_keys"
-done
-echo "[bootstrap] SSH key injected"
 
 {docker_pull_commands}
 echo "[bootstrap] Docker images ready"
@@ -1484,7 +1475,6 @@ done
                 sentinel_key=sentinel_key,
                 failed_key=failed_key,
                 region=self.region,
-                ssh_pubkey=Path(self.ssh_pubkey_path).read_text().strip(),  # type: ignore[arg-type]
                 docker_pull_commands=pull_cmds,
             )
             vm_info = self._launch_bootstrap_ec2(script)

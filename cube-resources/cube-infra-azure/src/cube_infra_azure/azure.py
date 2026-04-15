@@ -204,9 +204,11 @@ echo "[bootstrap] Done at $(date)"
 
 
 # ── Docker-host bootstrap script ──────────────────────────────────────────────
-# Placeholders: {docker_pull_commands}, {sentinel_sas_url}, {failed_sas_url}, {ssh_pubkey}
+# Placeholders: {docker_pull_commands}, {sentinel_sas_url}, {failed_sas_url}
 # Runs via cloud-init (custom_data) on the gallery bootstrap Ubuntu VM.
-# Installs Docker, pre-pulls all images, injects SSH key, writes sentinel blob.
+# Installs Docker, pre-pulls all images, deprovisiones for Generalized image,
+# then writes sentinel blob.  No SSH key is baked in — Azure injects the
+# caller's key at launch time via os_profile (Generalized image pattern).
 
 _DOCKER_BOOTSTRAP_SCRIPT = """\
 #!/bin/bash
@@ -226,31 +228,23 @@ echo "[bootstrap] Starting at $(date)"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq docker.io curl
+apt-get install -y -qq docker.io curl walinuxagent
 
 systemctl enable docker
 systemctl start docker
 
-# ── add azureuser to docker group (no sudo needed at launch time) ─────────────
-usermod -aG docker azureuser
-
-# ── inject SSH key (bake into disk so task VMs can be reached at launch time) ─
-SSH_PUBKEY='{ssh_pubkey}'
-for USER_HOME in /home/azureuser /root; do
-    [ -d "$USER_HOME" ] || continue
-    mkdir -p "$USER_HOME/.ssh"
-    grep -qxF "$SSH_PUBKEY" "$USER_HOME/.ssh/authorized_keys" 2>/dev/null \\
-        || echo "$SSH_PUBKEY" >> "$USER_HOME/.ssh/authorized_keys"
-    chmod 700 "$USER_HOME/.ssh"
-    chmod 600 "$USER_HOME/.ssh/authorized_keys"
-    OWNER=$(stat -c '%U' "$USER_HOME" 2>/dev/null || echo "root")
-    chown -R "$OWNER:$OWNER" "$USER_HOME/.ssh" 2>/dev/null || true
-done
-echo "[bootstrap] SSH key injected"
+# ── add cube user to docker group (no sudo needed at launch time) ─────────────
+usermod -aG docker cube
 
 # ── pre-pull Docker images ─────────────────────────────────────────────────────
 {docker_pull_commands}
 echo "[bootstrap] Docker images ready"
+
+# ── deprovision for Generalized gallery image ──────────────────────────────────
+# Clears SSH authorized_keys, machine-id, and cloud-init state so Azure can
+# inject the caller's SSH key + hostname at first boot (same as VM images).
+echo "[bootstrap] Deprovisioning for Generalized image..."
+waagent -force -deprovision+user
 
 # ── signal done ───────────────────────────────────────────────────────────────
 curl -s -X PUT -H "x-ms-blob-type: BlockBlob" -H "Content-Length: 0" "{sentinel_sas_url}"
@@ -1553,7 +1547,6 @@ class AzureInfraConfig(InfraConfig):
                 docker_pull_commands=pull_cmds,
                 sentinel_sas_url=sentinel_sas,
                 failed_sas_url=failed_sas,
-                ssh_pubkey=Path(self.ssh_pubkey_path).read_text().strip(),
             )
             disk_name = f"cube-dockerhost-disk-{image_name}"
             # If a stale disk exists from a previous interrupted run (sentinel absent
@@ -1572,14 +1565,14 @@ class AzureInfraConfig(InfraConfig):
             try:
                 logger.info("_provision_docker_service: VM running, streaming logs from %s", vm_info["public_ip"])
                 logger.info(
-                    "_provision_docker_service: SSH: ssh -i %s azureuser@%s",
+                    "_provision_docker_service: SSH: ssh -i %s cube@%s",
                     self.ssh_privkey_path,
                     vm_info["public_ip"],
                 )
                 with BootstrapMonitor(
                     public_ip=vm_info["public_ip"],
                     ssh_privkey=self.ssh_privkey_path,
-                    ssh_user="azureuser",
+                    ssh_user="cube",
                     sentinel_fn=lambda: self.blob_exists(sentinel_name),
                 ) as monitor:
                     monitor.wait(timeout=3600)
@@ -1670,14 +1663,14 @@ class AzureInfraConfig(InfraConfig):
                 },
                 "os_profile": {
                     "computer_name": vm_name,
-                    "admin_username": "azureuser",
+                    "admin_username": "cube",
                     "custom_data": custom_data_b64,
                     "linux_configuration": {
                         "disable_password_authentication": True,
                         "ssh": {
                             "public_keys": [
                                 {
-                                    "path": "/home/azureuser/.ssh/authorized_keys",
+                                    "path": "/home/cube/.ssh/authorized_keys",
                                     "key_data": pubkey,
                                 }
                             ]
@@ -1698,7 +1691,7 @@ class AzureInfraConfig(InfraConfig):
             vm_name,
             public_ip,
         )
-        logger.info("_launch_docker_host_vm: SSH: ssh -i %s azureuser@%s", self.ssh_privkey_path, public_ip)
+        logger.info("_launch_docker_host_vm: SSH: ssh -i %s cube@%s", self.ssh_privkey_path, public_ip)
         return {"vm_name": vm_name, "pip_name": pip_name, "nic_name": nic_name, "public_ip": public_ip}
 
     def _delete_network_resources(self, pip_name: str, nic_name: str) -> None:
