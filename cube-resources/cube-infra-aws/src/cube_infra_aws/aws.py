@@ -62,6 +62,7 @@ import botocore.exceptions
 from pydantic import Field, model_validator
 
 from cube.resource import (
+    DockerServiceConfig,
     InfraConfig,
     ResourceConfig,
     ResourceHandle,
@@ -69,7 +70,7 @@ from cube.resource import (
     UnsupportedResourceType,
     VMResourceConfig,
 )
-from cube_infra_aws._utils import BootstrapMonitor, free_port, open_tunnel, wait_for_ssh
+from cube_infra_aws._utils import BootstrapMonitor, free_port, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
 
 if TYPE_CHECKING:
     pass
@@ -226,6 +227,54 @@ echo "[bootstrap] Done at $(date)"
 """
 
 
+# ── Docker-host bootstrap script ─────────────────────────────────────────────
+# Placeholders: {s3_bucket}, {sentinel_key}, {failed_key}, {region},
+#               {docker_pull_commands}
+# Runs as root via EC2 user-data (cloud-init).
+# Writes sentinel to S3 when done; reads by _provision_docker_service().
+# No SSH key is baked in — EC2 injects the key pair at launch time via
+# cloud-init (same mechanism as all standard AMIs).
+
+_AWS_DOCKER_BOOTSTRAP_SCRIPT = """\
+#!/bin/bash
+set -eo pipefail
+exec > /var/log/cube-bootstrap.log 2>&1
+
+s3_put() {{
+    python3 -c "
+import boto3, sys
+boto3.client('s3', region_name='{region}').put_object(
+    Bucket='{s3_bucket}', Key='$1', Body=sys.stdin.buffer.read()
+)" <<< "$2"
+}}
+
+on_error() {{
+    msg="[bootstrap] FAILED at line $1: $2"
+    echo "$msg"
+    s3_put "{failed_key}" "$msg" || true
+    exit 1
+}}
+trap 'on_error $LINENO "$BASH_COMMAND"' ERR
+
+echo "[bootstrap] Starting at $(date)"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq docker.io curl python3-pip
+pip3 install boto3 -q
+
+systemctl enable docker
+systemctl start docker
+usermod -aG docker ubuntu
+
+{docker_pull_commands}
+echo "[bootstrap] Docker images ready"
+
+s3_put "{sentinel_key}" "done"
+echo "[bootstrap] Done at $(date)"
+"""
+
+
 # ── Tag helpers ────────────────────────────────────────────────────────────────
 
 
@@ -244,24 +293,25 @@ def _ec2_tags_to_dict(tags: list[dict[str, str]]) -> dict[str, str]:
 
 @dataclass
 class AWSResourceHandle(ResourceHandle):
-    """ResourceHandle for a running EC2 instance with an open SSH tunnel."""
+    """ResourceHandle for a running EC2 instance with open SSH tunnel(s)."""
 
     _instance_id: str = field(default="", repr=False)
-    _tunnel: subprocess.Popen | None = field(default=None, repr=False)
+    _tunnels: list[subprocess.Popen] = field(default_factory=list, repr=False)
 
     def close(self) -> None:
-        """Terminate the SSH tunnel and stop the EC2 instance."""
-        if self._tunnel is not None:
+        """Terminate SSH tunnel(s) and stop the EC2 instance."""
+        for proc in self._tunnels:
             try:
-                self._tunnel.terminate()
+                proc.terminate()
             except Exception:
                 pass
-            self._tunnel = None
-            logger.info("SSH tunnel closed for run %s", self.run_id[:8])
+        self._tunnels = []
+        logger.info("SSH tunnel(s) closed for run %s", self.run_id[:8])
 
         if self._instance_id:
             assert isinstance(self.infra, AWSInfraConfig)
             self.infra._terminate_instance(self._instance_id)
+            self._instance_id = ""
 
 
 # ── AWSInfraConfig ─────────────────────────────────────────────────────────────
@@ -463,27 +513,22 @@ class AWSInfraConfig(InfraConfig):
         return f"aws:{self.region}"
 
     def capabilities(self) -> set[str]:
-        """EC2 HVM instances satisfy KVM requirements (same hypervisor technology)."""
-        return {"kvm"}
+        """EC2 HVM instances support KVM workloads and Docker-host provisioning."""
+        return {"kvm", "docker"}
 
     def provision(self, resource: ResourceConfig) -> None:
-        """Bootstrap a VM image from source_url into an EC2 AMI.
+        """Bootstrap a resource into an EC2 AMI.
 
-        Pipeline (in-cloud, idempotent at every step):
-            source_url → bootstrap EC2 (download + qemu-img convert + S3 upload)
-                       → S3 → import-snapshot → EBS snapshot
-                       → register-image → AMI
-                       → ProvisionStore
+        For VMResourceConfig: downloads qcow2, converts to VHD, imports as AMI.
+        For DockerServiceConfig: installs Docker, pulls images, creates AMI.
 
-        Skips the bootstrap EC2 phase if the sentinel S3 object already exists.
-        Skips the snapshot/AMI phase if the AMI name already exists.
-        Always no-ops if already registered in ProvisionStore.
+        Both paths are idempotent; the ProvisionStore is checked first.
 
         Raises:
-            UnsupportedResourceType: if resource is not VMResourceConfig.
-            ValueError: if resource.source_url is not set.
+            UnsupportedResourceType: if resource is not VMResourceConfig or DockerServiceConfig.
+            ValueError: if source_url (VM) or docker_images (Docker) are not set.
         """
-        if not isinstance(resource, VMResourceConfig):
+        if not isinstance(resource, (VMResourceConfig, DockerServiceConfig)):
             raise UnsupportedResourceType(resource, self)
 
         from cube.provision_store import ProvisionStore
@@ -501,6 +546,15 @@ class AWSInfraConfig(InfraConfig):
             )
             return
 
+        if isinstance(resource, DockerServiceConfig):
+            if not resource.docker_images:
+                raise ValueError(f"Cannot provision {image_name!r}: docker_images is empty.")
+            logger.info("provision: building Docker-host AMI %r …", image_name)
+            ami_id = self._provision_docker_service(resource, image_name)
+            store.put(shim, self, {"ami_id": ami_id})
+            logger.info("provision: %r registered for %s", image_name, self.fingerprint())
+            return
+
         if not resource.source_url:
             raise ValueError(
                 f"Cannot provision {image_name!r}: no source_url set and "
@@ -514,7 +568,7 @@ class AWSInfraConfig(InfraConfig):
         logger.info("provision: %r registered for %s", image_name, self.fingerprint())
 
     def unprovision(self, resource: ResourceConfig) -> None:
-        """Deregister the AMI, delete the EBS snapshot, VHD in S3, sentinel, and ProvisionStore entry.
+        """Deregister the AMI, delete the EBS snapshot, S3 objects, and ProvisionStore entry.
 
         Safe to call when not provisioned — no-ops if not registered.
 
@@ -522,9 +576,9 @@ class AWSInfraConfig(InfraConfig):
         EC2 does not allow querying block devices of deregistered AMIs.
 
         Raises:
-            UnsupportedResourceType: if resource is not VMResourceConfig.
+            UnsupportedResourceType: if resource is not VMResourceConfig or DockerServiceConfig.
         """
-        if not isinstance(resource, VMResourceConfig):
+        if not isinstance(resource, (VMResourceConfig, DockerServiceConfig)):
             raise UnsupportedResourceType(resource, self)
 
         from cube.provision_store import ProvisionStore
@@ -568,9 +622,17 @@ class AWSInfraConfig(InfraConfig):
                 except Exception as exc:
                     logger.warning("unprovision: could not delete snapshot %s: %s", snapshot_id, exc)
 
-        vhd_key = image_name + ".vhd"
         s3 = self._s3()
-        for key in (vhd_key, vhd_key + ".bootstrap_done", vhd_key + ".bootstrap_failed"):
+        if isinstance(resource, DockerServiceConfig):
+            # Docker bootstrap uses sentinel keys without a .vhd prefix.
+            s3_keys = (
+                image_name + ".docker_bootstrap_done",
+                image_name + ".docker_bootstrap_failed",
+            )
+        else:
+            vhd_key = image_name + ".vhd"
+            s3_keys = (vhd_key, vhd_key + ".bootstrap_done", vhd_key + ".bootstrap_failed")
+        for key in s3_keys:
             try:
                 s3.delete_object(Bucket=self.s3_bucket, Key=key)
                 logger.info("unprovision: deleted s3://%s/%s", self.s3_bucket, key)
@@ -581,17 +643,19 @@ class AWSInfraConfig(InfraConfig):
         logger.info("unprovision: %r removed from ProvisionStore", image_name)
 
     def launch(self, resource: ResourceConfig) -> AWSResourceHandle:
-        """Launch an EC2 instance from the AMI, open SSH tunnel, return handle.
+        """Launch an EC2 instance from the AMI, open SSH tunnel(s), return handle.
+
+        For VMResourceConfig: opens a single tunnel to guest_port.
+        For DockerServiceConfig: runs launch_script via SSH, opens one tunnel
+        per service in resource.services; handle.endpoints is populated.
 
         Reads ami_id from the ProvisionStore.
         Raises ResourceNotReadyError if provision() was never called.
 
         run_id is generated internally. TTL resolves as:
         self.default_ttl_seconds ?? resource.default_ttl_seconds.
-        The instance is tagged with cube: tags for ARM-based cleanup.
-        SSH tunnel: localhost:{local_port} → instance:{guest_port}
         """
-        if not isinstance(resource, VMResourceConfig):
+        if not isinstance(resource, (VMResourceConfig, DockerServiceConfig)):
             raise UnsupportedResourceType(resource, self)
 
         from cube.provision_store import ProvisionStore
@@ -692,16 +756,40 @@ class AWSInfraConfig(InfraConfig):
             public_ip,
         )
 
-        # SSH + tunnel — clean up instance on any failure to avoid orphaned resources.
+        # SSH + tunnel(s) — clean up instance on any failure to avoid orphaned resources.
         try:
             logger.info("launch: waiting for SSH on %s…", public_ip)
             active_user = wait_for_ssh(
                 public_ip,
-                "user",
+                "ubuntu",
                 self.ssh_privkey_path,  # type: ignore[arg-type]
-                fallback_users=["ubuntu", "root"],
+                fallback_users=["user", "root"],
                 timeout=600,
             )
+
+            if isinstance(resource, DockerServiceConfig):
+                logger.info("launch: starting Docker services on %s", instance_id)
+                self._ssh_run(public_ip, active_user, resource.launch_script)
+                logger.info("launch: Docker services started")
+                endpoints, tunnels = open_tunnels(
+                    public_ip,
+                    active_user,
+                    self.ssh_privkey_path,  # type: ignore[arg-type]
+                    resource.services,
+                )
+                logger.info("launch: opened %d tunnel(s): %s", len(tunnels), list(endpoints))
+                endpoint = next(iter(endpoints.values())) if endpoints else None
+                return AWSResourceHandle(
+                    run_id=run_id,
+                    resource=resource,
+                    infra=self,
+                    endpoint=endpoint,
+                    endpoints=endpoints,
+                    created_at=created_at,
+                    expires_at=expires_at,
+                    _instance_id=instance_id,
+                    _tunnels=tunnels,
+                )
 
             local_port = free_port()
             logger.info(
@@ -732,7 +820,7 @@ class AWSInfraConfig(InfraConfig):
             created_at=created_at,
             expires_at=expires_at,
             _instance_id=instance_id,
-            _tunnel=tunnel,
+            _tunnels=[tunnel],
         )
 
     def list_active(self, run_id: str | None = None) -> list[AWSResourceHandle]:
@@ -770,7 +858,7 @@ class AWSInfraConfig(InfraConfig):
                         infra=self,
                         endpoint=None,
                         _instance_id=instance_id,
-                        _tunnel=None,
+                        _tunnels=[],
                     )
                 )
 
@@ -1355,6 +1443,110 @@ done
             public_ip,
         )
         return {"instance_id": instance_id, "public_ip": public_ip}
+
+    def _provision_docker_service(self, resource: DockerServiceConfig, image_name: str) -> str:
+        """Bootstrap a Docker-host AMI from a DockerServiceConfig.
+
+        Pipeline (idempotent):
+          1. Ensure S3 bucket, key pair, bootstrap profile.
+          2. If sentinel not in S3: launch bootstrap EC2, run Docker pull, wait for sentinel, terminate.
+          3. Create AMI from the stopped instance's snapshot.
+          4. Return ami_id.
+
+        Unlike the VM bootstrap, the Docker images are pulled into the instance at
+        bootstrap time and baked into the AMI — no qcow2 conversion or S3 VHD needed.
+        """
+        sentinel_key = image_name + ".docker_bootstrap_done"
+        failed_key = image_name + ".docker_bootstrap_failed"
+
+        logger.info("_provision_docker_service: %s  images=%s", image_name, resource.docker_images)
+
+        self._ensure_s3_bucket()
+        self._ensure_key_pair()
+
+        # Determine if we need to run the bootstrap EC2 phase.
+        bootstrap_instance_id: str | None = None
+        if not self._s3_object_exists(sentinel_key):
+            pull_cmds = "\n".join(
+                f"echo '[bootstrap] Pulling {img}...'\ndocker pull {img}" for img in resource.docker_images
+            )
+            script = _AWS_DOCKER_BOOTSTRAP_SCRIPT.format(
+                s3_bucket=self.s3_bucket,
+                sentinel_key=sentinel_key,
+                failed_key=failed_key,
+                region=self.region,
+                docker_pull_commands=pull_cmds,
+            )
+            vm_info = self._launch_bootstrap_ec2(script)
+            bootstrap_instance_id = vm_info["instance_id"]
+            t0 = time.time()
+            try:
+                logger.info("_provision_docker_service: EC2 running, streaming logs from %s", vm_info["public_ip"])
+                logger.info(
+                    "_provision_docker_service: SSH: ssh -i %s -o IdentitiesOnly=yes ubuntu@%s",
+                    self.ssh_privkey_path,
+                    vm_info["public_ip"],
+                )
+                with BootstrapMonitor(
+                    public_ip=vm_info["public_ip"],
+                    ssh_privkey=self.ssh_privkey_path,  # type: ignore[arg-type]
+                    ssh_user="ubuntu",
+                    sentinel_fn=lambda: self._s3_object_exists(sentinel_key),
+                ) as monitor:
+                    monitor.wait(timeout=3600)
+            except Exception:
+                logger.warning("_provision_docker_service: bootstrap failed — terminating %s", bootstrap_instance_id)
+                self._terminate_instance(bootstrap_instance_id)
+                raise
+            logger.info("_provision_docker_service: Docker images ready in %.1f min", (time.time() - t0) / 60)
+        else:
+            logger.info("_provision_docker_service: sentinel exists — checking for existing AMI")
+
+        # Check if AMI already exists (idempotent if previously created but ProvisionStore was lost).
+        ec2 = self._ec2()
+        resp = ec2.describe_images(
+            Owners=["self"],
+            Filters=[{"Name": "name", "Values": [image_name]}],
+        )
+        if resp["Images"]:
+            ami_id = resp["Images"][0]["ImageId"]
+            logger.info("_provision_docker_service: AMI already exists: %s (%s)", ami_id, image_name)
+            if bootstrap_instance_id:
+                self._terminate_instance(bootstrap_instance_id)
+            return ami_id
+
+        if bootstrap_instance_id is None:
+            raise RuntimeError(
+                f"Sentinel exists but no AMI found for {image_name!r} and no bootstrap instance running. "
+                "Delete the sentinel key and re-run provision()."
+            )
+
+        # Stop the instance so the root volume snapshot is consistent.
+        logger.info("_provision_docker_service: stopping %s to create AMI …", bootstrap_instance_id)
+        ec2.stop_instances(InstanceIds=[bootstrap_instance_id])
+        ec2.get_waiter("instance_stopped").wait(InstanceIds=[bootstrap_instance_id])
+
+        logger.info("_provision_docker_service: creating AMI %r …", image_name)
+        resp = ec2.create_image(
+            InstanceId=bootstrap_instance_id,
+            Name=image_name,
+            Description=f"CUBE Docker-host image: {image_name}",
+            NoReboot=True,
+        )
+        ami_id = resp["ImageId"]
+        # Default waiter: 40 × 15s = 10 min — too short for large disks.
+        # Extend to 120 × 15s = 30 min.
+        waiter = ec2.get_waiter("image_available")
+        waiter.wait(ImageIds=[ami_id], WaiterConfig={"MaxAttempts": 120})
+        ec2.create_tags(Resources=[ami_id], Tags=_dict_to_ec2_tags({**self.tags, "role": "docker-host"}))
+        logger.info("_provision_docker_service: AMI ready: %s", ami_id)
+
+        self._terminate_instance(bootstrap_instance_id)
+        return ami_id
+
+    def _ssh_run(self, public_ip: str, ssh_user: str, script: str) -> None:
+        """Run a bash script on the remote host via SSH. Raises on non-zero exit."""
+        ssh_run(public_ip, ssh_user, self.ssh_privkey_path, script)  # type: ignore[arg-type]
 
     def _terminate_instance(self, instance_id: str) -> None:
         """Terminate an EC2 instance and wait for it to be fully terminated."""
