@@ -12,10 +12,10 @@ Provisioning pipeline (~30-90 min, idempotent):
         → Compute Gallery image definition + version
         → ProvisionStore {"image_def": ..., "version": ...}
 
-Launch (~3-5 min per VM):
+Launch (~5-10 min per VM):
     Gallery image version
         → NIC + public IP
-        → VM (Specialized — no cloud-init)
+        → VM (Generalized — cloud-init injects caller's SSH key at first boot)
         → SSH tunnel localhost:{port} → VM:{guest_port}
         → AzureResourceHandle(endpoint="http://localhost:{port}")
 
@@ -94,8 +94,7 @@ logger = logging.getLogger(__name__)
 
 
 # ── Bootstrap script ───────────────────────────────────────────────────────────
-# Placeholders: {hf_url}, {vhd_sas_url}, {sentinel_sas_url}, {failed_sas_url},
-#               {ssh_pubkey}
+# Placeholders: {hf_url}, {vhd_sas_url}, {sentinel_sas_url}, {failed_sas_url}
 
 _AZURE_BOOTSTRAP_SCRIPT = """\
 #!/bin/bash
@@ -147,8 +146,10 @@ echo "[bootstrap] Converting qcow2 → fixed VHD..."
 qemu-img convert -f qcow2 -O vpc -o subformat=fixed,force_size "$QCOW2" /data/output.vhd
 echo "[bootstrap] Converted: $(du -sh /data/output.vhd)"
 
-# ── inject SSH into VHD ────────────────────────────────────────────────────────
-echo "[bootstrap] Injecting SSH into VHD..."
+# ── prepare VHD for Generalized image ─────────────────────────────────────────
+# Install openssh-server + walinuxagent, enable sshd, then deprovision so that
+# Azure can inject os_profile (SSH key, hostname) at launch time via waagent.
+echo "[bootstrap] Preparing VHD (install walinuxagent + deprovision)..."
 LOOP=$(losetup -f --show -P /data/output.vhd)
 sleep 2
 ROOT_PART=$(lsblk -rno NAME,FSTYPE "$LOOP" | awk '$2=="ext4" {{print "/dev/"$1}}' | tail -1)
@@ -162,9 +163,12 @@ for fs in dev dev/pts proc sys run; do mount --bind "/$fs" "/mnt/guest/$fs" 2>/d
 cp /etc/resolv.conf /mnt/guest/etc/resolv.conf 2>/dev/null || true
 chroot /mnt/guest /bin/bash -c "
 export DEBIAN_FRONTEND=noninteractive
-which sshd 2>/dev/null || (apt-get update -qq && apt-get install -y -qq openssh-server)
+apt-get update -qq
+which sshd 2>/dev/null || apt-get install -y -qq openssh-server
+dpkg -l walinuxagent 2>/dev/null | grep -q '^ii' || apt-get install -y -qq walinuxagent
 ls /etc/ssh/ssh_host_*_key 2>/dev/null | grep -q . || ssh-keygen -A
 rm -f /etc/ssh/sshd_not_to_be_run
+waagent -force -deprovision+user
 "
 [ -L /mnt/guest/etc/systemd/system/ssh.service ] && \\
     readlink /mnt/guest/etc/systemd/system/ssh.service | grep -q '/dev/null' && \\
@@ -182,21 +186,10 @@ for svc in "$SSH_SVC" "$SSH_SVC_ALT"; do
             /mnt/guest/etc/systemd/system/multi-user.target.wants/ssh.service && \\
         echo "[bootstrap] Enabled sshd via $svc" && break
 done
-SSH_PUBKEY='{ssh_pubkey}'
-for USER_HOME in /mnt/guest/home/user /mnt/guest/home/ubuntu /mnt/guest/root; do
-    [ -d "$USER_HOME" ] || continue
-    mkdir -p "$USER_HOME/.ssh"
-    grep -qxF "$SSH_PUBKEY" "$USER_HOME/.ssh/authorized_keys" 2>/dev/null \\
-        || echo "$SSH_PUBKEY" >> "$USER_HOME/.ssh/authorized_keys"
-    chmod 700 "$USER_HOME/.ssh"
-    chmod 600 "$USER_HOME/.ssh/authorized_keys"
-    OWNER=$(stat -c '%U' "$USER_HOME" 2>/dev/null || echo "root")
-    chown -R "$OWNER:$OWNER" "$USER_HOME/.ssh" 2>/dev/null || true
-done
 for fs in run sys proc dev/pts dev; do umount "/mnt/guest/$fs" 2>/dev/null || true; done
 umount /mnt/guest
 losetup -d "$LOOP" 2>/dev/null || true
-echo "[bootstrap] SSH injection done"
+echo "[bootstrap] VHD prepared"
 
 # ── upload ────────────────────────────────────────────────────────────────────
 echo "[bootstrap] Uploading to Azure Blob Storage..."
@@ -334,8 +327,8 @@ class AzureInfraConfig(InfraConfig):
         into memory; it is passed as ``-i {path}`` to SSH subprocess calls.
     ssh_pubkey_path     str | None = None
         Path to the SSH public key.  Auto-derived as ssh_privkey_path + ".pub"
-        if not set.  Its *content* is read once during provisioning and injected
-        into the VHD (bootstrap script writes it to authorized_keys).
+        if not set.  Its *content* is read at launch time and injected into the
+        VM via os_profile.linux_configuration.ssh.public_keys (Generalized image).
         Public keys are designed to be distributed.
     tags            dict[str, str] = {"project": "cube"}
         Base tags applied to all Azure resources created by this config.
@@ -702,12 +695,13 @@ class AzureInfraConfig(InfraConfig):
             "cube:nic_name": nic_name,
             "cube:ip_name": pip_name,
         }
+        pubkey = Path(self.ssh_pubkey_path).read_text().strip()  # type: ignore[arg-type]  # set by _autodiscover
+
         logger.info("launch: creating VM %s (%s)  image=%s/%s", vm_name, self.vm_size, image_def, version)
         t0 = time.time()
 
-        # Specialized gallery image: no os_profile allowed.
-        # ARM completes once the infrastructure is provisioned, without waiting
-        # for waagent or cloud-init to signal back from the guest.
+        # Generalized gallery image: os_profile injects the caller's SSH key via
+        # linux_configuration.ssh.public_keys. ARM waits for waagent to signal back.
         poller = compute.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
             self.resource_group,
             vm_name,
@@ -721,6 +715,21 @@ class AzureInfraConfig(InfraConfig):
                         "create_option": "FromImage",
                         "managed_disk": {"storage_account_type": "Standard_LRS"},
                         "delete_option": "Delete",
+                    },
+                },
+                "os_profile": {
+                    "computer_name": vm_name,
+                    "admin_username": "cube",
+                    "linux_configuration": {
+                        "disable_password_authentication": True,
+                        "ssh": {
+                            "public_keys": [
+                                {
+                                    "path": "/home/cube/.ssh/authorized_keys",
+                                    "key_data": pubkey,
+                                }
+                            ]
+                        },
                     },
                 },
                 "network_profile": {"network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]},
@@ -739,10 +748,9 @@ class AzureInfraConfig(InfraConfig):
             logger.info("launch: waiting for SSH on %s…", public_ip)
             active_user = wait_for_ssh(
                 public_ip,
-                "user",
+                "cube",
                 self.ssh_privkey_path,
-                fallback_users=["ubuntu", "root"],
-                timeout=600,  # OSWorld VM takes ~5-8 min to boot
+                timeout=600,  # VM boot may take ~5-8 min  + waagent provisioning
             )
 
             local_port = free_port()
@@ -1216,7 +1224,7 @@ class AzureInfraConfig(InfraConfig):
             ).result()
         return self.gallery_name
 
-    def _create_image_definition(self, name: str, os_state: str = "Specialized") -> str:
+    def _create_image_definition(self, name: str, os_state: str = "Generalized") -> str:
         """Create a gallery image definition (idempotent). Returns definition name."""
         self._ensure_gallery()
         compute = self._compute()
@@ -1419,7 +1427,6 @@ class AzureInfraConfig(InfraConfig):
                 vhd_sas_url=vhd_sas_url,
                 sentinel_sas_url=sentinel_sas_url,
                 failed_sas_url=failed_sas_url,
-                ssh_pubkey=Path(self.ssh_pubkey_path).read_text().strip(),
             )
             vm_info = self._launch_bootstrap_vm(script)
             t0 = time.time()
