@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 import urllib.request
 
 from cube_infra_azure import AzureInfraConfig
@@ -87,8 +88,6 @@ def _healthcheck(name: str, url: str, timeout: int = 30, retries: int = 6, retry
     Magento (shopping_admin web UI) can take 3-5 min to fully initialise even
     after the container reports healthy, so we retry up to retries times.
     """
-    import time
-
     for attempt in range(1, retries + 1):
         try:
             with urllib.request.urlopen(url, timeout=timeout) as resp:
