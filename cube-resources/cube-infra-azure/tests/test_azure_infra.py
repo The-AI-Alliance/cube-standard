@@ -348,14 +348,14 @@ class TestAzureResourceHandle:
     def test_close_terminates_tunnel(self) -> None:
         handle = self._make_handle()
         tunnel = MagicMock()
-        handle._tunnel = tunnel
+        handle._tunnels = [tunnel]
         with patch.object(handle.infra, "_delete_vm"):
             handle.close()
         tunnel.terminate.assert_called_once()
 
     def test_close_clears_tunnel_reference(self) -> None:
         handle = self._make_handle()
-        handle._tunnel = MagicMock()
+        handle._tunnels = [MagicMock()]
         with patch.object(handle.infra, "_delete_vm"):
             handle.close()
-        assert handle._tunnel is None
+        assert handle._tunnels == []
