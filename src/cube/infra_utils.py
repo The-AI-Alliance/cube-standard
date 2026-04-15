@@ -414,9 +414,7 @@ def build_volume_setup_script(volumes: list) -> str:
             if vol.tar_subpath:
                 tar_cmd += f" {vol.tar_subpath}"
             lines.append(f'  echo "[bootstrap] Extracting {filename} → {vol.name} ..."')
-            lines.append(
-                f'  docker run --rm -v "$VOLUME_DATA_DIR:/tar:ro" -v {vol.name}:/vol alpine sh -c "{tar_cmd}"'
-            )
+            lines.append(f'  docker run --rm -v "$VOLUME_DATA_DIR:/tar:ro" -v {vol.name}:/vol alpine sh -c "{tar_cmd}"')
             lines.append("fi")
 
     lines.append('echo "[bootstrap] Volume setup complete"')

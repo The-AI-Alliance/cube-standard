@@ -1552,6 +1552,7 @@ class AzureInfraConfig(InfraConfig):
             compute = self._compute()
             try:
                 from azure.core.exceptions import ResourceNotFoundError
+
                 existing = compute.disks.get(self.resource_group, disk_name)
                 if existing:
                     logger.info("_provision_docker_service: deleting stale disk %s (no sentinel)", disk_name)
