@@ -453,7 +453,7 @@ class LocalInfraConfig(InfraConfig):
             logger.info("Setting up volumes for %r…", resource.name)
             subprocess.run(["bash", "-c", volume_script], check=True)
 
-        ProvisionStore().set(resource, self, {"provisioned": True})
+        ProvisionStore().put(resource, self, {"provisioned": True})
 
     def _launch_docker_service(self, resource: DockerServiceConfig) -> LocalDockerServiceHandle:
         """Run the launch_script locally and return a handle tracking started containers.
