@@ -750,7 +750,7 @@ class AzureInfraConfig(InfraConfig):
                 public_ip,
                 "cube",
                 self.ssh_privkey_path,
-                timeout=600,  # VM boot may take ~5-8 min  + waagent provisioning
+                timeout=900,  # VM boot (~5-8 min) + waagent provisioning on Generalized image
             )
 
             local_port = free_port()
