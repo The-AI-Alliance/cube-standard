@@ -366,11 +366,54 @@ def test_main_test_dispatches_with_default_max_steps():
     with patch("cube.cli.cmd_test") as mock_test:
         with patch.object(sys, "argv", ["cube", "test", "counter-cube"]):
             main()
-    mock_test.assert_called_once_with("counter-cube", max_steps=20, output_path=None, ci_mode=False)
+    mock_test.assert_called_once_with(
+        "counter-cube", max_steps=20, output_path=None, ci_mode=False, demo_reset_repro=False
+    )
 
 
 def test_main_test_dispatches_with_custom_max_steps():
     with patch("cube.cli.cmd_test") as mock_test:
         with patch.object(sys, "argv", ["cube", "test", "counter-cube", "--max-steps=5"]):
             main()
-    mock_test.assert_called_once_with("counter-cube", max_steps=5, output_path=None, ci_mode=False)
+    mock_test.assert_called_once_with(
+        "counter-cube", max_steps=5, output_path=None, ci_mode=False, demo_reset_repro=False
+    )
+
+
+def test_main_test_dispatches_demo_reset_repro():
+    with patch("cube.cli.cmd_test") as mock_test:
+        with patch.object(sys, "argv", ["cube", "test", "counter-cube", "--demo-reset-repro"]):
+            main()
+    mock_test.assert_called_once_with(
+        "counter-cube", max_steps=20, output_path=None, ci_mode=False, demo_reset_repro=True
+    )
+
+
+def test_cmd_test_demo_reset_repro_shows_reset_error_panel(fake_debug_in_sys_modules):
+    """When the real check passes, --demo-reset-repro still renders the red reset-repro block."""
+    results = [
+        {
+            "task_id": "t1",
+            "done": True,
+            "reward": 1.0,
+            "steps": 3,
+            "episode_time_s": 0.1,
+            "error": None,
+            "tools_list_ok": True,
+            "close_idempotent_ok": True,
+        }
+    ]
+
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results):
+            with patch("cube.testing.check_reset_reproducibility", return_value=(True, "", "")):
+                with patch("cube.testing.check_benchmark_metadata", return_value=(True, "")):
+                    with patch(
+                        "cube.cli._print_reset_reproducibility_error_block",
+                        wraps=cli._print_reset_reproducibility_error_block,
+                    ) as spy:
+                        cmd_test("fake_debug.debug", demo_reset_repro=True)
+
+    spy.assert_called_once()
+    assert spy.call_args.kwargs["reset_ok"] is False
+    assert "demo token" in spy.call_args.kwargs["reset_diff"]

@@ -19,7 +19,8 @@ Usage:
                         entry-point name (e.g. counter-cube) or a dotted module
                         path (e.g. counter_cube.debug).  When an entry-point name
                         is given the debug module is auto-derived from the
-                        registered benchmark module.
+                        registered benchmark module.  Use --demo-reset-repro to
+                        preview the reset-reproducibility error panel after a clean run.
 """
 
 import base64
@@ -121,6 +122,20 @@ def _stress_fill_bar(fraction: float, width: int) -> str:
 _THROUGHPUT_MIN_TOTAL_S = 0.01
 _RESET_DIFF_DISPLAY_MAX = 24_000
 
+# Shown only with ``cube test NAME --demo-reset-repro`` (or CUBE_DEMO_RESET_REPRO=1) when the real
+# suite passes but you want to preview the reset-reproducibility error UI (red outline + compliance row).
+_DEMO_RESET_REPRO_MSG = (
+    "first observation differed between two fresh Task instances "
+    "(demo preview — run without --demo-reset-repro for real compliance)."
+)
+_DEMO_RESET_REPRO_DIFF = """--- observation (first Task)
++++ observation (second Task)
+@@ -1,3 +1,3 @@
+ counter:
+-  demo token: 0xa1
++  demo token: 0xb2
+"""
+
 
 def _print_reset_reproducibility_error_block(
     out: Console,
@@ -144,7 +159,7 @@ def _print_reset_reproducibility_error_block(
         parts.append(Syntax(d, lexer="text", word_wrap=True, line_numbers=False))
     panel_kw: dict[str, Any] = {
         "title": "[bold]Reset reproducibility error[/bold]",
-        "border_style": "yellow",
+        "border_style": "red",
         "padding": (0, 1),
     }
     if panel_width is not None:
@@ -380,13 +395,19 @@ def cmd_test(
     max_steps: int = 20,
     output_path: str | None = None,
     ci_mode: bool = False,
+    demo_reset_repro: bool = False,
 ) -> None:
     """Import *module_name* (or resolve an entry-point name) and run the debug compliance suite.
 
     When *ci_mode* is True (or ``CUBE_CI=1`` is set), the Rich terminal dashboard is suppressed
     and only plain-text compliance results are printed — suitable for GitHub Actions logs.
+
+    When *demo_reset_repro* is True (or ``CUBE_DEMO_RESET_REPRO=1``), after a successful run the
+    dashboard shows sample reset-reproducibility failure output (red error panel) for UI review;
+    the process still exits 0 if all tasks passed.
     """
     ci_mode = ci_mode or bool(os.environ.get("CUBE_CI"))
+    demo_reset_repro = demo_reset_repro or (os.environ.get("CUBE_DEMO_RESET_REPRO") == "1")
     from cube.testing import (
         aggregate_profiling,
         build_stress_test_report,
@@ -500,6 +521,14 @@ def cmd_test(
         compliance_passed.append("test_benchmark_metadata")
     else:
         compliance_failed.append("test_benchmark_metadata")
+
+    if demo_reset_repro and not failures and reset_ok:
+        if "test_reset_reproducibility" in compliance_passed:
+            compliance_passed.remove("test_reset_reproducibility")
+        compliance_failed.append("test_reset_reproducibility")
+        reset_ok = False
+        reset_msg = _DEMO_RESET_REPRO_MSG
+        reset_diff = _DEMO_RESET_REPRO_DIFF
 
     # ── Latency: p50, p95, p99 from step_times_s across all episodes ────────────
     all_step_times: list[float] = []
@@ -618,10 +647,10 @@ def cmd_test(
     n_comp_fail = len(compliance_failed)
     if n_comp_fail:
         compliance_banner = Text.from_markup(
-            f"[bold]COMPLIANCE[/bold]  [dim]{n_comp_pass} passed[/dim]  [error]· {n_comp_fail} failed[/error]"
+            f"[bold]COMPLIANCE[/bold]  [success]{n_comp_pass} passed[/success]  [error]· {n_comp_fail} failed[/error]"
         )
     else:
-        compliance_banner = Text.from_markup(f"[bold]COMPLIANCE[/bold]  [dim]{n_comp_pass} passed[/dim]")
+        compliance_banner = Text.from_markup(f"[bold]COMPLIANCE[/bold]  [success]{n_comp_pass} passed[/success]")
 
     max_lat = max(p50_s, p95_s, p99_s, 0.001)
     latency_section = Table(show_header=False, box=None, padding=(0, 0), show_edge=False)
@@ -761,7 +790,7 @@ def cmd_test(
     if failures:
         border = "red"
     elif compliance_failed:
-        border = "yellow"
+        border = "cyan"
     else:
         border = "green"
     comp_sub = ""
@@ -1177,8 +1206,9 @@ def _print_help() -> None:
         "cube test NAME",
         "Run the debug compliance suite — NAME is a benchmark entry-point name or a dotted module path. "
         "Options: [cmd]--ci[/cmd] (plain-text CI output, also set via CUBE_CI=1), "
-        "[cmd]--output=PATH[/cmd] (save JSON report), [cmd]--max-steps=N[/cmd]",
-        "cube test counter-cube --ci --output=results.json",
+        "[cmd]--output=PATH[/cmd] (save JSON report), [cmd]--max-steps=N[/cmd], "
+        "[cmd]--demo-reset-repro[/cmd] (preview reset-repro error UI; also [cmd]CUBE_DEMO_RESET_REPRO=1[/cmd])",
+        "cube test counter-cube --demo-reset-repro",
     )
     table.add_row(
         "cube registry add [PATH]",
@@ -1233,6 +1263,7 @@ def main() -> None:
         max_steps = 20
         output_path = None
         ci_mode = False
+        demo_reset_repro = False
         remaining = args[2:]
         for opt in remaining:
             if opt.startswith("--max-steps="):
@@ -1243,7 +1274,15 @@ def main() -> None:
                 output_path = "cube_stress_test_baseline.json"
             elif opt == "--ci":
                 ci_mode = True
-        cmd_test(args[1], max_steps=max_steps, output_path=output_path, ci_mode=ci_mode)
+            elif opt == "--demo-reset-repro":
+                demo_reset_repro = True
+        cmd_test(
+            args[1],
+            max_steps=max_steps,
+            output_path=output_path,
+            ci_mode=ci_mode,
+            demo_reset_repro=demo_reset_repro,
+        )
     elif command == "registry":
         subcmd = args[1] if len(args) > 1 else ""
         if subcmd != "add":
