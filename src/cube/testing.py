@@ -119,7 +119,9 @@ def run_debug_episode(
         obs, info = task.reset()
         reset_time = time.perf_counter() - t0
         report["reset_time_s"] = round(reset_time, 4)
-        logger.info(f"[run_debug_episode] task={task_id!r}  reset done in {reset_time:.1f}s  info={info}")
+        logger.info(
+            f"[run_debug_episode] task={task_id!r}  reset done in {reset_time:.1f}s  info={info}  obs={obs.to_markdown()}"
+        )
 
         # tools_list compliance: non-empty action_set with name, description, parameters per schema
         tools_ok, tools_msg = _validate_action_set(getattr(task, "action_set", None) or [])
@@ -142,9 +144,13 @@ def run_debug_episode(
             obs = env_out.obs
             if isinstance(env_out.info, dict) and "profiling" in env_out.info:
                 report["profiling"].append(env_out.info["profiling"])
+            extra = f"error={env_out.error!r}  " if env_out.error else ""
+            obs_md = env_out.obs.to_markdown()
+            if len(obs_md) > 500:
+                obs_md = obs_md[:250] + " ... [truncated] ... " + obs_md[-250:]
             logger.info(
                 f"[run_debug_episode] task={task_id!r}  step={report['steps']}  action={action.name}  "
-                f"reward={env_out.reward:.3f}  done={env_out.done}  step_time={step_time:.3f}s"
+                f"reward={env_out.reward:.3f}  done={env_out.done}  step_time={step_time:.3f}s  {extra}obs={obs_md}"
             )
 
             if env_out.done:

@@ -41,7 +41,7 @@ class ReachTargetTask(Task):
         obs = Observation.from_text(text)
         return obs, {"task_type": "reach_target", "target": self.target}
 
-    def evaluate(self, obs: Observation) -> tuple[float, dict[str, Any]]:
+    def evaluate(self, obs: Observation | None = None) -> tuple[float, dict[str, Any]]:
         value = self.tool._env.counter
 
         if value == self.target:
@@ -50,7 +50,7 @@ class ReachTargetTask(Task):
         progress = min(1.0, value / self.target) if self.target > 0 else 0.0
         return progress * 0.5, {"solved": False, "value": value, "target": self.target}
 
-    def finished(self, obs: Observation) -> bool:
+    def finished(self, obs: Observation | None = None) -> bool:
         return self.tool._env.counter == self.target
 
 

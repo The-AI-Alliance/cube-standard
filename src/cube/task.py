@@ -252,13 +252,17 @@ class Task(TypedBaseModel, ABC):
                 )
         done = done or self.finished(obs)
         # TODO: Add truncation logic based on step limits or time limits
-        profiling: dict[str, Any] = {
-            "tool_execute": {
-                "total": sum(action_times),
-                "avg_per_action": sum(action_times) / len(action_times) if action_times else 0.0,
-                "n_actions": len(action_times),
+        profiling: dict[str, Any] = (
+            {
+                "tool_execute": {
+                    "total": sum(action_times),
+                    "avg_per_action": sum(action_times) / len(action_times),
+                    "n_actions": len(action_times),
+                }
             }
-        }
+            if action_times
+            else {}
+        )
         if done or self.validate_per_step:
             t_eval_start = time.perf_counter()
             reward, info = self.evaluate(obs)
@@ -277,8 +281,15 @@ class Task(TypedBaseModel, ABC):
         return obs
 
     @abstractmethod
-    def evaluate(self, obs: Observation) -> Tuple[float, dict]:
-        """Validate the current state of the task and return (reward, info)."""
+    def evaluate(self, obs: Observation | None = None) -> Tuple[float, dict]:
+        """Validate the current state of the task and return (reward, info).
+
+        ``obs`` is optional because many tasks derive the score entirely from
+        internal tool state (e.g. a counter value, a VM screenshot taken inside
+        the tool) and do not need the last observation passed back.  Callers
+        that rely on observation content should pass it explicitly; callers
+        that don't can omit it: act, act, evaluate.
+        """
         pass
 
     def get_privileged_info(self) -> Content:
@@ -298,7 +309,7 @@ class Task(TypedBaseModel, ABC):
         # TODO: figure out if we want to provide some standard for this?
         return ""
 
-    def finished(self, obs: Observation) -> bool:
+    def finished(self, obs: Observation | None = None) -> bool:
         """(Optional) Check if the task is finished."""
         return False
 
@@ -347,6 +358,8 @@ class TaskConfig(ABC, TypedBaseModel):
 
         Example:
         >>> task_metadata = MyBenchmark.task_metadata[self.task_id]
+        >>> task_execution_info = MyBenchmark.load_task_execution_info(self.task_id)
+        >>> task_metadata = task_metadata.model_copy(update={"extra_info": task_execution_info})
         >>> return MyTask(
         ...     metadata=task_metadata,
         ...     tool_config=self.tool_config,
