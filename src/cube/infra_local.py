@@ -5,15 +5,21 @@ No cloud credentials required. This is the default infra and the reference
 implementation of the InfraConfig interface.
 
 Supported resource types:
-    VMResourceConfig  — boots a QEMU VM from a local qcow2 image.
-    (DockerImageConfig / DockerServiceConfig — deferred to a later phase.)
+    VMResourceConfig    — boots a QEMU VM from a local qcow2 image.
+    DockerImageConfig   — runs a Docker container from a pulled image.
 
 Image storage: CUBE_LOCAL_IMAGE_DIR env var, defaults to ~/.cube/images/.
-Active resource tracking: ~/.cube/active.json (PID + port per run_id entry).
+Active resource tracking: ~/.cube/active.json.
+  Each entry has a "type" field: "vm" (QEMU) or "docker".
+  VM entries carry: pid, overlay_path, port, endpoint, created_at, expires_at.
+  Docker entries carry: container_name, port_map, endpoint, created_at, expires_at.
 
-System requirements:
+System requirements (VM):
     qemu-img             — image conversion (brew install qemu / apt install qemu-utils)
     qemu-system-x86_64  — VM execution  (brew install qemu / apt install qemu-system-x86)
+
+System requirements (Docker):
+    docker               — container runtime (docker.com/get-started)
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from cube.resource import (
+    DockerImageConfig,
     InfraConfig,
     ResourceConfig,
     ResourceHandle,
@@ -73,7 +80,7 @@ def _deregister_active(entry_id: str) -> None:
     _save_active(data)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── VM Helpers ───────────────────────────────────────────────────────────────────
 
 
 def _free_port(start: int = 15000, count: int = 200) -> int:
@@ -191,6 +198,46 @@ def _create_overlay(base_image: Path, run_id: str) -> Path:
     return overlay
 
 
+# ── Docker Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _stop_docker_container(container_name: str) -> None:
+    """Stop and remove a Docker container by name. Idempotent."""
+    for cmd in (["docker", "stop", container_name], ["docker", "rm", container_name]):
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0 and "No such container" not in result.stderr:
+            logger.warning(f"{' '.join(cmd)} failed: {result.stderr.strip()}")
+    logger.info(f"Stopped and removed Docker container {container_name}")
+
+
+def _wait_for_docker_http(url: str, timeout: int = 60) -> None:
+    """Poll url until HTTP status < 500 or timeout expires.
+
+    Accepts any 1xx–4xx response as "container is up" — only 5xx and
+    connection errors are treated as not-yet-ready.
+    """
+    import urllib.error
+    import urllib.request
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url), timeout=5) as resp:
+                if resp.status < 500:
+                    logger.info(f"Container ready at {url} (status {resp.status})")
+                    return
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                logger.info(f"Container ready at {url} (status {e.code}: {e.reason})")
+                return
+        except Exception:
+            pass
+        remaining = int(deadline - time.time())
+        logger.debug(f"Waiting for container… ({remaining}s left)")
+        time.sleep(2)
+    raise TimeoutError(f"Container not ready after {timeout}s at {url}")
+
+
 # ── LocalResourceHandle ───────────────────────────────────────────────────────
 
 
@@ -221,6 +268,22 @@ class LocalResourceHandle(ResourceHandle):
             logger.debug("Removed overlay %s", self._overlay_path)
             self._overlay_path = None
 
+        _deregister_active(self._entry_id)
+
+
+@dataclass
+class LocalDockerResourceHandle(ResourceHandle):
+    """ResourceHandle for a locally-running Docker container."""
+
+    _entry_id: str = field(default="", repr=False)
+    _container_name: str = field(default="", repr=False)
+    port_map: dict[int, int] = field(default_factory=dict, repr=False)
+    """Maps container port → allocated host port."""
+
+    def close(self) -> None:
+        """Stop and remove the Docker container."""
+        if self._container_name:
+            _stop_docker_container(self._container_name)
         _deregister_active(self._entry_id)
 
 
@@ -272,12 +335,22 @@ class LocalInfraConfig(InfraConfig):
         return caps
 
     def provision(self, resource: ResourceConfig) -> None:
-        """Download and convert the image locally, then register it.
+        """Download/prepare the image locally, then register it.
 
         For VMResourceConfig: downloads the qcow2 (or zip of qcow2) from
         source_url and stores it at image_dir/{resource.name}.qcow2.
         Idempotent — skips download/convert if the image already exists.
+
+        For DockerImageConfig: pulls the image from the registry.
+        Idempotent — docker pull is a no-op when the image is already present.
         """
+        if isinstance(resource, DockerImageConfig):
+            logger.info(f"Pulling Docker image {resource.image!r}...")
+            subprocess.run(["docker", "pull", resource.image], check=True)
+            self.register(resource, {"image": resource.image})
+            logger.info(f"Pulled Docker image {resource.image!r}")
+            return
+
         if not isinstance(resource, VMResourceConfig):
             raise UnsupportedResourceType(resource, self)
 
@@ -305,7 +378,26 @@ class LocalInfraConfig(InfraConfig):
 
         self.register(resource, {"image_path": str(dest)})
 
-    def launch(self, resource: ResourceConfig) -> LocalResourceHandle:
+    def launch(self, resource: ResourceConfig) -> ResourceHandle:
+        """Instantiate a resource locally and return a live handle.
+
+        For VMResourceConfig: boots a QEMU VM with a copy-on-write overlay.
+        For DockerImageConfig: runs the container with dynamically-allocated host ports.
+
+        Reads resource_info from the ProvisionStore. Raises ResourceNotReadyError
+        if no entry is found (i.e. provision() or register() was never called).
+
+        run_id is generated internally; TTL resolves as
+        self.default_ttl_seconds ?? resource.default_ttl_seconds.
+        """
+        if isinstance(resource, DockerImageConfig):
+            return self._launch_docker(resource)
+        elif isinstance(resource, VMResourceConfig):
+            return self._launch_vm(resource)
+        else:
+            raise UnsupportedResourceType(resource, self)
+
+    def _launch_vm(self, resource: VMResourceConfig) -> LocalResourceHandle:
         """Boot a QEMU VM and return a handle with the guest agent endpoint.
 
         Reads image_path from the ProvisionStore. Raises ResourceNotReadyError
@@ -315,9 +407,6 @@ class LocalInfraConfig(InfraConfig):
         never modified. run_id is generated internally; TTL resolves as
         self.default_ttl_seconds ?? resource.default_ttl_seconds.
         """
-        if not isinstance(resource, VMResourceConfig):
-            raise UnsupportedResourceType(resource, self)
-
         from cube.provision_store import ProvisionStore
 
         resource_info = ProvisionStore().get(resource, self)
@@ -355,7 +444,7 @@ class LocalInfraConfig(InfraConfig):
         if self.enable_kvm and Path("/dev/kvm").exists():
             cmd += ["-enable-kvm", "-cpu", "host"]
 
-        logger.info("Starting QEMU VM for %r (run=%s, port=%d)", resource.name, run_id[:8], port)
+        logger.info(f"Starting QEMU VM for {resource.name!r} (run={run_id[:8]}, port={port})")
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         endpoint = f"http://127.0.0.1:{port}"
@@ -365,10 +454,10 @@ class LocalInfraConfig(InfraConfig):
         created_at = datetime.utcnow()
         expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
 
-        # Persist to active.json for cross-process cleanup.
         _register_active(
             entry_id,
             {
+                "type": "vm",
                 "run_id": run_id,
                 "resource_name": resource.name,
                 "infra_fingerprint": self.fingerprint(),
@@ -401,15 +490,95 @@ class LocalInfraConfig(InfraConfig):
             _overlay_path=overlay,
         )
 
-    def list_active(self, run_id: str | None = None) -> list[LocalResourceHandle]:
-        """Return handles for all active local VMs, optionally filtered by run_id.
+    def _launch_docker(self, resource: DockerImageConfig) -> LocalDockerResourceHandle:
+        """Run a Docker container and return a handle with the primary endpoint.
 
-        Reconstructed from ~/.cube/active.json — processes that have died are
-        cleaned up and excluded from the result.
+        Allocates a free host port for each container port declared in resource.ports.
+        The endpoint is http://127.0.0.1:{first_host_port}. A health check is
+        performed on {endpoint}{resource.health_check_path} unless health_check_path
+        is empty. On failure the container is removed and the error is re-raised.
         """
+        from cube.provision_store import ProvisionStore
 
+        resource_info = ProvisionStore().get(resource, self)
+        if resource_info is None:
+            raise ResourceNotReadyError(resource, self)
+
+        run_id = str(uuid.uuid4())
+        container_name = f"cube-{resource.name}-{run_id[:8]}"
+        entry_id = f"cube-{run_id[:8]}-docker-{uuid.uuid4().hex[:6]}"
+
+        # Allocate one free host port per declared container port.
+        port_map: dict[int, int] = {}
+        if resource.ports:
+            for container_port in resource.ports:
+                port_map[container_port] = _free_port()
+
+        cmd = ["docker", "run", "-d", "--name", container_name]
+        for container_port, host_port in port_map.items():
+            cmd += ["-p", f"127.0.0.1:{host_port}:{container_port}"]
+        if resource.gpu:
+            cmd += ["--gpus", "all"]
+        cmd.append(resource_info["image"])
+
+        logger.info(f"Starting Docker container {container_name!r} (run={run_id[:8]})")
+        subprocess.run(cmd, check=True, capture_output=True)
+
+        endpoint: str | None = None
+        if port_map:
+            first_host_port = next(iter(port_map.values()))
+            endpoint = f"http://127.0.0.1:{first_host_port}"
+
+        effective_ttl = (
+            self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
+        )
+        created_at = datetime.utcnow()
+        expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
+
+        _register_active(
+            entry_id,
+            {
+                "type": "docker",
+                "run_id": run_id,
+                "resource_name": resource.name,
+                "infra_fingerprint": self.fingerprint(),
+                "container_name": container_name,
+                "port_map": {str(k): v for k, v in port_map.items()},
+                "endpoint": endpoint,
+                "created_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat() if expires_at else None,
+            },
+        )
+
+        if endpoint and resource.health_check_path:
+            health_url = f"{endpoint}{resource.health_check_path}"
+            try:
+                _wait_for_docker_http(health_url, timeout=resource.health_check_timeout)
+            except TimeoutError:
+                _stop_docker_container(container_name)
+                _deregister_active(entry_id)
+                raise
+
+        return LocalDockerResourceHandle(
+            run_id=run_id,
+            resource=resource,
+            infra=self,
+            endpoint=endpoint,
+            created_at=created_at,
+            expires_at=expires_at,
+            _entry_id=entry_id,
+            _container_name=container_name,
+            port_map=port_map,
+        )
+
+    def list_active(self, run_id: str | None = None) -> list[ResourceHandle]:
+        """Return handles for all active local resources, optionally filtered by run_id.
+
+        Reconstructed from ~/.cube/active.json. Stale entries (dead process or
+        stopped container) are cleaned up and excluded from the result.
+        """
         data = _load_active()
-        handles = []
+        handles: list[ResourceHandle] = []
         stale_ids = []
 
         for entry_id, entry in data.items():
@@ -418,31 +587,19 @@ class LocalInfraConfig(InfraConfig):
             if run_id and entry.get("run_id") != run_id:
                 continue
 
-            pid = entry.get("pid")
-            if pid and not _pid_alive(pid):
+            entry_type = entry.get("type")
+            if entry_type == "docker":
+                handle = self._get_docker_handle(entry_id, entry)
+            elif entry_type == "vm":
+                handle = self._get_vm_handle(entry_id, entry)
+            else:
+                raise ValueError(f"Unknown active.json entry type: {entry_type!r}")
+
+            if handle is None:
                 stale_ids.append(entry_id)
-                continue
+            else:
+                handles.append(handle)
 
-            # Reconstruct a handle without the live Popen (pid-only tracking).
-            resource = VMResourceConfig(name=entry["resource_name"], scope="task")
-            created_at = datetime.fromisoformat(entry["created_at"])
-            expires_at = datetime.fromisoformat(entry["expires_at"]) if entry.get("expires_at") else None
-
-            handles.append(
-                LocalResourceHandle(
-                    run_id=entry["run_id"],
-                    resource=resource,
-                    infra=self,
-                    endpoint=entry["endpoint"],
-                    created_at=created_at,
-                    expires_at=expires_at,
-                    _entry_id=entry_id,
-                    _qemu_proc=None,  # can't reconstruct Popen; cleanup uses PID
-                    _overlay_path=Path(entry["overlay_path"]) if entry.get("overlay_path") else None,
-                )
-            )
-
-        # Clean up dead entries.
         if stale_ids:
             data = _load_active()
             for sid in stale_ids:
@@ -451,8 +608,64 @@ class LocalInfraConfig(InfraConfig):
 
         return handles
 
+    def _get_docker_handle(self, entry_id: str, entry: dict) -> LocalDockerResourceHandle | None:
+        """Reconstruct a LocalDockerResourceHandle from an active.json entry.
+
+        Returns None if the container is no longer running (stale entry).
+        """
+        container_name = entry.get("container_name", "")
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 or result.stdout.strip() != "true":
+            return None
+
+        created_at = datetime.fromisoformat(entry["created_at"])
+        expires_at = datetime.fromisoformat(entry["expires_at"]) if entry.get("expires_at") else None
+        port_map = {int(k): v for k, v in entry.get("port_map", {}).items()}
+        resource = DockerImageConfig(name=entry["resource_name"], image="")
+
+        return LocalDockerResourceHandle(
+            run_id=entry["run_id"],
+            resource=resource,
+            infra=self,
+            endpoint=entry.get("endpoint"),
+            created_at=created_at,
+            expires_at=expires_at,
+            _entry_id=entry_id,
+            _container_name=container_name,
+            port_map=port_map,
+        )
+
+    def _get_vm_handle(self, entry_id: str, entry: dict) -> LocalResourceHandle | None:
+        """Reconstruct a LocalResourceHandle from an active.json entry.
+
+        Returns None if the QEMU process is no longer alive (stale entry).
+        """
+        pid = entry.get("pid")
+        if pid and not _pid_alive(pid):
+            return None
+
+        resource = VMResourceConfig(name=entry["resource_name"])
+        created_at = datetime.fromisoformat(entry["created_at"])
+        expires_at = datetime.fromisoformat(entry["expires_at"]) if entry.get("expires_at") else None
+
+        return LocalResourceHandle(
+            run_id=entry["run_id"],
+            resource=resource,
+            infra=self,
+            endpoint=entry["endpoint"],
+            created_at=created_at,
+            expires_at=expires_at,
+            _entry_id=entry_id,
+            _qemu_proc=None,  # can't reconstruct Popen; cleanup uses PID
+            _overlay_path=Path(entry["overlay_path"]) if entry.get("overlay_path") else None,
+        )
+
     def cleanup(self, run_id: str) -> None:
-        """Kill all QEMU processes and remove overlays for run_id."""
+        """Tear down all local resources (VMs and Docker containers) for run_id."""
         data = _load_active()
         to_remove = []
         for entry_id, entry in list(data.items()):
@@ -520,21 +733,32 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _kill_entry(entry: dict) -> None:
-    """Kill QEMU process and remove overlay for a single active.json entry."""
-    pid = entry.get("pid")
-    if pid and _pid_alive(pid):
-        try:
-            os.kill(pid, 15)  # SIGTERM
-            time.sleep(1)
-            if _pid_alive(pid):
-                os.kill(pid, 9)  # SIGKILL
-        except Exception:
-            pass
-        logger.debug("Killed PID %d", pid)
+    """Tear down a single active.json entry (VM or Docker container)."""
+    entry_type = entry.get("type")
 
-    overlay_path = entry.get("overlay_path")
-    if overlay_path:
-        p = Path(overlay_path)
-        if p.exists():
-            p.unlink()
-            logger.debug("Removed overlay %s", p)
+    if entry_type == "docker":
+        container_name = entry.get("container_name")
+        if container_name:
+            _stop_docker_container(container_name)
+
+    elif entry_type == "vm":
+        pid = entry.get("pid")
+        if pid and _pid_alive(pid):
+            try:
+                os.kill(pid, 15)  # SIGTERM
+                time.sleep(1)
+                if _pid_alive(pid):
+                    os.kill(pid, 9)  # SIGKILL
+            except Exception:
+                pass
+            logger.debug(f"Killed PID {pid}")
+
+        overlay_path = entry.get("overlay_path")
+        if overlay_path:
+            p = Path(overlay_path)
+            if p.exists():
+                p.unlink()
+                logger.debug(f"Removed overlay {p}")
+
+    else:
+        raise ValueError(f"Unknown active.json entry type: {entry_type!r}")

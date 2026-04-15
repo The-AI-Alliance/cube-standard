@@ -171,7 +171,7 @@ class DockerImageConfig(ResourceConfig):
     """Single Docker image per task (SWE-bench, MLE-bench, CTF...).
 
     Resource requirements (ram_gb, cpu_cores, disk_gb, ports) are read by
-    DockerInfraConfig.launch() to configure the container. gpu=True maps to
+    LocalInfraConfig.launch() to configure the container. gpu=True maps to
     the "gpu:nvidia" capability requirement token via requirements().
     """
 
@@ -181,6 +181,11 @@ class DockerImageConfig(ResourceConfig):
     disk_gb: float = 10.0
     gpu: bool = False
     ports: list[int] | None = None
+    health_check_path: str = "/"
+    """HTTP path polled on the primary port after launch until status < 500.
+    Set to empty string to skip the health check entirely."""
+    health_check_timeout: int = 60
+    """Seconds to wait for the health check to pass before aborting launch."""
 
     def requirements(self) -> set[str]:
         reqs = {"docker"}
