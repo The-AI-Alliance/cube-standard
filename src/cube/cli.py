@@ -613,7 +613,6 @@ def cmd_test(
     ok_reset = "[success]✓[/success]" if reset_ok else "[error]✗[/error]"
     ok_close = "[success]✓[/success]" if close_idempotent_ok else "[error]✗[/error]"
 
-    compliance_header = Text.from_markup("[bold]COMPLIANCE[/bold]")
     compliance_checks_table = Table(
         show_header=False,
         box=box.SIMPLE,
@@ -805,7 +804,6 @@ def cmd_test(
     body_parts: list = [
         header_grid,
         Rule(style="dim"),
-        compliance_header,
         compliance_banner,
         compliance_checks_table,
         Rule(style="dim"),
@@ -833,7 +831,6 @@ def cmd_test(
         reset_diff=reset_diff,
         panel_width=_display_width,
     )
-    dash_console.print(Rule("[bold]CUBE Stress Test[/bold]", style="dim"))
     dash_console.print(stress_panel)
 
     if failures:
