@@ -135,6 +135,47 @@ def wait_for_ssh(
     raise TimeoutError(f"SSH not available after {timeout}s")
 
 
+def ssh_run(
+    public_ip: str,
+    ssh_user: str,
+    ssh_privkey: str,
+    script: str,
+) -> None:
+    """Run a bash script on the remote host via SSH. Raises on non-zero exit.
+
+    Stdout is forwarded at DEBUG level; stderr at WARNING on failure.
+    """
+    log = logging.getLogger(__name__)
+    result = subprocess.run(
+        [
+            "ssh",
+            "-i",
+            ssh_privkey,
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=30",
+            f"{ssh_user}@{public_ip}",
+            "bash -s",
+        ],
+        input=script,
+        capture_output=True,
+        text=True,
+    )
+    for line in result.stdout.splitlines():
+        log.debug("[ssh] %s", line)
+    if result.returncode != 0:
+        for line in result.stderr.splitlines():
+            log.warning("[ssh stderr] %s", line)
+        raise subprocess.CalledProcessError(result.returncode, "ssh", result.stdout, result.stderr)
+
+
 # ── BootstrapMonitor ──────────────────────────────────────────────────────────
 
 

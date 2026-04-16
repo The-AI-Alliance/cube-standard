@@ -27,7 +27,9 @@ build-backend = "hatchling.build"
 packages = ["src/cube_infra_azure"]
 
 [dependency-groups]
-dev = []
+dev = [
+    "pytest>=9.0",
+]
 
 [tool.uv.sources]
 cube-standard = { workspace = true }
