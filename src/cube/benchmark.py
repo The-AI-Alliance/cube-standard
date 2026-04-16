@@ -526,18 +526,28 @@ class Benchmark(TypedBaseModel, ABC):
         if not task_subset:
             raise ValueError("The resulting task list cannot be empty.")
 
-        # model_copy copies only Pydantic model fields, leaving PrivateAttrs at their defaults.
-        # This is intentional: the subset has not been set up yet (.setup() must be called by
-        # the caller), so runtime state like open file handles or subprocess objects must not
-        # be inherited from the parent.  ClassVars are not touched by model_copy (they live on
-        # the class), so we deep-copy them explicitly and use object.__setattr__ to set
-        # instance-level shadows without triggering Pydantic's ClassVar protection.
+        # model_copy(deep=True) copies both public Pydantic fields (resources, container_backend,
+        # etc.) and private attributes (__pydantic_private__).  We want the subset to inherit the
+        # caller's configuration (public fields) but NOT its runtime state: PrivateAttrs hold
+        # objects created by _setup() (file handles, subprocess objects, etc.) that cannot safely
+        # be shared or pickled.  We therefore reset __pydantic_private__ to fresh defaults for all
+        # PrivateAttrs — the caller must call .setup() on the returned subset before use.
+        # ClassVars are not touched by model_copy (they live on the class), so we deep-copy
+        # them explicitly and use object.__setattr__ to set instance-level shadows without
+        # triggering Pydantic's ClassVar protection.
         new_instance = self.model_copy(deep=True)
+        if new_instance.__pydantic_private__ is not None:
+            new_instance.__pydantic_private__ = {
+                k: fi.get_default() for k, fi in type(new_instance).__private_attributes__.items()
+            }
         new_bm = copy.deepcopy(type(new_instance).benchmark_metadata)
         new_bm.name = f"{self.benchmark_metadata.name}_{benchmark_name_suffix}"
         new_bm.num_tasks = len(task_subset)
         object.__setattr__(new_instance, "benchmark_metadata", new_bm)
         object.__setattr__(new_instance, "task_metadata", {tm.id: tm for tm in task_subset})
+        logger.info(
+            f"Created subset '{new_bm.name}' with {len(task_subset)} tasks. Call .setup() before spawning tasks."
+        )
         return new_instance
 
     @classmethod
