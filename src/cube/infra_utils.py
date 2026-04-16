@@ -386,13 +386,14 @@ def build_volume_setup_script(volumes: list) -> str:
         "mkdir -p $VOLUME_DATA_DIR",
     ]
 
-    # Collect unique URLs to download
+    # Collect unique URLs to download, keyed by vol.name to avoid basename collisions.
     urls_seen: set[str] = set()
     for vol in volumes:
         if vol.source_url and vol.source_url not in urls_seen:
             urls_seen.add(vol.source_url)
-            filename = vol.source_url.rsplit("/", 1)[-1]
-            lines.append(f'echo "[bootstrap] Downloading {filename} ..."')
+            basename = vol.source_url.rsplit("/", 1)[-1]
+            filename = f"{vol.name}_{basename}"
+            lines.append(f'echo "[bootstrap] Downloading {basename} for {vol.name} ..."')
             lines.append(
                 f'[ -f "$VOLUME_DATA_DIR/{filename}" ] || '
                 f'curl -L --retry 3 --retry-delay 10 -o "$VOLUME_DATA_DIR/{filename}" "{vol.source_url}"'
@@ -402,7 +403,8 @@ def build_volume_setup_script(volumes: list) -> str:
     for vol in volumes:
         lines.append(f'docker volume create "{vol.name}" 2>/dev/null || true')
         if vol.source_url:
-            filename = vol.source_url.rsplit("/", 1)[-1]
+            basename = vol.source_url.rsplit("/", 1)[-1]
+            filename = f"{vol.name}_{basename}"
             # Skip extraction if volume already has data
             lines.append(
                 f'if ! docker run --rm -v "{vol.name}:/vol:ro" alpine sh -c "ls -A /vol | head -1" | grep -q .; then'
@@ -413,7 +415,7 @@ def build_volume_setup_script(volumes: list) -> str:
             tar_cmd += " -C /vol"
             if vol.tar_subpath:
                 tar_cmd += f" {vol.tar_subpath}"
-            lines.append(f'  echo "[bootstrap] Extracting {filename} → {vol.name} ..."')
+            lines.append(f'  echo "[bootstrap] Extracting {basename} into {vol.name} ..."')
             lines.append(
                 f'  docker run --rm -v "$VOLUME_DATA_DIR:/tar:ro" -v "{vol.name}:/vol" alpine sh -c "{tar_cmd}"'
             )
