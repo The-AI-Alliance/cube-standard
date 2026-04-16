@@ -477,13 +477,13 @@ class LocalInfraConfig(InfraConfig):
         entry_id = f"cube-{run_id[:8]}-dss-{uuid.uuid4().hex[:6]}"
 
         # Snapshot containers before launch to identify which ones we started.
-        before = set(subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True).stdout.split())
+        before = set(subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True, check=True).stdout.split())
 
         if resource.launch_script:
             logger.info("Running launch_script for %r (run=%s)…", resource.name, run_id[:8])
             subprocess.run(["bash", "-c", resource.launch_script], check=True)
 
-        after = set(subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True).stdout.split())
+        after = set(subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True, check=True).stdout.split())
         container_ids = list(after - before)
         logger.info("launch_script started %d container(s) for %r", len(container_ids), resource.name)
 
