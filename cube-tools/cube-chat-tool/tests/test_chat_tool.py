@@ -26,10 +26,10 @@ def test_config_serialization_round_trip() -> None:
     assert type(restored.chat) is BasicChatConfig
 
 
-def test_action_set_contains_only_send_message() -> None:
+def test_action_set_contains_expected_actions() -> None:
     tool, _ = _make_tool()
     names = {a.name for a in tool.action_set}
-    assert names == {"send_message"}
+    assert names == {"send_message", "report_infeasible"}
 
 
 def test_execute_action_dispatches_send_message() -> None:
@@ -50,6 +50,27 @@ def test_execute_action_appends_chat_obs() -> None:
     # The observation should contain a chat_history content
     names = {c.name for c in result.contents if hasattr(c, "name")}
     assert "chat_history" in names
+
+
+def test_execute_action_dispatches_report_infeasible() -> None:
+    tool, mock_session = _make_tool()
+    mock_session.messages = [{"role": "infeasible", "timestamp": 0.0, "message": "no login page"}]
+    action = Action(name="report_infeasible", arguments={"reason": "no login page"})
+    result = tool.execute_action(action)
+    mock_session.add_message.assert_called_once_with("infeasible", "no login page")
+    mock_session.stop.assert_called_once()
+    assert isinstance(result, Observation)
+
+
+def test_report_infeasible_returns_observation_with_chat_history() -> None:
+    tool, mock_session = _make_tool()
+    mock_session.messages = [
+        {"role": "infeasible", "timestamp": 0.0, "message": "impossible task"},
+    ]
+    action = Action(name="report_infeasible", arguments={"reason": "impossible task"})
+    result = tool.execute_action(action)
+    assert isinstance(result, Observation)
+    assert "infeasible: impossible task" in result.contents[0].data
 
 
 def test_execute_action_returns_step_error_on_session_error() -> None:
