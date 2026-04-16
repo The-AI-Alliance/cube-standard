@@ -58,6 +58,7 @@ def test_execute_action_dispatches_report_infeasible() -> None:
     action = Action(name="report_infeasible", arguments={"reason": "no login page"})
     result = tool.execute_action(action)
     mock_session.add_message.assert_called_once_with("infeasible", "no login page")
+    mock_session.stop.assert_called_once()
     assert isinstance(result, Observation)
 
 

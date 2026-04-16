@@ -137,6 +137,13 @@ class ChatTool(Tool):
         ----------
         reason : str
             Explanation of why the task is infeasible.
+
+        Notes
+        -----
+        Stops the session after recording the message, so any task thread
+        blocked in ``wait_for_user_message()`` will unblock with a
+        ``SessionStoppedError``.
         """
         self._session.add_message("infeasible", reason)
+        self._session.stop()
         return self.chat_obs()
