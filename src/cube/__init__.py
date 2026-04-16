@@ -31,6 +31,7 @@ from cube.resource import (  # noqa: E402
     ResourceNotReadyError,
     UnsupportedResourceType,
     VMResourceConfig,
+    VolumeSpec,
 )
 
 __all__ += [
@@ -38,6 +39,7 @@ __all__ += [
     "VMResourceConfig",
     "DockerServiceConfig",
     "DockerImageConfig",
+    "VolumeSpec",
     "InfraConfig",
     "ResourceHandle",
     "ResourceNotReadyError",
