@@ -20,6 +20,11 @@ Usage:
                         path (e.g. counter_cube.debug).  When an entry-point name
                         is given the debug module is auto-derived from the
                         registered benchmark module.
+    cube registry add   Generate a cube-registry-entry.yaml from the pyproject.toml
+    [PATH]              in PATH (default: cwd).  Pass --submit to fork
+                        The-AI-Alliance/cube-registry, upload the entry, and open a
+                        pull request automatically.  Pass --registry=OWNER/REPO to
+                        target a different registry.
 """
 
 import base64
