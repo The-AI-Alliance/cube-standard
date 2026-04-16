@@ -48,11 +48,12 @@ def test_entry_point_found_and_loaded():
 def test_entry_point_load_failure_returns_error():
     ep = MagicMock()
     ep.name = "my-pkg"
+    ep.value = "my_pkg:Benchmark"
     ep.load.side_effect = ImportError("bad module")
     with patch("cube.introspect.importlib.metadata.entry_points", return_value=[ep]):
         cls, err = find_benchmark_class("my-pkg")
     assert cls is None
-    assert "bad module" in err
+    assert err == "Entry point 'my_pkg:Benchmark' failed to load: bad module"
 
 
 def test_entry_point_name_mismatch_falls_through_to_import():
@@ -97,7 +98,7 @@ def test_import_error_returns_error_message():
         with patch("cube.introspect.importlib.import_module", side_effect=ImportError("no module")):
             cls, err = find_benchmark_class("nonexistent-pkg")
     assert cls is None
-    assert "nonexistent-pkg" in err
+    assert err == "Could not import package 'nonexistent-pkg': no module"
 
 
 def test_no_benchmark_class_in_module_returns_error():
@@ -106,8 +107,12 @@ def test_no_benchmark_class_in_module_returns_error():
         with patch("cube.introspect.importlib.import_module", return_value=mod):
             cls, err = find_benchmark_class("my-pkg")
     assert cls is None
-    assert "my-pkg" in err
-    assert "entry point" in err.lower() or "benchmark" in err.lower()
+    assert err == (
+        "Package 'my-pkg' has no 'cube.benchmarks' entry point and does not export "
+        "a class named 'Benchmark'. Register an entry point in pyproject.toml:\n"
+        "  [project.entry-points.'cube.benchmarks']\n"
+        '  my-pkg = "your_module:YourBenchmark"'
+    )
 
 
 def test_hyphen_in_package_name_converts_to_underscore_for_import():
