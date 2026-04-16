@@ -1,10 +1,11 @@
 """Basic test for benchmark server creation."""
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
-from cube.container import Container, ContainerBackend
+from cube.container import Container, ContainerBackend, ContainerError, port_from_url
 from cube.core import Observation
 from cube.server import make_benchmark_fastapi_app
 from cube.task import Task, TaskConfig, TaskMetadata
@@ -124,3 +125,23 @@ def test_create_server_app():
         print("✓ /cube/shutdown succeeded")
 
     print("✓ Benchmark server test passed!")
+
+
+# ── port_from_url ─────────────────────────────────────────────────────────────
+
+
+def test_port_from_url_explicit_port():
+    assert port_from_url("http://localhost:8080") == 8080
+
+
+def test_port_from_url_https_default():
+    assert port_from_url("https://example.com") == 443
+
+
+def test_port_from_url_http_default():
+    assert port_from_url("http://example.com") == 80
+
+
+def test_port_from_url_unknown_scheme_raises():
+    with pytest.raises(ContainerError):
+        port_from_url("ftp://example.com")

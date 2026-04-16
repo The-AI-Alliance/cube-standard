@@ -9,11 +9,13 @@ from urllib.parse import urlparse
 
 import pytest
 
+pytest.importorskip("modal")  # skip whole module if modal not installed
+pytest.importorskip("tenacity")  # modal backend also requires tenacity
+
+
 from cube.backends.modal import ModalContainerBackend
 from cube.container import ContainerConfig
 from tests.backends.test_harness import log, make_container_common_tests, make_container_health_check_tests
-
-modal = pytest.importorskip("modal")
 
 try:
     import modal.config as _mc

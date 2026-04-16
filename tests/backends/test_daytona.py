@@ -6,13 +6,14 @@ Requires DAYTONA_API_KEY in the environment (or in a .env file).
 import os
 
 import pytest
+
+pytest.importorskip("daytona")  # skip whole module if daytona not installed
+
 from dotenv import load_dotenv
 
 from cube.backends.daytona import DaytonaContainerBackend
 from cube.container import ContainerConfig, ContainerError
 from tests.backends.test_harness import log, make_container_common_tests, make_container_health_check_tests
-
-daytona = pytest.importorskip("daytona")
 
 load_dotenv()
 
