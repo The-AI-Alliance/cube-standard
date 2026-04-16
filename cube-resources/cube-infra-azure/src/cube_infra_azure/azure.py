@@ -73,10 +73,12 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import Field, model_validator
 
+from cube.infra_utils import build_volume_setup_script
+from cube.provision_store import ProvisionStore
 from cube.resource import (
     DockerServiceConfig,
     InfraConfig,
@@ -87,9 +89,6 @@ from cube.resource import (
     VMResourceConfig,
 )
 from cube_infra_azure._utils import BootstrapMonitor, free_port, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +234,8 @@ systemctl start docker
 
 # ── add cube user to docker group (no sudo needed at launch time) ─────────────
 usermod -aG docker cube
+
+{volume_setup_commands}
 
 # ── pre-pull Docker images ─────────────────────────────────────────────────────
 {docker_pull_commands}
@@ -596,8 +597,6 @@ class AzureInfraConfig(InfraConfig):
         if not isinstance(resource, (VMResourceConfig, DockerServiceConfig)):
             raise UnsupportedResourceType(resource, self)
 
-        from cube.provision_store import ProvisionStore
-
         shim = self._resource_shim(resource)
         image_name = self._image_name(resource)
         store = ProvisionStore()
@@ -660,8 +659,6 @@ class AzureInfraConfig(InfraConfig):
         if not isinstance(resource, (VMResourceConfig, DockerServiceConfig)):
             raise UnsupportedResourceType(resource, self)
 
-        from cube.provision_store import ProvisionStore
-
         shim = self._resource_shim(resource)
         image_name = self._image_name(resource)
         store = ProvisionStore()
@@ -709,8 +706,6 @@ class AzureInfraConfig(InfraConfig):
         """
         if not isinstance(resource, (VMResourceConfig, DockerServiceConfig)):
             raise UnsupportedResourceType(resource, self)
-
-        from cube.provision_store import ProvisionStore
 
         resource_info = ProvisionStore().get(self._resource_shim(resource), self)
         if resource_info is None:
@@ -1543,8 +1538,10 @@ class AzureInfraConfig(InfraConfig):
             pull_cmds = "\n".join(
                 f"echo '[bootstrap] Pulling {img}...'\ndocker pull {img}" for img in resource.docker_images
             )
+            volume_cmds = build_volume_setup_script(resource.volumes)
             script = _DOCKER_BOOTSTRAP_SCRIPT.format(
                 docker_pull_commands=pull_cmds,
+                volume_setup_commands=volume_cmds,
                 sentinel_sas_url=sentinel_sas,
                 failed_sas_url=failed_sas,
             )
@@ -1554,11 +1551,13 @@ class AzureInfraConfig(InfraConfig):
             # can be created with create_option=FromImage.
             compute = self._compute()
             try:
+                from azure.core.exceptions import ResourceNotFoundError
+
                 existing = compute.disks.get(self.resource_group, disk_name)
                 if existing:
                     logger.info("_provision_docker_service: deleting stale disk %s (no sentinel)", disk_name)
                     compute.disks.begin_delete(self.resource_group, disk_name).result()
-            except Exception:
+            except ResourceNotFoundError:
                 pass  # disk doesn't exist — expected
             vm_info = self._launch_docker_host_vm(script, disk_name)
             t0 = time.time()

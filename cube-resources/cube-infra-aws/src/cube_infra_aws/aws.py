@@ -56,11 +56,13 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import botocore.exceptions
 from pydantic import Field, model_validator
 
+from cube.infra_utils import build_volume_setup_script
+from cube.provision_store import ProvisionStore
 from cube.resource import (
     DockerServiceConfig,
     InfraConfig,
@@ -71,9 +73,6 @@ from cube.resource import (
     VMResourceConfig,
 )
 from cube_infra_aws._utils import BootstrapMonitor, free_port, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +265,9 @@ pip3 install boto3 -q
 systemctl enable docker
 systemctl start docker
 usermod -aG docker ubuntu
+
+{volume_setup_commands}
+
 
 {docker_pull_commands}
 echo "[bootstrap] Docker images ready"
@@ -531,8 +533,6 @@ class AWSInfraConfig(InfraConfig):
         if not isinstance(resource, (VMResourceConfig, DockerServiceConfig)):
             raise UnsupportedResourceType(resource, self)
 
-        from cube.provision_store import ProvisionStore
-
         shim = self._resource_shim(resource)
         image_name = self._image_name(resource)
         store = ProvisionStore()
@@ -580,8 +580,6 @@ class AWSInfraConfig(InfraConfig):
         """
         if not isinstance(resource, (VMResourceConfig, DockerServiceConfig)):
             raise UnsupportedResourceType(resource, self)
-
-        from cube.provision_store import ProvisionStore
 
         shim = self._resource_shim(resource)
         image_name = self._image_name(resource)
@@ -657,8 +655,6 @@ class AWSInfraConfig(InfraConfig):
         """
         if not isinstance(resource, (VMResourceConfig, DockerServiceConfig)):
             raise UnsupportedResourceType(resource, self)
-
-        from cube.provision_store import ProvisionStore
 
         resource_info = ProvisionStore().get(self._resource_shim(resource), self)
         if resource_info is None:
@@ -1470,12 +1466,14 @@ done
             pull_cmds = "\n".join(
                 f"echo '[bootstrap] Pulling {img}...'\ndocker pull {img}" for img in resource.docker_images
             )
+            volume_cmds = build_volume_setup_script(resource.volumes)
             script = _AWS_DOCKER_BOOTSTRAP_SCRIPT.format(
                 s3_bucket=self.s3_bucket,
                 sentinel_key=sentinel_key,
                 failed_key=failed_key,
                 region=self.region,
                 docker_pull_commands=pull_cmds,
+                volume_setup_commands=volume_cmds,
             )
             vm_info = self._launch_bootstrap_ec2(script)
             bootstrap_instance_id = vm_info["instance_id"]
@@ -1522,26 +1520,27 @@ done
             )
 
         # Stop the instance so the root volume snapshot is consistent.
-        logger.info("_provision_docker_service: stopping %s to create AMI …", bootstrap_instance_id)
-        ec2.stop_instances(InstanceIds=[bootstrap_instance_id])
-        ec2.get_waiter("instance_stopped").wait(InstanceIds=[bootstrap_instance_id])
+        try:
+            logger.info("_provision_docker_service: stopping %s to create AMI …", bootstrap_instance_id)
+            ec2.stop_instances(InstanceIds=[bootstrap_instance_id])
+            ec2.get_waiter("instance_stopped").wait(InstanceIds=[bootstrap_instance_id])
 
-        logger.info("_provision_docker_service: creating AMI %r …", image_name)
-        resp = ec2.create_image(
-            InstanceId=bootstrap_instance_id,
-            Name=image_name,
-            Description=f"CUBE Docker-host image: {image_name}",
-            NoReboot=True,
-        )
-        ami_id = resp["ImageId"]
-        # Default waiter: 40 × 15s = 10 min — too short for large disks.
-        # Extend to 120 × 15s = 30 min.
-        waiter = ec2.get_waiter("image_available")
-        waiter.wait(ImageIds=[ami_id], WaiterConfig={"MaxAttempts": 120})
-        ec2.create_tags(Resources=[ami_id], Tags=_dict_to_ec2_tags({**self.tags, "role": "docker-host"}))
-        logger.info("_provision_docker_service: AMI ready: %s", ami_id)
-
-        self._terminate_instance(bootstrap_instance_id)
+            logger.info("_provision_docker_service: creating AMI %r …", image_name)
+            resp = ec2.create_image(
+                InstanceId=bootstrap_instance_id,
+                Name=image_name,
+                Description=f"CUBE Docker-host image: {image_name}",
+                NoReboot=True,
+            )
+            ami_id = resp["ImageId"]
+            # Default waiter: 40 × 15s = 10 min — too short for large disks.
+            # Extend to 120 × 15s = 30 min.
+            waiter = ec2.get_waiter("image_available")
+            waiter.wait(ImageIds=[ami_id], WaiterConfig={"MaxAttempts": 120})
+            ec2.create_tags(Resources=[ami_id], Tags=_dict_to_ec2_tags({**self.tags, "role": "docker-host"}))
+            logger.info("_provision_docker_service: AMI ready: %s", ami_id)
+        finally:
+            self._terminate_instance(bootstrap_instance_id)
         return ami_id
 
     def _ssh_run(self, public_ip: str, ssh_user: str, script: str) -> None:

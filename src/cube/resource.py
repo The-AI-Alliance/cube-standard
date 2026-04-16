@@ -158,32 +158,68 @@ class VMResourceConfig(ResourceConfig):
         return {"kvm"} if self.requires_kvm else set()
 
 
+class VolumeSpec(TypedBaseModel):
+    """Named Docker volume, optionally pre-populated from a remote archive.
+
+    Used during provision() to download data and extract it into Docker volumes
+    that are baked into the VM snapshot.  At launch(), volumes are mounted into
+    the container via their ``name`` and ``mount_path``.
+
+    Volumes without a ``source_url`` are created empty (populated at container runtime).
+
+    Example — pre-populated from a tarball::
+
+        VolumeSpec(
+            name="webarena_map_tile_db",
+            mount_path="/data/database",
+            source_url="https://example.com/osm_tile_server.tar",
+            tar_subpath="projects/ogma3/docker/volumes/osm-data/_data",
+            strip_components=6,
+        )
+
+    Example — empty volume::
+
+        VolumeSpec(name="webarena_map_tiles", mount_path="/data/tiles")
+    """
+
+    name: str
+    mount_path: str
+    source_url: str | None = None
+    tar_subpath: str | None = None
+    strip_components: int = 0
+
+
 class DockerServiceConfig(ResourceConfig):
     """Multi-container Docker service stack (WebArena, WorkArena, TheAgentCompany...).
 
-    docker_images: Docker Hub images to pre-pull during provision (determines the
-        provisioned snapshot content). Required — provision() will fail without them.
-    services: Maps service names to guest ports that launch() will SSH-tunnel to
-        localhost. Keys become the keys in ResourceHandle.endpoints.
-        Example: {"shopping_admin": 7780, "shopping_admin_ctrl": 7781}
-    launch_script: Bash snippet run inside the VM at launch time to start services
-        (e.g. `docker run -d -p 7780:80 am1n3e/webarena-verified-shopping_admin`).
-        Images must already be present from provision(); no docker pull at launch time.
+    Attributes:
+        docker_images:    Docker Hub images to pre-pull during provision (determines the
+            provisioned snapshot content). Required — provision() will fail without them.
+        services:         Maps service names to ports. Keys become the keys in
+            ResourceHandle.endpoints. On cloud infra (AWS/Azure) launch() SSH-tunnels
+            each guest port to a free local port. On LocalInfraConfig launch() uses
+            these as direct host ports (the launch_script binds them on the host).
+            Example: ``{"shopping_admin": 7780, "shopping_admin_ctrl": 7781}``
+        launch_script:    Bash snippet run inside the VM at launch time to start services
+            (e.g. ``docker run -d -p 7780:80 am1n3e/webarena-verified-shopping_admin``).
+            Images must already be present from provision(); no docker pull at launch time.
+        endpoint_to_site: Maps service names (keys in ``services``) to benchmark-specific
+            site identifiers. The benchmark interprets this mapping;
+            ``DockerServiceConfig`` itself does not. Only web-UI endpoints should appear
+            here — control/API endpoints are omitted.
+            Example: ``{"shopping_admin": "shopping_admin"}``
+        volumes:          Data volumes to download and extract during provision().  Each
+            ``VolumeSpec`` with a ``source_url`` is fetched and extracted into a Docker
+            volume that is baked into the VM snapshot.  Empty volumes (no ``source_url``)
+            are created for runtime use.  Archives referenced by multiple specs are
+            downloaded once.
     """
 
     docker_images: list[str] = []
     services: dict[str, int] = {}
     launch_script: str = ""
     endpoint_to_site: dict[str, str] = {}
-    """Maps service names (keys in ``services``) to benchmark-specific site identifiers.
-
-    The benchmark interprets this mapping; ``DockerServiceConfig`` itself does not.
-    Only web-UI endpoints should appear here — control/API endpoints are omitted.
-
-    Example for WebArena::
-
-        endpoint_to_site={"shopping_admin": "shopping_admin"}
-    """
+    volumes: list[VolumeSpec] = []
 
     def requirements(self) -> set[str]:
         return {"docker"}
