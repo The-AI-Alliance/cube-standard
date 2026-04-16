@@ -195,8 +195,10 @@ class DockerServiceConfig(ResourceConfig):
     Attributes:
         docker_images:    Docker Hub images to pre-pull during provision (determines the
             provisioned snapshot content). Required — provision() will fail without them.
-        services:         Maps service names to guest ports that launch() will SSH-tunnel
-            to localhost. Keys become the keys in ResourceHandle.endpoints.
+        services:         Maps service names to ports. Keys become the keys in
+            ResourceHandle.endpoints. On cloud infra (AWS/Azure) launch() SSH-tunnels
+            each guest port to a free local port. On LocalInfraConfig launch() uses
+            these as direct host ports (the launch_script binds them on the host).
             Example: ``{"shopping_admin": 7780, "shopping_admin_ctrl": 7781}``
         launch_script:    Bash snippet run inside the VM at launch time to start services
             (e.g. ``docker run -d -p 7780:80 am1n3e/webarena-verified-shopping_admin``).
