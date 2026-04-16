@@ -221,6 +221,7 @@ class TestRegistryAddSandbox:
         print(f"Waiting for CI on commit {head_sha[:8]} (up to {CI_TIMEOUT_S}s)...")
         deadline = time.time() + CI_TIMEOUT_S
         check_runs = []
+        statuses: dict[str, str] = {}
         while time.time() < deadline:
             time.sleep(15)
             resp = _gh_api("GET", f"/repos/{actual_registry}/commits/{head_sha}/check-runs")
