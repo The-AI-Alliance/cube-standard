@@ -203,7 +203,7 @@ class TestRegistryAddSandbox:
         assert not remaining, "TODOs still present:\n" + "\n".join(remaining)
 
         # 3. Submit — target the personal fork, not the upstream Alliance repo
-        result = _run_cube("registry", "add", "--submit", "--registry", sandbox_registry, str(COUNTER_CUBE_PATH))
+        result = _run_cube("registry", "add", "--submit", f"--registry={sandbox_registry}", str(COUNTER_CUBE_PATH))
         assert result.returncode == 0, f"Submit failed:\n{result.stdout}\n{result.stderr}"
 
         pr_match = re.search(r"https://github\.com/([^/]+/[^/\s]+)/pull/(\d+)", result.stdout + result.stderr)
