@@ -207,6 +207,34 @@ def test_suite_workers_must_be_positive():
         run_debug_suite("bench", mod, print_json=False, workers=0)
 
 
+def test_suite_parallel_workers_collects_all_episode_results_when_first_task_raises():
+    """Every future must get .result() so a failure in an earlier task does not swallow later ones."""
+
+    class FirstFailsTaskConfig(TaskConfig):
+        def make(self, runtime_context=None, container_backend=None):
+            if self.task_id == "t1":
+                raise RuntimeError("t1 make failed")
+            return DoneTask(metadata=TaskMetadata(id=self.task_id), tool_config=NoopToolConfig())
+
+    mod = ModuleType("fake_debug")
+    benchmark = DoneBenchmark()
+    object.__setattr__(
+        benchmark,
+        "task_metadata",
+        {"t1": TaskMetadata(id="t1"), "t2": TaskMetadata(id="t2")},
+    )
+    object.__setattr__(benchmark, "task_config_class", FirstFailsTaskConfig)
+    mod.get_debug_benchmark = lambda: benchmark  # type: ignore[attr-defined]
+    mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
+
+    results = run_debug_suite("bench", mod, print_json=False, workers=2)
+    assert len(results) == 2
+    assert results[0]["task_id"] == "t1"
+    assert results[0]["error"] is not None and "t1 make failed" in results[0]["error"]
+    assert results[1]["task_id"] == "t2"
+    assert results[1].get("error") in (None, "")  # second episode still ran
+
+
 # ── run_debug_suite — benchmark lifecycle ────────────────────────────────────
 
 

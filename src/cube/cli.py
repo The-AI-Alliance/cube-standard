@@ -416,9 +416,7 @@ def cmd_test(
         f"[info]Running debug suite for[/info] [file]{resolved}[/file]…",
         spinner="dots",
     ):
-        t_suite0 = time.perf_counter()
         results = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False, workers=1)
-        elapsed_suite_s = time.perf_counter() - t_suite0
 
     if not results:
         err_console.print(
@@ -597,20 +595,47 @@ def cmd_test(
     throughput_blocks: list = []
     throughput_blocks.append(Text.from_markup("[bold]THROUGHPUT (tasks/min)[/bold]"))
     if total_ep_s >= _THROUGHPUT_MIN_TOTAL_S:
-        rate_1 = n_tasks / (elapsed_suite_s / 60.0) if elapsed_suite_s > 0 else 0.0
+        # Second 1-worker pass (warm): rate_1 uses wall time comparable to 2/4 worker passes below
+        # (the compliance run above is a cold start; discarding it for throughput avoids biased scaling).
+        with console.status(
+            "[info]Warm-up[/info] [dim](1 worker, for throughput baseline)…[/dim]",
+            spinner="dots",
+        ):
+            t_warm0 = time.perf_counter()
+            _ = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False, workers=1)
+            elapsed_warm_1_s = time.perf_counter() - t_warm0
+        rate_1 = n_tasks / (elapsed_warm_1_s / 60.0) if elapsed_warm_1_s > 0 else 0.0
         throughput_rows = [(1, rate_1, rate_1, 1.0)]
+        parallel_issue_lines: list[str] = []
         with console.status(
             "[info]Measuring multi-worker throughput[/info] [dim](2 and 4 workers)…[/dim]",
             spinner="dots",
         ):
             for w in (2, 4):
                 t0 = time.perf_counter()
-                run_debug_suite(resolved, module, max_steps=max_steps, print_json=False, workers=w)
+                mw_results = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False, workers=w)
                 elapsed_w = time.perf_counter() - t0
-                actual_rate = n_tasks / (elapsed_w / 60.0) if elapsed_w > 0 else 0.0
+                n_w = len(mw_results)
+                for r in mw_results:
+                    ok_ep = not r.get("error") and r.get("done") and r.get("reward") == 1.0
+                    if not ok_ep:
+                        tid = r.get("task_id", "?")
+                        err = r.get("error") or "done/reward check failed"
+                        parallel_issue_lines.append(f"  [file]{tid}[/file]  workers={w}  [error]{err}[/error]")
+                actual_rate = n_w / (elapsed_w / 60.0) if elapsed_w > 0 else 0.0
                 linear_rate = rate_1 * w
                 eff = actual_rate / linear_rate if linear_rate > 0 else 1.0
                 throughput_rows.append((w, actual_rate, linear_rate, eff))
+        if parallel_issue_lines:
+            err_console.print(
+                Panel(
+                    "[warning]Some parallel debug episodes did not pass "
+                    "(compliance above reflects the 1-worker run only):[/warning]\n" + "\n".join(parallel_issue_lines),
+                    title="[warning]Parallel throughput run[/warning]",
+                    border_style="yellow",
+                    padding=(0, 1),
+                )
+            )
 
         throughput_table = Table(
             show_header=True,
@@ -637,8 +662,9 @@ def cmd_test(
         throughput_blocks.append(
             Text.from_markup(
                 "[dim]Measured = wall-clock suite throughput (tasks/min) for separate runs at 1, 2, and 4 "
-                "workers. Linear = 1-worker rate × workers. Efficiency = Measured / Linear. "
-                "Compliance and latency above use the 1-worker run only; parallel runs share "
+                "workers (the 1-worker rate uses a second warm pass so it matches the cache state of the "
+                "2/4 worker runs). Linear = 1-worker rate × workers. Efficiency = Measured / Linear. "
+                "Compliance and latency above use the first 1-worker run only; parallel runs share "
                 "[file]_runtime_context[/file] and must not mutate it after [file]setup()[/file].[/dim]"
             )
         )

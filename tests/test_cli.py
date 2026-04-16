@@ -212,8 +212,8 @@ def test_cmd_test_passes_on_all_tasks_passing(fake_debug_in_sys_modules):
     with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
         with patch("cube.testing.run_debug_suite", return_value=results) as mock_suite:
             cmd_test("fake_debug.debug")  # Should not raise
-    assert mock_suite.call_count == 3
-    assert [c.kwargs.get("workers") for c in mock_suite.call_args_list] == [1, 2, 4]
+    assert mock_suite.call_count == 4
+    assert [c.kwargs.get("workers") for c in mock_suite.call_args_list] == [1, 1, 2, 4]
 
 
 def test_cmd_test_exits_1_on_failure(fake_debug_in_sys_modules):
@@ -224,7 +224,7 @@ def test_cmd_test_exits_1_on_failure(fake_debug_in_sys_modules):
             with pytest.raises(SystemExit) as exc:
                 cmd_test("fake_debug.debug")
     assert exc.value.code == 1
-    assert mock_suite.call_count == 3
+    assert mock_suite.call_count == 4
 
 
 def test_cmd_test_exits_1_on_task_with_error(fake_debug_in_sys_modules):
@@ -235,7 +235,7 @@ def test_cmd_test_exits_1_on_task_with_error(fake_debug_in_sys_modules):
             with pytest.raises(SystemExit) as exc:
                 cmd_test("fake_debug.debug")
     assert exc.value.code == 1
-    assert mock_suite.call_count == 3
+    assert mock_suite.call_count == 4
 
 
 def test_cmd_test_import_error_exits_1():

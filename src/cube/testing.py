@@ -364,7 +364,33 @@ def run_debug_suite(
         else:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = [pool.submit(_episode_for_config, tc) for tc in task_configs]
-                results = [fut.result() for fut in futures]
+                # Call .result() on every future so exceptions in later tasks are not lost
+                # when an earlier future raises (list comprehension would stop early).
+                for tc, fut in zip(task_configs, futures, strict=True):
+                    try:
+                        results.append(fut.result())
+                    except Exception as exc:
+                        logger.exception(
+                            "[run_debug_suite] benchmark=%r parallel episode failed task_id=%r",
+                            benchmark_name,
+                            tc.task_id,
+                        )
+                        results.append(
+                            {
+                                "task_id": tc.task_id,
+                                "done": False,
+                                "reward": 0.0,
+                                "steps": 0,
+                                "episode_time_s": 0.0,
+                                "step_times_s": [],
+                                "error": f"{type(exc).__name__}: {exc}",
+                                "tools_list_ok": False,
+                                "tools_list_error": "",
+                                "reset_time_s": 0.0,
+                                "close_idempotent_ok": False,
+                                "profiling": [],
+                            }
+                        )
     finally:
         # Step 3: close the benchmark to free resources.
         if benchmark is not None:
