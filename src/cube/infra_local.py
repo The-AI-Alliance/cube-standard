@@ -524,14 +524,15 @@ class LocalInfraConfig(InfraConfig):
         )
 
     def list_active(self, run_id: str | None = None) -> list[LocalResourceHandle]:
-        """Return handles for all active local VMs, optionally filtered by run_id.
+        """Return handles for all active local resources, optionally filtered by run_id.
 
-        Reconstructed from ~/.cube/active.json — processes that have died are
-        cleaned up and excluded from the result.
+        Reconstructed from ~/.cube/active.json.  Supports both VM entries (type
+        absent / "vm") and Docker service entries (type "docker_service").
+        VM entries whose PID has died are silently dropped and removed.
         """
 
         data = _load_active()
-        handles = []
+        handles: list[LocalResourceHandle] = []
         stale_ids = []
 
         for entry_id, entry in data.items():
@@ -540,31 +541,47 @@ class LocalInfraConfig(InfraConfig):
             if run_id and entry.get("run_id") != run_id:
                 continue
 
-            pid = entry.get("pid")
-            if pid and not _pid_alive(pid):
-                stale_ids.append(entry_id)
-                continue
-
-            # Reconstruct a handle without the live Popen (pid-only tracking).
-            resource = VMResourceConfig(name=entry["resource_name"], scope="task")
             created_at = datetime.fromisoformat(entry["created_at"])
             expires_at = datetime.fromisoformat(entry["expires_at"]) if entry.get("expires_at") else None
 
-            handles.append(
-                LocalResourceHandle(
-                    run_id=entry["run_id"],
-                    resource=resource,
-                    infra=self,
-                    endpoint=entry["endpoint"],
-                    created_at=created_at,
-                    expires_at=expires_at,
-                    _entry_id=entry_id,
-                    _qemu_proc=None,  # can't reconstruct Popen; cleanup uses PID
-                    _overlay_path=Path(entry["overlay_path"]) if entry.get("overlay_path") else None,
+            if entry.get("type") == "docker_service":
+                resource = DockerServiceConfig(name=entry["resource_name"], scope="task")
+                handles.append(
+                    LocalDockerServiceHandle(
+                        run_id=entry["run_id"],
+                        resource=resource,
+                        infra=self,
+                        endpoint=entry.get("endpoint"),
+                        endpoints=entry.get("endpoints", {}),
+                        created_at=created_at,
+                        expires_at=expires_at,
+                        _entry_id=entry_id,
+                        _container_ids=entry.get("container_ids", []),
+                    )
                 )
-            )
+            else:
+                # VM entry — check the QEMU process is still alive.
+                pid = entry.get("pid")
+                if pid and not _pid_alive(pid):
+                    stale_ids.append(entry_id)
+                    continue
 
-        # Clean up dead entries.
+                resource = VMResourceConfig(name=entry["resource_name"], scope="task")
+                handles.append(
+                    LocalResourceHandle(
+                        run_id=entry["run_id"],
+                        resource=resource,
+                        infra=self,
+                        endpoint=entry["endpoint"],
+                        created_at=created_at,
+                        expires_at=expires_at,
+                        _entry_id=entry_id,
+                        _qemu_proc=None,  # can't reconstruct Popen; cleanup uses PID
+                        _overlay_path=Path(entry["overlay_path"]) if entry.get("overlay_path") else None,
+                    )
+                )
+
+        # Clean up dead VM entries.
         if stale_ids:
             data = _load_active()
             for sid in stale_ids:
@@ -642,7 +659,18 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _kill_entry(entry: dict) -> None:
-    """Kill QEMU process and remove overlay for a single active.json entry."""
+    """Stop containers / kill QEMU process and clean up for a single active.json entry."""
+    # Docker service entries: stop + remove all tracked containers.
+    container_ids = entry.get("container_ids", [])
+    for cid in container_ids:
+        for cmd in (["docker", "stop", cid], ["docker", "rm", cid]):
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0 and "No such container" not in result.stderr:
+                logger.warning("%s failed: %s", " ".join(cmd), result.stderr.strip())
+    if container_ids:
+        logger.debug("Stopped %d container(s) from stale entry", len(container_ids))
+
+    # VM entries: SIGTERM/SIGKILL the QEMU process.
     pid = entry.get("pid")
     if pid and _pid_alive(pid):
         try:
