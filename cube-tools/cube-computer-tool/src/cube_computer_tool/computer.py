@@ -14,6 +14,7 @@ import logging
 import time
 from enum import Enum
 from io import BytesIO
+from typing import Any
 from urllib.parse import urlparse
 
 from cube.container import Container
@@ -61,6 +62,7 @@ class ComputerConfig(ToolConfig):
     cache_dir: str = ""
     require_a11y_tree: bool = True
     require_terminal: bool = False
+    require_obs_winagent: bool = False
     observe_after_action: bool = True
 
     def make(self, container: Container | None = None, vm: VM | None = None) -> "ComputerBase":
@@ -138,11 +140,17 @@ class ComputerBase(Tool):
         """Read current screen state from the VM and return as Observation."""
         if self._guest is None:
             raise RuntimeError("No VM attached — call attach_vm() or pass vm= to ComputerConfig.make()")
-        raw_obs = {
+        raw_obs: dict[str, Any] = {
             "screenshot": self._guest.get_screenshot(),
             "accessibility_tree": self._guest.get_accessibility_tree() if self.config.require_a11y_tree else None,
             "terminal": self._guest.get_terminal_output() if self.config.require_terminal else None,
         }
+        if self.config.require_obs_winagent:
+            winagent = self._guest.get_obs_winagent()
+            if winagent:
+                raw_obs["window_title"] = winagent.get("window_title")
+                raw_obs["window_names_str"] = winagent.get("window_names_str")
+                raw_obs["computer_clipboard"] = winagent.get("computer_clipboard")
         return self._convert_observation(raw_obs)
 
     def _convert_observation(self, raw_obs: dict) -> Observation:
@@ -158,6 +166,15 @@ class ComputerBase(Tool):
 
         if raw_obs.get("terminal"):
             contents.append(TextContent(data=raw_obs["terminal"], name="terminal"))
+
+        if raw_obs.get("window_title"):
+            contents.append(TextContent(data=raw_obs["window_title"], name="window_title"))
+
+        if raw_obs.get("window_names_str"):
+            contents.append(TextContent(data=raw_obs["window_names_str"], name="window_names"))
+
+        if raw_obs.get("computer_clipboard"):
+            contents.append(TextContent(data=raw_obs["computer_clipboard"], name="clipboard"))
 
         return Observation(contents=contents)
 

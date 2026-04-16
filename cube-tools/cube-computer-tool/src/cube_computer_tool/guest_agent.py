@@ -85,16 +85,17 @@ class GuestAgent:
         logger.error("Failed to get screenshot after %d attempts", _RETRY_TIMES)
         return None
 
-    def get_accessibility_tree(self, backend: str = "win32") -> str | None:
+    def get_accessibility_tree(self, backend: str = "uia") -> str | None:
         """Return the XML accessibility tree string, or None on failure.
 
         Parameters
         ----------
         backend : str
             Accessibility backend passed as ``?backend=`` query param.
-            ``"win32"`` (default) is fast (~2s) and matches the original
-            WindowsAgentArena behavior; ``"uia"`` is richer but much slower
-            and can crash the Flask server on complex UI states.
+            ``"uia"`` (default) uses Windows UI Automation — richer element
+            data matching the original WindowsAgentArena behavior.
+            ``"win32"`` is faster but only returns top-level window containers.
+            On Linux the backend parameter is ignored (AT-SPI is always used).
         """
         for _ in range(_RETRY_TIMES):
             try:
@@ -120,6 +121,30 @@ class GuestAgent:
                 logger.error("Terminal output error: %s", exc)
             time.sleep(_RETRY_INTERVAL)
         logger.error("Failed to get terminal output")
+        return None
+
+    def get_obs_winagent(self) -> dict[str, Any] | None:
+        """Return lightweight window context from the /obs_winagent endpoint.
+
+        Returns a dict with keys: window_title, window_names_str, computer_clipboard.
+        The window_image and human_input fields from the server are skipped
+        (we already have a full screenshot, and human_input is unused).
+        """
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.get(self._base_url + "/obs_winagent", timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return {
+                        "window_title": data.get("window_title", ""),
+                        "window_names_str": data.get("window_names_str", ""),
+                        "computer_clipboard": data.get("computer_clipboard"),
+                    }
+                logger.error("obs_winagent error: %d", resp.status_code)
+            except Exception as exc:
+                logger.error("obs_winagent error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        logger.error("Failed to get obs_winagent")
         return None
 
     def get_file(self, file_path: str) -> bytes | None:
