@@ -920,6 +920,9 @@ def _gh_put_json(endpoint: str, body: dict) -> dict:
 
 def _gh_submit_pr(entry_id: str, yaml_text: str, registry: str) -> str:
     """Fork registry, create branch, upload YAML, open PR. Returns PR URL."""
+    if "/" not in registry:
+        err_console.print(f"[error]--registry must be in OWNER/REPO format, got:[/error] [cmd]{registry}[/cmd]")
+        sys.exit(1)
     repo_name = registry.split("/")[1]
 
     user_info = _gh_get("/user")
