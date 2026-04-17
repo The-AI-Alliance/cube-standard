@@ -63,6 +63,10 @@ class TypedBaseModel(BaseModel):
             actual_cls = getattr(module, class_name)
             if not (isinstance(actual_cls, type) and issubclass(actual_cls, TypedBaseModel)):
                 raise ValueError(f"Refusing to deserialize '{type_path}': class must be a TypedBaseModel subclass.")
+            # If _type matches the current class, proceed normally via handler to avoid
+            # Pydantic v2's "returning non-self from __init__" warning and broken __init__ path.
+            if actual_cls is cls:
+                return handler(value)
             return actual_cls.model_validate(value)
         if isinstance(value, dict) and inspect.isabstract(cls):
             raise ValueError(
@@ -138,6 +142,26 @@ class Action(TypedBaseModel):
     id: str | None = None
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def from_openai_tool_call(cls, tool_call: dict) -> Self:
+        """Create an Action from an OpenAI tool call dict.
+
+        Supports both Chat Completions format:
+            {"id": "call_xxx", "type": "function", "function": {"name": "click", "arguments": "{...}"}}
+        and flat/Responses API format:
+            {"id": "call_xxx", "name": "click", "arguments": "{...}"}
+        """
+        if "function" in tool_call:
+            func = tool_call["function"]
+            name = func["name"]
+            raw_args = func.get("arguments") or "{}"
+        else:
+            name = tool_call["name"]
+            raw_args = tool_call.get("arguments") or "{}"
+
+        arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+        return cls(id=tool_call.get("id") or tool_call.get("call_id"), name=name, arguments=arguments)
 
 
 class Content(TypedBaseModel, ABC):
@@ -367,6 +391,10 @@ class Observation(TypedBaseModel):
     def to_llm_messages(self) -> list[dict]:
         """Convert observation to a list of messages suitable for sending to LLM."""
         return [content.to_llm_message() for content in self.contents]
+
+    def to_markdown(self) -> str:
+        """Render the entire observation as a single Markdown string."""
+        return "\n\n".join(content.to_markdown() for content in self.contents)
 
     def __add__(self, other: Self) -> Self:
         self.contents += other.contents

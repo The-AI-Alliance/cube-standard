@@ -36,3 +36,6 @@ extend-select = ["I"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-rs"
+
+[tool.uv.sources]
+cube-standard = { workspace = true }

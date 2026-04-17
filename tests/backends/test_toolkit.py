@@ -11,9 +11,17 @@ import urllib.request
 
 import pytest
 
-from cube.backends.toolkit import ToolkitContainerBackend
-from cube.container import ContainerConfig
-from tests.backends.test_harness import log, make_container_common_tests, make_container_health_check_tests
+pytest.importorskip("tenacity")  # skip whole module if tenacity not installed
+
+pytestmark = pytest.mark.integration
+
+from cube.backends.toolkit import ToolkitContainerBackend  # noqa: E402
+from cube.container import ContainerConfig  # noqa: E402
+from tests.backends.test_harness import (  # noqa: E402
+    log,
+    make_container_common_tests,
+    make_container_health_check_tests,
+)
 
 if shutil.which("eai") is None:
     pytest.skip("eai CLI not installed", allow_module_level=True)

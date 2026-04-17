@@ -1,10 +1,12 @@
-<img alt="CUBE Standard banner" src="docs/assets/images/cube_standard_banner.png" />
+![CUBE Standard banner](docs/assets/images/cube_standard_banner.png)
 
 # CUBE Standard
 
 > [!NOTE]
 > **CUBE is in active development (alpha).** Interfaces may change. We welcome early adopters and contributors who want to shape the standard, not just use it.
-> See our [Roadmap](ROADMAP.md) and [Contributing Guide](CONTRIBUTING.md). Serious contributors can [apply here](https://forms.gle/JFiBi4ynfVLMghAH8) to become part of the team.
+> See our [Roadmap](ROADMAP.md) and [Contributing Guide](CONTRIBUTING.md).
+>
+> **Have a benchmark to contribute?** [Fill out this short form](https://docs.google.com/forms/d/e/1FAIpQLSddMFyRXZJPpD0I2K27OEmIPUpj57w--u2NuMscrjNlkqy8rQ/viewform) — no commitment required. Want to go deeper? [Apply to join the core team](https://forms.gle/JFiBi4ynfVLMghAH8).
 
 <!--
 [Published Documentation](https://the-ai-alliance.github.io/cube-standard/)
@@ -20,7 +22,7 @@ Principal developer: [ServiceNow AI Research](https://servicenow.com/research).
 
 ## Installation
 
-Requires Python 3.12+. Install with [uv](https://docs.astral.sh/uv/):
+Requires Python 3.13+. Install with [uv](https://docs.astral.sh/uv/):
 
 ```sh
 uv add cube-standard
@@ -74,6 +76,9 @@ cd my-bench && uv sync
 # expose get_debug_benchmark and get_debug_agent in src/*/debug.py
 cube test my-bench
 ```
+
+> [!NOTE]
+> `cube test` discovers benchmarks via the `cube.benchmarks` entry point group. The benchmark package must be installed (e.g. `uv sync` or `pip install -e .`) before running `cube test`, otherwise the benchmark will not be found.
 
 Or scaffold from the template:
 
