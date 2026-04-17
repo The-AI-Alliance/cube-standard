@@ -105,6 +105,9 @@ _TASK_META_1 = {
 
 _TASK_META_2 = {**_TASK_META_1, "id": "task-2"}
 
+_TASK_CONFIG_1 = _CounterTaskConfig(task_id="task-1").model_dump(mode="json")
+_TASK_CONFIG_2 = _CounterTaskConfig(task_id="task-2").model_dump(mode="json")
+
 
 def _text_content(data: str, tool_call_id: str | None = None) -> dict:
     return {"_type": "cube.core.TextContent", "data": data, "name": None, "tool_call_id": tool_call_id}
@@ -174,6 +177,7 @@ def test_benchmark_info(bench_client):
         "requirements": {},
         "tags": [],
         "reset_isolation": None,
+        "named_subsets": {},
         "extra_info": {},
     }
 
@@ -191,6 +195,21 @@ def test_benchmark_tasks_filter_by_id(bench_client):
 def test_benchmark_tasks_offset_limit(bench_client):
     resp = _rpc(bench_client, "cube/tasks", {"offset": 1, "limit": 1})
     assert resp.json()["result"] == [_TASK_META_2]
+
+
+def test_benchmark_task_configs_all(bench_client):
+    resp = _rpc(bench_client, "cube/task_configs")
+    assert resp.json()["result"] == [_TASK_CONFIG_1, _TASK_CONFIG_2]
+
+
+def test_benchmark_task_configs_filter_by_id(bench_client):
+    resp = _rpc(bench_client, "cube/task_configs", {"task_id": "task-1"})
+    assert resp.json()["result"] == [_TASK_CONFIG_1]
+
+
+def test_benchmark_task_configs_offset_limit(bench_client):
+    resp = _rpc(bench_client, "cube/task_configs", {"offset": 1, "limit": 1})
+    assert resp.json()["result"] == [_TASK_CONFIG_2]
 
 
 def test_benchmark_shutdown(bench_client):

@@ -2,378 +2,138 @@
 
 ## Context
 
-`server.py` is currently mislabeled: the functions are named `*_rpc_server` but
-the apps they produce are plain REST (multiple GET/POST endpoints).  This plan
-replaces that with real JSON-RPC 2.0 and sets up a phased path toward
-WebSocket support for multi-agent, async, and streaming use-cases.
+Replace the old multi-endpoint REST server (`make_benchmark_fastapi_app`, `make_task_fastapi_app`)
+with a real JSON-RPC 2.0 server (single `POST /` per server, method dispatched from the body),
+then add WebSocket and media sideband support in later phases.
 
 ---
 
-## Current state (what exists)
+## Phase 1 — HTTP POST transport ✅ DONE
 
-| Function | What it actually does |
-|---|---|
-| `make_benchmark_fastapi_app(benchmark)` | Returns FastAPI with REST endpoints: `GET /cube/info`, `GET /cube/tasks`, `POST /cube/spawn`, `POST /cube/shutdown` |
-| `make_task_fastapi_app(task)` | Returns FastAPI with REST endpoints: `GET /tools/list`, `POST /tools/call`, `POST /cube/reset`, `POST /cube/step`, … |
-| `make_benchmark_rpc_server(…)` | Wraps above in a subprocess |
-| `make_task_rpc_server(…)` | Wraps above in a subprocess |
+Single `POST /` endpoint per server.  Method name is in the JSON-RPC 2.0 body.
 
-Problems:
-- "RPC" name is misleading; it's REST.
-- Multiple endpoints means cross-language clients have to hard-code URL paths per method.
-- No uniform error envelope; HTTP status codes carry the error signal, not the body.
-- No foundation for server-initiated messages (needed for async steps, multi-agent).
+**Wire format:**
 
----
-
-## Target: phased JSON-RPC 2.0
-
-### Phase 1 — HTTP POST transport (immediate, this PR)
-
-Replace the multi-endpoint REST apps with a **single `POST /` endpoint** per
-server that dispatches on the `method` field in the JSON-RPC 2.0 body.
-
-**Wire format (JSON-RPC 2.0)**
-
-```
-Request:
-  {"jsonrpc": "2.0", "method": "<name>", "params": {...}, "id": <int|str|null>}
-
-Success response:
-  {"jsonrpc": "2.0", "result": <value>, "id": <same id>}
-
-Error response:
-  {"jsonrpc": "2.0", "error": {"code": <int>, "message": "<str>", "data": <opt>}, "id": <same id>}
+```json
+Request:  {"jsonrpc": "2.0", "method": "<name>", "params": {...}, "id": <int|str|null>}
+Success:  {"jsonrpc": "2.0", "result": <value>, "id": <same>}
+Error:    {"jsonrpc": "2.0", "error": {"code": <int>, "message": "<str>"}, "id": <same>}
 ```
 
-Standard error codes used:
+**Benchmark server methods (`POST /`):**
 
-| Code | Name | When |
-|---|---|---|
-| -32700 | Parse error | Body is not valid JSON |
-| -32600 | Invalid Request | Missing `jsonrpc` or `method` field |
-| -32601 | Method not found | Unknown method name |
-| -32602 | Invalid params | Required param missing or wrong type |
-| -32603 | Internal error | Unhandled exception in method handler |
+| Method | Params | Result |
+| --- | --- | --- |
+| `cube/info` | — | `BenchmarkMetadata` |
+| `cube/tasks` | `task_id?`, `offset?`, `limit?` | `list[TaskMetadata]` |
+| `cube/task_configs` | `task_id?`, `offset?`, `limit?` | `list[TaskConfig]` |
+| `cube/spawn` | `task_config`, `host?`, `port?` | `str` URL |
+| `cube/shutdown` | — | `null` |
 
-**Method registry**
+> `cube/task_configs` returns fully-populated TaskConfig dicts (benchmark fills in all
+> benchmark-level fields: tool config, seeds, infra URLs, …).  Clients call this to get
+> a ready-to-use config and pass it directly to `cube/spawn` — no manual config construction.
 
-Benchmark server (`POST /`):
+**Task server methods (`POST /`):**
 
-| Method | Python equivalent | Params | Result |
-|---|---|---|---|
-| `cube/info` | `benchmark.benchmark_metadata` | — | `BenchmarkMetadata` |
-| `cube/tasks` | `benchmark.task_metadata.values()` | `task_id?`, `offset?`, `limit?` | `list[TaskMetadata]` |
-| `cube/spawn` | starts subprocess, returns URL | `task_config`, `host?`, `port?` | `str` URL |
-| `cube/shutdown` | `benchmark.close()` | — | `null` |
+| Method | Params | Result |
+| --- | --- | --- |
+| `tools/list` | — | `list[ActionSchema]` |
+| `tools/call` | `name`, `arguments?`, `action_id?` | `Observation \| StepError` |
+| `cube/reset` | — | `{obs, info}` |
+| `cube/step` | `name`, `arguments?`, `action_id?` | `EnvironmentOutput` |
+| `cube/evaluate` | `obs?` | `{reward, info}` |
+| `cube/close` | — | `null` |
+| `cube/status` | — | `str` |
+| `cube/privileged_info` | — | `Content` |
 
-> Note: `cube/spawn` (network) and `benchmark.spawn()` (Python API) are separate
-> concerns.  The network method starts a subprocess and returns a URL.
-> `benchmark.spawn()` creates the task in-process and returns `(task, app)` — no
-> subprocess.
-
-Task server (`POST /`):
-
-| Method | Python equivalent | Params | Result |
-|---|---|---|---|
-| `tools/list` | `task.action_set` | — | `list[ActionSchema]` |
-| `tools/call` | `task.tool.execute_action(action)` | `name`, `arguments?`, `action_id?` | `Observation \| StepError` |
-| `cube/reset` | `task.reset()` | — | `{obs, info}` |
-| `cube/step` | `task.step(action)` | `name`, `arguments?`, `action_id?` | `EnvironmentOutput` |
-| `cube/evaluate` | `task.evaluate(obs)` | `obs?` | `{reward, info}` |
-| `cube/close` | `task.close()` | — | `null` |
-| `cube/status` | `task.get_status()` | — | `str` |
-| `cube/privileged_info` | `task.get_privileged_info()` | — | `Content` |
-
-**Param shape for `tools/call` and `cube/step`**
-
-Both use a flat, MCP-compatible shape:
+**`tools/call` and `cube/step` param shape** — flat MCP-compatible:
 
 ```json
 {"name": "click", "arguments": {"x": 100, "y": 200}, "action_id": "abc-123"}
 ```
 
-This matches the MCP wire format for `tools/call` exactly — a CUBE task server
-can be driven by a standard MCP client with no adapter.  `action_id` is
-optional; when provided it maps to `Action.id`, enabling action↔observation
-correlation in logs and anticipating the Phase 2 async WebSocket flow.
-`action_id` is distinct from the JSON-RPC envelope `id` field.
+**Serialization:** all Pydantic results via `model_dump(mode="json")`; params validated
+with `Model.model_validate(params["key"])`.
 
-The old `action` wrapper (`{"action": {"name": "...", "arguments": {...}}}`) and
-multi-action list support for `cube/step` have been removed.
+**Subprocess design (cross-platform):**
 
-**Serialization notes**
+- `TaskConfig` is the sole serialization unit across processes.  `Task` and `Benchmark`
+  instances are never pickled (may hold non-serialisable live resources).
+- Single module-level entry point `_spawn_task_subprocess(task_config, runtime_ctx, host, port)`
+  used by both `cube/spawn` and `make_task_rpc_server` — avoids local-closure pickling
+  failure on macOS/Windows (spawn start method).
+- `make_benchmark_rpc_server` uses a **daemon thread** (not a subprocess) because
+  `Benchmark` is not guaranteed picklable.
+  TODO: switch to subprocess once `BenchmarkConfig` lands
+  ([RFC: BenchmarkConfig and scaling](https://github.com/The-AI-Alliance/cube-harness/blob/rfc/benchmark-config-and-scaling/docs/rfc-benchmark-config-and-scaling.md)).
 
-All Pydantic models in results are serialized via `model_dump(mode="json")`, which
-preserves the `_type` discriminator needed by `TypedBaseModel` for round-trip
-deserialization.  Params containing Pydantic models (e.g. `action`, `obs`,
-`task_config`) are validated with `Model.model_validate(params["key"])`.
+**Readiness polling:** `wait_for_server` posts `{}` (valid JSON, invalid JSON-RPC) and
+checks for HTTP 200.  Works for both server types with no shared method name.
 
-**Public API changes in `server.py`**
+**Delivered files:**
 
-| Old name | New name | Notes |
-|---|---|---|
-| `make_benchmark_fastapi_app` | `make_benchmark_jsonrpc_app` | Single endpoint |
-| `make_task_fastapi_app` | `make_task_jsonrpc_app` | Single endpoint |
-| `make_benchmark_rpc_server` | unchanged | Wraps new app in a subprocess |
-| `make_task_rpc_server` | unchanged | Wraps new app in a subprocess |
-| `ServerInfo` type alias | unchanged | `(FastAPI, Process, str)` |
-
-**Changes in `benchmark.py`**
-
-`Benchmark.spawn(task_config)` signature changes:
-
-- Old: starts a subprocess, returns `str` URL
-- New: creates the task in-process, returns `tuple[Task, FastAPI]`
-
-Subprocess management is now the caller's responsibility — use
-`make_task_rpc_server(task)` if you need a running server.
-
-No new dependencies are required; FastAPI + uvicorn are already in
-`pyproject.toml`.
+- `src/cube/server.py` — `make_benchmark_jsonrpc_app`, `make_task_jsonrpc_app`,
+  `make_benchmark_rpc_server`, `make_task_rpc_server`
+- `src/cube/client.py` — `rpc`, `wait_for_server`, `BenchmarkClient`, `TaskClient`
+- `tests/test_server.py` — full coverage via `TestClient` (no subprocesses/ports)
+- `examples/counter-cube-remote/` — end-to-end example with `server.py`,
+  `client_sdk.py`, `client_raw.py`, and `tests/test_e2e.py`
 
 ---
 
-### Phase 2 — WebSocket transport (future, not this PR)
+## Phase 2 — WebSocket transport (future)
 
-**Why WebSocket is needed for advanced use-cases:**
+**Why needed:**
 
-- **Multi-agent**: N agents connect simultaneously; the server must push
-  different observations to different agents.  HTTP POST is client-initiated
-  only.
-- **Async action execution**: agent sends an action, server acknowledges
-  immediately, pushes the result later as a JSON-RPC *notification* (no `id`
-  field).  HTTP requires polling or long-polling.
-- **Streaming observations**: sensor streams, video, stdout — continuous
-  server-to-client data flow.  HTTP POST is a single request/response.
+- **Multi-agent:** N agents connect simultaneously; server must push different observations to different agents.
+- **Async actions:** agent sends an action, server acknowledges immediately and pushes the result later as a JSON-RPC notification (no `id`).
+- **Streaming observations:** continuous server-to-client data (video, stdout, …).
 
-**Proposed design (for a follow-up PR):**
+**Proposed design:**
 
-Add `make_task_ws_app(task)` that opens a WebSocket endpoint at `ws://host/ws`.
-The connection itself is the session.  The JSON-RPC message schema is identical
-to Phase 1; only the transport changes.
+Add `make_task_ws_app(task)` with a WebSocket endpoint at `ws://host/ws`.  The
+connection is the session.  JSON-RPC message schema is identical to Phase 1; only
+the transport changes.
 
-Server-initiated messages use JSON-RPC *notifications* (requests without `id`):
+Server-initiated messages use JSON-RPC *notifications* (no `id`):
 
 ```json
-{"jsonrpc": "2.0", "method": "cube.action_result",
- "params": {"action_id": 42, "obs": {...}, "done": false}}
+{"jsonrpc": "2.0", "method": "cube/action_result",
+ "params": {"action_id": "abc-123", "obs": {...}, "done": false}}
 ```
 
-Async step flow over WebSocket:
-1. Client sends `{"method": "cube.step", "params": {"action": ...}, "id": 42}`
-2. Server replies `{"result": {"status": "accepted"}, "id": 42}` immediately
-3. Server later pushes `{"method": "cube.action_result", "params": {...}}` (notification)
+Async step flow:
 
-For multi-agent: each agent opens its own WebSocket connection.  An optional
-`agent_id` in params identifies the sender when the server wants to route
-messages.
+1. Client sends `{"method": "cube/step", "params": {"name": "click", ...}, "id": 1}`
+2. Server replies `{"result": {"status": "accepted"}, "id": 1}` immediately
+3. Server later pushes notification with the result
+
+For multi-agent: each agent opens its own WebSocket.  Optional `agent_id` in params
+identifies the sender.
 
 ---
 
-### Phase 3 — Media sideband channels (future, not this PR)
+## Phase 3 — Media sideband channels (future)
 
-Heavy binary streams (video frames, audio) should not flow through the JSON-RPC
-control channel.  Instead, the task server negotiates a separate channel:
+Heavy binary streams (video, audio) must not flow through the JSON-RPC control channel.
+The task server negotiates a separate channel:
 
 ```json
-{"jsonrpc": "2.0", "method": "observation.stream_available",
+{"jsonrpc": "2.0", "method": "observation/stream_available",
  "params": {"type": "video", "url": "ws://same-host:PORT/stream/video"}}
 ```
 
 The client opens a second WebSocket to that URL and receives raw binary frames.
-This keeps the control plane latency unaffected by media backpressure.
+This keeps control-plane latency unaffected by media backpressure.
 
 ---
 
-## Test plan for Phase 1
+## Possible follow-up examples (not blocking Phase 2/3)
 
-**File**: `tests/test_server.py`
-
-Uses a minimal inline benchmark + task + tool (no `counter-cube` dependency).
-Tests benchmark server and task server independently in-process via
-`starlette.testclient.TestClient` — no subprocess, no ports.
-
-```python
-# 1. Make the benchmark JSON-RPC app
-app = make_benchmark_jsonrpc_app(MinimalBenchmark())
-client = TestClient(app)
-
-# 2. cube/info
-resp = client.post("/", json={"jsonrpc":"2.0","method":"cube/info","id":1})
-assert resp.json()["result"]["name"] == "minimal-benchmark"
-
-# 3. cube/tasks with filtering
-resp = client.post("/", json={"jsonrpc":"2.0","method":"cube/tasks","id":2})
-assert len(resp.json()["result"]) == 2
-
-# 4. benchmark.spawn() returns (task, app) — use directly
-task, task_app = benchmark.spawn(MinimalTaskConfig(task_id="task-1"))
-task_client = TestClient(task_app)
-
-# 5. tools/list
-resp = task_client.post("/", json={"jsonrpc":"2.0","method":"tools/list","id":1})
-# assert action schemas
-
-# 6. cube/reset
-resp = task_client.post("/", json={"jsonrpc":"2.0","method":"cube/reset","id":2})
-obs = resp.json()["result"]["obs"]
-
-# 7. cube/step until done
-action = {"name": "...", "arguments": {}}
-resp = task_client.post("/", json={"jsonrpc":"2.0","method":"cube/step",
-                                    "params":{"action": action},"id":3})
-assert resp.json()["result"]["done"] is True
-
-# 8. Error: unknown method → -32601
-resp = task_client.post("/", json={"jsonrpc":"2.0","method":"cube/unknown","id":99})
-assert resp.json()["error"]["code"] == -32601
-
-# 9. Error: missing param → -32602
-resp = task_client.post("/", json={"jsonrpc":"2.0","method":"cube/step","id":100})
-assert resp.json()["error"]["code"] == -32602
-
-# 10. Error: bad JSON → -32700
-resp = task_client.post("/", content=b"not json", headers={"content-type":"application/json"})
-assert resp.json()["error"]["code"] == -32700
-```
-
-Also updates `tests/test_benchmark_server.py` to use `make_benchmark_jsonrpc_app`
-and JSON-RPC calls.
-
-**File**: `examples/counter-cube-remote/`
-
-A standalone example showing how to run counter-cube as a remote JSON-RPC server
-and interact with it from a plain HTTP client (no cube imports needed on the
-client side).  Intended as a learning resource for benchmark authors and harness
-developers.  Contains:
-
-- `server.py` — starts the benchmark server and waits
-- `client.py` — connects via raw HTTP JSON-RPC, runs a full episode, prints results
-- `README.md` — explains the remote protocol and how to run the example
-
----
-
-## Decisions
-
-1. **Callers of old names**: `tests/test_benchmark_server.py` imports
-   `make_benchmark_fastapi_app` and tests REST endpoints — it will be updated
-   to use `make_benchmark_jsonrpc_app` and JSON-RPC calls.  No callers in
-   `cube-harness`.
-
-2. **`benchmark.spawn()` simplification**: remove subprocess creation from
-   `spawn()`.  New signature: `spawn(task_config) → tuple[Task, FastAPI]`.
-   The `cube/spawn` network endpoint (in the benchmark server) is separate:
-   it still starts a subprocess and returns a URL, because that is the whole
-   point of a remote API.  `benchmark.spawn()` and `cube/spawn` serve different
-   use-cases and do not need to be consistent with each other.
-
-3. **Method naming**: slashes, matching MCP convention
-   (`cube/info`, `cube/tasks`, `tools/list`, `tools/call`, …).
-
-4. **Test client**: `starlette.testclient.TestClient` (already wraps async
-   handlers transparently — no `pytest-asyncio` needed).
-
-5. **Test dependencies**: no new deps.  `test_server.py` defines a minimal
-   inline cube (benchmark + task + tool) to avoid depending on `counter-cube`.
-
----
-
-## Session checkpoint — resume from here
-
-### What is done
-
-- [x] `src/cube/server.py` — fully rewritten.
-  - Old REST functions (`make_benchmark_fastapi_app`, `make_task_fastapi_app`) replaced
-    by `make_benchmark_jsonrpc_app` and `make_task_jsonrpc_app`.
-  - Single `POST /` endpoint with JSON-RPC 2.0 dispatch in each.
-  - Methods use slash naming: `cube/info`, `cube/tasks`, `cube/spawn`, `cube/shutdown`,
-    `tools/list`, `tools/call`, `cube/reset`, `cube/step`, `cube/evaluate`, `cube/close`,
-    `cube/status`, `cube/privileged_info`.
-  - Serialization via `model_dump(mode="json")` (linter replaced `jsonable_encoder` calls).
-  - `_find_free_port()` helper with TOCTOU docstring.
-  - `_ok()` / `_err()` helpers with docstrings.
-  - `make_benchmark_rpc_server` / `make_task_rpc_server` kept, now wrap the new apps.
-
-- [x] `src/cube/benchmark.py` — `spawn()` updated.
-  - Signature is now `spawn(task_config) → Task` (pure creation, no subprocess/server).
-  - Docstring explains the separation between in-process `spawn()` and the `cube/spawn`
-    network endpoint.
-
-- [x] `tests/test_server.py` — new file replacing `test_benchmark_server.py`.
-  - Defines a minimal inline cube (`_MiniBenchmark`, `_CounterTask`, `_CounterTool`) —
-    no dependency on `counter-cube`.
-  - Uses `starlette.testclient.TestClient` (no `pytest-asyncio`).
-  - Covers: `cube/info`, `cube/tasks` (all / filter / pagination), `cube/shutdown`,
-    `tools/list`, `cube/reset`, `tools/call` (with and without `action_id`),
-    `cube/step` full episode, `cube/evaluate` (with and without obs),
-    `cube/status`, `cube/privileged_info`, `cube/close`.
-  - Covers JSON-RPC error envelopes: unknown method (-32601), missing param (-32602),
-    invalid JSON (-32700), invalid request (-32600).
-
-- [x] `tests/test_benchmark_server.py` — deleted (superseded by `test_server.py`).
-
-### What remains
-
-- [ ] **`examples/counter-cube-remote/`** — Python end-to-end example (use case #2: process isolation):
-  - `server.py` — imports `CounterBenchmark`, calls `make_benchmark_rpc_server()`,
-    prints the URL, then joins the process (blocks).
-  - `client.py` — pure HTTP JSON-RPC (uses only `httpx`, no cube imports).
-    Calls `cube/info`, `cube/tasks`, `cube/spawn` to get a task URL, then
-    `tools/list`, `cube/reset`, `cube/step` in a loop until done, prints final reward.
-  - `pyproject.toml` — depends on `cube-standard` and `counter-cube` (via path).
-  - Short `README.md` showing how to run (`python server.py` in one terminal,
-    `python client.py` in another).
-
-- [ ] **`examples/counter-cube-node/`** — cross-language example (use case #1: language-agnostic protocol):
-  - A minimal Node.js server (~50–80 lines) that implements the CUBE JSON-RPC protocol
-    without any Python or cube-standard dependency.
-  - Methods: `cube/info`, `cube/tasks`, `cube/spawn` (stub), `tools/list`,
-    `cube/reset`, `cube/step`, `cube/evaluate`, `cube/close`.
-  - Behaviour mirrors `counter-cube` (increment a counter; done when it reaches 2).
-  - `tests/` — pytest test suite that:
-    1. Spawns the Node.js server as a subprocess (`subprocess.Popen`).
-    2. Polls until the HTTP port is up.
-    3. Drives a full episode via `httpx` JSON-RPC calls.
-    4. Asserts correct responses and final reward.
-  - No `pytest.mark.integration` needed — the test lives inside this package and is
-    only run when you `cd` into it.
-  - `package.json` — single dependency: none (use Node.js built-in `http` module).
-
-- [ ] **`examples/docker-cube/`** — Docker-backed example (use case #4: security sandbox):
-  - A self-contained benchmark where each task's tool runs a command **inside a Docker
-    container** via `LocalContainerBackend`.
-  - The task does something simple that requires a container — e.g. run `echo hello`
-    or `python3 -c "print(1+1)"` inside `alpine` or `python:3.12-alpine` and return
-    the stdout as the observation.
-  - `ContainerConfig` is declared on the `TaskConfig`; `LocalContainerBackend` is
-    passed in at setup time.
-  - `tests/` — pytest test that instantiates the benchmark with `LocalContainerBackend`,
-    spawns a task, runs a full episode, and checks the reward.  Requires Docker daemon
-    (test fails gracefully with `pytest.skip` if Docker is not available).
-  - No dependency on `counter-cube`; standalone `pyproject.toml`.
-
-- [ ] **Ray parallel test** (use case #3: scaling across cores) — lives in `cube-harness`:
-  - An integration test in `cube-harness/tests/` that:
-    1. Starts a benchmark server (`make_benchmark_rpc_server`) in a background thread
-       or process.
-    2. Initialises a local Ray cluster (`ray.init(num_cpus=N)`).
-    3. Defines a Ray remote function that: calls `cube/spawn` on the benchmark server,
-       polls until the task URL is up, runs a full episode via `httpx`, returns the reward.
-    4. Dispatches N episodes in parallel and asserts all rewards are correct.
-  - **Prerequisite**: fix the `cube/spawn` readiness race — the subprocess starts
-    `uvicorn` but returns the URL immediately.  The caller must poll
-    `GET /` (or a `/healthz` endpoint) until it gets a 200 before using the URL.
-    Options: (a) add a `cube/health` no-op method to the task server, (b) retry in
-    the client, (c) have `cube/spawn` block until uvicorn signals readiness via a
-    `multiprocessing.Event`.  Option (c) is cleanest.
-
-### Key context for next session
-
-- `counter-cube` example lives in `examples/counter-cube/` and is a working reference
-  for how a benchmark is structured.  `counter-cube-remote` should `import CounterBenchmark`
-  from it.
-- `LocalContainerBackend` is fully implemented in `src/cube/backends/local.py`.  The
-  `docker` Python SDK is already a dependency.  No new infra needed for the Docker example.
-- `cube_harness/exp_runner.py` already uses `ray.init` + `@ray.remote`.  The Ray test
-  should follow the same pattern.
+- **`examples/counter-cube-node/`** — Node.js server implementing the CUBE JSON-RPC
+  protocol with zero Python dependencies.  Demonstrates language-agnostic protocol.
+- **`examples/docker-cube/`** — Docker-backed benchmark where each task's tool runs
+  inside a container via `LocalContainerBackend`.
+- **Ray parallel test** (in `cube-harness`) — N agents in parallel, each calling
+  `cube/spawn` on a shared benchmark server and running independent episodes.

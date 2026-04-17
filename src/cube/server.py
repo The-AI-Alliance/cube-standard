@@ -21,10 +21,11 @@ Error response::
 
 Benchmark methods (``POST /``)
 -------------------------------
-- ``cube/info``      → BenchmarkMetadata
-- ``cube/tasks``     → list[TaskMetadata]   (params: task_id?, offset?, limit?)
-- ``cube/spawn``     → str URL              (params: task_config, host?, port?)
-- ``cube/shutdown``  → null
+- ``cube/info``         → BenchmarkMetadata
+- ``cube/tasks``        → list[TaskMetadata]   (params: task_id?, offset?, limit?)
+- ``cube/task_configs`` → list[TaskConfig]     (params: task_id?, offset?, limit?)
+- ``cube/spawn``        → str URL              (params: task_config, host?, port?)
+- ``cube/shutdown``     → null
 
 Task methods (``POST /``)
 --------------------------
@@ -32,7 +33,7 @@ Task methods (``POST /``)
 - ``tools/call``           → Observation | StepError    (params: name, arguments?)
 - ``cube/reset``           → {obs, info}
 - ``cube/step``            → EnvironmentOutput          (params: name, arguments?)
-- ``cube/evaluate``        → {reward, info}             (params: obs?)  obs defaults to empty Observation when omitted
+- ``cube/evaluate``        → {reward, info}             (params: obs?)
 - ``cube/close``           → null
 - ``cube/status``          → str
 - ``cube/privileged_info`` → Content
@@ -59,10 +60,29 @@ Note on ``cube/spawn`` vs ``benchmark.spawn()``
 These are two separate things:
 
 * ``cube/spawn`` (network endpoint): called by remote clients; starts a task
-  server in a subprocess and returns its URL.
-* ``benchmark.spawn(task_config)`` (Python API): creates the task and its
-  JSON-RPC app in-process and returns ``(task, app)``.  No subprocess.  Useful
-  for tests and direct Python usage.
+  server in a subprocess and returns its URL.  The subprocess calls
+  ``task_config.make()`` — TaskConfig is the serialization boundary.
+* ``benchmark.spawn(task_config)`` (Python API): creates the task in-process
+  and returns the ``Task`` object.  No subprocess, no server.  Useful for
+  tests and direct Python usage.
+
+Note on serialization boundaries
+---------------------------------
+**TaskConfig** (Pydantic model) is the unit of serialization across process
+boundaries.  Task objects hold live resources (tool connections, containers,
+…) and are never pickled.  All subprocess entry points receive a TaskConfig
+and call ``task_config.make()`` inside the worker.
+
+**Benchmark** instances are similarly not guaranteed to be picklable — they
+may hold SSH sessions, container handles, or other OS-level resources created
+in ``_setup()``.
+
+TODO: once ``BenchmarkConfig`` lands (see
+  https://github.com/The-AI-Alliance/cube-harness/blob/rfc/benchmark-config-and-scaling/docs/rfc-benchmark-config-and-scaling.md),
+  ``make_benchmark_rpc_server`` should accept a ``BenchmarkConfig``, call
+  ``config.make()`` inside the subprocess, and provide real process isolation
+  without ever pickling a live Benchmark.  Until then, the benchmark server
+  launcher uses a thread (shared memory, no pickling).
 
 Note on deployment
 ------------------
@@ -72,13 +92,14 @@ apps with no subprocess or deployment concerns — they can be used with
 ASGI-compatible host (Modal, fly.io, GCP Cloud Run, …).
 
 ``make_benchmark_rpc_server`` and ``make_task_rpc_server`` are convenience
-wrappers that launch the app in a local subprocess via ``multiprocessing.Process``.
+wrappers for local development and testing.
 """
 
 import logging
 import multiprocessing
 import socket
-from typing import Any, Tuple
+import threading
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -86,12 +107,49 @@ from fastapi.responses import JSONResponse
 
 from cube.benchmark import Benchmark
 from cube.core import Action, Observation
-from cube.task import Task
-
-# Type alias for server return value: (app, process, url)
-ServerInfo = Tuple[FastAPI, multiprocessing.Process, str]
+from cube.task import Task, TaskConfig
 
 logger = logging.getLogger(__name__)
+
+
+# ── Module-level subprocess target ────────────────────────────────────────────
+#
+# On macOS the default multiprocessing start method is "spawn".  Unlike "fork"
+# (the Linux default), "spawn" starts a fresh Python interpreter and pickles
+# the target function by *reference* — the child re-imports the module and
+# looks up the function by name.  Local closures / nested functions are not
+# reachable by name and therefore cannot be pickled.
+#
+# Design rule: every multiprocessing.Process target must be a module-level
+# function, never a local closure.
+#
+# There is only one subprocess entry point for tasks because TaskConfig is the
+# sole serialization unit: both ``cube/spawn`` (the network endpoint) and
+# ``make_task_rpc_server`` pass a TaskConfig to this function, which calls
+# ``task_config.make()`` inside the worker to create the Task.  Task objects
+# themselves are never sent across process boundaries.
+
+
+def _spawn_task_subprocess(
+    task_config: TaskConfig,
+    runtime_ctx: dict[str, Any] | None,
+    host: str,
+    port: int,
+) -> None:
+    """Subprocess entry point: materialise a task from its config, then serve it.
+
+    Called by both the ``cube/spawn`` network endpoint and
+    ``make_task_rpc_server``.  The task is created *inside* the subprocess so
+    that live resources (tool instances, containers, …) are owned by the worker
+    process and never need to cross a process boundary.
+
+    ``container_backend`` is intentionally not forwarded — it is a legacy
+    parameter being replaced by the ``infra`` / ``resource`` pattern.  Infra
+    state is passed via ``runtime_ctx`` instead (see TaskConfig.make()).
+    """
+    task = task_config.make(runtime_context=runtime_ctx)
+    uvicorn.run(make_task_jsonrpc_app(task), host=host, port=port)
+
 
 # ── JSON-RPC 2.0 error codes ──────────────────────────────────────────────────
 
@@ -134,6 +192,9 @@ def _find_free_port(host: str = "127.0.0.1") -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((host, 0))
         return s.getsockname()[1]
+
+
+# ── FastAPI app factories ─────────────────────────────────────────────────────
 
 
 def make_benchmark_jsonrpc_app(benchmark: Benchmark) -> FastAPI:
@@ -186,6 +247,16 @@ def make_benchmark_jsonrpc_app(benchmark: Benchmark) -> FastAPI:
                 tasks_metadata = tasks_metadata[offset:] if limit == -1 else tasks_metadata[offset : offset + limit]
                 result = [tm.model_dump(mode="json") for tm in tasks_metadata]
 
+            elif method == "cube/task_configs":
+                task_id_filter = params.get("task_id")
+                offset = int(params.get("offset", 0))
+                limit = int(params.get("limit", -1))
+                configs = list(benchmark.get_task_configs())
+                if task_id_filter:
+                    configs = [c for c in configs if c.task_id == task_id_filter]
+                configs = configs[offset:] if limit == -1 else configs[offset : offset + limit]
+                result = [tc.model_dump(mode="json") for tc in configs]
+
             elif method == "cube/spawn":
                 if "task_config" not in params:
                     return JSONResponse(_err(req_id, _INVALID_PARAMS, "Missing 'task_config' in params"))
@@ -193,23 +264,18 @@ def make_benchmark_jsonrpc_app(benchmark: Benchmark) -> FastAPI:
                 host = params.get("host", "127.0.0.1")
                 port = int(params.get("port", _find_free_port(host)))
 
-                # Capture references needed inside the subprocess.
-                # task_config is a Pydantic model (picklable).  runtime_context
-                # and container_backend may not be picklable for all benchmarks
-                # (e.g. live SSH sessions) — callers should be aware of this.
-                runtime_ctx = benchmark._runtime_context
-                container_be = benchmark.container_backend
-
-                def _run_task_server() -> None:
-                    task = task_config.make(
-                        runtime_context=runtime_ctx,
-                        container_backend=container_be,
-                    )
-                    task_app = make_task_jsonrpc_app(task)
-                    uvicorn.run(task_app, host=host, port=port)
-
-                p = multiprocessing.Process(target=_run_task_server)
+                # Pass only picklable values to the subprocess.  TaskConfig is a
+                # Pydantic model and is always picklable.  runtime_context is a
+                # plain dict (or None).  container_backend is intentionally not
+                # forwarded — infra state lives in runtime_context instead.
+                p = multiprocessing.Process(
+                    target=_spawn_task_subprocess,
+                    args=(task_config, benchmark._runtime_context, host, port),
+                )
                 p.start()
+                # Returns the URL immediately; the subprocess starts uvicorn
+                # asynchronously.  Clients must poll until the server is ready
+                # before sending requests (readiness race — see client.py example).
                 result = f"http://{host}:{port}"
 
             elif method == "cube/shutdown":
@@ -312,35 +378,71 @@ def make_task_jsonrpc_app(task: Task) -> FastAPI:
 # ── Server launchers ──────────────────────────────────────────────────────────
 
 
-def make_benchmark_rpc_server(benchmark: Benchmark, host: str = "127.0.0.1", port: int = 8000) -> ServerInfo:
-    """
-    Spawn a JSON-RPC 2.0 benchmark server in a separate process.
+def make_benchmark_rpc_server(
+    benchmark: Benchmark,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+) -> tuple[threading.Thread, str]:
+    """Serve a benchmark JSON-RPC app in a background daemon thread.
+
+    Uses a **thread** (not a subprocess) because Benchmark instances are not
+    guaranteed to be picklable.  They may hold live OS-level resources created
+    in ``_setup()`` — SSH sessions, container handles, database connections —
+    that cannot survive serialisation.  A thread shares memory with the caller,
+    so the Benchmark is accessed directly without any pickling.
+
+    The thread is a daemon, so it stops automatically when the main process
+    exits.  To stop the server explicitly, use uvicorn's shutdown API or
+    terminate the process.
+
+    TODO: once BenchmarkConfig lands (see
+      https://github.com/The-AI-Alliance/cube-harness/blob/rfc/benchmark-config-and-scaling/docs/rfc-benchmark-config-and-scaling.md),
+      change this to accept a BenchmarkConfig, call ``config.make()`` inside a
+      ``multiprocessing.Process`` (mirroring ``make_task_rpc_server``), and
+      provide real process isolation.  Until then, process isolation requires
+      running ``server.py`` as a standalone script and launching the client
+      separately.
 
     Returns:
-        ServerInfo: (app, process, url)
+        ``(thread, url)`` — the background thread and the server base URL.
     """
     app = make_benchmark_jsonrpc_app(benchmark)
+    thread = threading.Thread(
+        target=uvicorn.run,
+        kwargs={"app": app, "host": host, "port": port},
+        daemon=True,
+    )
+    thread.start()
+    return thread, f"http://{host}:{port}"
 
-    def _run() -> None:
-        uvicorn.run(app, host=host, port=port)
 
-    process = multiprocessing.Process(target=_run)
-    process.start()
-    return app, process, f"http://{host}:{port}"
+def make_task_rpc_server(
+    task_config: TaskConfig,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    runtime_context: dict[str, Any] | None = None,
+) -> tuple[multiprocessing.Process, str]:
+    """Spawn a task JSON-RPC server in a subprocess.
 
+    Accepts a **TaskConfig** (not a Task) because only configs cross process
+    boundaries safely.  The subprocess calls ``task_config.make()`` to create
+    the Task inside the worker.  This is identical to the ``cube/spawn``
+    network endpoint — both use ``_spawn_task_subprocess`` as their entry
+    point.
 
-def make_task_rpc_server(task: Task, host: str = "127.0.0.1", port: int = 8000) -> ServerInfo:
-    """
-    Spawn a JSON-RPC 2.0 task server in a separate process.
+    Use this when you already have a TaskConfig in Python and want to expose
+    the task over the network without going through a benchmark server.  The
+    typical remote workflow (harness → benchmark server → ``cube/spawn`` →
+    task URL) does not call this function directly.
 
     Returns:
-        ServerInfo: (app, process, url)
+        ``(process, url)`` — the subprocess handle and the server base URL.
+        The subprocess starts uvicorn asynchronously; poll the URL until it
+        responds before sending requests.
     """
-    app = make_task_jsonrpc_app(task)
-
-    def _run() -> None:
-        uvicorn.run(app, host=host, port=port)
-
-    process = multiprocessing.Process(target=_run)
+    process = multiprocessing.Process(
+        target=_spawn_task_subprocess,
+        args=(task_config, runtime_context, host, port),
+    )
     process.start()
-    return app, process, f"http://{host}:{port}"
+    return process, f"http://{host}:{port}"
