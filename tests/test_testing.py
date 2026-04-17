@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import PrivateAttr
 
-from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext  # noqa: F401
+from cube.benchmark import Benchmark, BenchmarkMetadata
 from cube.container import Container
 from cube.core import Action, Observation
 from cube.task import STOP_ACTION, Task, TaskConfig, TaskMetadata

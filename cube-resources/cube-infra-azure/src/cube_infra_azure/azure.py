@@ -12,10 +12,10 @@ Provisioning pipeline (~30-90 min, idempotent):
         → Compute Gallery image definition + version
         → ProvisionStore {"image_def": ..., "version": ...}
 
-Launch (~3-5 min per VM):
+Launch (~5-10 min per VM):
     Gallery image version
         → NIC + public IP
-        → VM (Specialized — no cloud-init)
+        → VM (Generalized — cloud-init injects caller's SSH key at first boot)
         → SSH tunnel localhost:{port} → VM:{guest_port}
         → AzureResourceHandle(endpoint="http://localhost:{port}")
 
@@ -73,11 +73,14 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import Field, model_validator
 
+from cube.infra_utils import build_volume_setup_script
+from cube.provision_store import ProvisionStore
 from cube.resource import (
+    DockerServiceConfig,
     InfraConfig,
     ResourceConfig,
     ResourceHandle,
@@ -85,17 +88,13 @@ from cube.resource import (
     UnsupportedResourceType,
     VMResourceConfig,
 )
-from cube_infra_azure._utils import BootstrapMonitor, free_port, open_tunnel, wait_for_ssh
-
-if TYPE_CHECKING:
-    pass
+from cube_infra_azure._utils import BootstrapMonitor, free_port, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
 
 logger = logging.getLogger(__name__)
 
 
 # ── Bootstrap script ───────────────────────────────────────────────────────────
-# Placeholders: {hf_url}, {vhd_sas_url}, {sentinel_sas_url}, {failed_sas_url},
-#               {ssh_pubkey}
+# Placeholders: {hf_url}, {vhd_sas_url}, {sentinel_sas_url}, {failed_sas_url}
 
 _AZURE_BOOTSTRAP_SCRIPT = """\
 #!/bin/bash
@@ -147,8 +146,10 @@ echo "[bootstrap] Converting qcow2 → fixed VHD..."
 qemu-img convert -f qcow2 -O vpc -o subformat=fixed,force_size "$QCOW2" /data/output.vhd
 echo "[bootstrap] Converted: $(du -sh /data/output.vhd)"
 
-# ── inject SSH into VHD ────────────────────────────────────────────────────────
-echo "[bootstrap] Injecting SSH into VHD..."
+# ── prepare VHD for Generalized image ─────────────────────────────────────────
+# Install openssh-server + walinuxagent, enable sshd, then deprovision so that
+# Azure can inject os_profile (SSH key, hostname) at launch time via waagent.
+echo "[bootstrap] Preparing VHD (install walinuxagent + deprovision)..."
 LOOP=$(losetup -f --show -P /data/output.vhd)
 sleep 2
 ROOT_PART=$(lsblk -rno NAME,FSTYPE "$LOOP" | awk '$2=="ext4" {{print "/dev/"$1}}' | tail -1)
@@ -162,9 +163,12 @@ for fs in dev dev/pts proc sys run; do mount --bind "/$fs" "/mnt/guest/$fs" 2>/d
 cp /etc/resolv.conf /mnt/guest/etc/resolv.conf 2>/dev/null || true
 chroot /mnt/guest /bin/bash -c "
 export DEBIAN_FRONTEND=noninteractive
-which sshd 2>/dev/null || (apt-get update -qq && apt-get install -y -qq openssh-server)
+apt-get update -qq
+which sshd 2>/dev/null || apt-get install -y -qq openssh-server
+dpkg -l walinuxagent 2>/dev/null | grep -q '^ii' || apt-get install -y -qq walinuxagent
 ls /etc/ssh/ssh_host_*_key 2>/dev/null | grep -q . || ssh-keygen -A
 rm -f /etc/ssh/sshd_not_to_be_run
+waagent -force -deprovision+user
 "
 [ -L /mnt/guest/etc/systemd/system/ssh.service ] && \\
     readlink /mnt/guest/etc/systemd/system/ssh.service | grep -q '/dev/null' && \\
@@ -182,21 +186,10 @@ for svc in "$SSH_SVC" "$SSH_SVC_ALT"; do
             /mnt/guest/etc/systemd/system/multi-user.target.wants/ssh.service && \\
         echo "[bootstrap] Enabled sshd via $svc" && break
 done
-SSH_PUBKEY='{ssh_pubkey}'
-for USER_HOME in /mnt/guest/home/user /mnt/guest/home/ubuntu /mnt/guest/root; do
-    [ -d "$USER_HOME" ] || continue
-    mkdir -p "$USER_HOME/.ssh"
-    grep -qxF "$SSH_PUBKEY" "$USER_HOME/.ssh/authorized_keys" 2>/dev/null \\
-        || echo "$SSH_PUBKEY" >> "$USER_HOME/.ssh/authorized_keys"
-    chmod 700 "$USER_HOME/.ssh"
-    chmod 600 "$USER_HOME/.ssh/authorized_keys"
-    OWNER=$(stat -c '%U' "$USER_HOME" 2>/dev/null || echo "root")
-    chown -R "$OWNER:$OWNER" "$USER_HOME/.ssh" 2>/dev/null || true
-done
 for fs in run sys proc dev/pts dev; do umount "/mnt/guest/$fs" 2>/dev/null || true; done
 umount /mnt/guest
 losetup -d "$LOOP" 2>/dev/null || true
-echo "[bootstrap] SSH injection done"
+echo "[bootstrap] VHD prepared"
 
 # ── upload ────────────────────────────────────────────────────────────────────
 echo "[bootstrap] Uploading to Azure Blob Storage..."
@@ -209,29 +202,79 @@ echo "[bootstrap] Done at $(date)"
 """
 
 
+# ── Docker-host bootstrap script ──────────────────────────────────────────────
+# Placeholders: {docker_pull_commands}, {sentinel_sas_url}, {failed_sas_url}
+# Runs via cloud-init (custom_data) on the gallery bootstrap Ubuntu VM.
+# Installs Docker, pre-pulls all images, deprovisiones for Generalized image,
+# then writes sentinel blob.  No SSH key is baked in — Azure injects the
+# caller's key at launch time via os_profile (Generalized image pattern).
+
+_DOCKER_BOOTSTRAP_SCRIPT = """\
+#!/bin/bash
+set -eo pipefail
+exec > /var/log/cube-bootstrap.log 2>&1
+
+on_error() {{
+    msg="[bootstrap] FAILED at line $1: $2"
+    echo "$msg"
+    curl -s -X PUT -H "x-ms-blob-type: BlockBlob" \\
+         -H "Content-Length: ${{#msg}}" -d "$msg" "{failed_sas_url}" || true
+    exit 1
+}}
+trap 'on_error $LINENO "$BASH_COMMAND"' ERR
+
+echo "[bootstrap] Starting at $(date)"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq docker.io curl walinuxagent
+
+systemctl enable docker
+systemctl start docker
+
+# ── add cube user to docker group (no sudo needed at launch time) ─────────────
+usermod -aG docker cube
+
+{volume_setup_commands}
+
+# ── pre-pull Docker images ─────────────────────────────────────────────────────
+{docker_pull_commands}
+echo "[bootstrap] Docker images ready"
+
+# ── deprovision for Generalized gallery image ──────────────────────────────────
+# Clears SSH authorized_keys, machine-id, and cloud-init state so Azure can
+# inject the caller's SSH key + hostname at first boot (same as VM images).
+echo "[bootstrap] Deprovisioning for Generalized image..."
+waagent -force -deprovision+user
+
+# ── signal done ───────────────────────────────────────────────────────────────
+curl -s -X PUT -H "x-ms-blob-type: BlockBlob" -H "Content-Length: 0" "{sentinel_sas_url}"
+echo "[bootstrap] Done at $(date)"
+"""
+
+
 # ── AzureResourceHandle ───────────────────────────────────────────────────────
 
 
 @dataclass
 class AzureResourceHandle(ResourceHandle):
-    """ResourceHandle for a running Azure VM with an open SSH tunnel."""
+    """ResourceHandle for a running Azure VM with one or more open SSH tunnels."""
 
     _vm_name: str = field(default="", repr=False)
     _pip_name: str = field(default="", repr=False)
     _nic_name: str = field(default="", repr=False)
-    _tunnel: subprocess.Popen | None = field(default=None, repr=False)
+    _tunnels: list[subprocess.Popen] = field(default_factory=list, repr=False)
 
     def close(self) -> None:
-        """Terminate the SSH tunnel and delete the Azure VM + network resources."""
-        if self._tunnel is not None:
+        """Terminate SSH tunnel(s) and delete the Azure VM + network resources."""
+        for proc in self._tunnels:
             try:
-                self._tunnel.terminate()
+                proc.terminate()
             except Exception:
                 pass
-            self._tunnel = None
-            logger.info("SSH tunnel closed for run %s", self.run_id[:8])
-
+        self._tunnels = []
         if self._vm_name:
+            logger.info("SSH tunnel(s) closed for run %s", self.run_id[:8])
             assert isinstance(self.infra, AzureInfraConfig)
             self.infra._delete_vm(self._vm_name, self._pip_name, self._nic_name)
 
@@ -334,8 +377,8 @@ class AzureInfraConfig(InfraConfig):
         into memory; it is passed as ``-i {path}`` to SSH subprocess calls.
     ssh_pubkey_path     str | None = None
         Path to the SSH public key.  Auto-derived as ssh_privkey_path + ".pub"
-        if not set.  Its *content* is read once during provisioning and injected
-        into the VHD (bootstrap script writes it to authorized_keys).
+        if not set.  Its *content* is read at launch time and injected into the
+        VM via os_profile.linux_configuration.ssh.public_keys (Generalized image).
         Public keys are designed to be distributed.
     tags            dict[str, str] = {"project": "cube"}
         Base tags applied to all Azure resources created by this config.
@@ -532,8 +575,8 @@ class AzureInfraConfig(InfraConfig):
         return f"azure:{self.location}"
 
     def capabilities(self) -> set[str]:
-        """Azure can satisfy any VMResourceConfig (native hypervisor = KVM-equivalent)."""
-        return {"kvm"}
+        """Azure can satisfy VM and Docker resources (native hypervisor + Docker in VM)."""
+        return {"kvm", "docker"}
 
     def provision(self, resource: ResourceConfig) -> None:
         """Bootstrap OSWorld (or any VM image) from source_url into the Compute Gallery.
@@ -551,10 +594,8 @@ class AzureInfraConfig(InfraConfig):
             UnsupportedResourceType: if resource is not VMResourceConfig.
             ValueError: if resource.source_url is not set and no manual registration exists.
         """
-        if not isinstance(resource, VMResourceConfig):
+        if not isinstance(resource, (VMResourceConfig, DockerServiceConfig)):
             raise UnsupportedResourceType(resource, self)
-
-        from cube.provision_store import ProvisionStore
 
         shim = self._resource_shim(resource)
         image_name = self._image_name(resource)
@@ -568,24 +609,34 @@ class AzureInfraConfig(InfraConfig):
             )
             return
 
-        if not resource.source_url:
-            raise ValueError(
-                f"Cannot provision {image_name!r}: no source_url set and "
-                f"no registration found for {self.fingerprint()!r}.\n"
-                f'  Manual: infra.register(resource, {{"image_def": ..., "version": ...}})'
+        version = "1.0.0"
+
+        if isinstance(resource, DockerServiceConfig):
+            if not resource.docker_images:
+                raise ValueError(
+                    f"Cannot provision {image_name!r}: DockerServiceConfig.docker_images is empty. "
+                    f"Specify the Docker Hub images to pre-pull."
+                )
+            logger.info("provision: building Docker-host image %r …", image_name)
+            image_id = self._provision_docker_service(resource, image_name, version)
+        else:
+            if not resource.source_url:
+                raise ValueError(
+                    f"Cannot provision {image_name!r}: no source_url set and "
+                    f"no registration found for {self.fingerprint()!r}.\n"
+                    f'  Manual: infra.register(resource, {{"image_def": ..., "version": ...}})'
+                )
+            logger.info(
+                "provision: bootstrapping %r → gallery image (version %s)",
+                image_name,
+                version,
+            )
+            image_id = self._bootstrap(
+                url=resource.source_url,
+                image_name=image_name,
+                version=version,
             )
 
-        version = "1.0.0"
-        logger.info(
-            "provision: bootstrapping %r → gallery image (version %s)",
-            image_name,
-            version,
-        )
-        image_id = self._bootstrap(
-            url=resource.source_url,
-            image_name=image_name,
-            version=version,
-        )
         store.put(
             shim,
             self,
@@ -605,10 +656,8 @@ class AzureInfraConfig(InfraConfig):
         Raises:
             UnsupportedResourceType: if resource is not VMResourceConfig.
         """
-        if not isinstance(resource, VMResourceConfig):
+        if not isinstance(resource, (VMResourceConfig, DockerServiceConfig)):
             raise UnsupportedResourceType(resource, self)
-
-        from cube.provision_store import ProvisionStore
 
         shim = self._resource_shim(resource)
         image_name = self._image_name(resource)
@@ -632,9 +681,14 @@ class AzureInfraConfig(InfraConfig):
         except Exception as exc:
             logger.warning("unprovision: could not delete gallery image %s/%s: %s", image_def, version, exc)
 
-        blob_name = image_name + ".vhd"
-        for b in (blob_name, blob_name + ".bootstrap_done", blob_name + ".bootstrap_failed"):
-            self._delete_blob(b)
+        if isinstance(resource, DockerServiceConfig):
+            # Docker-host bootstrap uses different sentinel names (no .vhd blob).
+            for b in (image_name + ".docker_bootstrap_done", image_name + ".docker_bootstrap_failed"):
+                self._delete_blob(b)
+        else:
+            blob_name = image_name + ".vhd"
+            for b in (blob_name, blob_name + ".bootstrap_done", blob_name + ".bootstrap_failed"):
+                self._delete_blob(b)
 
         store.delete(shim, self)
         logger.info("unprovision: %r removed from ProvisionStore", image_name)
@@ -650,10 +704,8 @@ class AzureInfraConfig(InfraConfig):
         The VM is tagged with cube: tags for ARM-based cleanup.
         SSH tunnel: localhost:{local_port} → VM:{guest_port}
         """
-        if not isinstance(resource, VMResourceConfig):
+        if not isinstance(resource, (VMResourceConfig, DockerServiceConfig)):
             raise UnsupportedResourceType(resource, self)
-
-        from cube.provision_store import ProvisionStore
 
         resource_info = ProvisionStore().get(self._resource_shim(resource), self)
         if resource_info is None:
@@ -702,12 +754,13 @@ class AzureInfraConfig(InfraConfig):
             "cube:nic_name": nic_name,
             "cube:ip_name": pip_name,
         }
+        pubkey = Path(self.ssh_pubkey_path).read_text().strip()  # type: ignore[arg-type]  # set by _autodiscover
+
         logger.info("launch: creating VM %s (%s)  image=%s/%s", vm_name, self.vm_size, image_def, version)
         t0 = time.time()
 
-        # Specialized gallery image: no os_profile allowed.
-        # ARM completes once the infrastructure is provisioned, without waiting
-        # for waagent or cloud-init to signal back from the guest.
+        # Generalized gallery image: os_profile injects the caller's SSH key via
+        # linux_configuration.ssh.public_keys. ARM waits for waagent to signal back.
         poller = compute.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
             self.resource_group,
             vm_name,
@@ -721,6 +774,21 @@ class AzureInfraConfig(InfraConfig):
                         "create_option": "FromImage",
                         "managed_disk": {"storage_account_type": "Standard_LRS"},
                         "delete_option": "Delete",
+                    },
+                },
+                "os_profile": {
+                    "computer_name": vm_name,
+                    "admin_username": "cube",
+                    "linux_configuration": {
+                        "disable_password_authentication": True,
+                        "ssh": {
+                            "public_keys": [
+                                {
+                                    "path": "/home/cube/.ssh/authorized_keys",
+                                    "key_data": pubkey,
+                                }
+                            ]
+                        },
                     },
                 },
                 "network_profile": {"network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]},
@@ -739,38 +807,51 @@ class AzureInfraConfig(InfraConfig):
             logger.info("launch: waiting for SSH on %s…", public_ip)
             active_user = wait_for_ssh(
                 public_ip,
-                "user",
+                "cube",
                 self.ssh_privkey_path,
-                fallback_users=["ubuntu", "root"],
-                timeout=600,  # OSWorld VM takes ~5-8 min to boot
+                fallback_users=["ubuntu", "azureuser", "root"],
+                timeout=900,  # VM boot (~5-8 min) + waagent provisioning on Generalized image
             )
 
-            local_port = free_port()
-            logger.info(
-                "launch: opening tunnel localhost:%d → %s:%d",
-                local_port,
-                public_ip,
-                self.guest_port,
-            )
-            tunnel = open_tunnel(public_ip, active_user, self.ssh_privkey_path, local_port, self.guest_port)
+            if isinstance(resource, DockerServiceConfig):
+                # Start services inside the VM, then open one tunnel per service port.
+                if resource.launch_script:
+                    logger.info("launch: starting Docker services on %s", vm_name)
+                    self._ssh_run(public_ip, active_user, resource.launch_script)
+                    logger.info("launch: Docker services started")
+                endpoints, tunnels = open_tunnels(public_ip, active_user, self.ssh_privkey_path, resource.services)
+                logger.info("launch: opened %d tunnel(s): %s", len(tunnels), list(endpoints.keys()))
+                # Use the first endpoint as the canonical single endpoint for compat.
+                endpoint = next(iter(endpoints.values())) if endpoints else None
+            else:
+                local_port = free_port()
+                logger.info(
+                    "launch: opening tunnel localhost:%d → %s:%d",
+                    local_port,
+                    public_ip,
+                    self.guest_port,
+                )
+                tunnel = open_tunnel(public_ip, active_user, self.ssh_privkey_path, local_port, self.guest_port)
+                endpoint = f"http://localhost:{local_port}"
+                endpoints = {}
+                tunnels = [tunnel]
         except Exception:
             logger.warning("launch: SSH/tunnel failed — cleaning up VM %s", vm_name)
             self._delete_vm(vm_name, pip_name, nic_name)
             raise
-
-        endpoint = f"http://localhost:{local_port}"
 
         return AzureResourceHandle(
             run_id=run_id,
             resource=resource,
             infra=self,
             endpoint=endpoint,
+            endpoints=endpoints,
             created_at=created_at,
             expires_at=expires_at,
             _vm_name=vm_name,
             _pip_name=pip_name,
             _nic_name=nic_name,
-            _tunnel=tunnel,
+            _tunnels=tunnels,
         )
 
     def list_active(self, run_id: str | None = None) -> list[AzureResourceHandle]:
@@ -811,7 +892,7 @@ class AzureInfraConfig(InfraConfig):
                     _vm_name=vm_name,
                     _pip_name=pip_name,
                     _nic_name=nic_name,
-                    _tunnel=None,
+                    _tunnels=[],
                 )
             )
 
@@ -945,10 +1026,13 @@ class AzureInfraConfig(InfraConfig):
         except Exception as exc:
             logger.warning("cleanup_orphaned_resources: failed to list IPs: %s", exc)
 
-        # Orphaned intermediate disks — Unattached, name matches cube-disk-* pattern
+        # Orphaned intermediate disks — Unattached, name matches cube-disk-* or
+        # cube-dockerhost-disk-* (bootstrap OS disks left after interrupted provision).
         try:
             for disk in compute.disks.list_by_resource_group(rg):
-                if not (disk.name and disk.name.startswith("cube-disk-")):
+                if not (
+                    disk.name and (disk.name.startswith("cube-disk-") or disk.name.startswith("cube-dockerhost-disk-"))
+                ):
                     continue
                 if disk.disk_state != "Unattached":
                     continue
@@ -960,6 +1044,33 @@ class AzureInfraConfig(InfraConfig):
                     logger.warning("cleanup_orphaned_resources: disk %s: %s", disk.name, exc)
         except Exception as exc:
             logger.warning("cleanup_orphaned_resources: failed to list disks: %s", exc)
+
+        # Stale docker-host bootstrap VMs (cube-dockerhost-*) — these should
+        # have been deleted by _provision_docker_service() but can linger if the
+        # process crashed mid-provision.  Delete VM + NIC + IP; keep the OS disk
+        # (delete_option=Detach) so that a re-provision can continue.
+        result["bootstrap_vms"] = []
+        try:
+            for vm in compute.virtual_machines.list(rg):
+                if not (vm.name and vm.name.startswith("cube-dockerhost-")):
+                    continue
+                logger.info("cleanup_orphaned_resources: deleting stale bootstrap VM %s", vm.name)
+                try:
+                    # Deallocate first so NIC/IP can be freed
+                    compute.virtual_machines.begin_deallocate(rg, vm.name).result()
+                    compute.virtual_machines.begin_delete(rg, vm.name).result()
+                    result["bootstrap_vms"].append(vm.name)
+                    # Best-effort network cleanup using naming convention.
+                    # _create_network_resources(uid, uid) → "cube-{uid}-ip-{uid}"
+                    uid = vm.name[len("cube-dockerhost-") :]
+                    self._delete_network_resources(
+                        f"cube-{uid}-ip-{uid}",
+                        f"cube-{uid}-nic-{uid}",
+                    )
+                except Exception as exc:
+                    logger.warning("cleanup_orphaned_resources: VM %s: %s", vm.name, exc)
+        except Exception as exc:
+            logger.warning("cleanup_orphaned_resources: failed to list VMs: %s", exc)
 
         total = sum(len(v) for v in result.values())
         if total:
@@ -1216,7 +1327,7 @@ class AzureInfraConfig(InfraConfig):
             ).result()
         return self.gallery_name
 
-    def _create_image_definition(self, name: str, os_state: str = "Specialized") -> str:
+    def _create_image_definition(self, name: str, os_state: str = "Generalized") -> str:
         """Create a gallery image definition (idempotent). Returns definition name."""
         self._ensure_gallery()
         compute = self._compute()
@@ -1397,6 +1508,206 @@ class AzureInfraConfig(InfraConfig):
         logger.info("_launch_bootstrap_vm: SSH: ssh -i %s azureuser@%s", self.ssh_privkey_path, public_ip)
         return {"vm_name": vm_name, "pip_name": pip_name, "nic_name": nic_name, "public_ip": public_ip}
 
+    def _ssh_run(self, public_ip: str, ssh_user: str, script: str) -> None:
+        """Run a shell script on the VM over SSH and wait for it to finish."""
+        ssh_run(public_ip, ssh_user, self.ssh_privkey_path, script)
+
+    def _provision_docker_service(
+        self, resource: "DockerServiceConfig", image_name: str, version: str = "1.0.0"
+    ) -> str:
+        """Bootstrap a Docker-host gallery image for a DockerServiceConfig.
+
+        Pipeline (idempotent at every step):
+            Marketplace Ubuntu 22.04 VM
+                → install Docker + docker pull all images (via cloud-init)
+                → sentinel blob written when ready
+            VM deallocated → OS disk retained (delete_option=Detach)
+            OS disk → gallery image definition + version
+            Bootstrap VM + OS disk deleted
+
+        Returns the gallery image version resource ID.
+        """
+        sentinel_name = f"{image_name}.docker_bootstrap_done"
+        failed_name = f"{image_name}.docker_bootstrap_failed"
+
+        logger.info("_provision_docker_service: %s  images=%s", image_name, resource.docker_images)
+
+        if not self.blob_exists(sentinel_name):
+            sentinel_sas = self.generate_sas_url(sentinel_name, expiry_hours=8, write=True)
+            failed_sas = self.generate_sas_url(failed_name, expiry_hours=8, write=True)
+            pull_cmds = "\n".join(
+                f"echo '[bootstrap] Pulling {img}...'\ndocker pull {img}" for img in resource.docker_images
+            )
+            volume_cmds = build_volume_setup_script(resource.volumes)
+            script = _DOCKER_BOOTSTRAP_SCRIPT.format(
+                docker_pull_commands=pull_cmds,
+                volume_setup_commands=volume_cmds,
+                sentinel_sas_url=sentinel_sas,
+                failed_sas_url=failed_sas,
+            )
+            disk_name = f"cube-dockerhost-disk-{image_name}"
+            # If a stale disk exists from a previous interrupted run (sentinel absent
+            # but disk persisted via delete_option=Detach), delete it so the new VM
+            # can be created with create_option=FromImage.
+            compute = self._compute()
+            try:
+                from azure.core.exceptions import ResourceNotFoundError
+
+                existing = compute.disks.get(self.resource_group, disk_name)
+                if existing:
+                    logger.info("_provision_docker_service: deleting stale disk %s (no sentinel)", disk_name)
+                    compute.disks.begin_delete(self.resource_group, disk_name).result()
+            except ResourceNotFoundError:
+                pass  # disk doesn't exist — expected
+            vm_info = self._launch_docker_host_vm(script, disk_name)
+            t0 = time.time()
+            try:
+                logger.info("_provision_docker_service: VM running, streaming logs from %s", vm_info["public_ip"])
+                logger.info(
+                    "_provision_docker_service: SSH: ssh -i %s cube@%s",
+                    self.ssh_privkey_path,
+                    vm_info["public_ip"],
+                )
+                with BootstrapMonitor(
+                    public_ip=vm_info["public_ip"],
+                    ssh_privkey=self.ssh_privkey_path,
+                    ssh_user="cube",
+                    sentinel_fn=lambda: self.blob_exists(sentinel_name),
+                ) as monitor:
+                    monitor.wait(timeout=3600)
+            finally:
+                # Deallocate (not delete) so the OS disk is retained.
+                compute = self._compute()
+                logger.info("_provision_docker_service: deallocating %s", vm_info["vm_name"])
+                compute.virtual_machines.begin_deallocate(self.resource_group, vm_info["vm_name"]).result()
+                # Now safe to delete the VM resource; delete_option=Detach keeps the disk.
+                compute.virtual_machines.begin_delete(self.resource_group, vm_info["vm_name"]).result()
+                self._delete_network_resources(vm_info["pip_name"], vm_info["nic_name"])
+            logger.info(
+                "_provision_docker_service: Docker images pulled in %.1f min",
+                (time.time() - t0) / 60,
+            )
+        else:
+            logger.info("_provision_docker_service: sentinel exists — skipping VM phase")
+            disk_name = f"cube-dockerhost-disk-{image_name}"
+
+        self._create_image_definition(image_name)
+        image_id = self._create_image_version(image_name, version, disk_name)
+        logger.info("_provision_docker_service: gallery image ready: %s/%s", image_name, version)
+
+        # Gallery image has its own storage — source disk is no longer needed.
+        try:
+            self._compute().disks.begin_delete(self.resource_group, disk_name).result()
+            logger.info("_provision_docker_service: deleted source disk %s", disk_name)
+        except Exception as exc:
+            logger.warning("_provision_docker_service: could not delete disk %s: %s", disk_name, exc)
+
+        # Clean up sentinel blobs.
+        for b in (sentinel_name, failed_name):
+            self._delete_blob(b)
+
+        return image_id
+
+    def _launch_docker_host_vm(self, script: str, disk_name: str) -> dict:
+        """Launch a gallery-image Ubuntu VM for Docker image bootstrapping.
+
+        Uses the same bootstrap_gallery_image as _launch_bootstrap_vm (subscription
+        policy requires gallery images — marketplace images are blocked).
+        Uses cloud-init (custom_data) to run the bootstrap script.
+        OS disk is named explicitly and created with delete_option=Detach so it
+        persists after VM deletion for snapshotting into a gallery image.
+
+        Returns {vm_name, pip_name, nic_name, public_ip}.
+        """
+        uid = uuid.uuid4().hex[:6]
+        vm_name = f"cube-dockerhost-{uid}"
+        pubkey = Path(self.ssh_pubkey_path).read_text().strip()
+        custom_data_b64 = base64.b64encode(script.encode()).decode()
+        compute = self._compute()
+
+        logger.info("_launch_docker_host_vm: creating network resources")
+        pip, nic, pip_name, nic_name = self._create_network_resources(uid, uid)
+
+        image_id = (
+            f"/subscriptions/{self.subscription}/resourceGroups/{self.resource_group}"
+            f"/providers/Microsoft.Compute/galleries/{self.gallery_name}"
+            f"/images/{self.bootstrap_gallery_image}"
+            f"/versions/{self.bootstrap_gallery_image_ver}"
+        )
+        logger.info(
+            "_launch_docker_host_vm: launching %s (%s, 64 GB OS disk)  image=%s/%s",
+            vm_name,
+            self.bootstrap_vm_size,
+            self.bootstrap_gallery_image,
+            self.bootstrap_gallery_image_ver,
+        )
+        t0 = time.time()
+        poller = compute.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
+            self.resource_group,
+            vm_name,
+            {  # type: ignore[arg-type]
+                "location": self.location,
+                "tags": {**self.tags, "role": "docker-bootstrap"},
+                "hardware_profile": {"vm_size": self.bootstrap_vm_size},
+                "storage_profile": {
+                    "image_reference": {"id": image_id},
+                    "os_disk": {
+                        "name": disk_name,
+                        "create_option": "FromImage",
+                        "managed_disk": {"storage_account_type": self.bootstrap_disk_sku},
+                        "disk_size_gb": 64,
+                        # Detach keeps the disk after VM deletion — required for snapshotting.
+                        "delete_option": "Detach",
+                    },
+                },
+                "os_profile": {
+                    "computer_name": vm_name,
+                    "admin_username": "cube",
+                    "custom_data": custom_data_b64,
+                    "linux_configuration": {
+                        "disable_password_authentication": True,
+                        "ssh": {
+                            "public_keys": [
+                                {
+                                    "path": "/home/cube/.ssh/authorized_keys",
+                                    "key_data": pubkey,
+                                }
+                            ]
+                        },
+                    },
+                },
+                "network_profile": {"network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]},
+            },
+        )
+        poller.result()
+
+        pip_info = self._network().public_ip_addresses.get(self.resource_group, pip_name)
+        assert pip_info.ip_address
+        public_ip = pip_info.ip_address
+        logger.info(
+            "_launch_docker_host_vm: VM ready in %ds: %s @ %s",
+            int(time.time() - t0),
+            vm_name,
+            public_ip,
+        )
+        logger.info("_launch_docker_host_vm: SSH: ssh -i %s cube@%s", self.ssh_privkey_path, public_ip)
+        return {"vm_name": vm_name, "pip_name": pip_name, "nic_name": nic_name, "public_ip": public_ip}
+
+    def _delete_network_resources(self, pip_name: str, nic_name: str) -> None:
+        """Delete a NIC and public IP by name (best-effort, logs warnings on failure)."""
+        network = self._network()
+        for resource_type, name, delete_fn in [
+            ("NIC", nic_name, lambda: network.network_interfaces.begin_delete(self.resource_group, nic_name).result()),
+            ("IP", pip_name, lambda: network.public_ip_addresses.begin_delete(self.resource_group, pip_name).result()),
+        ]:
+            if not name:
+                continue
+            try:
+                delete_fn()
+                logger.debug("_delete_network_resources: deleted %s %s", resource_type, name)
+            except Exception as exc:
+                logger.warning("_delete_network_resources: could not delete %s %s: %s", resource_type, name, exc)
+
     def _bootstrap(self, url: str, image_name: str, version: str = "1.0.0") -> str:
         """In-cloud bootstrap: spin up Azure VM to download, convert, and upload the image.
 
@@ -1419,7 +1730,6 @@ class AzureInfraConfig(InfraConfig):
                 vhd_sas_url=vhd_sas_url,
                 sentinel_sas_url=sentinel_sas_url,
                 failed_sas_url=failed_sas_url,
-                ssh_pubkey=Path(self.ssh_pubkey_path).read_text().strip(),
             )
             vm_info = self._launch_bootstrap_vm(script)
             t0 = time.time()
