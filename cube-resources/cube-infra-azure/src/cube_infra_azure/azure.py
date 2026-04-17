@@ -425,6 +425,12 @@ class AzureInfraConfig(InfraConfig):
     bootstrap_gallery_image: str = "cube-ubuntu-22-04"
     bootstrap_gallery_image_ver: str = "1.0.0"
     bootstrap_os_disk_gb: int = 128
+    windows_admin_password: str | None = Field(default=None, repr=False, exclude=True)
+    """Administrator password for the WAA Windows image.
+    Required when bootstrapping a Windows qcow2. Used for WinRM auth during sysprep.
+    Set via WAA_WINDOWS_ADMIN_PASSWORD env var in your recipe.
+    Never stored in ProvisionStore or logs.
+    """
 
     # ── Auto-discovery ────────────────────────────────────────────────────────
 

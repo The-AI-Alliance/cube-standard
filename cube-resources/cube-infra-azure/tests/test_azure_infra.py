@@ -353,6 +353,19 @@ class TestDockerBootstrapScript:
 # ── AzureResourceHandle ───────────────────────────────────────────────────────
 
 
+def test_windows_admin_password_excluded_from_repr() -> None:
+    """windows_admin_password must not appear in repr or serialization."""
+    from cube_infra_azure import AzureInfraConfig
+
+    fields = AzureInfraConfig.model_fields
+    assert "windows_admin_password" in fields
+    field_info = fields["windows_admin_password"]
+    assert field_info.exclude is True
+
+
+# ── AzureResourceHandle ───────────────────────────────────────────────────────
+
+
 class TestAzureResourceHandle:
     def _make_handle(self) -> AzureResourceHandle:
         infra = _make_infra()
