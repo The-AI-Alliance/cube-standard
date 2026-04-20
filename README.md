@@ -26,7 +26,7 @@ CUBE Standard is organized into three layers:
 
 | Layer | Package | Description |
 | --- | --- | --- |
-| **Core** | `cube-standard` (this repo) | Protocol interfaces: `Tool`, `Task`, `Benchmark`, `Observation`, `Action` |
+| **Core** | `cube-standard` (this repo) | interfaces: `Tool`, `Task`, `Benchmark`, `Observation`, `Action` |
 | **Resources** | [`cube-resources/`](cube-resources/README.md) | Optional shared infrastructure (browser sessions, VM backends) |
 | **Tools** | [`cube-tools/`](cube-tools/README.md) | Optional action executors (browser tools, computer tools) |
 
