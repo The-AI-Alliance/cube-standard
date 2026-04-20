@@ -15,7 +15,7 @@ from cube.testing import (
     aggregate_profiling,
     assert_debug_tasks_reward_one,
     check_reset_reproducibility,
-    format_observation_unified_diff,
+    format_observation_diff,
     run_debug_episode,
     run_debug_suite,
 )
@@ -518,7 +518,7 @@ def test_check_reset_reproducibility_errors_return_empty_diff():
 def test_format_observation_diff_key_paths_and_truncates_leaves():
     a = {"hint": "ok", "html": "<div>" + "x" * 500 + "</div>"}
     b = {"hint": "ok", "html": "<div>" + "y" * 500 + "</div>"}
-    diff = format_observation_unified_diff(a, b)
+    diff = format_observation_diff(a, b)
     assert "html" in diff
     assert "Observation differences" in diff
     assert len(diff) < 900
@@ -528,6 +528,6 @@ def test_format_observation_diff_key_paths_and_truncates_leaves():
 def test_format_observation_diff_truncates_long_data_urls():
     a = {"screenshot": "data:image/png;base64," + "A" * 300}
     b = {"screenshot": "data:image/png;base64," + "B" * 300}
-    diff = format_observation_unified_diff(a, b)
+    diff = format_observation_diff(a, b)
     assert "screenshot" in diff
     assert len(diff) < 700

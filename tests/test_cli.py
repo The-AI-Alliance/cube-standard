@@ -334,6 +334,49 @@ def test_cmd_test_ci_mode_via_env_var(fake_debug_in_sys_modules, monkeypatch, ca
     assert "PASSED" in out
 
 
+def test_cmd_test_ci_mode_with_demo_flag_does_not_inject_reset_fail(fake_debug_in_sys_modules, monkeypatch, capsys):
+    """--demo-reset-repro is ignored in CI so logs do not show FAIL reset + exit 0."""
+    monkeypatch.setenv("CUBE_CI", "1")
+    results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results):
+            with patch("cube.testing.check_reset_reproducibility", return_value=(True, "", "")):
+                cmd_test("fake_debug.debug", demo_reset_repro=True)
+
+    out = capsys.readouterr().out
+    assert "  PASS  test_reset_reproducibility" in out
+    assert "  FAIL  test_reset_reproducibility" not in out
+
+
+def test_cmd_test_ci_mode_reset_repro_brackets_in_message_no_crash(fake_debug_in_sys_modules, capsys):
+    """User/exception text must not be parsed as Rich markup (plain reset-repro path)."""
+    results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+    bad_msg = "reset failed: [red]x[/red]"
+
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results):
+            with patch("cube.testing.check_reset_reproducibility", return_value=(False, bad_msg, "")):
+                cmd_test("fake_debug.debug", ci_mode=True)
+
+    out = capsys.readouterr().out
+    assert bad_msg in out
+    assert "PASSED" in out
+
+
+def test_cmd_test_ci_mode_truncates_large_reset_repro_diff(fake_debug_in_sys_modules, capsys):
+    """CI reset-repro diff must not dump unbounded bytes (matches dashboard cap)."""
+    results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+    huge = "x" * (cli._RESET_DIFF_DISPLAY_MAX + 500)
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results):
+            with patch("cube.testing.check_reset_reproducibility", return_value=(False, "mismatch", huge)):
+                cmd_test("fake_debug.debug", ci_mode=True)
+    out = capsys.readouterr().out
+    assert "... [diff truncated]" in out
+    assert huge not in out
+
+
 # ── main() ────────────────────────────────────────────────────────────────────
 
 

@@ -23,7 +23,7 @@ from rich.rule import Rule
 
 from cube.cli import _make_console, _print_reset_reproducibility_error_block
 from cube.core import Observation
-from cube.testing import format_observation_unified_diff
+from cube.testing import format_observation_diff
 
 _RESET_MSG = "first observation differed between two resets"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -71,7 +71,7 @@ def main() -> None:
     b1 = {"text": "Step 1 (variant)", "task_id": "debug-1", "seed": 42}
     _emit(
         label="Example A — dict / model_dump-style observation",
-        reset_diff=format_observation_unified_diff(a1, b1),
+        reset_diff=format_observation_diff(a1, b1),
         width=w,
     )
 
@@ -79,7 +79,7 @@ def main() -> None:
     b2 = {"screenshot": {"w": 80, "h": 61}, "hint": "ok"}
     _emit(
         label="Example B — nested dict observation",
-        reset_diff=format_observation_unified_diff(a2, b2),
+        reset_diff=format_observation_diff(a2, b2),
         width=w,
     )
 
@@ -92,7 +92,7 @@ def main() -> None:
 
     _emit(
         label="Example C — non-dict observation (repr / leaf comparison)",
-        reset_diff=format_observation_unified_diff(_Opaque("alpha"), _Opaque("beta")),
+        reset_diff=format_observation_diff(_Opaque("alpha"), _Opaque("beta")),
         width=w,
     )
 
@@ -102,7 +102,7 @@ def main_from_jsonl(path: Path) -> None:
     w = _terminal_width()
     _emit(
         label=f"From trajectory — {path}",
-        reset_diff=format_observation_unified_diff(obs_a, obs_b),
+        reset_diff=format_observation_diff(obs_a, obs_b),
         width=w,
     )
 

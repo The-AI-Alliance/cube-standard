@@ -253,9 +253,11 @@ def _observation_key_path_diff_report(
     return header + "\n\n".join(out)
 
 
-def format_observation_unified_diff(obs_a: object, obs_b: object) -> str:
-    """Same observation key-path diff text the CLI shows when reset reproducibility fails."""
-    return _observation_key_path_diff_report(obs_a, obs_b)
+def format_observation_diff(obs_a: object, obs_b: object) -> str:
+    """Key-path observation diff (same text as reset-repro when first observations differ)."""
+    da = obs_a.model_dump() if hasattr(obs_a, "model_dump") else obs_a
+    db = obs_b.model_dump() if hasattr(obs_b, "model_dump") else obs_b
+    return _observation_key_path_diff_report(da, db)
 
 
 def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str, str]:
@@ -293,10 +295,10 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str, st
             )
             obs1, _ = t1.reset()
             obs2, _ = t2.reset()
-            dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else obs1
-            dump2 = obs2.model_dump() if hasattr(obs2, "model_dump") else obs2
+            dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else str(obs1)
+            dump2 = obs2.model_dump() if hasattr(obs2, "model_dump") else str(obs2)
             ok = dump1 == dump2
-            diff_str = "" if ok else _observation_key_path_diff_report(dump1, dump2)
+            diff_str = "" if ok else format_observation_diff(dump1, dump2)
         except Exception as e:
             return False, str(e), ""
         finally:
