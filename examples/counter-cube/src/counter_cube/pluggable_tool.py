@@ -8,23 +8,22 @@ from cube.tool import Tool, ToolConfig, tool_action
 from .tool import CounterEnv
 
 
-type env = CounterEnv
-
 ## Simple action functions originally scoped outside the tool class.
+# Each receives the live CounterEnv as its first argument.
 
 
-def get_value(env) -> str:
+def get_value(env: CounterEnv) -> str:
     """Get the current counter value."""
     return f"Counter value is: {env.counter}"
 
 
-def decrement(env) -> str:
+def decrement(env: CounterEnv) -> str:
     """Decrement the counter by 1."""
     env.counter -= 1
     return f"Counter value is: {env.counter}"
 
 
-def increment_by(env, value: int) -> str:
+def increment_by(env: CounterEnv, value: int) -> str:
     """Increment the counter by a specified amount."""
     env.counter += value
     return f"Counter value is: {env.counter}"

@@ -28,7 +28,7 @@ class _Task(Task):
     def reset(self):
         return Observation.from_text("ready"), {}
 
-    def evaluate(self, obs):
+    def evaluate(self, obs=None):
         return 0.0, {}
 
 
@@ -213,3 +213,22 @@ def test_task_metadata_from_csv(tmp_path):
     assert set(tasks.keys()) == {"task-a", "task-b"}
     assert tasks["task-a"].split == "train"
     assert tasks["task-b"].split == "test"
+
+
+# --- spawn ---
+
+
+def test_spawn_returns_ready_task():
+    bench = MyBenchmark()
+    bench.setup()
+    task = bench.spawn(_TaskConfig(task_id="t1"))
+    assert isinstance(task, Task)
+    obs, _ = task.reset()
+    assert obs.contents[0].data == "ready"
+
+
+def test_spawn_unknown_task_raises():
+    bench = MyBenchmark()
+    bench.setup()
+    with pytest.raises(ValueError, match="not found"):
+        bench.spawn(_TaskConfig(task_id="nonexistent"))
