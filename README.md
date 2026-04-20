@@ -42,7 +42,7 @@ See [`cube-resources/README.md`](cube-resources/README.md) and [`cube-tools/READ
 
 ## Installation
 
-Requires Python 3.13+. Install with [uv](https://docs.astral.sh/uv/):
+Requires Python 3.12+. Install with [uv](https://docs.astral.sh/uv/):
 
 ```sh
 uv add cube-standard
