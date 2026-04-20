@@ -16,12 +16,10 @@ Abstract classes:
         make(...) -> Task     instantiate the Task from serialized config data
 """
 
-from __future__ import annotations
-
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Tuple
+from typing import Any, Dict, List, Literal, Tuple
 
 from pydantic import ConfigDict, Field, PrivateAttr
 
@@ -38,8 +36,13 @@ from cube.core import (
 )
 from cube.tool import AbstractTool, ToolConfig
 
-if TYPE_CHECKING:
-    from cube.benchmark import RuntimeContext
+RuntimeContext = dict[str, Any]
+"""
+Type alias for shared infrastructure references created during benchmark.setup().
+
+example:
+    {"container_id": "abc123", "vm_address": "http://12.34.56.78", "ssh_session": session}
+"""
 
 logger = logging.getLogger(__name__)
 
@@ -93,10 +96,10 @@ class Task(TypedBaseModel, ABC):
 
     This class contains:
     1. task logic:
-        + evaluate(obs) -> (float, dict)           abstract — score the current state
-        - filter_actions(actions) -> actions       optional whitelist of tool actions
-        - obs_postprocess(obs) -> obs              optional observation post-processing
-        - finished(obs) -> bool                    optional early-termination check
+        + evaluate(obs?) -> (float, dict)         abstract — score the current state
+        - filter_actions(actions) -> actions      optional whitelist of tool actions
+        - obs_postprocess(obs) -> obs             optional observation post-processing
+        - finished(obs?) -> bool                  optional early-termination check
         - get_privileged_info() -> Content        optional privileged task info
 
     2. gym-like environment dynamics:

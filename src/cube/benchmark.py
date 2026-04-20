@@ -40,7 +40,7 @@ from cube.container import ContainerBackend
 from cube.core import TypedBaseModel
 from cube.resource import ResourceConfig
 from cube.seed import AbstractSeedGenerator
-from cube.task import TaskConfig, TaskMetadata
+from cube.task import RuntimeContext, Task, TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
 
 logger = logging.getLogger(__name__)
@@ -64,15 +64,6 @@ class ResetIsolation(str, enum.Enum):
     RESTART = "restart"
     APP_LEVEL = "app_level"
     NEW_INSTANCE = "new_instance"
-
-
-RuntimeContext = dict[str, Any]
-"""
-Type alias for shared infrastructure references created during benchmark.setup().
-
-example:
-    {"container_id": "abc123", "vm_address": "http://12.34.56.78", "ssh_session": session}
-"""
 
 
 class BenchmarkMetadata(TypedBaseModel):
@@ -526,17 +517,28 @@ class Benchmark(TypedBaseModel, ABC):
         if not task_subset:
             raise ValueError("The resulting task list cannot be empty.")
 
-        # Deep-copy self to preserve the exact concrete class and all instance state (including
-        # subclass __init__ args, private attrs, etc.), then override the relevant attributes.
-        # ClassVars are not copied by deepcopy (they live on the class), so we deepcopy them
-        # explicitly and use object.__setattr__ to set instance-level shadows without triggering
-        # Pydantic's ClassVar protection.
-        new_instance = copy.deepcopy(self)
+        # model_copy(deep=True) copies both public Pydantic fields (resources, container_backend,
+        # etc.) and private attributes (__pydantic_private__).  We want the subset to inherit the
+        # caller's configuration (public fields) but NOT its runtime state: PrivateAttrs hold
+        # objects created by _setup() (file handles, subprocess objects, etc.) that cannot safely
+        # be shared or pickled.  We therefore reset __pydantic_private__ to fresh defaults for all
+        # PrivateAttrs — the caller must call .setup() on the returned subset before use.
+        # ClassVars are not touched by model_copy (they live on the class), so we deep-copy
+        # them explicitly and use object.__setattr__ to set instance-level shadows without
+        # triggering Pydantic's ClassVar protection.
+        new_instance = self.model_copy(deep=True)
+        if new_instance.__pydantic_private__ is not None:
+            new_instance.__pydantic_private__ = {
+                k: fi.get_default() for k, fi in type(new_instance).__private_attributes__.items()
+            }
         new_bm = copy.deepcopy(type(new_instance).benchmark_metadata)
         new_bm.name = f"{self.benchmark_metadata.name}_{benchmark_name_suffix}"
         new_bm.num_tasks = len(task_subset)
         object.__setattr__(new_instance, "benchmark_metadata", new_bm)
         object.__setattr__(new_instance, "task_metadata", {tm.id: tm for tm in task_subset})
+        logger.info(
+            f"Created subset '{new_bm.name}' with {len(task_subset)} tasks. Call .setup() before spawning tasks."
+        )
         return new_instance
 
     @classmethod
@@ -565,24 +567,34 @@ class Benchmark(TypedBaseModel, ABC):
         glob_key, glob_pattern = self.benchmark_metadata.named_subsets[name]
         return self.subset_from_glob(glob_key, glob_pattern)
 
-    def spawn(self, task_config: TaskConfig) -> str:
+    def spawn(self, task_config: TaskConfig) -> Task:
         """
-        Spawn a new RPC server for the specified task and return its endpoint URL.
+        Create and return a Task for the given config.
+
+        This is a pure creation call — no subprocess, no server, no network.
+        Callers that need a JSON-RPC server can do so in one extra line::
+
+            task = benchmark.spawn(task_config)
+            app  = make_task_jsonrpc_app(task)   # only if you need a server
+
+        The ``cube/spawn`` network endpoint (on a running benchmark server) is a
+        separate concept: it creates a task, wraps it in a JSON-RPC app, and spawns
+        a subprocess, then returns a URL.  That mixing of concerns is appropriate for
+        a remote API; it is not appropriate for the in-process Python API.
 
         Args:
             task_config: A TaskConfig produced by get_task_configs().
-        """
-        from cube.server import make_task_rpc_server
 
+        Returns:
+            The instantiated Task, ready to call reset() / step() / evaluate() on.
+        """
         if task_config.task_id not in self.task_metadata:
             raise ValueError(f"Task '{task_config.task_id}' not found in benchmark")
 
-        task = task_config.make(
+        return task_config.make(
             runtime_context=self._runtime_context,
             container_backend=self.container_backend,
         )
-        _app, _process, url = make_task_rpc_server(task)
-        return url
 
     @abstractmethod
     def close(self) -> None:

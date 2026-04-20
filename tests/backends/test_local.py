@@ -5,13 +5,20 @@ import urllib.request
 
 import pytest
 
+pytest.importorskip("docker")  # skip whole module if docker not installed
+pytest.importorskip("tenacity")  # local backend also requires tenacity
+
 pytestmark = pytest.mark.integration
 
-from cube.backends.local import LocalContainerBackend
-from cube.container import ContainerConfig, ContainerError
-from tests.backends.test_harness import log, make_container_common_tests, make_container_health_check_tests
+import docker  # noqa: E402 — must come after pytest.importorskip
 
-docker = pytest.importorskip("docker")
+from cube.backends.local import LocalContainerBackend  # noqa: E402
+from cube.container import ContainerConfig, ContainerError  # noqa: E402
+from tests.backends.test_harness import (  # noqa: E402
+    log,
+    make_container_common_tests,
+    make_container_health_check_tests,
+)
 
 try:
     docker.DockerClient().ping()

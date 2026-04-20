@@ -1,4 +1,4 @@
-"""Tests for cube.cli — covers cmd_init, cmd_list, cmd_test, _resolve_debug_module, and main()."""
+"""Tests for cube.cli — covers cmd_init, cmd_list, cmd_test, _resolve_debug_module, main(), and registry helpers."""
 
 import sys
 from pathlib import Path
@@ -8,7 +8,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cube import cli
-from cube.cli import _DEFAULT_NAME, _resolve_debug_module, cmd_init, cmd_list, cmd_test, main
+from cube.cli import (
+    _DEFAULT_NAME,
+    _build_registry_yaml,
+    _guess_display_name,
+    _parse_pyproject_license,
+    _resolve_debug_module,
+    cmd_init,
+    cmd_list,
+    cmd_test,
+    main,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -384,3 +394,119 @@ def test_main_test_dispatches_with_custom_max_steps():
         with patch.object(sys, "argv", ["cube", "test", "counter-cube", "--max-steps=5"]):
             main()
     mock_test.assert_called_once_with("counter-cube", max_steps=5, output_path=None, ci_mode=False)
+
+
+# ── _guess_display_name ───────────────────────────────────────────────────────
+
+
+def test_guess_display_name_hyphenated():
+    assert _guess_display_name("arithmetic-cube") == "Arithmetic Cube"
+
+
+def test_guess_display_name_single_word():
+    assert _guess_display_name("miniwob") == "Miniwob"
+
+
+def test_guess_display_name_underscores_treated_as_hyphens():
+    assert _guess_display_name("my_bench_cube") == "My Bench Cube"
+
+
+def test_guess_display_name_mixed_separators():
+    assert _guess_display_name("my_bench-cube") == "My Bench Cube"
+
+
+# ── _parse_pyproject_license ─────────────────────────────────────────────────
+
+
+def test_parse_pyproject_license_string():
+    assert _parse_pyproject_license({"license": "MIT"}) == "MIT"
+
+
+def test_parse_pyproject_license_dict_text():
+    assert _parse_pyproject_license({"license": {"text": "Apache-2.0"}}) == "Apache-2.0"
+
+
+def test_parse_pyproject_license_missing_returns_none():
+    assert _parse_pyproject_license({}) is None
+
+
+def test_parse_pyproject_license_dict_without_text_returns_none():
+    assert _parse_pyproject_license({"license": {"file": "LICENSE"}}) is None
+
+
+# ── _build_registry_yaml ─────────────────────────────────────────────────────
+
+
+def _make_yaml(**overrides):
+    defaults = dict(
+        id="counter-cube",
+        name="Counter Cube",
+        name_is_guessed=False,
+        version="0.1.0",
+        description="A simple counter benchmark.",
+        package="counter-cube",
+        dev_install_url=None,
+        authors=[{"github": "alice", "name": "Alice Smith"}],
+        wrapper_license="MIT",
+    )
+    defaults.update(overrides)
+    return _build_registry_yaml(**defaults)
+
+
+def test_build_registry_yaml_contains_id():
+    assert "id: counter-cube" in _make_yaml()
+
+
+def test_build_registry_yaml_contains_version():
+    assert 'version: "0.1.0"' in _make_yaml()
+
+
+def test_build_registry_yaml_contains_package():
+    assert "package: counter-cube" in _make_yaml()
+
+
+def test_build_registry_yaml_contains_author():
+    content = _make_yaml()
+    assert "github: alice" in content
+    assert "name: Alice Smith" in content
+
+
+def test_build_registry_yaml_contains_license():
+    assert "wrapper_license: MIT" in _make_yaml()
+
+
+def test_build_registry_yaml_dev_install_url_included_when_set():
+    content = _make_yaml(dev_install_url="git+https://github.com/org/repo")
+    assert "dev_install_url:" in content
+    assert "git+https://github.com/org/repo" in content
+
+
+def test_build_registry_yaml_dev_install_url_commented_when_none():
+    content = _make_yaml(dev_install_url=None)
+    assert "# dev_install_url:" in content
+
+
+def test_build_registry_yaml_guessed_name_has_comment():
+    content = _make_yaml(name_is_guessed=True)
+    assert "# auto-guessed" in content
+
+
+def test_build_registry_yaml_known_name_has_no_guess_comment():
+    content = _make_yaml(name_is_guessed=False)
+    assert "# auto-guessed" not in content
+
+
+def test_build_registry_yaml_missing_author_fields_produce_todos():
+    content = _make_yaml(authors=[{}])
+    assert "<TODO:" in content
+
+
+def test_build_registry_yaml_missing_license_produces_todo():
+    content = _make_yaml(wrapper_license=None)
+    assert "<TODO:" in content
+    assert "wrapper_license" in content
+
+
+def test_build_registry_yaml_contains_tags_placeholder():
+    content = _make_yaml()
+    assert "tags:" in content
