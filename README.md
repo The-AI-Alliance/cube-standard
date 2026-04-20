@@ -20,6 +20,26 @@ This repo contains the code and documentation for the **AI Alliance: CUBE Standa
 
 Principal developer: [ServiceNow AI Research](https://servicenow.com/research).
 
+## Components
+
+CUBE Standard is organized into three layers:
+
+| Layer | Package | Description |
+| --- | --- | --- |
+| **Core** | `cube-standard` (this repo) | Protocol interfaces: `Tool`, `Task`, `Benchmark`, `Observation`, `Action` |
+| **Resources** | [`cube-resources/`](cube-resources/README.md) | Optional shared infrastructure (browser sessions, VM backends) |
+| **Tools** | [`cube-tools/`](cube-tools/README.md) | Optional action executors (browser tools, computer tools) |
+
+**Resources** are pieces of shared infrastructure — e.g. a running browser instance or a VM — that are launched once and shared across tasks. **Tools** execute agent actions against that infrastructure.
+
+```text
+Benchmark ──► TaskConfig ──► Task ──► Tool ──► Resource ──► Environment
+                                ▲               (cube-tools)  (cube-resources)
+                         cube-standard
+```
+
+See [`cube-resources/README.md`](cube-resources/README.md) and [`cube-tools/README.md`](cube-tools/README.md) for available implementations and usage examples.
+
 ## Installation
 
 Requires Python 3.13+. Install with [uv](https://docs.astral.sh/uv/):
