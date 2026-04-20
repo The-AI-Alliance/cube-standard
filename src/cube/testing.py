@@ -4,7 +4,7 @@ CUBE testing utilities — framework-level harness for debug episodes.
 Public API
 ----------
 run_debug_episode(task, agent, *, max_steps)  →  dict
-run_debug_suite(benchmark_name, module, *, max_steps)  →  list[dict]
+run_debug_suite(benchmark_name, module, *, max_steps, workers=1)  →  list[dict]
 assert_debug_tasks_reward_one(module, *, max_steps)  →  None
 
 Module protocol (for assert_debug_tasks_reward_one and run_debug_suite)
@@ -19,6 +19,11 @@ The ``module`` argument must expose two callables:
 
     make_debug_agent(task_id: str) -> Callable[[Observation, list[ActionSchema]], Action]
         Return a deterministic agent for the given task_id.
+
+    Parallel runs (``run_debug_suite(..., workers>1)``): tasks share the benchmark's
+    ``_runtime_context`` by reference. After ``setup()`` returns, concurrent episodes
+    must treat that object as read-only; writing to it during execution is not safe
+    with multiple workers.
 
 Example usage in a test file::
 
@@ -36,6 +41,7 @@ import platform
 import time
 import types
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from cube import __version__  # report.cube_version and .save()
@@ -297,6 +303,7 @@ def run_debug_suite(
     *,
     max_steps: int = 20,
     print_json: bool = True,
+    workers: int = 1,
 ) -> list[dict]:
     """
     Run all debug tasks for a benchmark and optionally print a JSON report.
@@ -307,11 +314,21 @@ def run_debug_suite(
                         ``make_debug_agent(task_id)``.
         max_steps:      Safety cap passed to ``run_debug_episode`` (default 20).
         print_json:     If True, print the JSON report to stdout (default True).
+        workers:        Number of threads for episode execution (default 1). Values
+                        greater than 1 require tasks not to mutate
+                        ``benchmark._runtime_context`` after ``setup()``; see module
+                        docstring.
 
     Returns:
-        List of per-episode report dicts (same schema as ``run_debug_episode``).
-        The caller is responsible for exit-code handling.
+        List of per-episode report dicts (same schema as ``run_debug_episode``),
+        in ``get_task_configs()`` order.
+
+    Raises:
+        ValueError: If ``workers < 1``.
     """
+    if workers < 1:
+        raise ValueError("workers must be >= 1")
+
     benchmark = None
     results = []
     try:
@@ -324,10 +341,11 @@ def run_debug_suite(
         # Step 2: iterate task configs from the benchmark and run episodes.
         task_configs = list(benchmark.get_task_configs())
         logger.info(
-            f"[run_debug_suite] benchmark={benchmark_name!r}  running {len(task_configs)} task(s): "
-            f"{[tc.task_id for tc in task_configs]}"
+            f"[run_debug_suite] benchmark={benchmark_name!r}  running {len(task_configs)} task(s) "
+            f"workers={workers}: {[tc.task_id for tc in task_configs]}"
         )
-        for tc in task_configs:
+
+        def _episode_for_config(tc):
             try:
                 task = tc.make(
                     runtime_context=benchmark._runtime_context, container_backend=benchmark.container_backend
@@ -338,7 +356,41 @@ def run_debug_suite(
                     f"Hint: '{benchmark_name}' may require an optional tool package that is not installed.\n"
                     f"Check the benchmark's optional extras in its pyproject.toml"
                 ) from exc
-            results.append(run_debug_episode(task, module.make_debug_agent(tc.task_id), max_steps=max_steps))
+            return run_debug_episode(task, module.make_debug_agent(tc.task_id), max_steps=max_steps)
+
+        if workers == 1:
+            for tc in task_configs:
+                results.append(_episode_for_config(tc))
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(_episode_for_config, tc) for tc in task_configs]
+                # Call .result() on every future so exceptions in later tasks are not lost
+                # when an earlier future raises (list comprehension would stop early).
+                for tc, fut in zip(task_configs, futures, strict=True):
+                    try:
+                        results.append(fut.result())
+                    except Exception as exc:
+                        logger.exception(
+                            "[run_debug_suite] benchmark=%r parallel episode failed task_id=%r",
+                            benchmark_name,
+                            tc.task_id,
+                        )
+                        results.append(
+                            {
+                                "task_id": tc.task_id,
+                                "done": False,
+                                "reward": 0.0,
+                                "steps": 0,
+                                "episode_time_s": 0.0,
+                                "step_times_s": [],
+                                "error": f"{type(exc).__name__}: {exc}",
+                                "tools_list_ok": False,
+                                "tools_list_error": "",
+                                "reset_time_s": 0.0,
+                                "close_idempotent_ok": False,
+                                "profiling": [],
+                            }
+                        )
     finally:
         # Step 3: close the benchmark to free resources.
         if benchmark is not None:
