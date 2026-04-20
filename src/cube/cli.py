@@ -598,13 +598,14 @@ def cmd_test(
         # Second 1-worker pass (warm): rate_1 uses wall time comparable to 2/4 worker passes below
         # (the compliance run above is a cold start; discarding it for throughput avoids biased scaling).
         with console.status(
-            "[info]Warm-up[/info] [dim](1 worker, for throughput baseline)…[/dim]",
+            "[info]Warmed-up[/info] [dim](1 worker, for throughput baseline)…[/dim]",
             spinner="dots",
         ):
             t_warm0 = time.perf_counter()
-            _ = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False, workers=1)
+            warm_results = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False, workers=1)
             elapsed_warm_1_s = time.perf_counter() - t_warm0
-        rate_1 = n_tasks / (elapsed_warm_1_s / 60.0) if elapsed_warm_1_s > 0 else 0.0
+        n_tasks_warm = len(warm_results)
+        rate_1 = n_tasks_warm / (elapsed_warm_1_s / 60.0) if elapsed_warm_1_s > 0 else 0.0
         throughput_rows = [(1, rate_1, rate_1, 1.0)]
         parallel_issue_lines: list[str] = []
         with console.status(
