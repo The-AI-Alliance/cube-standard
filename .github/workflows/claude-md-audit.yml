@@ -49,4 +49,4 @@ jobs:
             instead.
 
           claude_args: |
-            --max-turns 30 --allowedTools "Read,Glob,Grep,Edit,Bash(git status),Bash(git diff:*),Bash(git add:*),Bash(git checkout:*),Bash(git commit:*),Bash(git push:*),Bash(gh pr create:*),Bash(gh pr comment:*)"
+            --model claude-sonnet-4-6 --max-turns 30 --allowedTools "Read,Glob,Grep,Edit,Bash(git status),Bash(git diff:*),Bash(git add:*),Bash(git checkout:*),Bash(git commit:*),Bash(git push:*),Bash(gh pr create:*),Bash(gh pr comment:*)"
