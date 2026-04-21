@@ -380,12 +380,9 @@ class Benchmark(TypedBaseModel, ABC):
                 if loaded is not None:
                     cls.task_metadata = loaded
                 else:
-                    # if no task_metadata file is found, assume install-time population via install().
-                    cls.task_metadata = {}
-                    logger.warning(
-                        f"{cls.__name__}.task_metadata is empty — no task_metadata.json/.csv found "
-                        f"next to the benchmark module. Call `{cls.__name__}.install()` to download "
-                        f"and cache task metadata before using this benchmark."
+                    raise TypeError(
+                        f"{cls.__name__} must declare 'task_metadata' as a class variable or ship a "
+                        f"task_metadata.json / task_metadata.csv file next to the benchmark module."
                     )
 
             task_meta = cls.__dict__["task_metadata"]
@@ -416,11 +413,6 @@ class Benchmark(TypedBaseModel, ABC):
         """
         Public method to setup the benchmark. Calls the internal _setup() implemented by the concrete subclass.
         """
-        if not self.task_metadata:
-            raise RuntimeError(
-                f"{type(self).__name__}.task_metadata is empty. "
-                f"Run `{type(self).__name__}.install()` first to download and cache task metadata."
-            )
         self._setup()
         # One debug line instead of four warnings — optional fields are unset for many minimal benchmarks.
         missing_optional: list[str] = []

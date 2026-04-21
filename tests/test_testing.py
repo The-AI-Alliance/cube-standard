@@ -80,7 +80,7 @@ class FailTaskConfig(TaskConfig):
 
 class DoneBenchmark(Benchmark):
     benchmark_metadata = BenchmarkMetadata(name="test-bench", version="0.1", description="test")
-    task_metadata = {}
+    task_metadata: ClassVar[dict[str, TaskMetadata]] = {"t1": TaskMetadata(id="t1")}
     task_config_class = DoneTaskConfig
 
     _install_calls: ClassVar[int] = 0  # class-level: install() is a classmethod
@@ -251,13 +251,9 @@ def test_double_setup_metadata_preserved():
 
     class DoubleSetupBenchmark(Benchmark):
         benchmark_metadata = BenchmarkMetadata(name="double-setup-bench", version="0.1", description="test")
-        task_metadata = {}
+        task_metadata = {tid: TaskMetadata(id=tid) for tid in task_ids}
         task_config_class = DoneTaskConfig
         _setup_calls: int = PrivateAttr(default=0)
-
-        @classmethod
-        def install(cls) -> None:
-            cls.task_metadata = {tid: TaskMetadata(id=tid) for tid in task_ids}
 
         def _setup(self) -> None:
             self._setup_calls += 1
@@ -265,7 +261,6 @@ def test_double_setup_metadata_preserved():
         def close(self) -> None:
             pass
 
-    DoubleSetupBenchmark.install()
     benchmark = DoubleSetupBenchmark()
     benchmark.setup()
     configs_first = list(benchmark.get_task_configs())
