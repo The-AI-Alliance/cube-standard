@@ -159,6 +159,10 @@ class VMResourceConfig(ResourceConfig):
     """Minimum vCPU count required. None defers to the infra's default instance size."""
     min_ram_gb: int | None = None
     """Minimum RAM (GB) required. None defers to the infra's default instance size."""
+    uefi: bool = False
+    """Boot the VM with UEFI firmware (OVMF) instead of SeaBIOS. Required for Windows 11."""
+    tpm: bool = False
+    """Attach an emulated TPM 2.0 device via swtpm. Required for Windows 11."""
 
     def requirements(self) -> set[str]:
         return {"kvm"} if self.requires_kvm else set()
