@@ -106,6 +106,10 @@ class ToolkitInfraConfig(InfraConfig):
         if ProvisionStore().get(resource, self) is None:
             self.provision(resource)
 
+        # Resolve the profile once — the eai CLI's EAI_PROFILE env var is ignored
+        # by some subcommands (notably `job exec`), so we always pass --profile.
+        profile = self.profile or os.environ.get("EAI_PROFILE")
+
         image = resource.docker_images[0]
         # DockerServiceConfig doesn't carry cpu/ram at launch time — stick to sensible
         # defaults matching DaytonaInfraConfig.  Cubes that need different resources
@@ -124,7 +128,7 @@ class ToolkitInfraConfig(InfraConfig):
         cmd += ["--", "sleep", "infinity"]
 
         logger.info("Submitting EAI job for %r (image=%s)…", resource.name, image)
-        result = _run_eai(cmd, profile=self.profile, account=self.account, timeout=self.launch_timeout_seconds)
+        result = _run_eai(cmd, profile=profile, account=self.account, timeout=self.launch_timeout_seconds)
         if result.returncode != 0:
             raise ContainerLaunchError(f"Failed to submit EAI job: {result.stderr.strip()}")
 
@@ -135,9 +139,9 @@ class ToolkitInfraConfig(InfraConfig):
             raise ContainerLaunchError(f"Could not parse job id from eai output: {result.stdout!r}") from exc
 
         logger.info("EAI job %s submitted — waiting for RUNNING…", job_id)
-        _wait_for_running(job_id, profile=self.profile, account=self.account, timeout=self.launch_timeout_seconds)
+        _wait_for_running(job_id, profile=profile, account=self.account, timeout=self.launch_timeout_seconds)
 
-        container = ToolkitContainer(job_id, profile=self.profile, account=self.account)
+        container = ToolkitContainer(job_id, profile=profile, account=self.account)
         logger.info("EAI job %s RUNNING", job_id)
 
         run_id = str(uuid.uuid4())

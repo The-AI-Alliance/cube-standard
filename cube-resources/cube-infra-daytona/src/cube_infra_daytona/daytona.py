@@ -140,6 +140,11 @@ class DaytonaInfraConfig(InfraConfig):
             "resources": Resources(**resources_kwargs),
             "auto_stop_interval": self.auto_stop_minutes,
             "ephemeral": self.ephemeral,
+            # Leave outbound network open — cubes like terminal-bench run
+            # task-level ``test.sh`` scripts that pull tools (uv, pytest) from
+            # the public internet during evaluate().  Explicit allow-lists
+            # would need per-task tuning.
+            "network_block_all": False,
         }
         if not self.ephemeral:
             create_kwargs["auto_delete_interval"] = self.auto_delete_minutes
