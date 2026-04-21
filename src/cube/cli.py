@@ -53,7 +53,7 @@ from rich.theme import Theme
 
 from cube import __version__
 from cube.core import Observation
-from cube.testing import format_observation_diff
+from cube.testing import RESET_REPRO_OBS_MISMATCH_MSG, format_observation_diff
 
 # ── Console setup ─────────────────────────────────────────────────────────────
 
@@ -141,7 +141,10 @@ def _emit_reset_repro_plain(reset_msg: str, reset_diff: str, *, file: TextIO) ->
     """Plain-text reset-repro error (no Rich markup on user-controlled *reset_msg*)."""
     print("\nReset reproducibility error:", file=file)
     if reset_diff.strip():
-        print(f"  (first task, two fresh Task instances): {reset_msg}", file=file)
+        if reset_msg == RESET_REPRO_OBS_MISMATCH_MSG:
+            print(f"  (first task, two fresh Task instances): {reset_msg}", file=file)
+        else:
+            print(f"  {reset_msg}", file=file)
         print("  A mismatch is not always a bug (e.g. time-dependent observations).", file=file)
         print(_truncate_reset_diff_text(reset_diff), file=file)
     else:

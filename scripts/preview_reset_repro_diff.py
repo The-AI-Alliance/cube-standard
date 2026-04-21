@@ -23,9 +23,8 @@ from rich.rule import Rule
 
 from cube.cli import _make_console, _print_reset_reproducibility_error_block
 from cube.core import Observation
-from cube.testing import format_observation_diff
+from cube.testing import RESET_REPRO_OBS_MISMATCH_MSG, format_observation_diff
 
-_RESET_MSG = "first observation differed between two resets"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_JSONL = _REPO_ROOT / "scripts" / "sample_trajectory.jsonl"
 
@@ -58,7 +57,7 @@ def _emit(*, label: str, reset_diff: str, width: int) -> None:
     _print_reset_reproducibility_error_block(
         dash,
         reset_ok=False,
-        reset_msg=_RESET_MSG,
+        reset_msg=RESET_REPRO_OBS_MISMATCH_MSG,
         reset_diff=reset_diff,
         panel_width=width,
     )

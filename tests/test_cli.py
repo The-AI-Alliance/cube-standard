@@ -19,6 +19,7 @@ from cube.cli import (
     cmd_test,
     main,
 )
+from cube.testing import RESET_REPRO_OBS_MISMATCH_MSG
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -362,6 +363,37 @@ def test_cmd_test_ci_mode_reset_repro_brackets_in_message_no_crash(fake_debug_in
     out = capsys.readouterr().out
     assert bad_msg in out
     assert "PASSED" in out
+
+
+def test_cmd_test_ci_mode_reset_repro_early_error_no_misleading_two_task_prefix(
+    fake_debug_in_sys_modules,
+    capsys,
+):
+    """Harness errors before two-task compare must not claim two fresh Task instances."""
+    results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+    for early_msg in ("no get_debug_benchmark", "no debug task configs"):
+        with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+            with patch("cube.testing.run_debug_suite", return_value=results):
+                with patch("cube.testing.check_reset_reproducibility", return_value=(False, early_msg, "")):
+                    cmd_test("fake_debug.debug", ci_mode=True)
+        out = capsys.readouterr().out
+        assert early_msg in out
+        assert "(first task, two fresh Task instances)" not in out
+
+
+def test_cmd_test_ci_mode_reset_repro_obs_mismatch_shows_two_task_prefix(fake_debug_in_sys_modules, capsys):
+    results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+    diff = "token:\n  first: 1\n  second: 2\n"
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results):
+            with patch(
+                "cube.testing.check_reset_reproducibility",
+                return_value=(False, RESET_REPRO_OBS_MISMATCH_MSG, diff),
+            ):
+                cmd_test("fake_debug.debug", ci_mode=True)
+    out = capsys.readouterr().out
+    assert "(first task, two fresh Task instances)" in out
+    assert RESET_REPRO_OBS_MISMATCH_MSG in out
 
 
 def test_cmd_test_ci_mode_truncates_large_reset_repro_diff(fake_debug_in_sys_modules, capsys):

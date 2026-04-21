@@ -48,6 +48,9 @@ from cube import __version__  # report.cube_version and .save()
 from cube.core import Action, ActionSchema, Observation
 from cube.task import Task
 
+# Returned when two ``reset()`` observations differ; CLI uses this to decide contextual wording.
+RESET_REPRO_OBS_MISMATCH_MSG = "first observation differed between two resets"
+
 logger = logging.getLogger(__name__)
 
 
@@ -310,7 +313,7 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str, st
                         pass
         if ok:
             return True, "", ""
-        return False, "first observation differed between two resets", diff_str
+        return False, RESET_REPRO_OBS_MISMATCH_MSG, diff_str
     finally:
         try:
             benchmark.close()
