@@ -13,6 +13,7 @@ members = [
     "cube-infra-aws",
     "cube-infra-azure",
     "cube-infra-daytona",
+    "cube-infra-toolkit",
     "cube-standard",
     "cube-vm-backend",
 ]
@@ -702,6 +703,29 @@ dev = [
 requires-dist = [
     { name = "cube-standard", editable = "." },
     { name = "daytona", specifier = ">=0.21" },
+    { name = "tenacity", specifier = ">=8.5.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0" }]
+
+[[package]]
+name = "cube-infra-toolkit"
+version = "0.1.0"
+source = { editable = "cube-resources/cube-infra-toolkit" }
+dependencies = [
+    { name = "cube-standard" },
+    { name = "tenacity" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cube-standard", editable = "." },
     { name = "tenacity", specifier = ">=8.5.0" },
 ]
 
