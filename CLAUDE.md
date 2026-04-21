@@ -69,11 +69,6 @@ tests/                          Unit + integration + backends
 
 Active proposals: `openspec/changes/`. Archived: `openspec/changes/archive/`.
 
-Historical context (not authoritative specs, kept for reference):
-- `design/main_specs.md` — earlier consolidated spec (superseded by `openspec/specs/`)
-- `design/architecture-diagram.md` — visual reference
-- `design/resource_lifecycle.md`, `design/browser-tool.md` — deep dives still useful for context
-
 ## Testing
 
 `make lint` and `make test`. For benchmark debug suite: `cube test <benchmark-name>`.
