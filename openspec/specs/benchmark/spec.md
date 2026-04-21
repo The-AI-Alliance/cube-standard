@@ -49,8 +49,7 @@ and `task_metadata` are auto-loaded from files next to the module if not declare
 - `benchmark_metadata.{json,csv}` → `benchmark_metadata_from_{json,csv}`
 - `task_metadata.{json,csv}` → `task_metadata_from_{json,csv}`
 
-If no `task_metadata` file and no declaration → `task_metadata = {}` with a warning
-(signals install-time population via `install()`).
+If no `task_metadata` file and no declaration → `TypeError` at class definition time.
 
 **Optional constructor fields:**
 ```python
@@ -65,8 +64,8 @@ seed_generator: AbstractSeedGenerator | None # yields seeds per TaskMetadata
 - `close()` — tear down what `_setup()` created
 
 **Concrete methods:**
-- `setup()` — public. Validates non-empty `task_metadata` (else errors: "run `install()`"),
-  then calls `_setup()`. Logs a debug line listing unset optional fields.
+
+- `setup()` — public. Calls `_setup()`. Logs a debug line listing unset optional fields.
 - `get_task_configs()` → `Generator[TaskConfig]` — yields one `task_config_class` per task,
   expanding via `seed_generator` if set
 - `spawn(task_config)` → `Task` — calls `task_config.make(runtime_context=..., container_backend=...)`
