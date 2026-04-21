@@ -93,13 +93,21 @@ We are in an era where AI coding agents generate more code than any team can car
 
 **Communicate through concise, iterated markdown.** The best PRs and RFCs arrive as a tight markdown document — clear problem statement, specific proposal, relevant context — refined through a few rounds of human-agent iteration before anyone else reads it. A well-drafted document respects reviewers' time and gets better feedback faster.
 
-**We loosely follow the [Open Spec](https://open-spec.org) methodology.** Design intent lives in `design/` as versioned specs. Implementation follows the spec; the spec is updated when reality diverges. When in doubt, write the spec first.
+**We follow the [OpenSpec](https://github.com/Fission-AI/OpenSpec) methodology** for managing contracts between layers. OpenSpec is a lightweight, spec-driven approach that keeps AI coding agents and human contributors aligned on the same contracts — without heavyweight processes. Each layer has a living spec in `openspec/specs/<layer>/spec.md` that defines its public API, invariants, and gotchas.
 
-## RFC Process
+The three habits:
 
-Large changes to the core protocol — new abstract methods, breaking type changes, new layers — go through an RFC before implementation.
+1. **Read** the spec for any layer you're about to touch.
+2. **Sync** the spec after merging — run `/update-openspec` in Claude Code.
+3. **Propose** before breaking — write a short delta in `openspec/changes/<name>/` so the team sees contract changes before code lands.
 
-**When an RFC is needed:**
+Full workflow, delta format, and examples: [`openspec/README.md`](openspec/README.md).
+
+## RFC / Change Proposal Process
+
+Large changes to the core protocol — new abstract methods, breaking type changes, new layers — go through a change proposal before implementation.
+
+**When a proposal is needed:**
 - Adding or changing an abstract method on `Tool`, `Task`, or `Benchmark`
 - Changing the `Observation` / `Action` / `EnvironmentOutput` data model
 - New optional protocol extensions (streaming, async, multi-agent, multi-dim reward)
@@ -114,33 +122,13 @@ Large changes to the core protocol — new abstract methods, breaking type chang
 **Process:**
 
 1. **Discuss** — Open a [GitHub Discussion](https://github.com/The-AI-Alliance/cube-standard/discussions) or issue tagged `RFC` to gauge interest.
-2. **Draft** — Copy the template below into `design/rfc_<short_name>.md` and open a PR. Prefix the PR title with `RFC:`.
-3. **Review** — Collect feedback for at least one week. The PR author is responsible for iterating on the draft.
+2. **Draft** — Create `openspec/changes/<name>/proposal.md` and `deltas.md`, open a PR prefixed `RFC:`. See [`openspec/README.md`](openspec/README.md) for the delta format.
+3. **Review** — Collect feedback for at least one week. The PR author iterates on the draft.
 4. **Merge** — A maintainer merges when there is rough consensus (no blocking objections from core contributors).
 5. **Implement** — Follow-up PRs implement the RFC. Link them back to the RFC PR.
+6. **Archive** — Move `openspec/changes/<name>/` to `openspec/changes/archive/YYYY-MM-DD-<name>/` and apply deltas to the main spec.
 
-**RFC template** (`design/rfc_<short_name>.md`):
-
-```markdown
-# RFC: <Title>
-
-## Summary
-One paragraph: what changes and why.
-
-## Motivation
-What problem does this solve? What is the cost of not doing it?
-
-## Design
-Concrete API / interface sketch. Include before/after code snippets where helpful.
-
-## Alternatives considered
-What else was explored and why it was rejected.
-
-## Open questions
-Unresolved issues that reviewers should weigh in on.
-```
-
-Existing RFCs live in [`design/`](design/).
+Active proposals live in [`openspec/changes/`](openspec/changes/).
 
 ## Known gaps / TODOs
 
