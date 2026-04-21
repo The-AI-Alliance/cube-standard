@@ -153,6 +153,12 @@ class VMResourceConfig(ResourceConfig):
     """VM-based resource (OSWorld, WindowsAgentArena, macOSWorld, AndroidWorld...)."""
 
     requires_kvm: bool = True
+    os_disk_gb: int | None = None
+    """Minimum OS disk size (GB) for task VMs. None means use the image's native size."""
+    min_cpu_cores: int | None = None
+    """Minimum vCPU count required. None defers to the infra's default instance size."""
+    min_ram_gb: int | None = None
+    """Minimum RAM (GB) required. None defers to the infra's default instance size."""
 
     def requirements(self) -> set[str]:
         return {"kvm"} if self.requires_kvm else set()
