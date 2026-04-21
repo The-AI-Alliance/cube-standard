@@ -240,10 +240,41 @@ class LocalDockerServiceHandle(ResourceHandle):
     ``endpoints`` maps service names (from DockerServiceConfig.services) to
     ``http://127.0.0.1:{port}`` URLs — the same ports declared in the resource,
     since the launch_script binds them directly on the host.
+
+    ``container`` returns a ``cube.container.Container`` wrapping the first started
+    container — convenient for task-scoped (L3) single-container resources where
+    the cube's tool layer needs ``.exec()`` semantics. Only available when exactly
+    one container was started; raises otherwise.
     """
 
     _entry_id: str = field(default="", repr=False)
     _container_ids: list[str] = field(default_factory=list, repr=False)
+    _container_cache: object | None = field(default=None, repr=False)
+
+    @property
+    def container(self):
+        """Return a ``Container`` wrapper for single-container L3 resources.
+
+        Built lazily on first access.  Caller must not call ``stop()`` on the wrapper
+        directly — this handle owns the lifecycle; use ``self.close()`` instead.
+        """
+        if self._container_cache is not None:
+            return self._container_cache
+        if len(self._container_ids) != 1:
+            raise RuntimeError(
+                f"LocalDockerServiceHandle.container is only defined for single-container "
+                f"resources (got {len(self._container_ids)} containers)."
+            )
+        # Import lazily to avoid circular import (backends.local imports resource).
+        import docker  # type: ignore
+
+        from cube.backends.local import LocalContainer
+
+        client = docker.from_env()
+        docker_container = client.containers.get(self._container_ids[0])
+        # remove_on_close=False — this handle, not the wrapper, owns the lifecycle.
+        self._container_cache = LocalContainer(docker_container, client, remove_on_close=False)
+        return self._container_cache
 
     def close(self) -> None:
         """Stop and remove all containers started by the launch_script."""
