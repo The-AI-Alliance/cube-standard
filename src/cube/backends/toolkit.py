@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 import shlex
 import socket
@@ -177,6 +178,7 @@ class ToolkitContainer(Container):
         self._exec_mode = exec_mode
         self._port_forwards: dict[int, subprocess.Popen] = {}
         self._port_map: dict[int, int] = {}
+        self._port_forward_logs: dict[int, str] = {}
         self._sidecar_token: str | None = None
         self._sidecar_local_port: int | None = None
         self._sidecar_ready = False
@@ -188,21 +190,72 @@ class ToolkitContainer(Container):
     # ------------------------- sidecar bootstrap -------------------------
 
     def _bootstrap_sidecar(self) -> None:
-        """Upload server, launch, port-forward, health-check. Idempotent."""
+        """Upload server, launch, port-forward, health-check.
+
+        Because the eai-exec RPC that uploads + starts the server is itself
+        subject to the CLOSE_WAIT hang we're trying to fix, we can't trust
+        the bootstrap's exit code — SIGTERMing the remote bash does NOT kill
+        the setsid-detached python child that's already running.  Instead:
+        retry the whole bootstrap up to 3 times, and treat the health probe
+        as the only ground truth for "sidecar is usable".
+        """
         if self._sidecar_ready or self._exec_mode == "direct":
             return
 
-        # 256-bit token; stays in memory on the client, and on disk in the
-        # container only as /tmp/.cube_sidecar_token (chmod 600, uid 13011).
+        # 256-bit token, reused across bootstrap retries.  Server reads from
+        # /tmp/.cube_sidecar_token (0600) at startup, so writing the same
+        # content on each retry is idempotent.
         token = secrets.token_urlsafe(32)
-        server_src = _SIDECAR_SERVER_PATH.read_text()
+        last_diag = ""
 
-        # Heredoc-upload the server, write the token to a 0600 file, launch
-        # nohup in background. The token never appears on the process argv —
-        # it flows via stdin of one eai exec and lands in a 0600 file.
-        bootstrap_script = (
-            "set -e\n"
+        # Open the tunnel BEFORE the first `eai job exec`: when exec hangs
+        # (the CLOSE_WAIT bug) and we kill its process group, the eai tunnel
+        # gateway gets into a bad state for this job and new port-forwards
+        # consistently fail with "websocket: bad handshake".  Forwarding
+        # first, while the gateway is fresh, avoids the corruption.
+        local_port = self.forward_port(_SIDECAR_CONTAINER_PORT)
+
+        for attempt in range(3):
+            self._kick_sidecar(token)
+            if self._probe_health(local_port, timeout=_SIDECAR_HEALTH_TIMEOUT):
+                self._sidecar_token = token
+                self._sidecar_local_port = local_port
+                self._sidecar_ready = True
+                logger.info(
+                    "Sidecar ready for job %s on local port %d (attempt %d)",
+                    self._job_id[:8], local_port, attempt + 1,
+                )
+                return
+            last_diag = self._fetch_sidecar_diagnostics()
+            logger.warning(
+                "Sidecar health failed on attempt %d/3 for job %s. Diag:\n%s",
+                attempt + 1, self._job_id[:8], last_diag,
+            )
+
+        raise ContainerLaunchError(
+            f"Sidecar /health never reached on local port {local_port} "
+            f"after 3 bootstrap attempts.\n--- last server diagnostics ---\n{last_diag}"
+        )
+
+    def _kick_sidecar(self, token: str) -> None:
+        """Upload the server + token, kill any prior instance, start detached.
+
+        Idempotent: safe to call repeatedly.  Ignores bootstrap exit code —
+        the health probe is what decides success.  The eai CLI often SIGTERMs
+        the remote bash when the response-delivery channel hangs (CLOSE_WAIT);
+        setsid --fork detaches python from that signal, so the server survives
+        even when the bash appears to have failed with rc=143.
+        """
+        server_src = _SIDECAR_SERVER_PATH.read_text()
+        script = (
             "umask 077\n"
+            # pgrep matches the current bash's argv (it contains this script,
+            # which references '_cube_sidecar.py' in the heredoc below).  $$
+            # excludes us from the kill set.
+            "pgrep -f _cube_sidecar.py 2>/dev/null "
+            "| grep -vw \"$$\" "
+            "| xargs -r kill 2>/dev/null || true\n"
+            "sleep 0.3\n"
             "cat > /tmp/_cube_sidecar.py <<'CUBE_SIDECAR_EOF'\n"
             f"{server_src}\n"
             "CUBE_SIDECAR_EOF\n"
@@ -212,53 +265,93 @@ class ToolkitContainer(Container):
             "chmod 600 /tmp/.cube_sidecar_token /tmp/_cube_sidecar.py\n"
             f"export CUBE_SIDECAR_PORT={_SIDECAR_CONTAINER_PORT}\n"
             "export CUBE_SIDECAR_TOKEN_FILE=/tmp/.cube_sidecar_token\n"
-            "python3 --version >/dev/null 2>&1 || { echo NO_PYTHON3; exit 1; }\n"
-            "nohup python3 /tmp/_cube_sidecar.py "
-            ">/tmp/_cube_sidecar.log 2>&1 &\n"
-            "disown\n"
-            "sleep 0.5\n"
-            "echo SIDECAR_KICKED\n"
+            # setsid --fork puts python in a new session AND makes it a child
+            # of pid 1, so when the eai exec closes (taking bash with it), the
+            # python survives.  stdin from /dev/null prevents SIGHUP on close.
+            "setsid --fork python3 /tmp/_cube_sidecar.py "
+            "</dev/null >/tmp/_cube_sidecar.log 2>&1\n"
+            "echo KICKED\n"
         )
-
         logger.info("Bootstrapping sidecar in job %s …", self._job_id[:8])
-        result = _run_eai(
-            ["job", "exec", self._job_id, "--", "bash", "-c", bootstrap_script],
-            profile=self._profile,
-            account=self._account,
-            timeout=_SIDECAR_BOOTSTRAP_TIMEOUT,
-        )
-        if "SIDECAR_KICKED" not in result.stdout:
-            raise ContainerLaunchError(
-                f"Sidecar bootstrap failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+        try:
+            _run_eai(
+                ["job", "exec", self._job_id, "--", "bash", "-c", script],
+                profile=self._profile,
+                account=self._account,
+                timeout=_SIDECAR_BOOTSTRAP_TIMEOUT,
+                retries=0,  # we retry at the bootstrap level via _bootstrap_sidecar
             )
+        except ContainerExecError as exc:
+            # CLI-level timeout — bash was killed, but setsid-forked python
+            # probably survived.  Proceed to health probe to find out.
+            logger.info("Bootstrap RPC timed out for job %s (%s); health probe will decide",
+                        self._job_id[:8], exc)
 
-        local_port = self.forward_port(_SIDECAR_CONTAINER_PORT)
+    def _reset_sidecar_port_forward(self) -> None:
+        """Kill any existing port-forward for the sidecar port so forward_port reopens it."""
+        port = _SIDECAR_CONTAINER_PORT
+        proc = self._port_forwards.pop(port, None)
+        self._port_map.pop(port, None)
+        log_path = self._port_forward_logs.pop(port, None)
+        if proc is not None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        if log_path:
+            try:
+                os.unlink(log_path)
+            except Exception:
+                pass
 
-        # Poll /health. Fresh port-forwards take a moment; the server also
-        # takes ~100-300ms to bind.
-        deadline = time.monotonic() + _SIDECAR_HEALTH_TIMEOUT
-        last_err: Exception | None = None
+    def _probe_health(self, local_port: int, *, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
                 with urllib.request.urlopen(
                     f"http://127.0.0.1:{local_port}/health", timeout=1.0
                 ) as r:
                     if r.status == 200:
-                        self._sidecar_token = token
-                        self._sidecar_local_port = local_port
-                        self._sidecar_ready = True
-                        logger.info(
-                            "Sidecar ready for job %s on local port %d",
-                            self._job_id[:8],
-                            local_port,
-                        )
-                        return
-            except (urllib.error.URLError, ConnectionError, OSError) as exc:
-                last_err = exc
+                        return True
+            except (urllib.error.URLError, ConnectionError, OSError):
                 time.sleep(0.2)
-        raise ContainerLaunchError(
-            f"Sidecar /health never returned 200 within {_SIDECAR_HEALTH_TIMEOUT}s: {last_err}"
-        )
+        return False
+
+    def _fetch_sidecar_diagnostics(self) -> str:
+        parts = []
+        try:
+            r = _run_eai(
+                ["job", "exec", self._job_id, "--", "bash", "-c",
+                 "tail -20 /tmp/_cube_sidecar.log 2>/dev/null; "
+                 "echo ---ps---; ps -ef | grep _cube_sidecar | grep -v grep; "
+                 "echo ---curl---; curl -sS --max-time 2 http://127.0.0.1:8787/health 2>&1 | head -5"],
+                profile=self._profile,
+                account=self._account,
+                timeout=30,
+                retries=0,
+            )
+            parts.append(r.stdout.strip() or "<empty>")
+        except Exception as exc:
+            parts.append(f"<diagnostics fetch failed: {exc}>")
+
+        # Also capture the eai port-forward process's own stderr — silent tunnel
+        # failures are often visible only here.
+        log_path = self._port_forward_logs.get(_SIDECAR_CONTAINER_PORT)
+        if log_path:
+            try:
+                with open(log_path) as f:
+                    pf_err = f.read().strip()
+            except Exception as exc:
+                pf_err = f"<read failed: {exc}>"
+            proc = self._port_forwards.get(_SIDECAR_CONTAINER_PORT)
+            pf_alive = proc is not None and proc.poll() is None
+            parts.append(f"---port-forward alive={pf_alive}---\n{pf_err or '<empty>'}")
+
+        return "\n".join(parts)
 
     # ------------------------- exec -------------------------
 
@@ -566,18 +659,33 @@ class ToolkitContainer(Container):
             container_port,
             self._job_id,
         )
+        # Capture stderr to a tempfile so we can diagnose silent failures
+        # ("exited 0 but the tunnel never actually works").
+        import tempfile
+        stderr_file = tempfile.NamedTemporaryFile(
+            prefix=f"eai-pf-{container_port}-", suffix=".log", delete=False, mode="w"
+        )
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=stderr_file,
         )
 
         # Give port-forward a moment to establish
         time.sleep(2)
         if proc.poll() is not None:
+            stderr_file.close()
+            try:
+                with open(stderr_file.name) as f:
+                    err_text = f.read().strip()
+            except Exception:
+                err_text = "<unavailable>"
             raise ContainerExecError(
-                f"Port-forward process exited immediately (rc={proc.returncode}) for port {container_port}"
+                f"Port-forward process exited immediately (rc={proc.returncode}) "
+                f"for port {container_port}. stderr: {err_text}"
             )
+        logger.debug("Port-forward stderr log at %s", stderr_file.name)
+        self._port_forward_logs[container_port] = stderr_file.name
 
         self._port_forwards[container_port] = proc
         self._port_map[container_port] = local_port

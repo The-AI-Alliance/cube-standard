@@ -18,6 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Literal
 
 from cube.backends.toolkit import ToolkitContainer
 from cube.container import Container, ContainerLaunchError
@@ -72,6 +73,10 @@ class ToolkitInfraConfig(InfraConfig):
     account: str | None = None
     preemptable: bool = False
     launch_timeout_seconds: int = 600
+    # "sidecar" routes .exec() via an in-container HTTP server (bypasses the
+    # eai-exec CLOSE_WAIT hang bug); "direct" keeps every .exec() on the flaky
+    # eai job exec RPC.  Sidecar is strongly preferred; direct is a debug/fallback.
+    exec_mode: Literal["sidecar", "direct"] = "sidecar"
 
     # ── InfraConfig interface ─────────────────────────────────────────────────
 
@@ -121,6 +126,9 @@ class ToolkitInfraConfig(InfraConfig):
             cmd.append("--preemptable")
         else:
             cmd.append("--non-preemptable")
+        # --tunnel enables the sidecar gateway used by `eai job port-forward`,
+        # which ToolkitContainer's sidecar exec_mode relies on.
+        cmd += ["--tunnel"]
         cmd += ["--format", "json", "--no-header"]
         cmd += ["-i", image]
         cmd += ["--cpu", str(cpu)]
@@ -141,7 +149,9 @@ class ToolkitInfraConfig(InfraConfig):
         logger.info("EAI job %s submitted — waiting for RUNNING…", job_id)
         _wait_for_running(job_id, profile=profile, account=self.account, timeout=self.launch_timeout_seconds)
 
-        container = ToolkitContainer(job_id, profile=profile, account=self.account)
+        container = ToolkitContainer(
+            job_id, profile=profile, account=self.account, exec_mode=self.exec_mode,
+        )
         logger.info("EAI job %s RUNNING", job_id)
 
         run_id = str(uuid.uuid4())
