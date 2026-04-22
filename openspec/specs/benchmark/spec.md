@@ -230,10 +230,71 @@ with config.make(infra) as bench:   # resources provisioned + setup() run
 
 ## Composition
 
-See `cube.benchmark` additions for `CompositeBenchmarkConfig`,
-`CompositeBenchmark`, and `CompositeTaskConfig` (landing incrementally on the
-same branch). They allow combining multiple benchmarks into a single
-serializable suite while routing tasks back to their source sub-benchmark.
+### `CompositeBenchmarkConfig` (in `cube.benchmark`)
+Combines multiple `BenchmarkConfig`s into one serializable suite. Any
+sub-config may itself be another `CompositeBenchmarkConfig` — composites nest
+freely.
+
+```python
+class CompositeBenchmarkConfig(BenchmarkConfig):
+    _skip_init_subclass_checks: ClassVar[bool] = True
+    task_config_class: ClassVar = CompositeTaskConfig
+    benchmark_class: ClassVar = CompositeBenchmark
+
+    sub_configs: list[SerializeAsAny[BenchmarkConfig]]
+    composite_name: str = "composite"
+    composite_version: str = "0.0.0"
+    composite_description: str = ""
+```
+
+- `benchmark_metadata` and `task_metadata` are exposed as **@property** that
+  compute from `sub_configs` at access time. `task_metadata` keys are prefixed
+  by the sub-benchmark's name (`"{sub.name}/{task_id}"`), guaranteeing
+  uniqueness across the composite even when two sub-benchmarks share a task id.
+- Construction raises `ValueError` if two sub-configs share a
+  `benchmark_metadata.name`.
+- `get_task_configs()` wraps every emitted config in `CompositeTaskConfig`
+  (see `cube.task`). The wrapper's `task_id` is the prefixed id; the inner
+  config keeps its native un-prefixed id so the sub-benchmark's ClassVar
+  lookup still works on workers.
+- `task_ids` (instance-level subset) filters at the prefixed level.
+- `make(infra)` calls `sub.make(infra)` for every sub_config in order. On any
+  failure, already-built sub-benchmarks are closed before the error
+  propagates. Returns a `CompositeBenchmark` holding
+  `sub_benchmarks: dict[str, Benchmark]`.
+- `install()` and `uninstall()` are **instance methods** (not classmethods like
+  the base) that delegate to every `sub.install()` / `sub.uninstall()` —
+  because the list of sub-configs is instance state.
+
+### `CompositeTaskConfig` (in `cube.task`)
+`TaskConfig` subclass that wraps a sub-config's `TaskConfig` with
+`sub_name: str` and `inner: TaskConfig`. `make()` delegates to
+`inner.make()`. The wrapper routes the task back to its source sub-benchmark
+at `CompositeBenchmark.spawn()` time.
+
+### `CompositeBenchmark`
+Runtime pair. Holds `sub_benchmarks: dict[str, Benchmark]`. `spawn()` routes
+a `CompositeTaskConfig` to `sub_benchmarks[wrapper.sub_name].spawn(wrapper.inner)`;
+passing any other `TaskConfig` raises `ValueError`. `close()` closes every
+sub-benchmark; exceptions are logged but not re-raised so one failing
+sub-benchmark does not block teardown.
+
+### Usage
+```python
+suite = CompositeBenchmarkConfig(
+    sub_configs=[
+        WorkArenaConfig().named_subset("l1"),
+        OSWorldConfig().subset_from_list(["chrome-1", "chrome-2"]),
+        ArithmeticConfig(),
+    ],
+    composite_name="multi-suite",
+)
+suite.install()                     # delegates to each sub_config.install()
+with suite.make(infra) as bench:
+    for tc in suite.get_task_configs():
+        task = bench.spawn(tc)
+        ...
+```
 
 ## Gotchas
 

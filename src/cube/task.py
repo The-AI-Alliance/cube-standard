@@ -360,8 +360,8 @@ class TaskConfig(ABC, TypedBaseModel):
             container_backend: HOW to run containers (local, Modal, ...) created by user and passed to benchmark constructor, then passed from Benchmark.spawn().
 
         Example:
-        >>> task_metadata = MyBenchmark.task_metadata[self.task_id]
-        >>> task_execution_info = MyBenchmark.load_task_execution_info(self.task_id)
+        >>> task_metadata = MyBenchmarkConfig.task_metadata[self.task_id]
+        >>> task_execution_info = MyBenchmarkConfig.load_task_execution_info(self.task_id)
         >>> task_metadata = task_metadata.model_copy(update={"extra_info": task_execution_info})
         >>> return MyTask(
         ...     metadata=task_metadata,
@@ -371,3 +371,39 @@ class TaskConfig(ABC, TypedBaseModel):
         ... )
         """
         pass
+
+
+class CompositeTaskConfig(TaskConfig):
+    """TaskConfig wrapper carrying composite routing info.
+
+    Composite benchmarks emit these from ``get_task_configs`` so that
+    ``CompositeBenchmark.spawn`` knows which sub-benchmark a given task
+    belongs to. The wrapper's ``task_id`` is prefixed with the sub-benchmark
+    name (``"{sub_name}/{inner.task_id}"``) for display/uniqueness; the
+    inner ``TaskConfig`` keeps its native un-prefixed id so each
+    sub-benchmark's ClassVar lookup still works on workers.
+
+    ``make()`` delegates to ``inner.make()`` — the wrapper is inert at the
+    task level, routing only matters at spawn time.
+    """
+
+    sub_name: str = Field(
+        ...,
+        description=("Name of the sub-benchmark this task belongs to (key into CompositeBenchmark.sub_benchmarks)."),
+    )
+    inner: TaskConfig = Field(
+        ...,
+        description=(
+            "The underlying TaskConfig emitted by the sub-benchmark. Its task_id is the native un-prefixed id."
+        ),
+    )
+
+    def make(
+        self,
+        runtime_context: RuntimeContext | None = None,
+        container_backend: ContainerBackend | None = None,
+    ) -> Task:
+        return self.inner.make(
+            runtime_context=runtime_context,
+            container_backend=container_backend,
+        )

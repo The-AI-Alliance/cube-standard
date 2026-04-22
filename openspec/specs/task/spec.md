@@ -122,6 +122,26 @@ narrows the view via the instance-level `task_ids` field without touching the
 ClassVar. Workers can therefore deserialize a `TaskConfig` in isolation and
 always find a valid `TaskMetadata` entry by id.
 
+### `CompositeTaskConfig`
+
+```python
+class CompositeTaskConfig(TaskConfig):
+    sub_name: str                    # key into CompositeBenchmark.sub_benchmarks
+    inner: TaskConfig                # the underlying sub-config's TaskConfig
+
+    def make(self, runtime_context=None, container_backend=None) -> Task:
+        return self.inner.make(runtime_context, container_backend)
+```
+
+Wrapper emitted by `CompositeBenchmarkConfig.get_task_configs()`. Its
+`task_id` is the composite-prefixed id (`"{sub_name}/{inner.task_id}"`) so
+every emitted id is unique across the composite; `inner.task_id` keeps the
+native un-prefixed id so the sub-benchmark's ClassVar lookup still works on
+workers. `make()` delegates to the inner — routing matters only at
+`CompositeBenchmark.spawn()` time. Because the wrapper is itself a
+`TaskConfig`, every generic path that consumes `TaskConfig`s works
+unchanged.
+
 ## Invariants
 
 1. `reset()` must call `self.tool.reset()` (implementer responsibility).

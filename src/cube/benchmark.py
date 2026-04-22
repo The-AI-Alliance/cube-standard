@@ -55,14 +55,14 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, ClassVar, Generator
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, SerializeAsAny
 
 from cube import get_cache_dir
 from cube.container import ContainerBackend
 from cube.core import TypedBaseModel
 from cube.resource import InfraConfig, ResourceConfig
 from cube.seed import AbstractSeedGenerator
-from cube.task import RuntimeContext, Task, TaskConfig, TaskMetadata
+from cube.task import CompositeTaskConfig, RuntimeContext, Task, TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
 
 logger = logging.getLogger(__name__)
@@ -377,8 +377,10 @@ class BenchmarkConfig(TypedBaseModel, ABC):
 
     @property
     def name(self) -> str:
-        """Benchmark name from the class-level ``benchmark_metadata``."""
-        return type(self).benchmark_metadata.name
+        """Benchmark name from ``benchmark_metadata``. Resolves via the
+        descriptor chain, so composites' @property overrides work here too.
+        """
+        return self.benchmark_metadata.name
 
     @property
     def num_tasks(self) -> int:
@@ -386,13 +388,14 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         return len(self.tasks())
 
     def tasks(self) -> dict[str, TaskMetadata]:
-        """Return the current task view — class-level ``task_metadata`` filtered by ``task_ids``.
+        """Return the current task view — ``task_metadata`` filtered by ``task_ids``.
 
-        When ``task_ids`` is None, returns the full ClassVar dict. Otherwise
-        returns a freshly-built dict containing only the declared ids, in the
-        order given by ``task_ids``.
+        When ``task_ids`` is None, returns the full ``task_metadata`` dict.
+        Otherwise returns a freshly-built dict containing only the declared
+        ids, in the order given by ``task_ids``. Access via ``self.`` so the
+        composite's @property override resolves correctly.
         """
-        full = type(self).task_metadata
+        full = self.task_metadata
         if self.task_ids is None:
             return full
         return {tid: full[tid] for tid in self.task_ids}
@@ -683,3 +686,209 @@ class Benchmark(ABC):
 
     def __exit__(self, *_exc_info) -> None:
         self.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Composite benchmarks
+#
+# Combine multiple BenchmarkConfigs into a single serializable suite.
+# Tasks are prefixed with their sub-benchmark's name so the composite exposes a
+# unique id per task. Routing back to the source sub-benchmark happens through
+# a ``CompositeTaskConfig`` wrapper that carries the sub-benchmark's name and
+# the original (un-prefixed) TaskConfig. The wrapper is itself a ``TaskConfig``
+# so every generic code path that consumes a TaskConfig continues to work.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class CompositeBenchmark(Benchmark):
+    """Runtime pair of ``CompositeBenchmarkConfig``.
+
+    Holds a dict of live sub-benchmarks keyed by sub_name and routes
+    ``spawn(CompositeTaskConfig)`` to the matching sub-benchmark. Does not
+    own any shared infrastructure of its own — each sub-benchmark has its
+    own ``_runtime_context`` and its own provisioned resources.
+    """
+
+    def __init__(self, config: "CompositeBenchmarkConfig") -> None:
+        super().__init__(config)
+        self.config: CompositeBenchmarkConfig = config  # type: ignore[assignment]
+        self.sub_benchmarks: dict[str, Benchmark] = {}
+
+    def _setup(self) -> None:
+        """No-op. Sub-benchmarks are instantiated by CompositeBenchmarkConfig.make
+        *before* this class is constructed, and are already live when we get here.
+        """
+
+    def close(self) -> None:
+        """Close every sub-benchmark; exceptions are logged but not re-raised so
+        one failing sub-benchmark does not block teardown of the others.
+        """
+        for sub_name, sub_bench in self.sub_benchmarks.items():
+            try:
+                sub_bench.close()
+            except Exception:
+                logger.exception("Error closing sub-benchmark %r", sub_name)
+
+    def spawn(self, task_config: TaskConfig) -> Task:
+        if not isinstance(task_config, CompositeTaskConfig):
+            raise ValueError(
+                f"CompositeBenchmark.spawn() expects a CompositeTaskConfig (wrap your TaskConfig first), "
+                f"got {type(task_config).__name__}"
+            )
+        if task_config.sub_name not in self.sub_benchmarks:
+            raise ValueError(
+                f"Unknown sub-benchmark {task_config.sub_name!r}; known: {list(self.sub_benchmarks.keys())}"
+            )
+        return self.sub_benchmarks[task_config.sub_name].spawn(task_config.inner)
+
+
+class CompositeBenchmarkConfig(BenchmarkConfig):
+    """Composition of multiple BenchmarkConfigs into one serializable suite.
+
+    ``sub_configs`` is a list of any ``BenchmarkConfig`` subclasses (including
+    other ``CompositeBenchmarkConfig`` instances — composites nest freely).
+    The composite exposes merged, prefixed views of ``benchmark_metadata`` and
+    ``task_metadata`` derived from its sub_configs; no per-composite metadata
+    is stored statically.
+
+    Sub-benchmark names (``sub.benchmark_metadata.name``) must be unique across
+    the composite — duplicate names raise ``ValueError`` at construction.
+
+    Typical usage::
+
+        suite = CompositeBenchmarkConfig(
+            sub_configs=[
+                WorkArenaConfig().named_subset("l1"),
+                OSWorldConfig().subset_from_list(["chrome-1", "chrome-2"]),
+                ArithmeticConfig(),
+            ],
+            composite_name="my-multi-suite",
+        )
+        with suite.make(infra) as bench:
+            for tc in suite.get_task_configs():
+                task = bench.spawn(tc)
+                ...
+    """
+
+    _skip_init_subclass_checks: ClassVar[bool] = True
+
+    # Fixed ClassVars that satisfy BenchmarkConfig's contract without requiring
+    # user declaration. ``benchmark_metadata`` and ``task_metadata`` are
+    # overridden as @property below so they reflect the current sub_configs.
+    task_config_class: ClassVar[type[TaskConfig]] = CompositeTaskConfig
+    benchmark_class: ClassVar[type[Benchmark]] = CompositeBenchmark
+
+    # SerializeAsAny forces each element to serialize using its runtime type's
+    # full field set, so subclass-specific fields (composite_name, sub_configs on
+    # nested composites, infra knobs on sub-configs, etc.) survive a JSON round
+    # trip. Without it Pydantic dumps only the base BenchmarkConfig fields.
+    sub_configs: list[SerializeAsAny[BenchmarkConfig]] = Field(
+        ...,
+        description=(
+            "Ordered list of BenchmarkConfigs to compose. Order is preserved in "
+            "``get_task_configs``. Each sub-config's benchmark_metadata.name must "
+            "be unique across the list."
+        ),
+    )
+    composite_name: str = Field(
+        default="composite",
+        description="Display name for this composite; surfaces in benchmark_metadata.name.",
+    )
+    composite_version: str = Field(default="0.0.0", description="Version label for this composite.")
+    composite_description: str = Field(default="", description="Description for this composite.")
+
+    def __init__(self, **data: Any) -> None:
+        super().__init__(**data)
+        # Check sub-benchmark name uniqueness at construction time.
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for sub in self.sub_configs:
+            name = sub.name
+            if name in seen:
+                duplicates.append(name)
+            seen.add(name)
+        if duplicates:
+            raise ValueError(
+                f"CompositeBenchmarkConfig requires unique sub-benchmark names; found duplicates: {duplicates}"
+            )
+
+    @property
+    def benchmark_metadata(self) -> BenchmarkMetadata:  # type: ignore[override]
+        """Computed metadata reflecting the composite's current sub_configs."""
+        return BenchmarkMetadata(
+            name=self.composite_name,
+            version=self.composite_version,
+            description=self.composite_description,
+            num_tasks=sum(sub.num_tasks for sub in self.sub_configs),
+            tags=sorted({t for sub in self.sub_configs for t in sub.benchmark_metadata.tags}),
+        )
+
+    @property
+    def task_metadata(self) -> dict[str, TaskMetadata]:  # type: ignore[override]
+        """Merged view with keys prefixed by sub-benchmark name (``"{sub_name}/{task_id}"``)."""
+        merged: dict[str, TaskMetadata] = {}
+        for sub in self.sub_configs:
+            sub_name = sub.name
+            for tid, tm in sub.tasks().items():
+                merged[f"{sub_name}/{tid}"] = tm
+        return merged
+
+    # tasks() is inherited from BenchmarkConfig and reads ``task_metadata`` (our
+    # property) — so subsetting via ``task_ids`` on the composite continues to
+    # work. Callers should use prefixed ids.
+
+    def get_task_configs(self) -> Generator[TaskConfig, None, None]:  # type: ignore[override]
+        """Yield ``CompositeTaskConfig`` wrappers over each sub-config's task configs.
+
+        ``task_ids`` (instance-level subset) filters at the composite level:
+        if set, only prefixed ids in the list are emitted. Sub-configs still
+        emit their full configured sets — filtering is applied after wrapping.
+        """
+        allowed: set[str] | None = set(self.task_ids) if self.task_ids is not None else None
+        for sub in self.sub_configs:
+            sub_name = sub.name
+            for inner in sub.get_task_configs():
+                wrapped_id = f"{sub_name}/{inner.task_id}"
+                if allowed is not None and wrapped_id not in allowed:
+                    continue
+                yield CompositeTaskConfig(
+                    task_id=wrapped_id,
+                    tool_config=inner.tool_config,
+                    seed=inner.seed,
+                    sub_name=sub_name,
+                    inner=inner,
+                )
+
+    def make(self, infra: InfraConfig | None = None) -> CompositeBenchmark:
+        """Instantiate every sub-benchmark and wire them into a CompositeBenchmark.
+
+        Each sub-config's ``make(infra)`` is called in order; on any failure,
+        already-built sub-benchmarks are closed before the error propagates.
+        """
+        composite = CompositeBenchmark(config=self)
+        try:
+            for sub in self.sub_configs:
+                composite.sub_benchmarks[sub.name] = sub.make(infra)
+        except Exception:
+            for sub_bench in composite.sub_benchmarks.values():
+                try:
+                    sub_bench.close()
+                except Exception:
+                    logger.exception("Error closing partially-initialised sub-benchmark")
+            raise
+        composite.setup()  # no-op for CompositeBenchmark; kept for consistency
+        return composite
+
+    # Class-level data lifecycle on composites: delegate to every sub-config.
+    # These are instance methods here (unlike BenchmarkConfig's classmethods)
+    # because a composite's sub-configs are instance state.
+
+    def install(self) -> None:  # type: ignore[override]
+        """Install every sub-config. Idempotent; safe to call multiple times."""
+        for sub in self.sub_configs:
+            sub.install()
+
+    def uninstall(self) -> None:  # type: ignore[override]
+        """Uninstall every sub-config."""
+        for sub in self.sub_configs:
+            sub.uninstall()
