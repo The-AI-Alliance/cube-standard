@@ -186,11 +186,12 @@ class ToolkitContainer(Container):
             ["job", "exec", self._job_id, "--", "bash", "-c", wrapped],
             profile=self._profile,
             account=self._account,
-            # Generous CLI buffer: eai job exec can add tens of seconds of
-            # overhead per call for authentication + tunnel setup, especially
-            # under cluster load.  Without this margin, the outer subprocess
-            # timeout fires before the inner `timeout ${N}s` has even finished.
-            timeout=effective_timeout + 120,
+            # Tight CLI buffer: the inner `timeout ${N}s` already bounds the
+            # command, so this buffer only needs to cover ``eai``'s wire-up
+            # and response-delivery overhead (normally <5s).  Keeping it tight
+            # makes _run_eai's retry-on-hang fire quickly instead of waiting a
+            # full extra minute on every hung call.
+            timeout=effective_timeout + 30,
         )
         duration = time.monotonic() - start
         logger.info("exec [%s]: done in %.1fs, exit_code=%s", self._job_id[:8], duration, result.returncode)
