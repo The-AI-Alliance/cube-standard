@@ -31,10 +31,17 @@ def build_docker_run_script(
     Used as the ``launch_script`` on ``DockerServiceConfig(scope="task")``.  Infras that
     don't shell-out to bash (Daytona, Toolkit) ignore the script and create the container
     directly from ``docker_images[0]``.
+
+    Tags the container with ``--label cube.launch=$CUBE_LAUNCH_ID`` — ``LocalInfraConfig``
+    injects ``CUBE_LAUNCH_ID`` into the shell env before running the script, so the
+    label filter in ``_launch_docker_service`` can identify just this container under
+    concurrent launches (pytest-xdist, Ray workers, etc.).  ``:-unlabeled`` lets the
+    script still run when invoked outside the infra (manual debugging).
     """
     return (
         f"docker run -d "
         f"--name {container_name} "
+        f'--label "cube.launch=${{CUBE_LAUNCH_ID:-unlabeled}}" '
         f"--memory={int(ram_gb * 1024)}m "
         f"--cpus={cpu_cores} "
         f"{image} "
