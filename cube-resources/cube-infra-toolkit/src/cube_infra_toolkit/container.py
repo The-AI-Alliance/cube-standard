@@ -182,6 +182,34 @@ class ToolkitContainer(Container):
 
     # ------------------------- sidecar bootstrap -------------------------
 
+    def _ensure_python3(self) -> None:
+        """Install python3 via apt if the image doesn't have it.
+
+        The sidecar server is a Python script — it can't start without python3.
+        Minimal images (bare LaTeX, Alpine-derived, etc.) often omit it.
+        Uses direct eai exec (bypasses sidecar which doesn't exist yet).
+        """
+        check = _run_eai(
+            ["job", "exec", self._job_id, "--", "bash", "-c", "python3 --version 2>/dev/null && echo HAS_PYTHON || echo NO_PYTHON"],
+            eai_path=self._eai_path,
+            profile=self._profile,
+            account=self._account,
+            timeout=15,
+            retries=1,
+        )
+        if "NO_PYTHON" not in check.stdout:
+            return
+        logger.info("python3 missing in job %s — installing via apt-get", self._job_id[:8])
+        _run_eai(
+            ["job", "exec", self._job_id, "--", "bash", "-c",
+             "apt-get update -qq && apt-get install -y --no-install-recommends python3 python3-pip 2>&1"],
+            eai_path=self._eai_path,
+            profile=self._profile,
+            account=self._account,
+            timeout=120,
+            retries=1,
+        )
+
     def _bootstrap_sidecar(self) -> None:
         """Upload server, launch, port-forward, health-check.
 
@@ -197,6 +225,10 @@ class ToolkitContainer(Container):
 
         token = secrets.token_urlsafe(32)
         last_diag = ""
+
+        # Ensure python3 is available — the sidecar server is a Python script.
+        # Some minimal images (e.g. bare LaTeX) ship without it; install via apt.
+        self._ensure_python3()
 
         # Open the tunnel BEFORE the first `eai job exec`: when exec hangs
         # (the CLOSE_WAIT bug) and we kill its process group, the eai tunnel

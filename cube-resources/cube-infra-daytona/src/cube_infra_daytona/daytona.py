@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -26,6 +27,7 @@ from daytona import (
     Resources,
 )
 
+from cube.container import ContainerLaunchError
 from cube.resource import (
     DockerServiceConfig,
     InfraConfig,
@@ -123,7 +125,21 @@ class DaytonaInfraConfig(InfraConfig):
             create_kwargs["auto_delete_interval"] = self.auto_delete_minutes
 
         params = CreateSandboxFromImageParams(**create_kwargs)
-        sandbox = client.create(params, timeout=self.launch_timeout_seconds)
+        # Retry on quota errors (parallel launches can transiently exceed tier
+        # limits while prior sandboxes are still shutting down).
+        for _attempt in range(3):
+            try:
+                sandbox = client.create(params, timeout=self.launch_timeout_seconds)
+                break
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "memory limit exceeded" in msg or "quota" in msg or "limit exceeded" in msg:
+                    logger.warning("Daytona quota hit on attempt %d/3 — waiting 30s: %s", _attempt + 1, exc)
+                    time.sleep(30)
+                    if _attempt == 2:
+                        raise ContainerLaunchError(f"Daytona quota exceeded after 3 attempts: {exc}") from exc
+                else:
+                    raise
 
         container = DaytonaContainer(sandbox, client)
         logger.info("Daytona sandbox live: %s (%s)", container.id, resource.name)
