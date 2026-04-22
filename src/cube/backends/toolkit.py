@@ -310,11 +310,19 @@ class ToolkitContainer(Container):
         last_log = 0.0
         while time.monotonic() < deadline:
             try:
-                poll = self.exec(
-                    f"if [ -f {rc_path} ]; then cat {rc_path}; else echo PENDING; fi",
+                # retries=0 on polls: a hung poll costs 30s (its own timeout)
+                # instead of 30+5+30+10+30=105s with full retry chain.
+                # The outer while-loop naturally retries on the next tick —
+                # no need to double up retries here.
+                poll_result = _run_eai(
+                    ["job", "exec", self._job_id, "--", "bash", "-c",
+                     f"if [ -f {rc_path} ]; then cat {rc_path}; else echo PENDING; fi"],
+                    profile=self._profile,
+                    account=self._account,
                     timeout=30,
+                    retries=0,
                 )
-                body = poll.stdout.strip()
+                body = poll_result.stdout.strip()
             except ContainerExecError as exc:
                 logger.warning("exec_long_running [%s]: poll hung (%s); retrying on next tick", self._job_id[:8], exc)
                 body = "PENDING"
