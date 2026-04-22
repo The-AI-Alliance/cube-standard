@@ -45,6 +45,12 @@ Circular import: `benchmark.py` imports `TaskConfig`; `task.py` imports `Benchma
 ### Heavy data inlined into task_metadata
 Keep the shipped JSON lean (< a few KB). If you need MB of per-task data, populate it via `Benchmark.install()` into an execution cache, then attach to `metadata.extra_info` lazily in `TaskConfig.make()`. See `cube-harness/cubes/swebench-live-cube`.
 
+### Using `extra_info` for light structured fields
+If you're reaching for `extra_info` to hold per-task metadata (repo, base_commit, instruction, splits, log_parser, container image, …), promote those to first-class fields on a custom `TaskMetadata` subclass instead. `extra_info` is reserved for heavy runtime data populated lazily via `install()`, not light structured metadata. `extra_info` should be empty in the shipped `task_metadata.json`.
+
+### Bulk data committed under src/<pkg>/
+Datasets, archives, fixtures, etc. should be auto-downloaded by `scripts/create_task_metadata.py` into `benchmark.cache_dir()` (typically `~/.cube/<benchmark-id>/`), not committed under `src/<pkg>/data/` or similar. In-tree data bloats wheels, complicates distribution, and hides the regeneration path.
+
 ### Shipping one metadata file per split
 Don't. One `task_metadata.json` with all tasks; declare splits via `BenchmarkMetadata.named_subsets`.
 

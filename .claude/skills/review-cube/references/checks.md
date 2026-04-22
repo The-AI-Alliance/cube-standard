@@ -44,12 +44,16 @@ Detect which the cube uses by grepping the benchmark module for the ClassVar ass
 - Option B chosen but `task_metadata.json` missing (or `benchmark_metadata.json` missing when also needed).
 - Option A chosen but required ClassVars (`benchmark_metadata`, `task_metadata`, `task_config_class`) missing.
 - `task_metadata.json` average size per task exceeds **1024 bytes**: `size_bytes / num_tasks > 1024`. Recommend the `extra_info` + `install()` pattern (see `cube-harness/cubes/swebench-live-cube`).
+- `task_metadata.extra_info` is non-empty in the shipped `task_metadata.json`. `extra_info` is reserved for heavy runtime data populated lazily in `TaskConfig.make()` via `Benchmark.install()`'s cache. For structured per-task fields (repo, base_commit, instruction, splits, log_parser, container image, …), introduce a custom `TaskMetadata` subclass. Reference: `cube-harness/cubes/swebench-live-cube/src/swebench_live_cube/task.py`.
 
 **Suggestions:**
 - S-75: `Task.reset()` has no visible call to `self.tool.reset()`.
 - S-75: `Task.evaluate()` appears to mutate state (writes to `self.tool._env.*`, calls tool action methods, writes to `self._runtime_context`). `evaluate()` must be pure.
 - S-75: `_setup()` / `install()` / `close()` appear non-idempotent (no early-return guard, no `if self._already_setup: return`, destructive ops unconditionally).
-- S-50: If Option B, `scripts/create_task_metadata.py` exists but has no `--force` flag or no idempotency guard.
+- S-75: Option B with `task_metadata.json` committed but no metadata generator script at the repo root (`scripts/create_task_metadata.py` or `scripts/generate_task_metadata.py`). Without one, the metadata can't be regenerated if the upstream source changes.
+- S-75: Bulk data files committed inside the package source (e.g. `src/<pkg>/data/`, `src/<pkg>/assets/`). Heavy data should be auto-downloaded by the generator script into `benchmark.cache_dir()` (typically `~/.cube/<benchmark-id>/`), not shipped in-tree — committing bloats wheels and makes the regeneration path opaque.
+- S-50: If Option B, the generator script (`scripts/create_task_metadata.py` or `scripts/generate_task_metadata.py`) exists but has no `--force` flag or no idempotency guard.
+- S-50: Metadata-generation logic is inlined in `benchmark.py` (or another package module) rather than living in `scripts/*.py` at the repo root. Move it to the script so regeneration is explicit and reproducible.
 - S-50: Multiple "split"-like fields or values appear in `TaskMetadata` but `BenchmarkMetadata.named_subsets` isn't declared.
 - S-25: TODO placeholders left in `benchmark_metadata.description`, `TaskMetadata.abstract_description`, or anywhere in the source.
 - S-25: Template boilerplate left in `tool.py` (`example_action` still present unchanged).

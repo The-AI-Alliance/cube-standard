@@ -130,6 +130,7 @@ Requirements:
 - Idempotent — by default skip if `task_metadata.json` already exists; `--force` to regenerate.
 - Committed to the repo for reproducibility. Anyone can regenerate the metadata if the upstream source changes.
 - Fetches from the real source (HF dataset, a cloned upstream repo, CSV, DB).
+- **Auto-downloads bulk data** (datasets, archives, fixtures) into `benchmark.cache_dir()` — typically `~/.cube/<benchmark-id>/` — rather than committing it under `src/<pkg>/data/` or similar. In-tree data bloats wheels and hides the regeneration path.
 - Writes lightweight public fields only — any heavy per-task data goes into the `install()`-populated cache, not the JSON.
 
 Templates to mirror:
