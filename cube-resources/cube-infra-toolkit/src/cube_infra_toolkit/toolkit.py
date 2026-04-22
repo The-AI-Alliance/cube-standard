@@ -2,7 +2,8 @@
 
 Each ``launch()`` creates an ``eai job new -- sleep infinity`` with the resource's image,
 polls until RUNNING, and returns a handle whose ``.container`` is a live
-``ToolkitContainer`` (reused from ``cube.backends.toolkit``) the tool layer drives.
+``ToolkitContainer`` (defined in this package's ``container`` module) the tool
+layer drives.
 
 Authentication: the ``eai`` CLI reads its own config (``~/.eai/config``).  Pick the
 cluster via ``profile=`` on the config or ``EAI_PROFILE`` env var.
@@ -13,14 +14,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal
 
-from cube.backends.toolkit import ToolkitContainer
 from cube.container import Container, ContainerLaunchError
 from cube.resource import (
     DockerServiceConfig,
@@ -29,6 +28,7 @@ from cube.resource import (
     ResourceHandle,
     UnsupportedResourceType,
 )
+from cube_infra_toolkit.container import ToolkitContainer, _run_eai
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +136,11 @@ class ToolkitInfraConfig(InfraConfig):
         cmd += ["--", "sleep", "infinity"]
 
         logger.info("Submitting EAI job for %r (image=%s)…", resource.name, image)
-        result = _run_eai(cmd, profile=profile, account=self.account, timeout=self.launch_timeout_seconds)
+        # retries=0: `eai job new` is not idempotent — a timeout mid-creation
+        # may have actually created the job, and a retry would produce a duplicate.
+        result = _run_eai(
+            cmd, profile=profile, account=self.account, timeout=self.launch_timeout_seconds, retries=0,
+        )
         if result.returncode != 0:
             raise ContainerLaunchError(f"Failed to submit EAI job: {result.stderr.strip()}")
 
@@ -186,34 +190,6 @@ class ToolkitInfraConfig(InfraConfig):
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
-
-
-def _run_eai(
-    args: list[str],
-    *,
-    profile: str | None = None,
-    account: str | None = None,
-    timeout: int | None = 60,
-) -> subprocess.CompletedProcess[str]:
-    """Run ``eai`` with optional --profile/--account and return the completed process."""
-    cmd = ["eai"]
-    if profile:
-        cmd += ["--profile", profile]
-    if account:
-        cmd += ["--account", account]
-    cmd += args
-
-    logger.debug("Running: %s", " ".join(cmd))
-    try:
-        return subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,
-        )
-    except FileNotFoundError as exc:
-        raise ContainerLaunchError("The 'eai' CLI is not installed or not on PATH.") from exc
 
 
 def _wait_for_running(

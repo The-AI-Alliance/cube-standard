@@ -26,7 +26,6 @@ from daytona import (
     Resources,
 )
 
-from cube.backends.daytona import DaytonaContainer
 from cube.container import Container
 from cube.resource import (
     DockerServiceConfig,
@@ -35,6 +34,7 @@ from cube.resource import (
     ResourceHandle,
     UnsupportedResourceType,
 )
+from cube_infra_daytona.container import DaytonaContainer
 
 logger = logging.getLogger(__name__)
 

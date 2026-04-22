@@ -2,7 +2,7 @@
 
 These tests run the server as a subprocess on localhost — no toolkit/eai
 dependency. They cover the security surface we documented in
-_toolkit_sidecar_server.py.
+cube_infra_toolkit/_sidecar_server.py.
 """
 
 from __future__ import annotations
@@ -18,7 +18,10 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
-SERVER_PATH = Path(__file__).parent.parent.parent / "src" / "cube" / "backends" / "_toolkit_sidecar_server.py"
+SERVER_PATH = (
+    Path(__file__).parent.parent.parent
+    / "cube-resources" / "cube-infra-toolkit" / "src" / "cube_infra_toolkit" / "_sidecar_server.py"
+)
 
 
 def _free_port() -> int:
