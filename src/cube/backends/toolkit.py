@@ -257,10 +257,14 @@ class ToolkitContainer(Container):
         out_path = f"{marker_base}.out"
         rc_path = f"{marker_base}.rc"
 
-        # Build the kick-off command. We explicitly background with `& disown`
-        # so the bash -lc wrapping from .exec() can exit immediately without
-        # waiting on the child.  The `timeout ${timeout}s` inside the bash
-        # bounds the child even if the wrapper dies early.
+        # Build an idempotent kick-off command.
+        # `mkdir <lock>` is POSIX-atomic: on first kick it succeeds and we
+        # fire the background command; on any retry (because the first kick
+        # RPC hung) it fails and we no-op.  This guarantees the command runs
+        # exactly once in the container — critical for non-idempotent
+        # commands like `git apply` where a second execution fails because
+        # the patch is already applied.
+        lock_path = f"{marker_base}.lock"
         parts = []
         if env:
             for k, v in env.items():
@@ -268,8 +272,13 @@ class ToolkitContainer(Container):
         if workdir:
             parts.append(f"cd {shlex.quote(workdir)}")
         parts.append(
+            f"if mkdir {lock_path} 2>/dev/null; then "
             f"(timeout {timeout}s bash -c {shlex.quote(command)} > {out_path} 2>&1; "
-            f"echo $? > {rc_path}) & disown"
+            f"echo $? > {rc_path}) & disown; "
+            f"echo KICKED; "
+            f"else "
+            f"echo ALREADY_STARTED; "
+            f"fi"
         )
         kick_cmd = " && ".join(parts)
 
@@ -325,7 +334,7 @@ class ToolkitContainer(Container):
                     stdout = ""
                 # Best-effort cleanup.  Failure to clean up is not fatal.
                 try:
-                    self.exec(f"rm -f {out_path} {rc_path}", timeout=30)
+                    self.exec(f"rm -rf {out_path} {rc_path} {lock_path}", timeout=30)
                 except Exception:
                     pass
                 return ExecResult(
