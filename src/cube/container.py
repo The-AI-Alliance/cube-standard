@@ -14,7 +14,6 @@ fields continue to type-check during the migration.
 
 from __future__ import annotations
 
-import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict
@@ -160,7 +159,12 @@ def port_from_url(url: str) -> int:
 
 
 class ContainerConfig(TypedBaseModel):
-    """DEPRECATED.  Use ``cube.resource.DockerImageConfig`` instead."""
+    """DEPRECATED.  Use ``cube.resource.DockerImageConfig`` instead.
+
+    Kept only so existing ``TaskMetadata.container_config`` fields continue to
+    type-check during the infra migration.  No per-instance warning — would be
+    noisy across CSV task-metadata loads.
+    """
 
     image: str
     ram_gb: float = 4.0
@@ -169,31 +173,18 @@ class ContainerConfig(TypedBaseModel):
     disk_gb: float = 10.0
     ports: list[int] | None = None
 
-    def model_post_init(self, __context: Any) -> None:
-        warnings.warn(
-            "ContainerConfig is deprecated — use cube.resource.DockerImageConfig instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
 
 class ContainerBackend(TypedBaseModel, ABC):
     """DEPRECATED.  Use ``cube.resource.InfraConfig`` + ``InfraConfig.launch(resource)`` instead.
 
     Kept only so existing ``Task.container_backend`` / ``Benchmark.container_backend``
-    fields continue to type-check during the infra migration.
+    fields continue to type-check during the infra migration.  Subclasses emit a
+    one-shot ``DeprecationWarning`` at *import* time (see ``cube.backends.*``),
+    not per instantiation.
     """
 
     timeout_seconds: int = 1800
     backend_config: Dict[str, Any] = Field(default_factory=dict)
-
-    def model_post_init(self, __context: Any) -> None:
-        warnings.warn(
-            f"{type(self).__name__} uses the deprecated ContainerBackend API — "
-            "switch to cube.resource.InfraConfig.launch().",
-            DeprecationWarning,
-            stacklevel=2,
-        )
 
     @abstractmethod
     def launch(self, config: ContainerConfig) -> Container:
