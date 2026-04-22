@@ -220,6 +220,132 @@ class ToolkitContainer(Container):
             duration_seconds=round(duration, 3),
         )
 
+    def exec_long_running(
+        self,
+        command: str,
+        *,
+        timeout: int,
+        poll_interval: int = 30,
+        workdir: str | None = None,
+        env: Dict[str, str] | None = None,
+    ) -> ExecResult:
+        """Run a long-running command via background+poll.
+
+        Root cause: ``eai job exec`` occasionally hangs for minutes on the
+        response-delivery side of long-running commands (the CLI blocks in
+        a ``read()`` on an HTTPS socket where the server has already closed
+        its half — see `docs/toolkit-hang-bugreport.md`).  A retry on the
+        outer call re-runs the entire command, wasting the original work.
+
+        Fix: decouple the long command from the RPC channel.
+
+          1. One short ``exec`` kicks off ``(cmd > out 2>&1; echo $? > rc) & disown``
+             and returns in ~1 s.
+          2. Short polls (``test -f <rc>``) every ``poll_interval`` s check
+             whether the command has completed.  Each poll is short and
+             retry-safe.
+          3. A final short ``exec`` reads the captured stdout/stderr and
+             returns the observed exit code.
+
+        Works because every individual RPC call is short — the 6 % per-call
+        eai hang rate is amortised across many short polls instead of bet
+        on one long ``exec``.
+        """
+        import uuid as _uuid
+
+        marker_base = f"/tmp/cube_lr_{_uuid.uuid4().hex[:8]}"
+        out_path = f"{marker_base}.out"
+        rc_path = f"{marker_base}.rc"
+
+        # Build the kick-off command. We explicitly background with `& disown`
+        # so the bash -lc wrapping from .exec() can exit immediately without
+        # waiting on the child.  The `timeout ${timeout}s` inside the bash
+        # bounds the child even if the wrapper dies early.
+        parts = []
+        if env:
+            for k, v in env.items():
+                parts.append(f"export {k}={shlex.quote(v)}")
+        if workdir:
+            parts.append(f"cd {shlex.quote(workdir)}")
+        parts.append(
+            f"(timeout {timeout}s bash -c {shlex.quote(command)} > {out_path} 2>&1; "
+            f"echo $? > {rc_path}) & disown"
+        )
+        kick_cmd = " && ".join(parts)
+
+        logger.info("exec_long_running [%s]: kicking off, marker=%s", self._job_id[:8], marker_base)
+        # Even if the kick RPC hangs (we've observed this — see bugreport H4),
+        # the container may still have received and started the command.  So
+        # we swallow CLI-level hangs / non-zero exit codes on the kick and
+        # proceed to polling.  If the command was never actually submitted,
+        # the poll deadline will catch that.
+        try:
+            kick = self.exec(kick_cmd, timeout=30)
+            if kick.exit_code != 0:
+                logger.warning(
+                    "exec_long_running [%s]: kick exited non-zero (rc=%d stderr=%r) — "
+                    "proceeding to poll anyway (bg command may still be running)",
+                    self._job_id[:8], kick.exit_code, kick.stderr[:200],
+                )
+        except ContainerExecError as exc:
+            logger.warning(
+                "exec_long_running [%s]: kick RPC failed (%s) — proceeding to poll anyway "
+                "(container may have received the command despite the CLI hang)",
+                self._job_id[:8], exc,
+            )
+
+        # Poll for completion.  Each poll is a short exec that's retry-safe
+        # via _run_eai's built-in retry; on the rare chance all retries still
+        # hang, we swallow the error and poll again on the next tick.
+        deadline = time.monotonic() + timeout + 60  # small grace period for filesystem flush
+        last_log = 0.0
+        while time.monotonic() < deadline:
+            try:
+                poll = self.exec(
+                    f"if [ -f {rc_path} ]; then cat {rc_path}; else echo PENDING; fi",
+                    timeout=30,
+                )
+                body = poll.stdout.strip()
+            except ContainerExecError as exc:
+                logger.warning("exec_long_running [%s]: poll hung (%s); retrying on next tick", self._job_id[:8], exc)
+                body = "PENDING"
+            if body and body != "PENDING":
+                try:
+                    rc = int(body.split()[0])
+                except ValueError:
+                    rc = 1
+                try:
+                    out_result = self.exec(f"cat {out_path} 2>/dev/null", timeout=60)
+                    stdout = out_result.stdout
+                except ContainerExecError as exc:
+                    logger.warning(
+                        "exec_long_running [%s]: couldn't fetch output (%s); "
+                        "returning rc=%d with empty stdout", self._job_id[:8], exc, rc,
+                    )
+                    stdout = ""
+                # Best-effort cleanup.  Failure to clean up is not fatal.
+                try:
+                    self.exec(f"rm -f {out_path} {rc_path}", timeout=30)
+                except Exception:
+                    pass
+                return ExecResult(
+                    stdout=stdout,
+                    stderr="",
+                    exit_code=rc,
+                    duration_seconds=timeout + 60 - (deadline - time.monotonic()),
+                )
+            # Log infrequently to avoid spam on multi-minute commands.
+            now = time.monotonic()
+            if now - last_log > 60:
+                logger.info("exec_long_running [%s]: still running …", self._job_id[:8])
+                last_log = now
+            time.sleep(poll_interval)
+
+        raise ContainerExecError(
+            f"exec_long_running timed out after {timeout}s "
+            f"(marker {marker_base} in container {self._job_id})"
+        )
+
     def forward_port(self, container_port: int) -> int:
         if container_port in self._port_map:
             return self._port_map[container_port]
