@@ -56,13 +56,23 @@ def _run_eai(
     profile: str | None = None,
     account: str | None = None,
     timeout: int | None = 60,
+    retries: int = 2,
 ) -> subprocess.CompletedProcess[str]:
-    """Run an ``eai`` CLI command and return the completed process.
+    """Run an ``eai`` CLI command with process-group cleanup + retry-on-hang.
 
-    Timeout handling puts ``eai`` in its own process group (``start_new_session``)
-    and SIGKILLs the whole group on ``TimeoutExpired``.  Without this, ``eai``
-    occasionally leaves defunct child processes behind when its internal retry
-    loop gets stuck — visible as ``(eai)`` zombies under ``ps``.
+    Empirically, ``eai job exec`` has a small but non-zero per-invocation hang
+    rate — a fresh process retry almost always succeeds.  Strategy:
+
+    1. Put ``eai`` in its own process group (``start_new_session=True``) so
+       ``killpg`` on timeout tears down any forked children.  Without this,
+       ``(eai)`` zombies accumulate when the CLI's internal loop gets stuck.
+    2. On ``TimeoutExpired``, kill the process group and retry up to
+       ``retries`` times.  Each retry starts a fresh ``eai`` subprocess, which
+       virtually eliminates the stuck-state carryover.
+
+    Only ``TimeoutExpired`` triggers a retry.  Non-zero exit codes pass through
+    unchanged — those indicate real failures (bad args, 404, auth) where
+    retrying is a waste.
     """
     import os
     import signal
@@ -74,34 +84,53 @@ def _run_eai(
         cmd += ["--account", account]
     cmd += args
 
-    logger.debug("Running: %s", " ".join(cmd))
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            start_new_session=True,
-        )
-    except FileNotFoundError as exc:
-        raise ContainerLaunchError("The 'eai' CLI tool is not installed or not on PATH.") from exc
-
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        # Kill the entire process group so no defunct children survive.
+    last_err: subprocess.TimeoutExpired | None = None
+    for attempt in range(retries + 1):
+        logger.debug("Running (attempt %d/%d): %s", attempt + 1, retries + 1, " ".join(cmd))
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        try:
-            proc.communicate(timeout=5)  # drain pipes so the PID reaps cleanly
-        except Exception:
-            pass
-        raise ContainerExecError(f"eai command timed out after {timeout}s: {' '.join(cmd)}") from exc
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                start_new_session=True,
+            )
+        except FileNotFoundError as exc:
+            raise ContainerLaunchError("The 'eai' CLI tool is not installed or not on PATH.") from exc
 
-    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            last_err = exc
+            # Kill the entire process group so no defunct children survive.
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                proc.communicate(timeout=5)  # drain pipes so the PID reaps cleanly
+            except Exception:
+                pass
+            if attempt < retries:
+                # Hangs empirically arrive in clusters — back off a few seconds
+                # so a retry isn't likely to hit the same transient window.
+                backoff = 5 * (attempt + 1)
+                logger.warning(
+                    "eai command timed out after %ds (attempt %d/%d); backing off %ds before retry: %s",
+                    timeout, attempt + 1, retries + 1, backoff, " ".join(cmd),
+                )
+                time.sleep(backoff)
+                continue
+            raise ContainerExecError(
+                f"eai command timed out after {timeout}s (tried {retries + 1} times): {' '.join(cmd)}"
+            ) from exc
+
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+    # Unreachable — loop either returns or raises.
+    assert last_err is not None
+    raise ContainerExecError(f"eai: unreachable branch") from last_err
 
 
 def _find_free_port() -> int:
