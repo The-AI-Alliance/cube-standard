@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
+from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
 from cube.container import Container, ContainerBackend
 from cube.core import Observation
 from cube.server import make_benchmark_jsonrpc_app, make_task_jsonrpc_app
@@ -77,18 +77,21 @@ class _CounterTaskConfig(TaskConfig):
 
 
 class _MiniBenchmark(Benchmark):
+    def _setup(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class _MiniBenchmarkConfig(BenchmarkConfig):
     benchmark_metadata = BenchmarkMetadata(name="mini", version="0.1.0", description="test", num_tasks=2)
     task_metadata = {
         "task-1": TaskMetadata(id="task-1"),
         "task-2": TaskMetadata(id="task-2"),
     }
     task_config_class = _CounterTaskConfig
-
-    def _setup(self) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
+    benchmark_class = _MiniBenchmark
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -134,9 +137,7 @@ def _rpc(client, method, params=None, req_id=1):
 
 @pytest.fixture
 def benchmark():
-    b = _MiniBenchmark()
-    b.setup()
-    return b
+    return _MiniBenchmarkConfig().make()
 
 
 @pytest.fixture

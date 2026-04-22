@@ -1,9 +1,9 @@
 """
 NeMo Gym integration for CUBE.
 
-Provides a CubeResourcesServer that wraps any CUBE Benchmark as an HTTP server
-compatible with NeMo Gym's resource server protocol. NeMo Gym's CubeAgent calls
-these endpoints over HTTP -- no NeMo Gym Python dependency required.
+Provides a CubeResourcesServer that wraps any CUBE BenchmarkConfig as an HTTP
+server compatible with NeMo Gym's resource server protocol. NeMo Gym's CubeAgent
+calls these endpoints over HTTP -- no NeMo Gym Python dependency required.
 
 Endpoints:
     POST /seed_session  -- pick a task, reset it, return initial observation + tools
@@ -15,7 +15,7 @@ Endpoints:
 Usage:
     from cube.integrations.nemogym import CubeResourcesServer
 
-    server = CubeResourcesServer(benchmark=my_benchmark)
+    server = CubeResourcesServer(config=my_benchmark_config, infra=my_infra)
     server.run(host="0.0.0.0", port=8080)
 
 Or programmatically:
@@ -30,8 +30,9 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from cube.benchmark import Benchmark
+from cube.benchmark import Benchmark, BenchmarkConfig
 from cube.core import Action
+from cube.resource import InfraConfig
 from cube.task import Task, TaskConfig
 
 logger = logging.getLogger(__name__)
@@ -88,27 +89,30 @@ class TaskListItem(BaseModel):
 
 
 class CubeResourcesServer:
-    """Wraps a CUBE Benchmark as a NeMo Gym-compatible HTTP resource server.
+    """Wraps a CUBE BenchmarkConfig as a NeMo Gym-compatible HTTP resource server.
 
     Manages multiple concurrent sessions (env_id -> Task), each corresponding
-    to one episode. Calls benchmark.install() and benchmark.setup() automatically.
+    to one episode. Calls ``config.install()`` then ``config.make(infra)`` to
+    obtain a live ``Benchmark`` ready to spawn tasks.
 
     Args:
-        benchmark: A CUBE Benchmark instance (not yet set up).
+        config: A CUBE ``BenchmarkConfig`` describing the benchmark to serve.
+        infra:  Optional ``InfraConfig`` passed to ``config.make(infra)`` for
+                resource provisioning. None for benchmarks that don't need it.
     """
 
-    def __init__(self, benchmark: Benchmark) -> None:
-        self.benchmark = benchmark
-        benchmark.install()
-        benchmark.setup()
-        self._task_configs: list[TaskConfig] = list(benchmark.get_task_configs())
+    def __init__(self, config: BenchmarkConfig, infra: InfraConfig | None = None) -> None:
+        self.config = config
+        type(config).install()  # classmethod on BenchmarkConfig: populates task execution cache
+        self.benchmark: Benchmark = config.make(infra)
+        self._task_configs: list[TaskConfig] = list(config.get_task_configs())
         self._sessions: dict[str, Task] = {}
         self._last_obs: dict[str, object] = {}  # env_id -> last Observation for verify
 
         if not self._task_configs:
-            raise ValueError(f"Benchmark '{benchmark.name}' has no task configs")
+            raise ValueError(f"Benchmark '{config.name}' has no task configs")
 
-        logger.info("CubeResourcesServer loaded %d tasks from '%s'", len(self._task_configs), benchmark.name)
+        logger.info("CubeResourcesServer loaded %d tasks from '%s'", len(self._task_configs), config.name)
 
     # -- Lifecycle -----------------------------------------------------------
 
@@ -137,7 +141,7 @@ class CubeResourcesServer:
         task_config = self._task_configs[body.task_idx]
         task = task_config.make(
             runtime_context=self.benchmark._runtime_context,
-            container_backend=self.benchmark.container_backend,
+            container_backend=self.config.container_backend,
         )
         try:
             obs, _info = task.reset()
@@ -204,9 +208,10 @@ class CubeResourcesServer:
         async def lifespan(app: FastAPI):
             yield
             server._close_all()
+            server.benchmark.close()
 
         app = FastAPI(
-            title=f"CUBE Resources Server -- {self.benchmark.name}",
+            title=f"CUBE Resources Server -- {self.config.name}",
             lifespan=lifespan,
         )
 
@@ -218,7 +223,7 @@ class CubeResourcesServer:
 
         @app.get("/health")
         def health():
-            return {"status": "ok", "benchmark": self.benchmark.name, "num_tasks": len(self._task_configs)}
+            return {"status": "ok", "benchmark": self.config.name, "num_tasks": len(self._task_configs)}
 
         return app
 

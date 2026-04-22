@@ -10,7 +10,7 @@ import argparse
 import os
 from typing import Any, ClassVar, Dict, Tuple
 
-from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
+from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
 from cube.container import Container, ContainerBackend, ContainerConfig
 from cube.core import Action, ActionSchema, Observation
 from cube.task import Task, TaskConfig, TaskMetadata
@@ -176,7 +176,7 @@ class CounterTaskConfig(TaskConfig):
         Builds CounterToolConfig from extra_info["tool_config"] if present, otherwise uses defaults.
         An explicit tool_config on this TaskConfig always takes precedence.
         """
-        task_metadata = CounterBenchmark.task_metadata[self.task_id]
+        task_metadata = CounterBenchmarkConfig.task_metadata[self.task_id]
         tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
         return ReachTargetTask(
             metadata=task_metadata,
@@ -186,9 +186,20 @@ class CounterTaskConfig(TaskConfig):
         )
 
 
-# Benchmark Implementation
+# Benchmark runtime pair — no shared infrastructure needed for this simple benchmark.
 class CounterBenchmark(Benchmark):
-    """Minimal benchmark with counter tasks."""
+    """Minimal runtime Benchmark — _setup/close are no-ops."""
+
+    def _setup(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+# Benchmark Implementation
+class CounterBenchmarkConfig(BenchmarkConfig):
+    """Minimal benchmark config with counter tasks."""
 
     benchmark_metadata: ClassVar[BenchmarkMetadata] = BenchmarkMetadata(
         name="toy-counter",
@@ -221,14 +232,7 @@ class CounterBenchmark(Benchmark):
         ),
     }
     task_config_class: ClassVar[type[TaskConfig]] = CounterTaskConfig
-
-    def _setup(self) -> None:
-        """No shared infrastructure needed for this simple benchmark."""
-        pass
-
-    def close(self) -> None:
-        """No resources to clean up for this simple benchmark."""
-        pass
+    benchmark_class: ClassVar[type[Benchmark]] = CounterBenchmark
 
 
 # Test Function
@@ -274,15 +278,14 @@ def _make_task(
     task_id: str,
 ) -> ReachTargetTask:
     cfg = task_configs[task_id]
-    return cfg.make(runtime_context=benchmark._runtime_context, container_backend=benchmark.container_backend)
+    return cfg.make(runtime_context=benchmark._runtime_context, container_backend=benchmark.config.container_backend)
 
 
 def run_backend_smoke(backend_name: str, container_backend: ContainerBackend | None) -> None:
     print(f"Running toy benchmark smoke test with backend={backend_name}")
-    benchmark = CounterBenchmark(container_backend=container_backend)
-    benchmark.setup()
-    try:
-        task_configs = {c.task_id: c for c in benchmark.get_task_configs()}
+    config = CounterBenchmarkConfig(container_backend=container_backend)
+    with config.make() as benchmark:
+        task_configs = {c.task_id: c for c in config.get_task_configs()}
         task = _make_task(benchmark, task_configs, "count-to-3")
         try:
             task.reset()
@@ -293,8 +296,6 @@ def run_backend_smoke(backend_name: str, container_backend: ContainerBackend | N
             print("✓ Smoke test passed")
         finally:
             task.close()
-    finally:
-        benchmark.close()
 
 
 def test_counter_benchmark(container_backend: ContainerBackend | None = None, backend_name: str = "none"):
@@ -302,10 +303,10 @@ def test_counter_benchmark(container_backend: ContainerBackend | None = None, ba
     print(f"Starting counter benchmark tests (backend={backend_name})...")
     print("=" * 60)
 
-    benchmark = CounterBenchmark(container_backend=container_backend)
-    benchmark.setup()
+    config = CounterBenchmarkConfig(container_backend=container_backend)
+    benchmark = config.make()
 
-    task_configs = {c.task_id: c for c in benchmark.get_task_configs()}
+    task_configs = {c.task_id: c for c in config.get_task_configs()}
 
     # === Test 1: Single action execution via .step (with default config) ===
     print("\n" + "=" * 60)

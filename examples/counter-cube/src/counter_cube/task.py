@@ -63,9 +63,9 @@ class CounterTaskConfig(TaskConfig):
           3. CounterToolConfig defaults
         """
         # Deferred import to avoid circular dependency (benchmark imports task).
-        from counter_cube.benchmark import CounterBenchmark  # noqa: PLC0415
+        from counter_cube.benchmark import CounterBenchmarkConfig  # noqa: PLC0415
 
-        task_metadata: TaskMetadata = CounterBenchmark.task_metadata[self.task_id]
+        task_metadata: TaskMetadata = CounterBenchmarkConfig.task_metadata[self.task_id]
         tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
         return ReachTargetTask(
             metadata=task_metadata,

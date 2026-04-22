@@ -216,7 +216,7 @@ def make_benchmark_jsonrpc_app(benchmark: Benchmark) -> FastAPI:
     Any field whose type is not JSON-serializable and has no Pydantic serializer
     will be silently excluded from the response.
     """
-    app = FastAPI(title=f"CUBE Benchmark Server - {benchmark.name}")
+    app = FastAPI(title=f"CUBE Benchmark Server - {benchmark.config.name}")
 
     @app.post("/")
     async def _dispatch(request: Request) -> JSONResponse:
@@ -235,10 +235,10 @@ def make_benchmark_jsonrpc_app(benchmark: Benchmark) -> FastAPI:
 
         try:
             if method == "cube/info":
-                result = benchmark.benchmark_metadata.model_dump(mode="json")
+                result = benchmark.config.benchmark_metadata.model_dump(mode="json")
 
             elif method == "cube/tasks":
-                tasks_metadata = list(benchmark.task_metadata.values())
+                tasks_metadata = list(benchmark.config.tasks().values())
                 task_id = params.get("task_id")
                 offset = int(params.get("offset", 0))
                 limit = int(params.get("limit", -1))
@@ -251,7 +251,7 @@ def make_benchmark_jsonrpc_app(benchmark: Benchmark) -> FastAPI:
                 task_id_filter = params.get("task_id")
                 offset = int(params.get("offset", 0))
                 limit = int(params.get("limit", -1))
-                configs = list(benchmark.get_task_configs())
+                configs = list(benchmark.config.get_task_configs())
                 if task_id_filter:
                     configs = [c for c in configs if c.task_id == task_id_filter]
                 configs = configs[offset:] if limit == -1 else configs[offset : offset + limit]
@@ -260,7 +260,7 @@ def make_benchmark_jsonrpc_app(benchmark: Benchmark) -> FastAPI:
             elif method == "cube/spawn":
                 if "task_config" not in params:
                     return JSONResponse(_err(req_id, _INVALID_PARAMS, "Missing 'task_config' in params"))
-                task_config = benchmark.task_config_class.model_validate(params["task_config"])
+                task_config = benchmark.config.task_config_class.model_validate(params["task_config"])
                 host = params.get("host", "127.0.0.1")
                 port = int(params.get("port", _find_free_port(host)))
 

@@ -14,11 +14,17 @@ reason about safety, cost, and cleanup across crashes.
 | Level | Scope | Examples | Created by | Torn down by |
 |-------|-------|----------|------------|--------------|
 | **L1** | Provisioned images (long-lived) | AWS AMI, Azure Gallery image, local qcow2 | `provision()` or `register()` | `unprovision()` (manual only) |
-| **L2** | Benchmark-scoped (per run) | WebArena server, WorkArena ServiceNow | `benchmark.setup()` | `handle.close()` or `cleanup(run_id)` |
+| **L2** | Benchmark-scoped (per run) | WebArena server, WorkArena ServiceNow | `BenchmarkConfig.make(infra)` → `Benchmark.setup()` | `handle.close()` or `cleanup(run_id)` |
 | **L3** | Task-scoped (per task) | Individual OSWorld VM, per-task container | `infra.launch()` | `handle.close()` or `cleanup(run_id)` |
 
 L1 entries live in `ProvisionStore` (`~/.cube/provisions/`).
 L2/L3 resources are tracked via cloud tags (`cube:run_id`, `cube:expires_at`).
+
+**Provisioning trigger:** `BenchmarkConfig.make(infra)` iterates
+`config.resources` and calls `infra.provision(resource)` on each entry whose
+`provision_status(infra) != "ready"` before invoking `benchmark.setup()`. Benchmark
+authors do not need to call `provision` manually from `_setup()` — idempotent
+provisioning is handled by the factory.
 
 ## Public API
 

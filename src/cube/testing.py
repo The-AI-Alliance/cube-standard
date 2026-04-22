@@ -4,24 +4,24 @@ CUBE testing utilities — framework-level harness for debug episodes.
 Public API
 ----------
 run_debug_episode(task, agent, *, max_steps)  →  dict
-run_debug_suite(benchmark_name, module, *, max_steps, workers=1)  →  list[dict]
-assert_debug_tasks_reward_one(module, *, max_steps)  →  None
+run_debug_suite(benchmark_name, module, *, max_steps, workers=1, infra=None)  →  list[dict]
+assert_debug_tasks_reward_one(module, *, infra=None, max_steps)  →  None
 
-Module protocol (for assert_debug_tasks_reward_one and run_debug_suite)
-----------------------------------------------------------------------
+Module protocol (for ``assert_debug_tasks_reward_one`` and ``run_debug_suite``)
+-------------------------------------------------------------------------------
 The ``module`` argument must expose two callables:
 
-    get_debug_benchmark() -> Benchmark
-        Called once before any debug episodes run. Returns a Benchmark instance
-        (optionally pre-filtered to the debug subset via ``subset_from_list``).
-        The harness calls ``install()``, ``setup()``, and ``close()`` on it and
-        iterates ``get_task_configs()`` to discover which tasks to run.
+    get_debug_benchmark(infra: InfraConfig | None = None) -> BenchmarkConfig
+        Return a BenchmarkConfig (optionally pre-filtered to the debug subset
+        via ``subset_from_list``). The harness calls ``config.install()`` then
+        ``config.make(infra)`` to obtain a live ``Benchmark`` ready to spawn
+        tasks, and ``benchmark.close()`` at the end to free resources.
 
     make_debug_agent(task_id: str) -> Callable[[Observation, list[ActionSchema]], Action]
         Return a deterministic agent for the given task_id.
 
     Parallel runs (``run_debug_suite(..., workers>1)``): tasks share the benchmark's
-    ``_runtime_context`` by reference. After ``setup()`` returns, concurrent episodes
+    ``_runtime_context`` by reference. After ``make()`` returns, concurrent episodes
     must treat that object as read-only; writing to it during execution is not safe
     with multiple workers.
 
@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 
 from cube import __version__  # report.cube_version and .save()
 from cube.core import Action, ActionSchema, Observation
+from cube.resource import InfraConfig
 from cube.task import Task
 
 logger = logging.getLogger(__name__)
@@ -185,33 +186,33 @@ def run_debug_episode(
     return report
 
 
-def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str]:
+def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig | None = None) -> tuple[bool, str]:
     """
     Same seed → identical first observation (stress_test_specs.md).
     Uses first task config only: make() twice, reset() each, compare first obs.
-    Calls benchmark.install() and .setup() before get_task_configs(), and
-    .close() when done, so the benchmark is in a consistent state.
+    Calls ``config.install()`` and ``config.make(infra)`` before iterating
+    ``get_task_configs``, and ``benchmark.close()`` when done.
     """
     bench_fn = getattr(module, "get_debug_benchmark", None)
     if not callable(bench_fn):
         return False, "no get_debug_benchmark"
-    benchmark = bench_fn()
+    config = bench_fn(infra) if _accepts_infra(bench_fn) else bench_fn()
+    config.install()  # classmethod on BenchmarkConfig; accessing via instance is idiomatic
+    benchmark = config.make(infra)
     try:
-        benchmark.install()
-        benchmark.setup()
-        configs = list(benchmark.get_task_configs())
+        configs = list(config.get_task_configs())
         if not configs:
             return False, "no debug task configs"
         tc = configs[0]
         t1 = t2 = None
         try:
             t1 = tc.make(
-                runtime_context=getattr(benchmark, "_runtime_context", None),
-                container_backend=getattr(benchmark, "container_backend", None),
+                runtime_context=benchmark._runtime_context,
+                container_backend=config.container_backend,
             )
             t2 = tc.make(
-                runtime_context=getattr(benchmark, "_runtime_context", None),
-                container_backend=getattr(benchmark, "container_backend", None),
+                runtime_context=benchmark._runtime_context,
+                container_backend=config.container_backend,
             )
             obs1, _ = t1.reset()
             obs2, _ = t2.reset()
@@ -235,19 +236,34 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str]:
             pass
 
 
-def check_benchmark_metadata(module: types.ModuleType) -> tuple[bool, str]:
+def check_benchmark_metadata(module: types.ModuleType, *, infra: InfraConfig | None = None) -> tuple[bool, str]:
     """
     Benchmark has non-empty name and version (stress_test_specs.md).
-    Get metadata from the benchmark instance returned by get_debug_benchmark().
+    Gets metadata from the BenchmarkConfig returned by ``get_debug_benchmark()``.
     """
     bench_fn = getattr(module, "get_debug_benchmark", None)
     if not callable(bench_fn):
         return False, "no get_debug_benchmark"
-    benchmark = bench_fn()
-    meta = benchmark.benchmark_metadata
+    config = bench_fn(infra) if _accepts_infra(bench_fn) else bench_fn()
+    meta = config.benchmark_metadata
     if meta is None:
         return False, "no benchmark_metadata"
     return True, ""
+
+
+def _accepts_infra(fn: Callable) -> bool:
+    """Return True if ``fn`` declares a positional/keyword ``infra`` parameter.
+
+    Allows ``get_debug_benchmark`` to be either ``() -> BenchmarkConfig`` or
+    ``(infra) -> BenchmarkConfig`` during the migration window.
+    """
+    import inspect
+
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    return "infra" in sig.parameters
 
 
 def aggregate_profiling(episode_reports: list[dict]) -> dict[str, float]:
@@ -304,24 +320,28 @@ def run_debug_suite(
     max_steps: int = 20,
     print_json: bool = True,
     workers: int = 1,
+    infra: InfraConfig | None = None,
 ) -> list[dict]:
     """
     Run all debug tasks for a benchmark and optionally print a JSON report.
 
     Args:
         benchmark_name: Label used in the JSON output (e.g. ``"osworld-cube"``).
-        module:         A module exposing ``get_debug_benchmark()`` and
-                        ``make_debug_agent(task_id)``.
+        module:         A module exposing ``get_debug_benchmark(infra=None) -> BenchmarkConfig``
+                        and ``make_debug_agent(task_id)``.
         max_steps:      Safety cap passed to ``run_debug_episode`` (default 20).
         print_json:     If True, print the JSON report to stdout (default True).
         workers:        Number of threads for episode execution (default 1). Values
                         greater than 1 require tasks not to mutate
-                        ``benchmark._runtime_context`` after ``setup()``; see module
+                        ``benchmark._runtime_context`` after ``make()``; see module
                         docstring.
+        infra:          Optional ``InfraConfig`` passed to ``config.make(infra)`` for
+                        resource provisioning. Forwarded to ``get_debug_benchmark`` if
+                        that function accepts an ``infra`` parameter (resolves #96).
 
     Returns:
         List of per-episode report dicts (same schema as ``run_debug_episode``),
-        in ``get_task_configs()`` order.
+        in ``config.get_task_configs()`` order.
 
     Raises:
         ValueError: If ``workers < 1``.
@@ -332,14 +352,15 @@ def run_debug_suite(
     benchmark = None
     results = []
     try:
-        # Step 1: create and install the benchmark.
+        # Step 1: resolve the BenchmarkConfig and bring a live Benchmark into existence.
         logger.info(f"[run_debug_suite] benchmark={benchmark_name!r}  calling get_debug_benchmark()")
-        benchmark = module.get_debug_benchmark()
-        benchmark.install()
-        benchmark.setup()
+        bench_fn = module.get_debug_benchmark
+        config = bench_fn(infra) if _accepts_infra(bench_fn) else bench_fn()
+        config.install()  # classmethod on BenchmarkConfig; accessing via instance is idiomatic
+        benchmark = config.make(infra)
 
-        # Step 2: iterate task configs from the benchmark and run episodes.
-        task_configs = list(benchmark.get_task_configs())
+        # Step 2: iterate task configs from the config and run episodes.
+        task_configs = list(config.get_task_configs())
         logger.info(
             f"[run_debug_suite] benchmark={benchmark_name!r}  running {len(task_configs)} task(s) "
             f"workers={workers}: {[tc.task_id for tc in task_configs]}"
@@ -348,7 +369,8 @@ def run_debug_suite(
         def _episode_for_config(tc):
             try:
                 task = tc.make(
-                    runtime_context=benchmark._runtime_context, container_backend=benchmark.container_backend
+                    runtime_context=benchmark._runtime_context,
+                    container_backend=config.container_backend,
                 )
             except ImportError as exc:
                 raise ImportError(
@@ -491,6 +513,7 @@ class StressTestReport:
 def assert_debug_tasks_reward_one(
     module: types.ModuleType,
     *,
+    infra: InfraConfig | None = None,
     max_steps: int = 20,
 ) -> None:
     """
@@ -507,15 +530,17 @@ def assert_debug_tasks_reward_one(
             assert_debug_tasks_reward_one(mod)
 
     Args:
-        module:    A module exposing ``get_debug_benchmark()`` and
-                   ``make_debug_agent(task_id)``.
+        module:    A module exposing ``get_debug_benchmark(infra=None) -> BenchmarkConfig``
+                   and ``make_debug_agent(task_id)``.
+        infra:     Optional ``InfraConfig`` forwarded to ``get_debug_benchmark`` and
+                   ``config.make(infra)``.
         max_steps: Safety cap passed to ``run_debug_episode`` (default 20).
 
     Raises:
         AssertionError: If any episode does not complete, errors, or gets
                         reward < 1.0.
     """
-    for report in run_debug_suite(module.__name__, module, max_steps=max_steps):
+    for report in run_debug_suite(module.__name__, module, max_steps=max_steps, infra=infra):
         task_id = report["task_id"]
         assert not report["error"], f"[{task_id}] Episode error: {report['error']}"
         assert report["done"], f"[{task_id}] Episode did not complete: {report}"

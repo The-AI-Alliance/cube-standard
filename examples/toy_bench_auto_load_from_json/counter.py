@@ -8,7 +8,7 @@ sitting next to this file.
 
 from typing import Any, ClassVar, Dict, Tuple
 
-from cube.benchmark import Benchmark, RuntimeContext
+from cube.benchmark import Benchmark, BenchmarkConfig, RuntimeContext
 from cube.container import Container, ContainerBackend
 from cube.core import Action, ActionSchema, Observation
 from cube.task import Task, TaskConfig
@@ -84,7 +84,7 @@ class CounterTaskConfig(TaskConfig):
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> ReachTargetTask:
-        task_metadata = CounterBenchmark.task_metadata[self.task_id]
+        task_metadata = CounterBenchmarkConfig.task_metadata[self.task_id]
         tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
         return ReachTargetTask(
             metadata=task_metadata,
@@ -94,12 +94,7 @@ class CounterTaskConfig(TaskConfig):
         )
 
 
-# benchmark_metadata and task_metadata are intentionally omitted:
-# they are auto-loaded from benchmark_metadata.json and task_metadata.json
-# in the same directory as this file.
 class CounterBenchmark(Benchmark):
-    task_config_class: ClassVar[type[TaskConfig]] = CounterTaskConfig
-
     def _setup(self) -> None:
         pass
 
@@ -107,24 +102,32 @@ class CounterBenchmark(Benchmark):
         pass
 
 
+# benchmark_metadata and task_metadata are intentionally omitted:
+# they are auto-loaded from benchmark_metadata.json and task_metadata.json
+# in the same directory as this file.
+class CounterBenchmarkConfig(BenchmarkConfig):
+    task_config_class: ClassVar[type[TaskConfig]] = CounterTaskConfig
+    benchmark_class: ClassVar[type[Benchmark]] = CounterBenchmark
+
+
 if __name__ == "__main__":
-    bench = CounterBenchmark()
+    config = CounterBenchmarkConfig()
 
-    print(f"benchmark_metadata.name   = {bench.benchmark_metadata.name}")
-    print(f"benchmark_metadata.tags   = {bench.benchmark_metadata.tags}")
-    print(f"tasks loaded              = {list(bench.task_metadata.keys())}")
+    print(f"benchmark_metadata.name   = {config.benchmark_metadata.name}")
+    print(f"benchmark_metadata.tags   = {config.benchmark_metadata.tags}")
+    print(f"tasks loaded              = {list(config.task_metadata.keys())}")
 
-    task_configs = list(bench.get_task_configs())
+    task_configs = list(config.get_task_configs())
     assert len(task_configs) == 3
 
-    task = task_configs[0].make()
-    obs, _ = task.reset()
-    print(f"\nFirst task reset obs: {obs.contents[0].data}")
+    with config.make() as bench:
+        task = bench.spawn(task_configs[0])
+        obs, _ = task.reset()
+        print(f"\nFirst task reset obs: {obs.contents[0].data}")
 
-    for _ in range(3):
-        env_out = task.step(Action(name="increment", arguments={}))
-    assert env_out.done  # type: ignore
-    print(f"After 3 increments: done={env_out.done}, reward={env_out.reward}")  # type: ignore
+        for _ in range(3):
+            env_out = task.step(Action(name="increment", arguments={}))
+        assert env_out.done  # type: ignore
+        print(f"After 3 increments: done={env_out.done}, reward={env_out.reward}")  # type: ignore
 
-    bench.close()
     print("\nAll checks passed.")

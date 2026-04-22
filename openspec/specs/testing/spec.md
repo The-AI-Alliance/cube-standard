@@ -13,13 +13,20 @@ benchmark-specific imports required.
 Benchmark packages expose `<package>.debug` with two callables:
 
 ```python
-def get_debug_benchmark() -> Benchmark:
-    """Return a Benchmark instance, optionally pre-filtered to debug tasks
-    via subset_from_list. Base class calls install(), setup(), and close() on it."""
+def get_debug_benchmark(infra: InfraConfig | None = None) -> BenchmarkConfig:
+    """Return a BenchmarkConfig, optionally pre-filtered to debug tasks via
+    subset_from_list. The base harness calls config.install() then
+    config.make(infra) to obtain a live Benchmark, and benchmark.close() on
+    exit. The infra argument is forwarded to both calls (closes #96) — it is
+    ignored by benchmarks that don't need infra."""
 
 def make_debug_agent(task_id: str) -> Callable[[Observation, list[ActionSchema]], Action]:
     """Return a deterministic agent that solves the named task."""
 ```
+
+For backwards compatibility during migration, `run_debug_suite` uses
+`inspect.signature` to detect whether `get_debug_benchmark` declares an `infra`
+parameter and forwards it only when the signature accepts it.
 
 ## Public API
 
@@ -46,15 +53,17 @@ Report schema:
 }
 ```
 
-### `run_debug_suite(benchmark_name, module, *, max_steps=20, workers=1) -> list[dict]`
-Discovers tasks via `module.get_debug_benchmark().get_task_configs()`, runs each
-with `module.make_debug_agent(task_id)`, and returns a list of episode reports.
+### `run_debug_suite(benchmark_name, module, *, max_steps=20, workers=1, infra=None) -> list[dict]`
+Discovers tasks via `module.get_debug_benchmark(infra).get_task_configs()`,
+calls `config.install()` then `config.make(infra)` to obtain a live Benchmark,
+runs each task with `module.make_debug_agent(task_id)`, and returns a list of
+episode reports. Always calls `benchmark.close()` in a `finally` block.
 
 **Parallel runs (`workers > 1`):** tasks share the benchmark's `_runtime_context`
-by reference. After `setup()` returns, concurrent episodes must treat that object
+by reference. After `make()` returns, concurrent episodes must treat that object
 as read-only. Writes from multiple workers are not safe.
 
-### `assert_debug_tasks_reward_one(module, *, max_steps=20) -> None`
+### `assert_debug_tasks_reward_one(module, *, infra=None, max_steps=20) -> None`
 Runs `run_debug_suite` and asserts every task reaches `reward == 1.0`.
 Raises `AssertionError` otherwise. Drop-in for pytest:
 
@@ -66,8 +75,8 @@ def test_debug_tasks():
 ```
 
 ### Compliance checks (used by `cube test`)
-- `check_benchmark_metadata(module)` → `(ok, err)` — verifies `BenchmarkMetadata` required fields
-- `check_reset_reproducibility(module)` → `(ok, err)` — same config × 2 `make()` + `reset()` → identical first obs
+- `check_benchmark_metadata(module, *, infra=None)` → `(ok, err)` — verifies `BenchmarkMetadata` required fields on the config returned by `get_debug_benchmark`
+- `check_reset_reproducibility(module, *, infra=None)` → `(ok, err)` — same TaskConfig × 2 `make()` + `reset()` → identical first obs. Also calls `config.install()` and `config.make(infra)` to bring up the benchmark.
 - `aggregate_profiling(reports)` — roll-up of per-step profiling dicts
 - `build_stress_test_report(...)` — assembles the full compliance report
 

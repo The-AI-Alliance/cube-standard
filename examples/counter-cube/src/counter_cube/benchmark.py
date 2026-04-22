@@ -1,18 +1,31 @@
 """Benchmark for counter-cube.
 
 Top-level registry: holds ClassVar metadata and vends TaskConfig objects.
-Required ClassVars: benchmark_metadata, task_metadata, task_config_class.
-_setup() / close() are no-ops here — real benchmarks use them for containers.
+Required ClassVars on the BenchmarkConfig subclass: benchmark_metadata,
+task_metadata, task_config_class, benchmark_class.
+_setup() / close() on the paired Benchmark are no-ops here — real benchmarks
+use them for containers / shared servers.
 """
 
 from typing import ClassVar
 
-from cube.benchmark import Benchmark, BenchmarkMetadata
+from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata
 from cube.task import TaskConfig, TaskMetadata
+
 from counter_cube.task import CounterTaskConfig
 
 
 class CounterBenchmark(Benchmark):
+    """Runtime pair — counter-cube needs no shared infrastructure."""
+
+    def _setup(self) -> None:
+        """No shared infrastructure needed."""
+
+    def close(self) -> None:
+        """No resources to clean up."""
+
+
+class CounterBenchmarkConfig(BenchmarkConfig):
     """Registry of counter tasks — minimal benchmark with no shared infrastructure."""
 
     benchmark_metadata: ClassVar[BenchmarkMetadata] = BenchmarkMetadata(
@@ -46,11 +59,4 @@ class CounterBenchmark(Benchmark):
     }
 
     task_config_class: ClassVar[type[TaskConfig]] = CounterTaskConfig
-
-    def _setup(self) -> None:
-        """No shared infrastructure needed."""
-        pass
-
-    def close(self) -> None:
-        """No resources to clean up."""
-        pass
+    benchmark_class: ClassVar[type[Benchmark]] = CounterBenchmark

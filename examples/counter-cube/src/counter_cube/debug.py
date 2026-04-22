@@ -1,11 +1,11 @@
-"""Deterministic debug agent for testing CounterBenchmark end-to-end without an LLM.
+"""Deterministic debug agent for testing counter-cube end-to-end without an LLM.
 
 Each debug task has a hardcoded action sequence that completes it successfully.
 Used to validate the CUBE task loop in CI or local development.
 
 Public API
 ----------
-get_debug_benchmark()           → CounterBenchmark
+get_debug_benchmark(infra=None) → CounterBenchmarkConfig
 make_debug_agent(task_id)       → DebugAgent
 
 Usage::
@@ -19,7 +19,9 @@ from __future__ import annotations
 import logging
 
 from cube.core import Action, ActionSchema, Observation
-from counter_cube.benchmark import CounterBenchmark
+from cube.resource import InfraConfig
+
+from counter_cube.benchmark import CounterBenchmarkConfig
 
 logger = logging.getLogger(__name__)
 
@@ -102,15 +104,18 @@ class DebugAgent:
 # ---------------------------------------------------------------------------
 
 
-def get_debug_benchmark() -> CounterBenchmark:
-    """Return a CounterBenchmark instance scoped to the debug tasks.
+def get_debug_benchmark(infra: InfraConfig | None = None) -> CounterBenchmarkConfig:
+    """Return a ``CounterBenchmarkConfig`` scoped to the debug tasks.
 
-    Called once by cube.testing before any debug episodes run.
-    The harness will call benchmark.install() and benchmark.setup() on the
-    returned instance, iterate benchmark.get_task_configs() to discover tasks,
-    and call benchmark.close() at the end to free resources.
+    Called once by ``cube.testing`` before any debug episodes run. The harness
+    will then call ``type(config).install()`` and ``config.make(infra)`` to
+    obtain a live ``Benchmark`` ready to spawn tasks.
+
+    ``infra`` is accepted for protocol compatibility but ignored — counter-cube
+    has no resource dependencies.
     """
-    return CounterBenchmark().subset_from_list(list(_TASK_ACTIONS.keys()))
+    del infra  # counter-cube has no infra needs
+    return CounterBenchmarkConfig().subset_from_list(list(_TASK_ACTIONS.keys()))
 
 
 def make_debug_agent(task_id: str) -> DebugAgent:

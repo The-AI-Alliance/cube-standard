@@ -7,7 +7,7 @@ Read them alongside tool.py, task.py, and benchmark.py.
 import pytest
 
 from cube.core import Action, Observation
-from counter_cube import CounterBenchmark, CounterTaskConfig, CounterTool, CounterToolConfig
+from counter_cube import CounterBenchmarkConfig, CounterTaskConfig, CounterTool, CounterToolConfig
 from counter_cube.pluggable_tool import CounterToolPluggable
 
 INCREMENT = Action(name="increment", arguments={})
@@ -16,15 +16,13 @@ DECREMENT = Action(name="decrement", arguments={})
 
 @pytest.fixture
 def benchmark():
-    bench = CounterBenchmark()
-    bench.setup()
-    yield bench
-    bench.close()
+    with CounterBenchmarkConfig().make() as bench:
+        yield bench
 
 
 @pytest.fixture
 def task_configs(benchmark):
-    return {c.task_id: c for c in benchmark.get_task_configs()}
+    return {c.task_id: c for c in benchmark.config.get_task_configs()}
 
 
 # ---------------------------------------------------------------------------

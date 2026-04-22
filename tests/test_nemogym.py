@@ -2,7 +2,7 @@
 
 from fastapi.testclient import TestClient
 
-from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
+from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
 from cube.container import Container, ContainerBackend
 from cube.core import Observation
 from cube.integrations.nemogym import CubeResourcesServer
@@ -46,13 +46,6 @@ class _TaskConfig(TaskConfig):
 
 
 class _Benchmark(Benchmark):
-    benchmark_metadata = BenchmarkMetadata(name="test-bench", version="0.1.0", description="test", num_tasks=2)
-    task_metadata = {
-        "t1": TaskMetadata(id="t1"),
-        "t2": TaskMetadata(id="t2"),
-    }
-    task_config_class = _TaskConfig
-
     def _setup(self):
         pass
 
@@ -60,8 +53,18 @@ class _Benchmark(Benchmark):
         pass
 
 
+class _BenchmarkConfig(BenchmarkConfig):
+    benchmark_metadata = BenchmarkMetadata(name="test-bench", version="0.1.0", description="test", num_tasks=2)
+    task_metadata = {
+        "t1": TaskMetadata(id="t1"),
+        "t2": TaskMetadata(id="t2"),
+    }
+    task_config_class = _TaskConfig
+    benchmark_class = _Benchmark
+
+
 def _make_server() -> CubeResourcesServer:
-    return CubeResourcesServer(benchmark=_Benchmark())
+    return CubeResourcesServer(config=_BenchmarkConfig())
 
 
 def _make_client() -> TestClient:

@@ -113,9 +113,14 @@ class TaskConfig(TypedBaseModel, ABC):
 ```
 
 Minimal JSON-serializable handle that workers receive. `make()` runs on the worker,
-looks up `TaskMetadata` via `task_id` from the benchmark's `task_metadata` dict,
-potentially merges in heavy fields from `Benchmark.load_task_execution_info(task_id)`,
-and constructs the Task.
+looks up `TaskMetadata` via `task_id` from the owning `BenchmarkConfig`'s
+class-level `task_metadata` dict, potentially merges in heavy fields from
+`BenchmarkConfig.load_task_execution_info(task_id)`, and constructs the Task.
+
+Class-level lookup is stable across subsetting: `BenchmarkConfig.subset_from_*`
+narrows the view via the instance-level `task_ids` field without touching the
+ClassVar. Workers can therefore deserialize a `TaskConfig` in isolation and
+always find a valid `TaskMetadata` entry by id.
 
 ## Invariants
 
