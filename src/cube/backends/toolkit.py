@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import shlex
 import socket
 import subprocess
 import time
-from typing import Dict
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Dict, Literal
 
 from tenacity import (
     before_sleep_log,
@@ -31,6 +35,15 @@ from cube.container import (
     ExecResult,
     HealthCheckError,
 )
+
+_SIDECAR_SERVER_PATH = Path(__file__).parent / "_toolkit_sidecar_server.py"
+_SIDECAR_CONTAINER_PORT = 8787
+_SIDECAR_BOOTSTRAP_TIMEOUT = 30
+_SIDECAR_HEALTH_TIMEOUT = 15
+
+
+class _SidecarUnavailable(Exception):
+    """Raised when the sidecar is unreachable for a single call; triggers fallback to direct exec."""
 
 logger = logging.getLogger(__name__)
 
@@ -141,23 +154,113 @@ def _find_free_port() -> int:
 
 
 class ToolkitContainer(Container):
-    """Runtime handle backed by an EAI Toolkit job."""
+    """Runtime handle backed by an EAI Toolkit job.
+
+    Exec routing: `eai job exec` has a known TCP half-close bug that hangs
+    ~6% of calls. By default (exec_mode="sidecar") we bootstrap a small HTTP
+    server inside the container at launch and route all `.exec()` calls via
+    an `eai job port-forward` tunnel to it. The direct `eai job exec` path
+    is still used for bootstrap + as a fallback. See _toolkit_sidecar_server.py
+    for the server-side security posture.
+    """
 
     def __init__(
         self,
         job_id: str,
         profile: str | None = None,
         account: str | None = None,
+        exec_mode: Literal["sidecar", "direct"] = "sidecar",
     ) -> None:
         self._job_id = job_id
         self._profile = profile
         self._account = account
+        self._exec_mode = exec_mode
         self._port_forwards: dict[int, subprocess.Popen] = {}
         self._port_map: dict[int, int] = {}
+        self._sidecar_token: str | None = None
+        self._sidecar_local_port: int | None = None
+        self._sidecar_ready = False
 
     @property
     def id(self) -> str:
         return self._job_id
+
+    # ------------------------- sidecar bootstrap -------------------------
+
+    def _bootstrap_sidecar(self) -> None:
+        """Upload server, launch, port-forward, health-check. Idempotent."""
+        if self._sidecar_ready or self._exec_mode == "direct":
+            return
+
+        # 256-bit token; stays in memory on the client, and on disk in the
+        # container only as /tmp/.cube_sidecar_token (chmod 600, uid 13011).
+        token = secrets.token_urlsafe(32)
+        server_src = _SIDECAR_SERVER_PATH.read_text()
+
+        # Heredoc-upload the server, write the token to a 0600 file, launch
+        # nohup in background. The token never appears on the process argv —
+        # it flows via stdin of one eai exec and lands in a 0600 file.
+        bootstrap_script = (
+            "set -e\n"
+            "umask 077\n"
+            "cat > /tmp/_cube_sidecar.py <<'CUBE_SIDECAR_EOF'\n"
+            f"{server_src}\n"
+            "CUBE_SIDECAR_EOF\n"
+            "cat > /tmp/.cube_sidecar_token <<'CUBE_TOKEN_EOF'\n"
+            f"{token}\n"
+            "CUBE_TOKEN_EOF\n"
+            "chmod 600 /tmp/.cube_sidecar_token /tmp/_cube_sidecar.py\n"
+            f"export CUBE_SIDECAR_PORT={_SIDECAR_CONTAINER_PORT}\n"
+            "export CUBE_SIDECAR_TOKEN_FILE=/tmp/.cube_sidecar_token\n"
+            "python3 --version >/dev/null 2>&1 || { echo NO_PYTHON3; exit 1; }\n"
+            "nohup python3 /tmp/_cube_sidecar.py "
+            ">/tmp/_cube_sidecar.log 2>&1 &\n"
+            "disown\n"
+            "sleep 0.5\n"
+            "echo SIDECAR_KICKED\n"
+        )
+
+        logger.info("Bootstrapping sidecar in job %s …", self._job_id[:8])
+        result = _run_eai(
+            ["job", "exec", self._job_id, "--", "bash", "-c", bootstrap_script],
+            profile=self._profile,
+            account=self._account,
+            timeout=_SIDECAR_BOOTSTRAP_TIMEOUT,
+        )
+        if "SIDECAR_KICKED" not in result.stdout:
+            raise ContainerLaunchError(
+                f"Sidecar bootstrap failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+        local_port = self.forward_port(_SIDECAR_CONTAINER_PORT)
+
+        # Poll /health. Fresh port-forwards take a moment; the server also
+        # takes ~100-300ms to bind.
+        deadline = time.monotonic() + _SIDECAR_HEALTH_TIMEOUT
+        last_err: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{local_port}/health", timeout=1.0
+                ) as r:
+                    if r.status == 200:
+                        self._sidecar_token = token
+                        self._sidecar_local_port = local_port
+                        self._sidecar_ready = True
+                        logger.info(
+                            "Sidecar ready for job %s on local port %d",
+                            self._job_id[:8],
+                            local_port,
+                        )
+                        return
+            except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                last_err = exc
+                time.sleep(0.2)
+        raise ContainerLaunchError(
+            f"Sidecar /health never returned 200 within {_SIDECAR_HEALTH_TIMEOUT}s: {last_err}"
+        )
+
+    # ------------------------- exec -------------------------
 
     def exec(
         self,
@@ -168,6 +271,78 @@ class ToolkitContainer(Container):
     ) -> ExecResult:
         effective_timeout = timeout if timeout is not None else 120
 
+        if self._exec_mode == "sidecar":
+            try:
+                if not self._sidecar_ready:
+                    self._bootstrap_sidecar()
+                return self._exec_via_sidecar(command, effective_timeout, workdir, env)
+            except _SidecarUnavailable as exc:
+                logger.warning(
+                    "Sidecar exec failed for job %s, falling back to direct eai exec: %s",
+                    self._job_id[:8],
+                    exc,
+                )
+                # Don't keep retrying bootstrap for this container.
+                self._sidecar_ready = False
+                self._exec_mode = "direct"
+
+        return self._exec_direct(command, effective_timeout, workdir, env)
+
+    def _exec_via_sidecar(
+        self,
+        command: str,
+        timeout: int,
+        workdir: str | None,
+        env: Dict[str, str] | None,
+    ) -> ExecResult:
+        assert self._sidecar_ready and self._sidecar_token and self._sidecar_local_port
+        payload: dict = {"command": command, "timeout": timeout}
+        if workdir:
+            payload["workdir"] = workdir
+        if env:
+            payload["env"] = env
+        data = json.dumps(payload).encode("utf-8")
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self._sidecar_local_port}/exec",
+            data=data,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._sidecar_token}",
+            },
+        )
+        logger.info("exec [%s] (sidecar): %s", self._job_id[:8], command)
+        start = time.monotonic()
+        try:
+            # Client-side read timeout = command timeout + generous overhead
+            # for JSON serialization on large stdout/stderr payloads.
+            with urllib.request.urlopen(req, timeout=timeout + 30) as r:
+                body = json.loads(r.read().decode("utf-8"))
+        except (urllib.error.URLError, ConnectionError, OSError, json.JSONDecodeError) as exc:
+            raise _SidecarUnavailable(str(exc)) from exc
+
+        duration = time.monotonic() - start
+        logger.info(
+            "exec [%s] (sidecar): done in %.1fs, exit_code=%s",
+            self._job_id[:8],
+            duration,
+            body.get("exit_code"),
+        )
+        return ExecResult(
+            stdout=body.get("stdout", "").strip(),
+            stderr=body.get("stderr", "").strip(),
+            exit_code=int(body.get("exit_code", 1)),
+            duration_seconds=round(float(body.get("duration_seconds", duration)), 3),
+        )
+
+    def _exec_direct(
+        self,
+        command: str,
+        effective_timeout: int,
+        workdir: str | None,
+        env: Dict[str, str] | None,
+    ) -> ExecResult:
         parts: list[str] = []
         if env:
             for k, v in env.items():
@@ -180,7 +355,7 @@ class ToolkitContainer(Container):
         # Wrap with exit-code capture since eai job exec doesn't relay exit codes
         wrapped = f"timeout {effective_timeout}s bash -lc {shlex.quote(full_command)}; echo EXIT_CODE:$?"
 
-        logger.info("exec [%s]: %s", self._job_id[:8], command)
+        logger.info("exec [%s] (direct): %s", self._job_id[:8], command)
         start = time.monotonic()
         result = _run_eai(
             ["job", "exec", self._job_id, "--", "bash", "-c", wrapped],
@@ -194,7 +369,12 @@ class ToolkitContainer(Container):
             timeout=effective_timeout + 30,
         )
         duration = time.monotonic() - start
-        logger.info("exec [%s]: done in %.1fs, exit_code=%s", self._job_id[:8], duration, result.returncode)
+        logger.info(
+            "exec [%s] (direct): done in %.1fs, exit_code=%s",
+            self._job_id[:8],
+            duration,
+            result.returncode,
+        )
 
         stdout = result.stdout
         stderr = result.stderr
@@ -208,7 +388,6 @@ class ToolkitContainer(Container):
                     exit_code = int(lines[i].split(":", 1)[1])
                 except ValueError:
                     pass
-                # Remove the marker line from stdout
                 lines.pop(i)
                 break
         stdout = "\n".join(lines)
@@ -467,6 +646,7 @@ class ToolkitContainerBackend(ContainerBackend):
     account: str | None = None
     interactive: bool = False
     preemptable: bool = False
+    exec_mode: Literal["sidecar", "direct"] = "sidecar"
 
     def launch(self, config: ContainerConfig) -> ToolkitContainer:
         return self._launch_with_retry(config)
@@ -555,7 +735,12 @@ class ToolkitContainerBackend(ContainerBackend):
                 f"EAI job {job_id} did not reach RUNNING state within {self.timeout_seconds}s (last state: {state})"
             )
 
-        container = ToolkitContainer(job_id, profile=self.profile, account=self.account)
+        container = ToolkitContainer(
+            job_id,
+            profile=self.profile,
+            account=self.account,
+            exec_mode=self.exec_mode,
+        )
         logger.info("EAI job running: %s", job_id)
 
         self._run_health_check(container)
