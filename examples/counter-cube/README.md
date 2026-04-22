@@ -72,6 +72,7 @@ benchmark.close()
 
 ## Further reading
 
-- `../../design/main_specs.md` — full CUBE specification
-- `../../examples/toy_benchmark/counter.py` — flat single-file version of the same example
-- `../../cubes/osworld-cube/` — a real cube using VMs and desktop automation
+- **[Authoring a CUBE guide](https://the-ai-alliance.github.io/cube-standard/authoring-a-cube)** — if you're new to CUBE, start here; this directory is the reference implementation it points to
+- [`openspec/specs/`](../../openspec/specs/) — formal per-layer contracts
+- [`examples/toy_benchmark/`](../toy_benchmark/) — flat single-file variant of the same example
+- [`cube-harness/cubes/osworld-cube/`](https://github.com/The-AI-Alliance/cube-harness/tree/main/cubes/osworld-cube) — a real cube using VMs and desktop automation (lives in the cube-harness repo)
