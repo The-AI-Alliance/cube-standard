@@ -57,7 +57,16 @@ def _run_eai(
     account: str | None = None,
     timeout: int | None = 60,
 ) -> subprocess.CompletedProcess[str]:
-    """Run an ``eai`` CLI command and return the completed process."""
+    """Run an ``eai`` CLI command and return the completed process.
+
+    Timeout handling puts ``eai`` in its own process group (``start_new_session``)
+    and SIGKILLs the whole group on ``TimeoutExpired``.  Without this, ``eai``
+    occasionally leaves defunct child processes behind when its internal retry
+    loop gets stuck — visible as ``(eai)`` zombies under ``ps``.
+    """
+    import os
+    import signal
+
     cmd = ["eai"]
     if profile:
         cmd += ["--profile", profile]
@@ -67,18 +76,32 @@ def _run_eai(
 
     logger.debug("Running: %s", " ".join(cmd))
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
         )
     except FileNotFoundError as exc:
         raise ContainerLaunchError("The 'eai' CLI tool is not installed or not on PATH.") from exc
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
+        # Kill the entire process group so no defunct children survive.
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            proc.communicate(timeout=5)  # drain pipes so the PID reaps cleanly
+        except Exception:
+            pass
         raise ContainerExecError(f"eai command timed out after {timeout}s: {' '.join(cmd)}") from exc
-    return result
+
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def _find_free_port() -> int:
