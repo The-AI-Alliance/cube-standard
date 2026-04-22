@@ -90,6 +90,7 @@ class DaytonaContainer(Container):
         client: Daytona,
         allowed_ports: set[int] | None = None,
     ) -> None:
+        super().__init__()  # populates ResourceHandle fields with defaults
         self._sandbox = sandbox
         self._client = client
         self._url_cache: dict[int, str] = {}

@@ -1,7 +1,8 @@
 """ModalInfraConfig — InfraConfig serving ``DockerServiceConfig(scope="task")`` as Modal Sandboxes.
 
 Each ``launch()`` creates a Modal Sandbox from the resource's image and returns a
-handle whose ``.container`` exposes a ``ModalContainer`` for the cube's tool layer.
+live ``ModalContainer`` — which IS a ``ResourceHandle`` and exposes the container
+interface for the cube's tool layer.
 
 Authentication: Modal reads credentials from ``~/.modal.toml`` (set by ``modal setup``)
 or ``MODAL_TOKEN_ID`` / ``MODAL_TOKEN_SECRET`` env vars.  Credentials are never
@@ -12,46 +13,21 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
 import modal
 
 from cube.backends.modal import ModalContainer
-from cube.container import Container, ContainerLaunchError
+from cube.container import ContainerLaunchError
 from cube.resource import (
     DockerServiceConfig,
     InfraConfig,
     ResourceConfig,
-    ResourceHandle,
     UnsupportedResourceType,
 )
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ModalResourceHandle(ResourceHandle):
-    """ResourceHandle wrapping a live Modal Sandbox.
-
-    ``.container`` exposes a ``ModalContainer`` that the cube's tool layer drives.
-    ``close()`` terminates the sandbox.
-    """
-
-    _container: Container | None = field(default=None, repr=False)
-
-    @property
-    def container(self) -> Container | None:
-        return self._container
-
-    def close(self) -> None:
-        if self._container is not None:
-            try:
-                self._container.stop()
-            except Exception as exc:  # best-effort
-                logger.warning("Error stopping Modal sandbox for %s: %s", self.resource.name, exc)
-            self._container = None
 
 
 class ModalInfraConfig(InfraConfig):
@@ -93,7 +69,7 @@ class ModalInfraConfig(InfraConfig):
         ProvisionStore().put(resource, self, {"provisioned": True})
         logger.info("Registered %r with ModalInfraConfig (no upfront image pull)", resource.name)
 
-    def launch(self, resource: ResourceConfig) -> ModalResourceHandle:
+    def launch(self, resource: ResourceConfig) -> ModalContainer:
         if not isinstance(resource, DockerServiceConfig):
             raise UnsupportedResourceType(resource, self)
 
@@ -130,25 +106,22 @@ class ModalInfraConfig(InfraConfig):
         container = ModalContainer(sandbox)
         logger.info("Modal sandbox live: %s (%s)", container.id, resource.name)
 
-        run_id = str(uuid.uuid4())
+        # Populate ResourceHandle bookkeeping on the container itself.
         effective_ttl = (
             self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
         )
-        created_at = datetime.now()
-        expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
-
-        return ModalResourceHandle(
-            run_id=run_id,
-            resource=resource,
-            infra=self,
-            endpoint=None,
-            endpoints={},
-            created_at=created_at,
-            expires_at=expires_at,
-            _container=container,
+        container.run_id = str(uuid.uuid4())
+        container.resource = resource
+        container.infra = self
+        container.endpoint = None
+        container.endpoints = {}
+        container.created_at = datetime.now()
+        container.expires_at = (
+            container.created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
         )
+        return container
 
-    def list_active(self, run_id: str | None = None) -> list[ModalResourceHandle]:
+    def list_active(self, run_id: str | None = None) -> list[ModalContainer]:
         """Not implemented — Modal sandboxes aren't tagged with our run_id today."""
         return []
 

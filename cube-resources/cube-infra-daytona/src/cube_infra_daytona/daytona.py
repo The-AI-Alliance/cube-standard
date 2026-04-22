@@ -1,8 +1,9 @@
 """DaytonaInfraConfig — InfraConfig serving ``DockerServiceConfig(scope="task")``.
 
 Each call to ``launch()`` creates a fresh Daytona sandbox from the resource's image
-and returns a handle whose ``.container`` attribute exposes a ``cube.container.Container``
-for the cube's tool layer to drive (bash, read_file, write_file, etc.).
+and returns a live ``DaytonaContainer`` — which IS a ``ResourceHandle`` (closes the
+sandbox via ``close()``) and also provides ``exec()`` / ``forward_port()`` for the
+cube's tool layer to drive.
 
 Authentication: reads ``DAYTONA_API_KEY``, ``DAYTONA_API_URL``, ``DAYTONA_TARGET`` from
 env if not provided as fields.  Credentials are NEVER stored on the config itself
@@ -14,7 +15,6 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -26,42 +26,15 @@ from daytona import (
     Resources,
 )
 
-from cube.container import Container
 from cube.resource import (
     DockerServiceConfig,
     InfraConfig,
     ResourceConfig,
-    ResourceHandle,
     UnsupportedResourceType,
 )
 from cube_infra_daytona.container import DaytonaContainer
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class DaytonaResourceHandle(ResourceHandle):
-    """ResourceHandle wrapping a live Daytona sandbox.
-
-    Exposes ``.container`` — a ``DaytonaContainer`` that the cube's tool layer drives
-    via ``exec()`` / ``forward_port()`` / etc.  ``close()`` deletes the sandbox and
-    tears down the exec session.
-    """
-
-    _container: Container | None = field(default=None, repr=False)
-
-    @property
-    def container(self) -> Container | None:
-        return self._container
-
-    def close(self) -> None:
-        """Delete the Daytona sandbox and end the exec session.  Idempotent."""
-        if self._container is not None:
-            try:
-                self._container.stop()
-            except Exception as exc:  # best-effort: log and continue
-                logger.warning("Error closing Daytona sandbox %s: %s", self.resource.name, exc)
-            self._container = None
 
 
 class DaytonaInfraConfig(InfraConfig):
@@ -116,7 +89,7 @@ class DaytonaInfraConfig(InfraConfig):
         ProvisionStore().put(resource, self, {"provisioned": True})
         logger.info("Registered %r with DaytonaInfraConfig (no upfront image pull)", resource.name)
 
-    def launch(self, resource: ResourceConfig) -> DaytonaResourceHandle:
+    def launch(self, resource: ResourceConfig) -> DaytonaContainer:
         if not isinstance(resource, DockerServiceConfig):
             raise UnsupportedResourceType(resource, self)
 
@@ -155,25 +128,23 @@ class DaytonaInfraConfig(InfraConfig):
         container = DaytonaContainer(sandbox, client)
         logger.info("Daytona sandbox live: %s (%s)", container.id, resource.name)
 
-        run_id = str(uuid.uuid4())
+        # Populate ResourceHandle bookkeeping on the container itself — a
+        # DaytonaContainer IS a ResourceHandle (no wrapper).
         effective_ttl = (
             self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
         )
-        created_at = datetime.now()
-        expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
-
-        return DaytonaResourceHandle(
-            run_id=run_id,
-            resource=resource,
-            infra=self,
-            endpoint=None,  # Daytona sandboxes don't expose an eager endpoint
-            endpoints={},
-            created_at=created_at,
-            expires_at=expires_at,
-            _container=container,
+        container.run_id = str(uuid.uuid4())
+        container.resource = resource
+        container.infra = self
+        container.endpoint = None  # Daytona sandboxes don't expose an eager endpoint
+        container.endpoints = {}
+        container.created_at = datetime.now()
+        container.expires_at = (
+            container.created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
         )
+        return container
 
-    def list_active(self, run_id: str | None = None) -> list[DaytonaResourceHandle]:
+    def list_active(self, run_id: str | None = None) -> list[DaytonaContainer]:
         """Not implemented — Daytona's API doesn't tag sandboxes with our run_id today.
 
         Returns an empty list so ``cleanup_stale()`` won't try to iterate.  When we

@@ -54,6 +54,7 @@ class LocalContainer(Container):
         client: docker.DockerClient,
         remove_on_close: bool = True,
     ) -> None:
+        super().__init__()  # populates ResourceHandle fields with defaults
         self._container = docker_container
         self._client = client
         self._remove_on_close = remove_on_close

@@ -1,9 +1,8 @@
 """ToolkitInfraConfig — InfraConfig serving ``DockerServiceConfig(scope="task")`` as EAI jobs.
 
 Each ``launch()`` creates an ``eai job new -- sleep infinity`` with the resource's image,
-polls until RUNNING, and returns a handle whose ``.container`` is a live
-``ToolkitContainer`` (defined in this package's ``container`` module) the tool
-layer drives.
+polls until RUNNING, and returns a live ``ToolkitContainer`` — which IS a
+``ResourceHandle`` and also provides the container interface for the cube's tool layer.
 
 Authentication: the ``eai`` CLI reads its own config (``~/.eai/config``).  Pick the
 cluster via ``profile=`` on the config or ``EAI_PROFILE`` env var.
@@ -16,44 +15,19 @@ import logging
 import os
 import time
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal
 
-from cube.container import Container, ContainerLaunchError
+from cube.container import ContainerLaunchError
 from cube.resource import (
     DockerServiceConfig,
     InfraConfig,
     ResourceConfig,
-    ResourceHandle,
     UnsupportedResourceType,
 )
 from cube_infra_toolkit.container import ToolkitContainer, _run_eai
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ToolkitResourceHandle(ResourceHandle):
-    """ResourceHandle wrapping a live EAI Toolkit job.
-
-    ``.container`` returns the ``ToolkitContainer`` the cube's tool layer drives.
-    ``close()`` kills the job and tears down any port-forwards.
-    """
-
-    _container: Container | None = field(default=None, repr=False)
-
-    @property
-    def container(self) -> Container | None:
-        return self._container
-
-    def close(self) -> None:
-        if self._container is not None:
-            try:
-                self._container.stop()
-            except Exception as exc:  # best-effort
-                logger.warning("Error stopping EAI job for %s: %s", self.resource.name, exc)
-            self._container = None
 
 
 class ToolkitInfraConfig(InfraConfig):
@@ -102,7 +76,7 @@ class ToolkitInfraConfig(InfraConfig):
         ProvisionStore().put(resource, self, {"provisioned": True})
         logger.info("Registered %r with ToolkitInfraConfig (no upfront image pull)", resource.name)
 
-    def launch(self, resource: ResourceConfig) -> ToolkitResourceHandle:
+    def launch(self, resource: ResourceConfig) -> ToolkitContainer:
         if not isinstance(resource, DockerServiceConfig):
             raise UnsupportedResourceType(resource, self)
 
@@ -158,25 +132,22 @@ class ToolkitInfraConfig(InfraConfig):
         )
         logger.info("EAI job %s RUNNING", job_id)
 
-        run_id = str(uuid.uuid4())
+        # Populate ResourceHandle bookkeeping on the container itself.
         effective_ttl = (
             self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
         )
-        created_at = datetime.now()
-        expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
-
-        return ToolkitResourceHandle(
-            run_id=run_id,
-            resource=resource,
-            infra=self,
-            endpoint=None,
-            endpoints={},
-            created_at=created_at,
-            expires_at=expires_at,
-            _container=container,
+        container.run_id = str(uuid.uuid4())
+        container.resource = resource
+        container.infra = self
+        container.endpoint = None
+        container.endpoints = {}
+        container.created_at = datetime.now()
+        container.expires_at = (
+            container.created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
         )
+        return container
 
-    def list_active(self, run_id: str | None = None) -> list[ToolkitResourceHandle]:
+    def list_active(self, run_id: str | None = None) -> list[ToolkitContainer]:
         """Not implemented — EAI jobs aren't tagged with our run_id today."""
         return []
 

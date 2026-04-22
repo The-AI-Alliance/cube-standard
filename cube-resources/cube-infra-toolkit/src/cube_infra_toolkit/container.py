@@ -158,6 +158,7 @@ class ToolkitContainer(Container):
         account: str | None = None,
         exec_mode: Literal["sidecar", "direct"] = "sidecar",
     ) -> None:
+        super().__init__()  # populates ResourceHandle fields with defaults
         self._job_id = job_id
         self._profile = profile
         self._account = account

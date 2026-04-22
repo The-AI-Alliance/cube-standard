@@ -1,5 +1,20 @@
+"""Container — a ``ResourceHandle`` that adds exec / port-forwarding.
+
+A ``Container`` IS a ``ResourceHandle``.  ``InfraConfig.launch()`` returns one
+directly — no wrapper indirection.  Subclasses carry the handle bookkeeping
+(run_id / resource / infra / created_at / expires_at) alongside their driver-
+specific state.
+
+``ContainerBackend`` and ``ContainerConfig`` below are the pre-``InfraConfig``
+factory + config.  They are **deprecated** — use ``InfraConfig.launch()`` with
+``DockerImageConfig`` or ``DockerServiceConfig`` (in ``cube.resource``) instead.
+Kept here only so existing ``Task.container_backend`` / ``Benchmark.container_backend``
+fields continue to type-check during the migration.
+"""
+
 from __future__ import annotations
 
+import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict
@@ -7,17 +22,7 @@ from typing import Any, Dict
 from pydantic import Field
 
 from cube.core import TypedBaseModel
-
-
-class ContainerConfig(TypedBaseModel):
-    """Declarative description of *what* to run — owned by the benchmark."""
-
-    image: str
-    ram_gb: float = 4.0
-    cpu_cores: float = 2.0
-    gpu: bool = False
-    disk_gb: float = 10.0
-    ports: list[int] | None = None
+from cube.resource import ResourceHandle
 
 
 @dataclass
@@ -56,11 +61,16 @@ class ContainerExecError(ContainerError):
     """Raised when command execution inside a container fails."""
 
 
-class Container(ABC):
-    """Runtime handle to a running container (not serializable)."""
+class Container(ResourceHandle, ABC):
+    """Live handle to a running container.
 
-    def __repr__(self) -> str:
-        return f"<{type(self).__name__} id={self.id}>"
+    Inherits ``ResourceHandle`` bookkeeping (run_id, resource, infra, created_at,
+    expires_at, endpoint, endpoints) and adds the container-specific capability
+    surface: exec / port-forward / status / id.
+
+    ``ResourceHandle.close()`` is satisfied by delegating to ``stop()`` so callers
+    can treat the handle uniformly via the ``with`` statement or ``close()``.
+    """
 
     @abstractmethod
     def exec(
@@ -117,12 +127,73 @@ class Container(ABC):
     def id(self) -> str:
         """Unique, backend-specific container identifier."""
 
+    def close(self) -> None:
+        """Delegates to ``stop()`` — satisfies ``ResourceHandle.close()``."""
+        self.stop()
+
+    @property
+    def container(self) -> "Container":
+        """Return self — Container IS ResourceHandle, no wrapper.
+
+        Kept for uniformity with legacy handle types (e.g.
+        ``LocalDockerServiceHandle.container``) that wrap multiple containers
+        and need an indirection property.
+        """
+        return self
+
+
+def port_from_url(url: str) -> int:
+    """Extract the effective port from a URL (443 for https, 80 for http)."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.port is not None:
+        return parsed.port
+    if parsed.scheme == "https":
+        return 443
+    if parsed.scheme == "http":
+        return 80
+    raise ContainerError(f"Could not determine port from URL: {url}")
+
+
+# ── Deprecated pre-InfraConfig API ───────────────────────────────────────────
+
+
+class ContainerConfig(TypedBaseModel):
+    """DEPRECATED.  Use ``cube.resource.DockerImageConfig`` instead."""
+
+    image: str
+    ram_gb: float = 4.0
+    cpu_cores: float = 2.0
+    gpu: bool = False
+    disk_gb: float = 10.0
+    ports: list[int] | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        warnings.warn(
+            "ContainerConfig is deprecated — use cube.resource.DockerImageConfig instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
 
 class ContainerBackend(TypedBaseModel, ABC):
-    """Serializable configuration for *how* to run containers."""
+    """DEPRECATED.  Use ``cube.resource.InfraConfig`` + ``InfraConfig.launch(resource)`` instead.
+
+    Kept only so existing ``Task.container_backend`` / ``Benchmark.container_backend``
+    fields continue to type-check during the infra migration.
+    """
 
     timeout_seconds: int = 1800
     backend_config: Dict[str, Any] = Field(default_factory=dict)
+
+    def model_post_init(self, __context: Any) -> None:
+        warnings.warn(
+            f"{type(self).__name__} uses the deprecated ContainerBackend API — "
+            "switch to cube.resource.InfraConfig.launch().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     @abstractmethod
     def launch(self, config: ContainerConfig) -> Container:
@@ -144,17 +215,3 @@ class ContainerBackend(TypedBaseModel, ABC):
         except Exception as exc:
             container.stop()
             raise HealthCheckError(f"Health check raised an exception: {exc}") from exc
-
-
-def port_from_url(url: str) -> int:
-    """Extract the effective port from a URL (443 for https, 80 for http)."""
-    from urllib.parse import urlparse
-
-    parsed = urlparse(url)
-    if parsed.port is not None:
-        return parsed.port
-    if parsed.scheme == "https":
-        return 443
-    if parsed.scheme == "http":
-        return 80
-    raise ContainerError(f"Could not determine port from URL: {url}")
