@@ -32,6 +32,7 @@ Infer register from vocabulary (ML jargon vs. product/infra jargon) and from wha
   > **Skill maintenance TODO:** when any of the above land, update this guardrail and `references/pitfalls.md`.
 - **Prefer reuse over reinvention.** Before designing any custom tool or resource, check `references/shared-packages.md` and see if an existing `cube-tools/*` or `cube-resources/*` package fits (directly or via subclass). Only build from scratch if nothing fits.
 - Confirm before destructive actions: rewriting a scaffold dir, deleting files, `cube registry add --submit`, any force-push.
+- **Escalate awkward fits.** If during Discover or Reflect the user describes a benchmark shape that doesn't slot cleanly into the protocol (action space won't compress into a single `Tool`, scoring needs human judgment, episode structure doesn't match `reset → step → evaluate`, or the benchmark needs something from the "Not yet supported" list above), **stop scaffolding** and suggest the user open an issue at https://github.com/The-AI-Alliance/cube-standard/issues tagging `@recursix` and `@nicolasag` before proceeding. Don't try to paper over structural mismatches with hacks.
 
 ## Flow
 

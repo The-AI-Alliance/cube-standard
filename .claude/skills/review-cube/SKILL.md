@@ -75,6 +75,7 @@ Format per `references/report-template.md`. Two sections (Blocking, Suggestions 
 - **Read-only against the cube code and the registry YAML.** This skill makes no edits to either. The only side effect is the confirmed `gh pr review` comment.
 - **Temp work goes under `/tmp/cube-review-<id>/`** and is cleaned up after the report is delivered, unless the user asks to keep it.
 - Confirm before any destructive action (e.g., removing the temp dir if the user has opened files in it, force-anything).
+- **Flag structural mismatches for human discussion.** If the review surfaces issues that suggest the benchmark shape itself doesn't fit the protocol — not fixable bugs, but things like an action space that can't live in a single `Tool`, evaluation that needs human judgment, or episode structure that doesn't match `reset → step → evaluate` — include a Suggestion in the report recommending the author open an issue at https://github.com/The-AI-Alliance/cube-standard/issues tagging `@recursix` and `@nicolasag` to discuss before merge. Don't list workaround hacks as the solution.
 
 ## References
 
