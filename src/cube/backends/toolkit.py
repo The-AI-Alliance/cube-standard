@@ -202,18 +202,6 @@ class ToolkitContainer(Container):
         if self._sidecar_ready or self._exec_mode == "direct":
             return
 
-        # Minimal images (e.g. some terminal-bench tasks) ship without python3.
-        # The sidecar is a pure-python daemon, so no-python = no sidecar.  Silently
-        # fall back to direct exec mode — the image's workload may be fine without
-        # the sidecar's latency/reliability benefits.
-        if not self._has_python3():
-            logger.info(
-                "Container %s has no python3 — falling back to exec_mode='direct'",
-                self._job_id[:8],
-            )
-            self._exec_mode = "direct"
-            return
-
         # 256-bit token, reused across bootstrap retries.  Server reads from
         # /tmp/.cube_sidecar_token (0600) at startup, so writing the same
         # content on each retry is idempotent.
@@ -244,24 +232,15 @@ class ToolkitContainer(Container):
                 attempt + 1, self._job_id[:8], last_diag,
             )
 
-        raise ContainerLaunchError(
-            f"Sidecar /health never reached on local port {local_port} "
-            f"after 3 bootstrap attempts.\n--- last server diagnostics ---\n{last_diag}"
+        # All 3 health probes failed — sidecar unbootstrappable (no python3, or
+        # persistent network issue).  Silently fall back to direct eai exec so
+        # the task can still run; the caller does not need to handle this case.
+        logger.warning(
+            "Sidecar bootstrap failed after 3 attempts for job %s — "
+            "falling back to direct exec mode.  Last diag:\n%s",
+            self._job_id[:8], last_diag,
         )
-
-    def _has_python3(self) -> bool:
-        try:
-            r = _run_eai(
-                ["job", "exec", self._job_id, "--", "bash", "-c",
-                 "command -v python3 >/dev/null 2>&1 && echo YES || echo NO"],
-                profile=self._profile, account=self._account,
-                timeout=30, retries=1,
-            )
-            return "YES" in r.stdout
-        except ContainerExecError:
-            # If we can't probe reliably, assume no python3 to avoid infinite
-            # retry of a doomed bootstrap.
-            return False
+        self._exec_mode = "direct"
 
     def _kick_sidecar(self, token: str) -> None:
         """Upload the server + token, kill any prior instance, start detached.
