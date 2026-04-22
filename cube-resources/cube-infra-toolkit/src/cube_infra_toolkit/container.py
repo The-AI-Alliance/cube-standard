@@ -60,6 +60,7 @@ _retry_io = retry(
 def _run_eai(
     args: list[str],
     *,
+    eai_path: str = "eai",
     profile: str | None = None,
     account: str | None = None,
     timeout: int | None = 60,
@@ -81,7 +82,7 @@ def _run_eai(
     unchanged — those indicate real failures (bad args, 404, auth) where
     retrying is a waste.
     """
-    cmd = ["eai"]
+    cmd = [eai_path]
     if profile:
         cmd += ["--profile", profile]
     if account:
@@ -101,7 +102,10 @@ def _run_eai(
                 start_new_session=True,
             )
         except FileNotFoundError as exc:
-            raise ContainerLaunchError("The 'eai' CLI tool is not installed or not on PATH.") from exc
+            raise ContainerLaunchError(
+            f"The 'eai' CLI tool was not found at {cmd[0]!r}. "
+            "Install it or set ToolkitInfraConfig(eai_path=...)."
+        ) from exc
 
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
@@ -157,12 +161,14 @@ class ToolkitContainer(Container):
         profile: str | None = None,
         account: str | None = None,
         exec_mode: Literal["sidecar", "direct"] = "sidecar",
+        eai_path: str = "eai",
     ) -> None:
         super().__init__()  # populates ResourceHandle fields with defaults
         self._job_id = job_id
         self._profile = profile
         self._account = account
         self._exec_mode = exec_mode
+        self._eai_path = eai_path
         self._port_forwards: dict[int, subprocess.Popen] = {}
         self._port_map: dict[int, int] = {}
         self._port_forward_logs: dict[int, str] = {}
@@ -259,6 +265,7 @@ class ToolkitContainer(Container):
         try:
             _run_eai(
                 ["job", "exec", self._job_id, "--", "bash", "-c", script],
+                eai_path=self._eai_path,
                 profile=self._profile,
                 account=self._account,
                 timeout=_SIDECAR_BOOTSTRAP_TIMEOUT,
@@ -310,6 +317,7 @@ class ToolkitContainer(Container):
                  "tail -20 /tmp/_cube_sidecar.log 2>/dev/null; "
                  "echo ---ps---; ps -ef | grep _cube_sidecar | grep -v grep; "
                  "echo ---curl---; curl -sS --max-time 2 http://127.0.0.1:8787/health 2>&1 | head -5"],
+                eai_path=self._eai_path,
                 profile=self._profile,
                 account=self._account,
                 timeout=30,
@@ -430,6 +438,7 @@ class ToolkitContainer(Container):
         start = time.monotonic()
         result = _run_eai(
             ["job", "exec", self._job_id, "--", "bash", "-c", wrapped],
+            eai_path=self._eai_path,
             profile=self._profile,
             account=self._account,
             timeout=effective_timeout + 30,
@@ -470,7 +479,7 @@ class ToolkitContainer(Container):
 
         local_port = _find_free_port()
 
-        cmd = ["eai"]
+        cmd = [self._eai_path]
         if self._profile:
             cmd += ["--profile", self._profile]
         if self._account:
@@ -539,6 +548,7 @@ class ToolkitContainer(Container):
         try:
             _run_eai(
                 ["job", "kill", self._job_id],
+                eai_path=self._eai_path,
                 profile=self._profile,
                 account=self._account,
                 timeout=30,
@@ -550,6 +560,7 @@ class ToolkitContainer(Container):
         try:
             result = _run_eai(
                 ["job", "get", self._job_id, "--format", "json", "--no-header"],
+                eai_path=self._eai_path,
                 profile=self._profile,
                 account=self._account,
                 timeout=30,

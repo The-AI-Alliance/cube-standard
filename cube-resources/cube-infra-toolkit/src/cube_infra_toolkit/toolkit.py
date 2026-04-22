@@ -51,6 +51,8 @@ class ToolkitInfraConfig(InfraConfig):
     # eai-exec CLOSE_WAIT hang bug); "direct" keeps every .exec() on the flaky
     # eai job exec RPC.  Sidecar is strongly preferred; direct is a debug/fallback.
     exec_mode: Literal["sidecar", "direct"] = "sidecar"
+    # Override when eai is not on PATH (e.g. installed in ~/bin via .zshrc).
+    eai_path: str = "eai"
 
     # ── InfraConfig interface ─────────────────────────────────────────────────
 
@@ -113,7 +115,8 @@ class ToolkitInfraConfig(InfraConfig):
         # retries=0: `eai job new` is not idempotent — a timeout mid-creation
         # may have actually created the job, and a retry would produce a duplicate.
         result = _run_eai(
-            cmd, profile=profile, account=self.account, timeout=self.launch_timeout_seconds, retries=0,
+            cmd, eai_path=self.eai_path, profile=profile, account=self.account,
+            timeout=self.launch_timeout_seconds, retries=0,
         )
         if result.returncode != 0:
             raise ContainerLaunchError(f"Failed to submit EAI job: {result.stderr.strip()}")
@@ -125,10 +128,14 @@ class ToolkitInfraConfig(InfraConfig):
             raise ContainerLaunchError(f"Could not parse job id from eai output: {result.stdout!r}") from exc
 
         logger.info("EAI job %s submitted — waiting for RUNNING…", job_id)
-        _wait_for_running(job_id, profile=profile, account=self.account, timeout=self.launch_timeout_seconds)
+        _wait_for_running(
+            job_id, eai_path=self.eai_path, profile=profile,
+            account=self.account, timeout=self.launch_timeout_seconds,
+        )
 
         container = ToolkitContainer(
-            job_id, profile=profile, account=self.account, exec_mode=self.exec_mode,
+            job_id, profile=profile, account=self.account,
+            exec_mode=self.exec_mode, eai_path=self.eai_path,
         )
         logger.info("EAI job %s RUNNING", job_id)
 
@@ -166,6 +173,7 @@ class ToolkitInfraConfig(InfraConfig):
 def _wait_for_running(
     job_id: str,
     *,
+    eai_path: str = "eai",
     profile: str | None,
     account: str | None,
     timeout: int,
@@ -175,6 +183,7 @@ def _wait_for_running(
     while time.monotonic() < deadline:
         result = _run_eai(
             ["job", "get", job_id, "--format", "json", "--no-header"],
+            eai_path=eai_path,
             profile=profile,
             account=account,
             timeout=30,
@@ -188,14 +197,14 @@ def _wait_for_running(
         if state == "running":
             return
         if state in ("failed", "cancelled", "killed"):
-            _run_eai(["job", "kill", job_id], profile=profile, account=account, timeout=30)
+            _run_eai(["job", "kill", job_id], eai_path=eai_path, profile=profile, account=account, timeout=30)
             raise ContainerLaunchError(f"EAI job {job_id} entered terminal state: {state}")
 
         last_state = state
         logger.info("EAI job %s state=%s, waiting…", job_id[:8], state)
         time.sleep(5)
 
-    _run_eai(["job", "kill", job_id], profile=profile, account=account, timeout=30)
+    _run_eai(["job", "kill", job_id], eai_path=eai_path, profile=profile, account=account, timeout=30)
     raise ContainerLaunchError(
         f"EAI job {job_id} did not reach RUNNING within {timeout}s (last state: {last_state!r})"
     )
