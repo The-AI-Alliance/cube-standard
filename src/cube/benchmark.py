@@ -520,8 +520,11 @@ class Benchmark(TypedBaseModel, ABC):
         # triggering Pydantic's ClassVar protection.
         new_instance = self.model_copy(deep=True)
         if new_instance.__pydantic_private__ is not None:
+            # Pydantic 2.13+ added a validated-data variant to default_factory's type
+            # signature; we only ever use 0-arg factories, so the call-arg ignore is safe.
             new_instance.__pydantic_private__ = {
-                k: fi.get_default() for k, fi in type(new_instance).__private_attributes__.items()
+                k: (fi.default_factory() if fi.default_factory is not None else fi.default)  # type: ignore[call-arg]
+                for k, fi in type(new_instance).__private_attributes__.items()
             }
         new_bm = copy.deepcopy(type(new_instance).benchmark_metadata)
         new_bm.name = f"{self.benchmark_metadata.name}_{benchmark_name_suffix}"
