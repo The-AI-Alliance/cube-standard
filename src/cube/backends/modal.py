@@ -57,6 +57,9 @@ class ModalContainer(Container):
     def id(self) -> str:
         return self._sandbox.object_id
 
+    def __repr__(self) -> str:
+        return f"ModalContainer(id={self.id!r}, run_id={self.run_id!r})"
+
     def exec(
         self,
         command: str,

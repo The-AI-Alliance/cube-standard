@@ -102,6 +102,9 @@ class DaytonaContainer(Container):
     def id(self) -> str:
         return self._sandbox.id
 
+    def __repr__(self) -> str:
+        return f"DaytonaContainer(id={self.id!r}, run_id={self.run_id!r})"
+
     def exec(
         self,
         command: str,

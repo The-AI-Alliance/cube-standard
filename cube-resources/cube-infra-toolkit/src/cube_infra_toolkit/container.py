@@ -3,6 +3,8 @@
 Canonical home for the Toolkit driver.  ``cube.backends.toolkit`` re-exports
 this class for back-compat with the deprecated ``ToolkitContainerBackend``
 factory; new code should use ``ToolkitInfraConfig`` from this package.
+
+Upstream EAI Toolkit documentation: https://docs.console.elementai.com/
 """
 
 from __future__ import annotations
@@ -225,6 +227,12 @@ class ToolkitContainer(Container):
     @property
     def id(self) -> str:
         return self._job_id
+
+    def __repr__(self) -> str:
+        return (
+            f"ToolkitContainer(job_id={self._job_id!r}, "
+            f"profile={self._profile!r}, exec_mode={self._exec_mode!r}, run_id={self.run_id!r})"
+        )
 
     # ------------------------- exec relay bootstrap -------------------------
 
