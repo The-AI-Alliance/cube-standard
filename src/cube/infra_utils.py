@@ -47,7 +47,7 @@ def open_tunnel(
             "ssh",
             "-N",
             "-L",
-            f"127.0.0.1:{local_port}:localhost:{remote_port}",
+            f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
             "-i",
             ssh_privkey,
             "-o",
