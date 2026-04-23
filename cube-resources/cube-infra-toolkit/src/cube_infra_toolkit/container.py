@@ -156,6 +156,16 @@ def relay_startup_args(token: str) -> list[str]:
     Embeds the exec relay script + token directly in the job's startup command so
     the relay is running before the first port-forward — eliminating all bootstrap
     ``eai job exec`` calls for images that already have python3.
+
+    Security tradeoff: the base64-encoded token is embedded in the startup
+    script, so the ``eai job new`` submission and the brief ``/bin/sh -c`` process
+    that runs it have the token (base64) in argv. The ``/_exec_relay_server.py``
+    "token never on argv" invariant applies to the long-lived relay server
+    process itself — it reads the token from a file, never from its own argv —
+    not to the one-shot startup shell. Moving the token off startup argv would
+    require a second round-trip (generate token on container, fetch back via
+    ``eai job exec`` after RUNNING), defeating the zero-bootstrap optimization.
+    Slow-path ``_kick_relay_python`` does deliver its script via stdin.
     """
     script_b64 = base64.b64encode(_EXEC_RELAY_SERVER_PATH.read_bytes()).decode()
     token_b64 = base64.b64encode(token.encode()).decode()
@@ -282,15 +292,19 @@ class ToolkitContainer(Container):
         logger.info("Bootstrapping exec relay in job %s …", self._job_id[:8])
         # Retry the kick: CLOSE_WAIT hangs ~6% of exec calls; short timeout + retries
         # reduces P(all attempts hang) to near-zero without adding much latency.
+        # Deliver the script via stdin (`bash -s`) so the base64 token never appears
+        # in the bash process's argv / /proc/<pid>/cmdline.
+        script_bytes = script.encode()
         for kick_attempt in range(4):
             try:
                 result = _run_eai(
-                    ["job", "exec", self._job_id, "--", "bash", "-c", script],
+                    ["job", "exec", self._job_id, "--", "bash", "-s"],
                     eai_path=self._eai_path,
                     profile=self._profile,
                     account=self._account,
                     timeout=_EXEC_RELAY_KICK_TIMEOUT,
                     retries=0,
+                    input=script_bytes,
                 )
                 logger.info("Exec relay kick output for job %s: %s", self._job_id[:8], result.stdout.strip())
                 return  # kick sent; health probe decides if it worked
