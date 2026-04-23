@@ -7,6 +7,7 @@ factory; new code should use ``ToolkitInfraConfig`` from this package.
 
 from __future__ import annotations
 
+import base64
 import gzip
 import importlib.resources
 import json
@@ -41,8 +42,11 @@ from cube.container import (
 
 _SIDECAR_SERVER_PATH = Path(__file__).parent / "_sidecar_server.py"
 _SIDECAR_CONTAINER_PORT = 8787
-_SIDECAR_BOOTSTRAP_TIMEOUT = 30
+_SIDECAR_BOOTSTRAP_TIMEOUT = 15  # commands complete in <5s; short so CLOSE_WAIT fails fast
 _SIDECAR_HEALTH_TIMEOUT = 15
+# /dev/shm is a tmpfs that is exec-able on virtually all Linux containers.
+# /tmp is often mounted noexec on hardened runtimes (e.g. Toolkit yul101).
+_SIDECAR_BINARY_CONTAINER_PATH = "/dev/shm/_cube_sidecar"
 
 # Architecture token → subdirectory name inside _bin/
 _ARCH_MAP: dict[str, str] = {
@@ -255,48 +259,58 @@ class ToolkitContainer(Container):
     def _bootstrap_sidecar(self) -> None:
         """Upload sidecar, launch, port-forward, health-check.
 
-        Tries the pre-built static Go binary first (no python3 needed).
-        Falls back to the Python script if the binary is unavailable.
-        Retries the whole bootstrap up to 3 times; health probe is the only
-        ground truth for "sidecar is usable".
+        Strategy (in order):
+        1. Go static binary (no python3 dependency) — up to 2 attempts.
+        2. Python script fallback (fast ~5 KB upload) — up to 2 attempts.
+        3. Direct exec fallback (CLOSE_WAIT-susceptible, used as last resort).
         """
         if self._sidecar_ready or self._exec_mode == "direct":
             return
 
-        # Prefer Go binary — no python3 dependency, works in any Linux image.
         binary: bytes | None = None
         try:
             arch_dir = self._detect_arch()
             binary = _load_sidecar_binary(arch_dir)
-            logger.info("Using Go sidecar binary (%s, %d bytes) for job %s",
+            logger.info("Go sidecar binary available (%s, %d bytes) for job %s",
                         arch_dir, len(binary), self._job_id[:8])
         except (FileNotFoundError, ContainerLaunchError) as exc:
-            logger.info("Go binary unavailable (%s) — falling back to Python sidecar + apt install", exc)
-            self._ensure_python3()
+            logger.info("Go binary unavailable for job %s (%s)", self._job_id[:8], exc)
 
         token = secrets.token_urlsafe(32)
         # Open tunnel BEFORE the first exec — avoids gateway corruption on hang.
         local_port = self.forward_port(_SIDECAR_CONTAINER_PORT)
         last_diag = ""
 
-        for attempt in range(3):
-            if binary is not None:
+        # Phase 1: try Go binary (2 attempts).
+        if binary is not None:
+            for attempt in range(2):
                 self._kick_sidecar_binary(token, binary)
-            else:
-                self._kick_sidecar_python(token)
+                if self._probe_health(local_port, timeout=_SIDECAR_HEALTH_TIMEOUT):
+                    self._sidecar_token = token
+                    self._sidecar_local_port = local_port
+                    self._sidecar_ready = True
+                    logger.info("Go sidecar ready for job %s (attempt %d)", self._job_id[:8], attempt + 1)
+                    return
+                last_diag = self._fetch_sidecar_diagnostics()
+                logger.warning("Go sidecar health failed on attempt %d/2 for job %s. Diag:\n%s",
+                               attempt + 1, self._job_id[:8], last_diag)
+            logger.info("Go binary bootstrap failed for job %s; switching to Python sidecar", self._job_id[:8])
+
+        # Phase 2: Python sidecar (2 attempts, install python3 if needed).
+        self._ensure_python3()
+        for attempt in range(2):
+            self._kick_sidecar_python(token)
             if self._probe_health(local_port, timeout=_SIDECAR_HEALTH_TIMEOUT):
                 self._sidecar_token = token
                 self._sidecar_local_port = local_port
                 self._sidecar_ready = True
-                logger.info("Sidecar ready for job %s on local port %d (attempt %d, binary=%s)",
-                            self._job_id[:8], local_port, attempt + 1, binary is not None)
+                logger.info("Python sidecar ready for job %s (attempt %d)", self._job_id[:8], attempt + 1)
                 return
             last_diag = self._fetch_sidecar_diagnostics()
-            logger.warning("Sidecar health failed on attempt %d/3 for job %s. Diag:\n%s",
+            logger.warning("Python sidecar health failed on attempt %d/2 for job %s. Diag:\n%s",
                            attempt + 1, self._job_id[:8], last_diag)
 
-        logger.warning("Sidecar bootstrap failed after 3 attempts for job %s — "
-                       "falling back to direct exec mode.  Last diag:\n%s",
+        logger.warning("Sidecar bootstrap failed for job %s — falling back to direct exec mode. Last diag:\n%s",
                        self._job_id[:8], last_diag)
         self._exec_mode = "direct"
 
@@ -306,10 +320,11 @@ class ToolkitContainer(Container):
         logger.info("Uploading Go sidecar binary to job %s (%d→%d bytes gzipped) …",
                     self._job_id[:8], len(binary), len(compressed))
         # gzip -d reads compressed data from stdin and writes raw binary to stdout.
+        dest = _SIDECAR_BINARY_CONTAINER_PATH
         upload_script = (
             "umask 077\n"
             "pgrep -f _cube_sidecar 2>/dev/null | grep -vw \"$$\" | xargs -r kill 2>/dev/null || true\n"
-            "gzip -d > /tmp/_cube_sidecar && chmod 700 /tmp/_cube_sidecar\n"
+            f"gzip -d > {dest} && chmod 700 {dest}\n"
             "echo UPLOADED\n"
         )
         try:
@@ -327,14 +342,16 @@ class ToolkitContainer(Container):
                         self._job_id[:8], exc)
             return
 
+        token_file = f"{dest}.token"
+        log_file = f"{dest}.log"
         start_script = (
-            "cat > /tmp/.cube_sidecar_token <<'CUBE_TOKEN_EOF'\n"
+            f"cat > {token_file} <<'CUBE_TOKEN_EOF'\n"
             f"{token}\n"
             "CUBE_TOKEN_EOF\n"
-            "chmod 600 /tmp/.cube_sidecar_token\n"
+            f"chmod 600 {token_file}\n"
             f"export CUBE_SIDECAR_PORT={_SIDECAR_CONTAINER_PORT}\n"
-            "export CUBE_SIDECAR_TOKEN_FILE=/tmp/.cube_sidecar_token\n"
-            "setsid --fork /tmp/_cube_sidecar </dev/null >/tmp/_cube_sidecar.log 2>&1\n"
+            f"export CUBE_SIDECAR_TOKEN_FILE={token_file}\n"
+            f"nohup {dest} </dev/null >{log_file} 2>&1 &\n"
             "echo KICKED\n"
         )
         try:
@@ -353,41 +370,48 @@ class ToolkitContainer(Container):
     def _kick_sidecar_python(self, token: str) -> None:
         """Upload the Python sidecar script + token, kill any prior instance, start detached."""
         server_src = _SIDECAR_SERVER_PATH.read_text()
+        server_b64 = base64.b64encode(server_src.encode()).decode()
+        token_b64 = base64.b64encode(token.encode()).decode()
         script = (
             "umask 077\n"
             "pgrep -f _cube_sidecar.py 2>/dev/null "
             "| grep -vw \"$$\" "
             "| xargs -r kill 2>/dev/null || true\n"
             "sleep 0.3\n"
-            "cat > /tmp/_cube_sidecar.py <<'CUBE_SIDECAR_EOF'\n"
-            f"{server_src}\n"
-            "CUBE_SIDECAR_EOF\n"
-            "cat > /tmp/.cube_sidecar_token <<'CUBE_TOKEN_EOF'\n"
-            f"{token}\n"
-            "CUBE_TOKEN_EOF\n"
+            f"printf '%s' '{server_b64}' | base64 -d > /tmp/_cube_sidecar.py\n"
+            f"printf '%s' '{token_b64}' | base64 -d > /tmp/.cube_sidecar_token\n"
             "chmod 600 /tmp/.cube_sidecar_token /tmp/_cube_sidecar.py\n"
             f"export CUBE_SIDECAR_PORT={_SIDECAR_CONTAINER_PORT}\n"
             "export CUBE_SIDECAR_TOKEN_FILE=/tmp/.cube_sidecar_token\n"
-            # Resolve the full python3 path first — `setsid --fork python3` fails in
-            # some images where python3 is only in PATH under login shells.
-            "PYTHON3=$(command -v python3 || command -v python) && "
-            "setsid --fork \"$PYTHON3\" /tmp/_cube_sidecar.py "
-            "</dev/null >/tmp/_cube_sidecar.log 2>&1\n"
+            "PYTHON3=$(command -v python3 || command -v python)\n"
+            "echo \"PYTHON3=$PYTHON3\"\n"
+            "[ -z \"$PYTHON3\" ] && echo 'ERROR: no python3 found' && exit 1\n"
+            "nohup \"$PYTHON3\" /tmp/_cube_sidecar.py "
+            "</dev/null >/tmp/_cube_sidecar.log 2>&1 &\n"
             "echo KICKED\n"
         )
         logger.info("Bootstrapping Python sidecar in job %s …", self._job_id[:8])
-        try:
-            _run_eai(
-                ["job", "exec", self._job_id, "--", "bash", "-c", script],
-                eai_path=self._eai_path,
-                profile=self._profile,
-                account=self._account,
-                timeout=_SIDECAR_BOOTSTRAP_TIMEOUT,
-                retries=0,
-            )
-        except ContainerExecError as exc:
-            logger.info("Bootstrap RPC timed out for job %s (%s); health probe will decide",
-                        self._job_id[:8], exc)
+        # Retry the kick: CLOSE_WAIT hangs ~6% of exec calls; short timeout + retries
+        # reduces P(all attempts hang) to near-zero without adding much latency.
+        for kick_attempt in range(4):
+            try:
+                result = _run_eai(
+                    ["job", "exec", self._job_id, "--", "bash", "-c", script],
+                    eai_path=self._eai_path,
+                    profile=self._profile,
+                    account=self._account,
+                    timeout=_SIDECAR_BOOTSTRAP_TIMEOUT,
+                    retries=0,
+                )
+                logger.info("Python sidecar kick output for job %s: %s", self._job_id[:8], result.stdout.strip())
+                return  # kick sent; health probe decides if it worked
+            except ContainerExecError:
+                if kick_attempt < 3:
+                    logger.warning("Python sidecar kick timed out for job %s (CLOSE_WAIT, attempt %d/4); retrying",
+                                   self._job_id[:8], kick_attempt + 1)
+                else:
+                    logger.warning("Python sidecar kick failed after 4 attempts for job %s",
+                                   self._job_id[:8])
 
     def _reset_sidecar_port_forward(self) -> None:
         """Kill any existing port-forward for the sidecar port so forward_port reopens it."""
@@ -428,7 +452,7 @@ class ToolkitContainer(Container):
         try:
             r = _run_eai(
                 ["job", "exec", self._job_id, "--", "bash", "-c",
-                 "tail -20 /tmp/_cube_sidecar.log 2>/dev/null; "
+                 "tail -20 /dev/shm/_cube_sidecar.log /tmp/_cube_sidecar.log 2>/dev/null; "
                  "echo ---ps---; ps -ef | grep _cube_sidecar | grep -vw grep; "
                  "echo ---curl---; curl -sS --max-time 2 http://127.0.0.1:8787/health 2>&1 | head -5"],
                 eai_path=self._eai_path,
@@ -546,32 +570,55 @@ class ToolkitContainer(Container):
         parts.append(command)
         full_command = " && ".join(parts)
 
-        wrapped = f"timeout {effective_timeout}s bash -lc {shlex.quote(full_command)}; echo EXIT_CODE:$?"
+        _SENTINEL = "__CUBE_EXEC_OK__"
+        wrapped = (
+            f"timeout {effective_timeout}s bash -lc {shlex.quote(full_command)}; "
+            f"echo EXIT_CODE:$?; echo {_SENTINEL}"
+        )
 
         logger.info("exec [%s] (direct): %s", self._job_id[:8], command)
-        start = time.monotonic()
-        result = _run_eai(
-            ["job", "exec", self._job_id, "--", "bash", "-c", wrapped],
-            eai_path=self._eai_path,
-            profile=self._profile,
-            account=self._account,
-            timeout=effective_timeout + 30,
-        )
-        duration = time.monotonic() - start
-        logger.info(
-            "exec [%s] (direct): done in %.1fs, exit_code=%s",
-            self._job_id[:8],
-            duration,
-            result.returncode,
-        )
+        result = None
+        duration = 0.0
+        for attempt in range(3):
+            start = time.monotonic()
+            result = _run_eai(
+                ["job", "exec", self._job_id, "--", "bash", "-c", wrapped],
+                eai_path=self._eai_path,
+                profile=self._profile,
+                account=self._account,
+                timeout=effective_timeout + 30,
+            )
+            duration = time.monotonic() - start
+            logger.info(
+                "exec [%s] (direct): done in %.1fs, exit_code=%s",
+                self._job_id[:8],
+                duration,
+                result.returncode,
+            )
+            # Phantom execution: sentinel missing + fast return + outer rc=0.
+            # Happens after CLOSE_WAIT recovery — the eai CLI returns immediately
+            # with empty stdout while the job-side bash never actually ran.
+            if _SENTINEL not in result.stdout and result.returncode == 0 and duration < 2.0:
+                logger.warning(
+                    "exec [%s] (direct): phantom execution detected (attempt %d/3), retrying in 5s",
+                    self._job_id[:8],
+                    attempt + 1,
+                )
+                time.sleep(5)
+                continue
+            break
 
-        stdout = result.stdout
-        stderr = result.stderr
+        stdout = result.stdout  # type: ignore[union-attr]
+        stderr = result.stderr  # type: ignore[union-attr]
 
-        exit_code = 1 if result.returncode != 0 else 0
+        exit_code = 1 if result.returncode != 0 else 0  # type: ignore[union-attr]
         lines = stdout.rstrip().split("\n")
+        sentinel_removed = False
         for i in range(len(lines) - 1, -1, -1):
-            if lines[i].startswith("EXIT_CODE:"):
+            if not sentinel_removed and lines[i] == _SENTINEL:
+                lines.pop(i)
+                sentinel_removed = True
+            elif lines[i].startswith("EXIT_CODE:"):
                 try:
                     exit_code = int(lines[i].split(":", 1)[1])
                 except ValueError:
