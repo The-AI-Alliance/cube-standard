@@ -72,7 +72,7 @@ _TOKEN = _load_token()
 def _check_auth(header_value: str | None) -> bool:
     if not header_value or not header_value.startswith("Bearer "):
         return False
-    presented = header_value[len("Bearer "):].strip()
+    presented = header_value[len("Bearer ") :].strip()
     return hmac.compare_digest(presented, _TOKEN)
 
 

@@ -20,7 +20,11 @@ from pathlib import Path
 
 SERVER_PATH = (
     Path(__file__).parent.parent.parent
-    / "cube-resources" / "cube-infra-toolkit" / "src" / "cube_infra_toolkit" / "_exec_relay_server.py"
+    / "cube-resources"
+    / "cube-infra-toolkit"
+    / "src"
+    / "cube_infra_toolkit"
+    / "_exec_relay_server.py"
 )
 
 
@@ -301,9 +305,7 @@ def test_exec_workdir(tmp_path):
 
 def test_exec_env_override():
     with _server() as (port, tok, _):
-        status, body = _post(
-            port, tok, {"command": "echo $CUBE_TEST_VAR", "env": {"CUBE_TEST_VAR": "xyz"}}
-        )
+        status, body = _post(port, tok, {"command": "echo $CUBE_TEST_VAR", "env": {"CUBE_TEST_VAR": "xyz"}})
     assert status == 200
     assert body["stdout"].strip() == "xyz"
 

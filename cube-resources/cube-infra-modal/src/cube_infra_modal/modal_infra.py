@@ -99,9 +99,7 @@ class ModalInfraConfig(InfraConfig):
         try:
             sandbox = modal.Sandbox.create(**kwargs)
         except Exception as exc:
-            raise ContainerLaunchError(
-                f"Failed to create Modal sandbox from {image_ref!r}: {exc}"
-            ) from exc
+            raise ContainerLaunchError(f"Failed to create Modal sandbox from {image_ref!r}: {exc}") from exc
 
         container = ModalContainer(sandbox)
         logger.info("Modal sandbox live: %s (%s)", container.id, resource.name)
@@ -116,9 +114,7 @@ class ModalInfraConfig(InfraConfig):
         container.endpoint = None
         container.endpoints = {}
         container.created_at = datetime.now()
-        container.expires_at = (
-            container.created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
-        )
+        container.expires_at = container.created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
         return container
 
     def list_active(self, run_id: str | None = None) -> list[ModalContainer]:

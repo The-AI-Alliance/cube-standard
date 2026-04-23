@@ -155,9 +155,7 @@ class DaytonaInfraConfig(InfraConfig):
         container.endpoint = None  # Daytona sandboxes don't expose an eager endpoint
         container.endpoints = {}
         container.created_at = datetime.now()
-        container.expires_at = (
-            container.created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
-        )
+        container.expires_at = container.created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
         return container
 
     def list_active(self, run_id: str | None = None) -> list[DaytonaContainer]:

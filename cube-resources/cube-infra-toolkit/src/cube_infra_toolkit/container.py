@@ -104,9 +104,8 @@ def _run_eai(
             )
         except FileNotFoundError as exc:
             raise ContainerLaunchError(
-            f"The 'eai' CLI tool was not found at {cmd[0]!r}. "
-            "Install it or set ToolkitInfraConfig(eai_path=...)."
-        ) from exc
+                f"The 'eai' CLI tool was not found at {cmd[0]!r}. Install it or set ToolkitInfraConfig(eai_path=...)."
+            ) from exc
 
         try:
             raw_out, raw_err = proc.communicate(input=input, timeout=timeout)
@@ -126,7 +125,11 @@ def _run_eai(
                 backoff = 5 * (attempt + 1)
                 logger.warning(
                     "eai command timed out after %ds (attempt %d/%d); backing off %ds before retry: %s",
-                    timeout, attempt + 1, retries + 1, backoff, " ".join(cmd),
+                    timeout,
+                    attempt + 1,
+                    retries + 1,
+                    backoff,
+                    " ".join(cmd),
                 )
                 time.sleep(backoff)
                 continue
@@ -218,8 +221,15 @@ class ToolkitContainer(Container):
     def _ensure_python3(self) -> None:
         """Install python3 via apt if the image doesn't have it (slow path only)."""
         check = _run_eai(
-            ["job", "exec", self._job_id, "--", "bash", "-c",
-             "python3 --version 2>/dev/null && echo HAS_PYTHON || echo NO_PYTHON"],
+            [
+                "job",
+                "exec",
+                self._job_id,
+                "--",
+                "bash",
+                "-c",
+                "python3 --version 2>/dev/null && echo HAS_PYTHON || echo NO_PYTHON",
+            ],
             eai_path=self._eai_path,
             profile=self._profile,
             account=self._account,
@@ -230,8 +240,15 @@ class ToolkitContainer(Container):
             return
         logger.info("python3 missing in job %s — installing via apt-get", self._job_id[:8])
         _run_eai(
-            ["job", "exec", self._job_id, "--", "bash", "-c",
-             "apt-get update -qq && apt-get install -y --no-install-recommends python3 python3-pip 2>&1"],
+            [
+                "job",
+                "exec",
+                self._job_id,
+                "--",
+                "bash",
+                "-c",
+                "apt-get update -qq && apt-get install -y --no-install-recommends python3 python3-pip 2>&1",
+            ],
             eai_path=self._eai_path,
             profile=self._profile,
             account=self._account,
@@ -247,7 +264,7 @@ class ToolkitContainer(Container):
         script = (
             "umask 077\n"
             "pgrep -f _cube_exec_relay.py 2>/dev/null "
-            "| grep -vw \"$$\" "
+            '| grep -vw "$$" '
             "| xargs -r kill 2>/dev/null || true\n"
             "sleep 0.3\n"
             f"printf '%s' '{server_b64}' | base64 -d > /tmp/_cube_exec_relay.py\n"
@@ -256,9 +273,9 @@ class ToolkitContainer(Container):
             f"export CUBE_EXEC_RELAY_PORT={_EXEC_RELAY_PORT}\n"
             "export CUBE_EXEC_RELAY_TOKEN_FILE=/tmp/.cube_exec_relay_token\n"
             "PYTHON3=$(command -v python3 || command -v python)\n"
-            "echo \"PYTHON3=$PYTHON3\"\n"
+            'echo "PYTHON3=$PYTHON3"\n'
             "[ -z \"$PYTHON3\" ] && echo 'ERROR: no python3 found' && exit 1\n"
-            "nohup \"$PYTHON3\" /tmp/_cube_exec_relay.py "
+            'nohup "$PYTHON3" /tmp/_cube_exec_relay.py '
             "</dev/null >/tmp/_cube_exec_relay.log 2>&1 &\n"
             "echo KICKED\n"
         )
@@ -281,7 +298,8 @@ class ToolkitContainer(Container):
                 if kick_attempt < 3:
                     logger.warning(
                         "Exec relay kick timed out for job %s (CLOSE_WAIT, attempt %d/4); retrying",
-                        self._job_id[:8], kick_attempt + 1,
+                        self._job_id[:8],
+                        kick_attempt + 1,
                     )
                 else:
                     logger.warning("Exec relay kick failed after 4 attempts for job %s", self._job_id[:8])
@@ -308,8 +326,7 @@ class ToolkitContainer(Container):
                 logger.info("Exec relay ready (pre-started) for job %s", self._job_id[:8])
                 return
             logger.info(
-                "Pre-started relay not healthy for job %s — python3 likely absent; "
-                "bootstrapping via eai exec",
+                "Pre-started relay not healthy for job %s — python3 likely absent; bootstrapping via eai exec",
                 self._job_id[:8],
             )
 
@@ -328,12 +345,15 @@ class ToolkitContainer(Container):
             last_diag = self._fetch_relay_diagnostics()
             logger.warning(
                 "Exec relay health failed on attempt %d/2 for job %s. Diag:\n%s",
-                attempt + 1, self._job_id[:8], last_diag,
+                attempt + 1,
+                self._job_id[:8],
+                last_diag,
             )
 
         logger.warning(
             "Exec relay bootstrap failed for job %s — falling back to direct exec. Last diag:\n%s",
-            self._job_id[:8], last_diag,
+            self._job_id[:8],
+            last_diag,
         )
         self._exec_mode = "direct"
 
@@ -341,9 +361,7 @@ class ToolkitContainer(Container):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                with urllib.request.urlopen(
-                    f"http://127.0.0.1:{local_port}/health", timeout=1.0
-                ) as r:
+                with urllib.request.urlopen(f"http://127.0.0.1:{local_port}/health", timeout=1.0) as r:
                     if r.status == 200:
                         return True
             except (urllib.error.URLError, ConnectionError, OSError):
@@ -354,10 +372,17 @@ class ToolkitContainer(Container):
         parts = []
         try:
             r = _run_eai(
-                ["job", "exec", self._job_id, "--", "bash", "-c",
-                 "tail -20 /tmp/_cube_exec_relay.log 2>/dev/null; "
-                 "echo ---ps---; ps -ef | grep _cube_exec_relay | grep -vw grep; "
-                 "echo ---curl---; curl -sS --max-time 2 http://127.0.0.1:8787/health 2>&1 | head -5"],
+                [
+                    "job",
+                    "exec",
+                    self._job_id,
+                    "--",
+                    "bash",
+                    "-c",
+                    "tail -20 /tmp/_cube_exec_relay.log 2>/dev/null; "
+                    "echo ---ps---; ps -ef | grep _cube_exec_relay | grep -vw grep; "
+                    "echo ---curl---; curl -sS --max-time 2 http://127.0.0.1:8787/health 2>&1 | head -5",
+                ],
                 eai_path=self._eai_path,
                 profile=self._profile,
                 account=self._account,
@@ -475,8 +500,7 @@ class ToolkitContainer(Container):
 
         _SENTINEL = "__CUBE_EXEC_OK__"
         wrapped = (
-            f"timeout {effective_timeout}s bash -lc {shlex.quote(full_command)}; "
-            f"echo EXIT_CODE:$?; echo {_SENTINEL}"
+            f"timeout {effective_timeout}s bash -lc {shlex.quote(full_command)}; echo EXIT_CODE:$?; echo {_SENTINEL}"
         )
 
         logger.info("exec [%s] (direct): %s", self._job_id[:8], command)

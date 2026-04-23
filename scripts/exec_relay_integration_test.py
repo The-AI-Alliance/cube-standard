@@ -20,11 +20,12 @@ import statistics
 import sys
 import time
 
+from cube_infra_toolkit import ToolkitInfraConfig
+
+from cube.resource import DockerServiceConfig
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("exec-relay-itest")
-
-from cube_infra_toolkit import ToolkitInfraConfig
-from cube.resource import DockerServiceConfig
 
 
 N_EXECS = 20
@@ -43,7 +44,6 @@ def _run_suite(infra: ToolkitInfraConfig, label: str) -> dict:
     failures = 0
     first_s = 0.0
     try:
-        # First call health-checks the pre-started relay — time it separately.
         t0 = time.monotonic()
         r0 = container.exec("echo hello", timeout=30)
         first_s = time.monotonic() - t0
@@ -59,7 +59,6 @@ def _run_suite(infra: ToolkitInfraConfig, label: str) -> dict:
                 failures += 1
                 log.warning("[%s] iter %d bad result: rc=%s out=%r", label, i, r.exit_code, r.stdout)
 
-        # Security sanity: confirm the relay token env var is not visible to child processes.
         r = container.exec(
             "env | grep -c CUBE_EXEC_RELAY_TOKEN_FILE || true; echo SEP; ls /tmp/.cube_exec_relay_token 2>&1",
             timeout=30,

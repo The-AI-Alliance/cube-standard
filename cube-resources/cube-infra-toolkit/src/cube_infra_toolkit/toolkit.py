@@ -125,8 +125,12 @@ class ToolkitInfraConfig(InfraConfig):
         # retries=0: `eai job new` is not idempotent — a timeout mid-creation
         # may have actually created the job, and a retry would produce a duplicate.
         result = _run_eai(
-            cmd, eai_path=self.eai_path, profile=profile, account=self.account,
-            timeout=self.launch_timeout_seconds, retries=0,
+            cmd,
+            eai_path=self.eai_path,
+            profile=profile,
+            account=self.account,
+            timeout=self.launch_timeout_seconds,
+            retries=0,
         )
         if result.returncode != 0:
             raise ContainerLaunchError(f"Failed to submit EAI job: {result.stderr.strip()}")
@@ -139,13 +143,19 @@ class ToolkitInfraConfig(InfraConfig):
 
         logger.info("EAI job %s submitted — waiting for RUNNING…", job_id)
         _wait_for_running(
-            job_id, eai_path=self.eai_path, profile=profile,
-            account=self.account, timeout=self.launch_timeout_seconds,
+            job_id,
+            eai_path=self.eai_path,
+            profile=profile,
+            account=self.account,
+            timeout=self.launch_timeout_seconds,
         )
 
         container = ToolkitContainer(
-            job_id, profile=profile, account=self.account,
-            exec_mode=self.exec_mode, eai_path=self.eai_path,
+            job_id,
+            profile=profile,
+            account=self.account,
+            exec_mode=self.exec_mode,
+            eai_path=self.eai_path,
             relay_prestarted_token=relay_token,
         )
         logger.info("EAI job %s RUNNING", job_id)
@@ -160,9 +170,7 @@ class ToolkitInfraConfig(InfraConfig):
         container.endpoint = None
         container.endpoints = {}
         container.created_at = datetime.now()
-        container.expires_at = (
-            container.created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
-        )
+        container.expires_at = container.created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
         return container
 
     def list_active(self, run_id: str | None = None) -> list[ToolkitContainer]:
@@ -216,6 +224,4 @@ def _wait_for_running(
         time.sleep(5)
 
     _run_eai(["job", "kill", job_id], eai_path=eai_path, profile=profile, account=account, timeout=30)
-    raise ContainerLaunchError(
-        f"EAI job {job_id} did not reach RUNNING within {timeout}s (last state: {last_state!r})"
-    )
+    raise ContainerLaunchError(f"EAI job {job_id} did not reach RUNNING within {timeout}s (last state: {last_state!r})")
