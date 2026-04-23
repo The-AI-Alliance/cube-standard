@@ -60,7 +60,7 @@ Work through the layers top-down. Each file has `TODO` comments pointing at what
 
 | # | File | What to fill in |
 |---|---|---|
-| 1 | `tool.py` | Subclass `Tool`; add `@tool_action` methods for each agent-callable action |
+| 1 | `tool.py` | **Check reusable tools first** — for web agents use [`cube-browser-tool`](https://github.com/The-AI-Alliance/cube-standard/tree/main/cube-tools/cube-browser-tool), for desktop/CUA use [`cube-computer-tool`](https://github.com/The-AI-Alliance/cube-standard/tree/main/cube-tools/cube-computer-tool). Import directly or subclass to add benchmark-specific actions. Only subclass `Tool` from scratch if neither fits; mark methods with `@tool_action`. |
 | 2 | `task.py` | Implement `reset()` (opening observation) and `evaluate()` (reward on termination) |
 | 3 | `benchmark.py` | Fill `BenchmarkMetadata` and `task_metadata` (inline or CSV/JSON); implement `_setup()` / `close()` |
 | 4 | `debug.py` | One deterministic action sequence per task — must reach `reward == 1.0` |
@@ -117,4 +117,5 @@ Ways to reach us:
 - [CONTRIBUTING.md](https://github.com/The-AI-Alliance/cube-standard/blob/main/CONTRIBUTING.md) — framework invariants, RFC process, template rules
 - [openspec/specs/](https://github.com/The-AI-Alliance/cube-standard/tree/main/openspec/specs) — formal per-layer contracts
 - [cube-registry](https://github.com/The-AI-Alliance/cube-registry) — submission YAML template and compliance tiers
+- [cube-tools/](https://github.com/The-AI-Alliance/cube-standard/tree/main/cube-tools) — reusable tool packages (browser, computer, chat)
 - [DeepWiki](https://deepwiki.com/The-AI-Alliance/cube-standard) — full API reference
