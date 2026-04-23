@@ -122,56 +122,106 @@ class ToolkitInfraConfig(InfraConfig):
             cmd += ["--", "sleep", "infinity"]
 
         logger.info("Submitting EAI job for %r (image=%s)…", resource.name, image)
+        submit_started_at = datetime.now()
         # retries=0: `eai job new` is not idempotent — a timeout mid-creation
         # may have actually created the job, and a retry would produce a duplicate.
-        result = _run_eai(
-            cmd,
-            eai_path=self.eai_path,
-            profile=profile,
-            account=self.account,
-            timeout=self.launch_timeout_seconds,
-            retries=0,
-        )
+        try:
+            result = _run_eai(
+                cmd,
+                eai_path=self.eai_path,
+                profile=profile,
+                account=self.account,
+                timeout=self.launch_timeout_seconds,
+                retries=0,
+            )
+        except Exception as exc:
+            # _run_eai timed out or failed before returning. The job MAY have been
+            # created server-side — we have no ID to kill it. Log loudly so ops
+            # can find orphans via `eai job ls --mine` matching the submit window.
+            logger.error(
+                "EAI job submission failed at %s (profile=%s, account=%s, image=%s): %s. "
+                "If a job was accepted server-side, it will orphan — check `eai job ls --mine` "
+                "for jobs submitted around this timestamp and kill manually.",
+                submit_started_at.isoformat(),
+                profile,
+                self.account,
+                image,
+                exc,
+            )
+            raise ContainerLaunchError(f"Failed to submit EAI job: {exc}") from exc
+
         if result.returncode != 0:
+            # Non-zero from eai generally means the CLI rejected before submission,
+            # but we can't be certain — warn so the window is auditable.
+            logger.warning(
+                "eai job new returned rc=%d at %s (stderr: %s). Assuming no job created; "
+                "if an orphan appears, check `eai job ls --mine` for submissions around this time.",
+                result.returncode,
+                submit_started_at.isoformat(),
+                result.stderr.strip(),
+            )
             raise ContainerLaunchError(f"Failed to submit EAI job: {result.stderr.strip()}")
 
         try:
             payload = json.loads(result.stdout)
             job_id = payload["id"]
         except (json.JSONDecodeError, KeyError) as exc:
+            logger.error(
+                "eai job new returned rc=0 but payload was unparseable at %s: stdout=%r. "
+                "A job was likely created — check `eai job ls --mine` and kill manually.",
+                submit_started_at.isoformat(),
+                result.stdout,
+            )
             raise ContainerLaunchError(f"Could not parse job id from eai output: {result.stdout!r}") from exc
 
-        logger.info("EAI job %s submitted — waiting for RUNNING…", job_id)
-        _wait_for_running(
-            job_id,
-            eai_path=self.eai_path,
-            profile=profile,
-            account=self.account,
-            timeout=self.launch_timeout_seconds,
-        )
+        # Once we have a job_id, any downstream failure must kill the job.
+        try:
+            logger.info("EAI job %s submitted — waiting for RUNNING…", job_id)
+            _wait_for_running(
+                job_id,
+                eai_path=self.eai_path,
+                profile=profile,
+                account=self.account,
+                timeout=self.launch_timeout_seconds,
+            )
 
-        container = ToolkitContainer(
-            job_id,
-            profile=profile,
-            account=self.account,
-            exec_mode=self.exec_mode,
-            eai_path=self.eai_path,
-            relay_prestarted_token=relay_token,
-        )
-        logger.info("EAI job %s RUNNING", job_id)
+            container = ToolkitContainer(
+                job_id,
+                profile=profile,
+                account=self.account,
+                exec_mode=self.exec_mode,
+                eai_path=self.eai_path,
+                relay_prestarted_token=relay_token,
+            )
+            logger.info("EAI job %s RUNNING", job_id)
 
-        # Populate ResourceHandle bookkeeping on the container itself.
-        effective_ttl = (
-            self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
-        )
-        container.run_id = str(uuid.uuid4())
-        container.resource = resource
-        container.infra = self
-        container.endpoint = None
-        container.endpoints = {}
-        container.created_at = datetime.now()
-        container.expires_at = container.created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
-        return container
+            # Populate ResourceHandle bookkeeping on the container itself.
+            effective_ttl = (
+                self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
+            )
+            container.run_id = str(uuid.uuid4())
+            container.resource = resource
+            container.infra = self
+            container.endpoint = None
+            container.endpoints = {}
+            container.created_at = datetime.now()
+            container.expires_at = container.created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
+            return container
+        except Exception:
+            # _wait_for_running already kills on its own failure paths, but the
+            # construction + bookkeeping below it do not. Be defensive.
+            logger.exception("Post-submission setup failed for EAI job %s; killing to prevent leak", job_id)
+            try:
+                _run_eai(
+                    ["job", "kill", job_id],
+                    eai_path=self.eai_path,
+                    profile=profile,
+                    account=self.account,
+                    timeout=30,
+                )
+            except Exception as kill_exc:
+                logger.warning("Failed to kill EAI job %s during cleanup: %s", job_id, kill_exc)
+            raise
 
     def list_active(self, run_id: str | None = None) -> list[ToolkitContainer]:
         """Not implemented — EAI jobs aren't tagged with our run_id today."""
