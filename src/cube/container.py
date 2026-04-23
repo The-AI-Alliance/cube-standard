@@ -99,7 +99,7 @@ class Container(ResourceHandle, ABC):
         fine for backends with reliable exec streaming (LocalContainer,
         DaytonaContainer, ModalContainer).  Backends whose exec primitive
         has reliability issues on long-running commands (notably
-        ToolkitContainer — see `docs/toolkit-hang-bugreport.md`) override
+        ToolkitContainer — see `docs/toolkit-exec-relay-design.md`) override
         this to kick off the command in the background inside the
         container and poll a sentinel file for completion.  Each individual
         RPC call under this override is short (< 1 s), so a transient CLI
