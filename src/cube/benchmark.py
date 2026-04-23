@@ -41,8 +41,8 @@ Composition
 -----------
 ``CompositeBenchmarkConfig`` holds a list of ``BenchmarkConfig``s and emits
 each sub-config's TaskConfigs unchanged in type, with ``task_id`` prefixed by
-the sub-benchmark's name and a ``sub_benchmark`` routing tag set.
-``CompositeBenchmark.spawn()`` reads ``sub_benchmark`` to route the task to
+the sub-benchmark's name and a ``sub_bench_name`` routing tag set.
+``CompositeBenchmark.spawn()`` reads ``sub_bench_name`` to route the task to
 its origin sub-benchmark's ``_runtime_context``.
 """
 
@@ -738,7 +738,7 @@ class CompositeBenchmark(Benchmark):
 
     Holds a dict of live sub-benchmarks keyed by sub-benchmark name. Routes
     ``spawn(task_config)`` to the matching sub-benchmark by reading
-    ``task_config.sub_benchmark``. Does not own any shared infrastructure of its
+    ``task_config.sub_bench_name``. Does not own any shared infrastructure of its
     own — each sub-benchmark has its own ``_runtime_context`` and its own
     provisioned resources.
     """
@@ -764,7 +764,7 @@ class CompositeBenchmark(Benchmark):
                 logger.exception("Error closing sub-benchmark %r", sub_name)
 
     def spawn(self, task_config: TaskConfig) -> Task:
-        """Route the task to its origin sub-benchmark via ``sub_benchmark``.
+        """Route the task to its origin sub-benchmark via ``sub_bench_name``.
 
         Bypasses the sub-benchmark's own ``spawn`` validation (which would
         reject the prefixed ``task_id`` because it's not in the sub's
@@ -772,17 +772,17 @@ class CompositeBenchmark(Benchmark):
         the sub's ``_runtime_context``. The TaskConfig is self-contained —
         its ``metadata`` and ``tool_config`` are already populated.
         """
-        if task_config.sub_benchmark is None:
+        if task_config.sub_bench_name is None:
             raise ValueError(
-                f"CompositeBenchmark.spawn() expects a TaskConfig with sub_benchmark set "
+                f"CompositeBenchmark.spawn() expects a TaskConfig with sub_bench_name set "
                 f"(emitted by CompositeBenchmarkConfig.get_task_configs()); "
-                f"got {type(task_config).__name__} with sub_benchmark=None"
+                f"got {type(task_config).__name__} with sub_bench_name=None"
             )
-        if task_config.sub_benchmark not in self.sub_benchmarks:
+        if task_config.sub_bench_name not in self.sub_benchmarks:
             raise ValueError(
-                f"Unknown sub-benchmark {task_config.sub_benchmark!r}; known: {list(self.sub_benchmarks.keys())}"
+                f"Unknown sub-benchmark {task_config.sub_bench_name!r}; known: {list(self.sub_benchmarks.keys())}"
             )
-        sub_bench = self.sub_benchmarks[task_config.sub_benchmark]
+        sub_bench = self.sub_benchmarks[task_config.sub_bench_name]
         return task_config.make(
             runtime_context=sub_bench._runtime_context,
             container_backend=sub_bench.config.container_backend,
@@ -792,10 +792,10 @@ class CompositeBenchmark(Benchmark):
 class CompositeBenchmarkConfig(BenchmarkConfig):
     """Composition of multiple BenchmarkConfigs into one serializable suite.
 
-    ``sub_configs`` is a list of any ``BenchmarkConfig`` subclasses (including
+    ``sub_bench_configs`` is a list of any ``BenchmarkConfig`` subclasses (including
     other ``CompositeBenchmarkConfig`` instances — composites nest freely).
     The composite exposes merged, prefixed views of ``benchmark_metadata`` and
-    ``task_metadata`` derived from its sub_configs; no per-composite metadata
+    ``task_metadata`` derived from its sub_bench_configs; no per-composite metadata
     is stored statically.
 
     Sub-benchmark names (``sub.benchmark_metadata.name``) must be unique across
@@ -804,7 +804,7 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
     Typical usage::
 
         suite = CompositeBenchmarkConfig(
-            sub_configs=[
+            sub_bench_configs=[
                 WorkArenaConfig().named_subset("l1"),
                 OSWorldConfig().subset_from_list(["chrome-1", "chrome-2"]),
                 ArithmeticConfig(),
@@ -821,15 +821,15 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
     # TaskConfig subclass is preserved through the clone in get_task_configs().
     # task_config_class is intentionally omitted (get_task_configs is overridden).
     # benchmark_metadata / task_metadata are declared below as @property so
-    # they reflect the current sub_configs at access time; BenchmarkConfig's
+    # they reflect the current sub_bench_configs at access time; BenchmarkConfig's
     # __init_subclass__ detects the descriptors and skips file auto-load.
     benchmark_class: ClassVar[type[Benchmark]] = CompositeBenchmark
 
     # SerializeAsAny forces each element to serialize using its runtime type's
-    # full field set, so subclass-specific fields (composite_name, sub_configs on
+    # full field set, so subclass-specific fields (composite_name, sub_bench_configs on
     # nested composites, infra knobs on sub-configs, etc.) survive a JSON round
     # trip. Without it Pydantic dumps only the base BenchmarkConfig fields.
-    sub_configs: list[SerializeAsAny[BenchmarkConfig]] = Field(
+    sub_bench_configs: list[SerializeAsAny[BenchmarkConfig]] = Field(
         ...,
         description=(
             "Ordered list of BenchmarkConfigs to compose. Order is preserved in "
@@ -849,7 +849,7 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
         # Check sub-benchmark name uniqueness at construction time.
         seen: set[str] = set()
         duplicates: list[str] = []
-        for sub in self.sub_configs:
+        for sub in self.sub_bench_configs:
             name = sub.name
             if name in seen:
                 duplicates.append(name)
@@ -861,23 +861,23 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
 
     @property
     def benchmark_metadata(self) -> BenchmarkMetadata:  # type: ignore[override]
-        """Computed metadata reflecting the composite's current sub_configs."""
+        """Computed metadata reflecting the composite's current sub_bench_configs."""
         return BenchmarkMetadata(
             name=self.composite_name,
             version=self.composite_version,
             description=self.composite_description,
-            num_tasks=sum(sub.num_tasks for sub in self.sub_configs),
-            tags=sorted({t for sub in self.sub_configs for t in sub.benchmark_metadata.tags}),
+            num_tasks=sum(sub.num_tasks for sub in self.sub_bench_configs),
+            tags=sorted({t for sub in self.sub_bench_configs for t in sub.benchmark_metadata.tags}),
         )
 
     @property
     def task_metadata(self) -> dict[str, TaskMetadata]:  # type: ignore[override]
-        """Merged view with keys prefixed by sub-benchmark name (``"{sub_benchmark}/{task_id}"``)."""
+        """Merged view with keys prefixed by sub-benchmark name (``"{sub_bench_name}/{task_id}"``)."""
         merged: dict[str, TaskMetadata] = {}
-        for sub in self.sub_configs:
-            sub_benchmark = sub.name
+        for sub in self.sub_bench_configs:
+            sub_bench_name = sub.name
             for tid, tm in sub.tasks().items():
-                merged[f"{sub_benchmark}/{tid}"] = tm
+                merged[f"{sub_bench_name}/{tid}"] = tm
         return merged
 
     # tasks() is inherited from BenchmarkConfig and reads ``task_metadata`` (our
@@ -889,7 +889,7 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
 
         Each emitted TaskConfig is the sub-config's own subclass (preserving
         its native type, metadata, and any subclass-specific fields) with
-        ``task_id`` set to ``"{sub_benchmark}/{task_id}"`` and ``sub_benchmark``
+        ``task_id`` set to ``"{sub_bench_name}/{task_id}"`` and ``sub_bench_name``
         set to the sub-benchmark's name. No wrapper type — the clone stays a
         fully-functional TaskConfig whose ``make()`` works standalone.
 
@@ -897,13 +897,13 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
         if set, only prefixed ids in the list are emitted.
         """
         allowed: set[str] | None = set(self.task_ids) if self.task_ids is not None else None
-        for sub in self.sub_configs:
-            sub_benchmark = sub.name
+        for sub in self.sub_bench_configs:
+            sub_bench_name = sub.name
             for inner in sub.get_task_configs():
-                prefixed_id = f"{sub_benchmark}/{inner.task_id}"
+                prefixed_id = f"{sub_bench_name}/{inner.task_id}"
                 if allowed is not None and prefixed_id not in allowed:
                     continue
-                yield inner.model_copy(update={"task_id": prefixed_id, "sub_benchmark": sub_benchmark})
+                yield inner.model_copy(update={"task_id": prefixed_id, "sub_bench_name": sub_bench_name})
 
     def make(self, infra: InfraConfig | None = None) -> CompositeBenchmark:
         """Instantiate every sub-benchmark and wire them into a CompositeBenchmark.
@@ -913,7 +913,7 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
         """
         composite = CompositeBenchmark(config=self)
         try:
-            for sub in self.sub_configs:
+            for sub in self.sub_bench_configs:
                 composite.sub_benchmarks[sub.name] = sub.make(infra)
         except Exception:
             for sub_bench in composite.sub_benchmarks.values():
@@ -931,10 +931,10 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
 
     def install(self) -> None:  # type: ignore[override]
         """Install every sub-config. Idempotent; safe to call multiple times."""
-        for sub in self.sub_configs:
+        for sub in self.sub_bench_configs:
             sub.install()
 
     def uninstall(self) -> None:  # type: ignore[override]
         """Uninstall every sub-config."""
-        for sub in self.sub_configs:
+        for sub in self.sub_bench_configs:
             sub.uninstall()

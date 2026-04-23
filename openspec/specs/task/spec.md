@@ -104,7 +104,7 @@ class TaskConfig(TypedBaseModel, ABC):
     metadata: TaskMetadata                      # travels with the config
     seed: int | None = None
     tool_config: ToolConfig | None = None
-    sub_benchmark: str | None = None            # composite routing hint
+    sub_bench_name: str | None = None            # composite routing hint
 
     @abstractmethod
     def make(
@@ -127,7 +127,7 @@ statements, OSWorld evaluator configs) override
 `load_task_execution_info(task_id)` into `metadata.extra_info` at emit time,
 so the worker never touches disk.
 
-**`sub_benchmark`** is an optional routing tag. Standalone benchmarks leave
+**`sub_bench_name`** is an optional routing tag. Standalone benchmarks leave
 it None. `CompositeBenchmarkConfig.get_task_configs()` sets it to the
 origin sub-benchmark's name so `CompositeBenchmark.spawn()` can route the
 task back to the correct sub-benchmark's `_runtime_context`. No separate
@@ -135,7 +135,7 @@ wrapper type is needed — the emitted TaskConfig stays the sub-config's
 native subclass.
 
 **`task_id` in composites** is prefixed with the sub-benchmark's name
-(`"{sub_benchmark}/{task_id}"`) so every id across the composite is
+(`"{sub_bench_name}/{task_id}"`) so every id across the composite is
 unique, while `metadata.id` keeps the native un-prefixed id.
 
 ## Invariants

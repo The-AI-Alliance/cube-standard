@@ -338,7 +338,7 @@ class TaskConfig(ABC, TypedBaseModel):
     look up metadata; the config arrives complete and ``make()`` just uses
     ``self.metadata`` directly.
 
-    ``sub_benchmark`` is an optional routing hint used by
+    ``sub_bench_name`` is an optional routing hint used by
     ``CompositeBenchmark.spawn`` to dispatch a task to its origin
     sub-benchmark. Standalone benchmarks leave it None.
     """
@@ -354,7 +354,7 @@ class TaskConfig(ABC, TypedBaseModel):
     )
     seed: int | None = None
     tool_config: ToolConfig | None = None
-    sub_benchmark: str | None = Field(
+    sub_bench_name: str | None = Field(
         default=None,
         description=(
             "Optional routing hint set by ``CompositeBenchmarkConfig.get_task_configs()``. "

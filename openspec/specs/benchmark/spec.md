@@ -240,14 +240,14 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
     _skip_init_subclass_checks: ClassVar[bool] = True
     benchmark_class: ClassVar = CompositeBenchmark
 
-    sub_configs: list[SerializeAsAny[BenchmarkConfig]]
+    sub_bench_configs: list[SerializeAsAny[BenchmarkConfig]]
     composite_name: str = "composite"
     composite_version: str = "0.0.0"
     composite_description: str = ""
 ```
 
 - `benchmark_metadata` and `task_metadata` are exposed as **@property** that
-  compute from `sub_configs` at access time. `task_metadata` keys are prefixed
+  compute from `sub_bench_configs` at access time. `task_metadata` keys are prefixed
   by the sub-benchmark's name (`"{sub.name}/{task_id}"`), guaranteeing
   uniqueness across the composite even when two sub-benchmarks share a task id.
 - Construction raises `ValueError` if two sub-configs share a
@@ -255,7 +255,7 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
 - `get_task_configs()` emits each sub-config's TaskConfigs **unchanged in
   type** — the clone preserves the sub's native `TaskConfig` subclass,
   including its embedded `metadata`. Only `task_id` (prefixed) and
-  `sub_benchmark` (set to the sub's name) are updated. No wrapper class.
+  `sub_bench_name` (set to the sub's name) are updated. No wrapper class.
 - `task_ids` (instance-level subset) filters at the prefixed level.
 - `make(infra)` calls `sub.make(infra)` for every sub_config in order. On any
   failure, already-built sub-benchmarks are closed before the error
@@ -267,18 +267,18 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
 
 ### `CompositeBenchmark`
 Runtime pair. Holds `sub_benchmarks: dict[str, Benchmark]`. `spawn(task_config)`
-reads `task_config.sub_benchmark` and routes by calling
+reads `task_config.sub_bench_name` and routes by calling
 `task_config.make(runtime_context=sub_bench._runtime_context, container_backend=sub_bench.config.container_backend)`
 directly — bypassing the sub-benchmark's own `spawn()` validation, which
 would reject the prefixed `task_id`. A TaskConfig with
-`sub_benchmark=None` or an unknown `sub_benchmark` raises `ValueError`.
+`sub_bench_name=None` or an unknown `sub_bench_name` raises `ValueError`.
 `close()` closes every sub-benchmark; exceptions are logged but not
 re-raised so one failing sub-benchmark does not block teardown.
 
 ### Usage
 ```python
 suite = CompositeBenchmarkConfig(
-    sub_configs=[
+    sub_bench_configs=[
         WorkArenaConfig().named_subset("l1"),
         OSWorldConfig().subset_from_list(["chrome-1", "chrome-2"]),
         ArithmeticConfig(),

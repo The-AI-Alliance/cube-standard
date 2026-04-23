@@ -95,21 +95,21 @@ and initialises `_runtime_context: RuntimeContext = {}`.
 ## ADDED — `CompositeBenchmarkConfig`, `CompositeBenchmark`
 **Spec:** benchmark
 
-`CompositeBenchmarkConfig(BenchmarkConfig)` holds `sub_configs: list[BenchmarkConfig]`:
+`CompositeBenchmarkConfig(BenchmarkConfig)` holds `sub_bench_configs: list[BenchmarkConfig]`:
 - Merged `task_metadata` prefixes keys with the sub-benchmark name
   (`"{sub.benchmark_metadata.name}/{task_id}"`).
 - Duplicate sub-benchmark names raise at construction.
 - `get_task_configs()` emits each sub-config's TaskConfigs unchanged in
   type (preserving subclass-specific fields and embedded `metadata`) with
-  only `task_id` (prefixed) and `sub_benchmark` (tag) updated. No wrapper
+  only `task_id` (prefixed) and `sub_bench_name` (tag) updated. No wrapper
   type.
 - `make(infra)` calls `sub.make(infra)` for each sub_config and returns a
   `CompositeBenchmark` holding `sub_benchmarks: dict[str, Benchmark]`.
 
 `CompositeBenchmark(Benchmark)`:
-- `spawn(tc)` reads `tc.sub_benchmark` and routes by calling
+- `spawn(tc)` reads `tc.sub_bench_name` and routes by calling
   `tc.make(runtime_context=sub_bench._runtime_context, ...)` directly.
-  Rejects configs with `sub_benchmark=None` or unknown names.
+  Rejects configs with `sub_bench_name=None` or unknown names.
 - `close()` closes every sub-benchmark.
 
 ## MODIFIED — `TaskConfig` shape
@@ -119,7 +119,7 @@ and initialises `_runtime_context: RuntimeContext = {}`.
 - New field: `metadata: TaskMetadata` — stamped onto each emitted config by
   `BenchmarkConfig.get_task_configs()`. `make()` uses `self.metadata`
   directly; workers never import the owning BenchmarkConfig for lookups.
-- New field: `sub_benchmark: str | None = None` — routing hint set by
+- New field: `sub_bench_name: str | None = None` — routing hint set by
   `CompositeBenchmarkConfig.get_task_configs()`. Standalone benchmarks
   leave it None.
 

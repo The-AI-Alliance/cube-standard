@@ -54,7 +54,7 @@ emitted — every emitted id is still a valid key in the ClassVar.
 
 ### Composition
 
-`CompositeBenchmarkConfig(sub_configs=[...])` holds a list of
+`CompositeBenchmarkConfig(sub_bench_configs=[...])` holds a list of
 `BenchmarkConfig`s. Its merged `task_metadata` prefixes keys with the
 sub-benchmark name (`"workarena-cube/<id>"`). Emitted `TaskConfig`s are wrapped
 in `CompositeTaskConfig(sub_name, inner)` — the wrapper is itself a `TaskConfig`
