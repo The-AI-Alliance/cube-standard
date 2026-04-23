@@ -7,6 +7,7 @@ factory; new code should use ``ToolkitInfraConfig`` from this package.
 
 from __future__ import annotations
 
+import importlib.resources
 import json
 import logging
 import os
@@ -42,6 +43,28 @@ _SIDECAR_CONTAINER_PORT = 8787
 _SIDECAR_BOOTSTRAP_TIMEOUT = 30
 _SIDECAR_HEALTH_TIMEOUT = 15
 
+# Architecture token → subdirectory name inside _bin/
+_ARCH_MAP: dict[str, str] = {
+    "x86_64": "linux-amd64",
+    "aarch64": "linux-arm64",
+    "arm64": "linux-arm64",
+}
+
+
+def _load_sidecar_binary(arch_dir: str) -> bytes:
+    """Return bytes of the pre-built static cube-sidecar binary for ``arch_dir``.
+
+    ``arch_dir`` is one of the keys in ``_ARCH_MAP`` values, e.g. 'linux-amd64'.
+    Raises ``FileNotFoundError`` if the binary is absent (e.g. dev checkout
+    without running ``make`` in sidecar-go/).
+    """
+    pkg = importlib.resources.files("cube_infra_toolkit")
+    binary_path = pkg / "_bin" / arch_dir / "cube-sidecar"
+    try:
+        return binary_path.read_bytes()
+    except (FileNotFoundError, TypeError) as exc:
+        raise FileNotFoundError(f"Pre-built sidecar binary not found at _bin/{arch_dir}/cube-sidecar") from exc
+
 
 class _SidecarUnavailable(Exception):
     """Raised when the sidecar is unreachable for a single call; triggers fallback to direct exec."""
@@ -65,6 +88,7 @@ def _run_eai(
     account: str | None = None,
     timeout: int | None = 60,
     retries: int = 2,
+    input: bytes | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run an ``eai`` CLI command with process-group cleanup + retry-on-hang.
 
@@ -97,8 +121,7 @@ def _run_eai(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                text=True,
+                stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
                 start_new_session=True,
             )
         except FileNotFoundError as exc:
@@ -108,7 +131,9 @@ def _run_eai(
         ) from exc
 
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
+            raw_out, raw_err = proc.communicate(input=input, timeout=timeout)
+            stdout = raw_out.decode("utf-8", errors="replace")
+            stderr = raw_err.decode("utf-8", errors="replace")
         except subprocess.TimeoutExpired as exc:
             last_err = exc
             try:
@@ -182,6 +207,22 @@ class ToolkitContainer(Container):
 
     # ------------------------- sidecar bootstrap -------------------------
 
+    def _detect_arch(self) -> str:
+        """Return the arch dir name ('linux-amd64' or 'linux-arm64') for the container."""
+        result = _run_eai(
+            ["job", "exec", self._job_id, "--", "uname", "-m"],
+            eai_path=self._eai_path,
+            profile=self._profile,
+            account=self._account,
+            timeout=15,
+            retries=1,
+        )
+        machine = result.stdout.strip()
+        arch_dir = _ARCH_MAP.get(machine)
+        if not arch_dir:
+            raise ContainerLaunchError(f"Unsupported container architecture: {machine!r}")
+        return arch_dir
+
     def _ensure_python3(self) -> None:
         """Install python3 via apt if the image doesn't have it.
 
@@ -211,68 +252,103 @@ class ToolkitContainer(Container):
         )
 
     def _bootstrap_sidecar(self) -> None:
-        """Upload server, launch, port-forward, health-check.
+        """Upload sidecar, launch, port-forward, health-check.
 
-        Because the eai-exec RPC that uploads + starts the server is itself
-        subject to the CLOSE_WAIT hang we're trying to fix, we can't trust
-        the bootstrap's exit code — SIGTERMing the remote bash does NOT kill
-        the setsid-detached python child that's already running.  Instead:
-        retry the whole bootstrap up to 3 times, and treat the health probe
-        as the only ground truth for "sidecar is usable".
+        Tries the pre-built static Go binary first (no python3 needed).
+        Falls back to the Python script if the binary is unavailable.
+        Retries the whole bootstrap up to 3 times; health probe is the only
+        ground truth for "sidecar is usable".
         """
         if self._sidecar_ready or self._exec_mode == "direct":
             return
 
+        # Prefer Go binary — no python3 dependency, works in any Linux image.
+        binary: bytes | None = None
+        try:
+            arch_dir = self._detect_arch()
+            binary = _load_sidecar_binary(arch_dir)
+            logger.info("Using Go sidecar binary (%s, %d bytes) for job %s",
+                        arch_dir, len(binary), self._job_id[:8])
+        except (FileNotFoundError, ContainerLaunchError) as exc:
+            logger.info("Go binary unavailable (%s) — falling back to Python sidecar + apt install", exc)
+            self._ensure_python3()
+
         token = secrets.token_urlsafe(32)
+        # Open tunnel BEFORE the first exec — avoids gateway corruption on hang.
+        local_port = self.forward_port(_SIDECAR_CONTAINER_PORT)
         last_diag = ""
 
-        # Ensure python3 is available — the sidecar server is a Python script.
-        # Some minimal images (e.g. bare LaTeX) ship without it; install via apt.
-        self._ensure_python3()
-
-        # Open the tunnel BEFORE the first `eai job exec`: when exec hangs
-        # (the CLOSE_WAIT bug) and we kill its process group, the eai tunnel
-        # gateway gets into a bad state for this job and new port-forwards
-        # consistently fail with "websocket: bad handshake".  Forwarding
-        # first, while the gateway is fresh, avoids the corruption.
-        local_port = self.forward_port(_SIDECAR_CONTAINER_PORT)
-
         for attempt in range(3):
-            self._kick_sidecar(token)
+            if binary is not None:
+                self._kick_sidecar_binary(token, binary)
+            else:
+                self._kick_sidecar_python(token)
             if self._probe_health(local_port, timeout=_SIDECAR_HEALTH_TIMEOUT):
                 self._sidecar_token = token
                 self._sidecar_local_port = local_port
                 self._sidecar_ready = True
-                logger.info(
-                    "Sidecar ready for job %s on local port %d (attempt %d)",
-                    self._job_id[:8], local_port, attempt + 1,
-                )
+                logger.info("Sidecar ready for job %s on local port %d (attempt %d, binary=%s)",
+                            self._job_id[:8], local_port, attempt + 1, binary is not None)
                 return
             last_diag = self._fetch_sidecar_diagnostics()
-            logger.warning(
-                "Sidecar health failed on attempt %d/3 for job %s. Diag:\n%s",
-                attempt + 1, self._job_id[:8], last_diag,
-            )
+            logger.warning("Sidecar health failed on attempt %d/3 for job %s. Diag:\n%s",
+                           attempt + 1, self._job_id[:8], last_diag)
 
-        # All 3 health probes failed — sidecar unbootstrappable (no python3, or
-        # persistent network issue).  Silently fall back to direct eai exec so
-        # the task can still run; the caller does not need to handle this case.
-        logger.warning(
-            "Sidecar bootstrap failed after 3 attempts for job %s — "
-            "falling back to direct exec mode.  Last diag:\n%s",
-            self._job_id[:8], last_diag,
-        )
+        logger.warning("Sidecar bootstrap failed after 3 attempts for job %s — "
+                       "falling back to direct exec mode.  Last diag:\n%s",
+                       self._job_id[:8], last_diag)
         self._exec_mode = "direct"
 
-    def _kick_sidecar(self, token: str) -> None:
-        """Upload the server + token, kill any prior instance, start detached.
+    def _kick_sidecar_binary(self, token: str, binary: bytes) -> None:
+        """Upload the static binary via stdin, write token file, start detached."""
+        logger.info("Uploading Go sidecar binary to job %s (%d bytes) …",
+                    self._job_id[:8], len(binary))
+        upload_script = (
+            "umask 077\n"
+            "pgrep -f _cube_sidecar 2>/dev/null | grep -vw \"$$\" | xargs -r kill 2>/dev/null || true\n"
+            "cat > /tmp/_cube_sidecar && chmod 700 /tmp/_cube_sidecar\n"
+            "echo UPLOADED\n"
+        )
+        try:
+            _run_eai(
+                ["job", "exec", self._job_id, "--", "bash", "-c", upload_script],
+                eai_path=self._eai_path,
+                profile=self._profile,
+                account=self._account,
+                timeout=60,
+                retries=1,
+                input=binary,
+            )
+        except ContainerExecError as exc:
+            logger.info("Binary upload timed out for job %s (%s); health probe will decide",
+                        self._job_id[:8], exc)
+            return
 
-        Idempotent: safe to call repeatedly.  Ignores bootstrap exit code —
-        the health probe is what decides success.  The eai CLI often SIGTERMs
-        the remote bash when the response-delivery channel hangs (CLOSE_WAIT);
-        setsid --fork detaches python from that signal, so the server survives
-        even when the bash appears to have failed with rc=143.
-        """
+        start_script = (
+            "cat > /tmp/.cube_sidecar_token <<'CUBE_TOKEN_EOF'\n"
+            f"{token}\n"
+            "CUBE_TOKEN_EOF\n"
+            "chmod 600 /tmp/.cube_sidecar_token\n"
+            f"export CUBE_SIDECAR_PORT={_SIDECAR_CONTAINER_PORT}\n"
+            "export CUBE_SIDECAR_TOKEN_FILE=/tmp/.cube_sidecar_token\n"
+            "setsid --fork /tmp/_cube_sidecar </dev/null >/tmp/_cube_sidecar.log 2>&1\n"
+            "echo KICKED\n"
+        )
+        try:
+            _run_eai(
+                ["job", "exec", self._job_id, "--", "bash", "-c", start_script],
+                eai_path=self._eai_path,
+                profile=self._profile,
+                account=self._account,
+                timeout=_SIDECAR_BOOTSTRAP_TIMEOUT,
+                retries=0,
+            )
+        except ContainerExecError as exc:
+            logger.info("Start RPC timed out for job %s (%s); health probe will decide",
+                        self._job_id[:8], exc)
+
+    def _kick_sidecar_python(self, token: str) -> None:
+        """Upload the Python sidecar script + token, kill any prior instance, start detached."""
         server_src = _SIDECAR_SERVER_PATH.read_text()
         script = (
             "umask 077\n"
@@ -293,7 +369,7 @@ class ToolkitContainer(Container):
             "</dev/null >/tmp/_cube_sidecar.log 2>&1\n"
             "echo KICKED\n"
         )
-        logger.info("Bootstrapping sidecar in job %s …", self._job_id[:8])
+        logger.info("Bootstrapping Python sidecar in job %s …", self._job_id[:8])
         try:
             _run_eai(
                 ["job", "exec", self._job_id, "--", "bash", "-c", script],
@@ -347,7 +423,7 @@ class ToolkitContainer(Container):
             r = _run_eai(
                 ["job", "exec", self._job_id, "--", "bash", "-c",
                  "tail -20 /tmp/_cube_sidecar.log 2>/dev/null; "
-                 "echo ---ps---; ps -ef | grep _cube_sidecar | grep -v grep; "
+                 "echo ---ps---; ps -ef | grep _cube_sidecar | grep -vw grep; "
                  "echo ---curl---; curl -sS --max-time 2 http://127.0.0.1:8787/health 2>&1 | head -5"],
                 eai_path=self._eai_path,
                 profile=self._profile,
