@@ -7,6 +7,7 @@ factory; new code should use ``ToolkitInfraConfig`` from this package.
 
 from __future__ import annotations
 
+import gzip
 import importlib.resources
 import json
 import logging
@@ -300,13 +301,15 @@ class ToolkitContainer(Container):
         self._exec_mode = "direct"
 
     def _kick_sidecar_binary(self, token: str, binary: bytes) -> None:
-        """Upload the static binary via stdin, write token file, start detached."""
-        logger.info("Uploading Go sidecar binary to job %s (%d bytes) …",
-                    self._job_id[:8], len(binary))
+        """Upload the static binary via stdin (gzip-compressed), write token, start detached."""
+        compressed = gzip.compress(binary, compresslevel=6)
+        logger.info("Uploading Go sidecar binary to job %s (%d→%d bytes gzipped) …",
+                    self._job_id[:8], len(binary), len(compressed))
+        # gzip -d reads compressed data from stdin and writes raw binary to stdout.
         upload_script = (
             "umask 077\n"
             "pgrep -f _cube_sidecar 2>/dev/null | grep -vw \"$$\" | xargs -r kill 2>/dev/null || true\n"
-            "cat > /tmp/_cube_sidecar && chmod 700 /tmp/_cube_sidecar\n"
+            "gzip -d > /tmp/_cube_sidecar && chmod 700 /tmp/_cube_sidecar\n"
             "echo UPLOADED\n"
         )
         try:
@@ -315,9 +318,9 @@ class ToolkitContainer(Container):
                 eai_path=self._eai_path,
                 profile=self._profile,
                 account=self._account,
-                timeout=60,
+                timeout=120,
                 retries=1,
-                input=binary,
+                input=compressed,
             )
         except ContainerExecError as exc:
             logger.info("Binary upload timed out for job %s (%s); health probe will decide",
@@ -365,7 +368,10 @@ class ToolkitContainer(Container):
             "chmod 600 /tmp/.cube_sidecar_token /tmp/_cube_sidecar.py\n"
             f"export CUBE_SIDECAR_PORT={_SIDECAR_CONTAINER_PORT}\n"
             "export CUBE_SIDECAR_TOKEN_FILE=/tmp/.cube_sidecar_token\n"
-            "setsid --fork python3 /tmp/_cube_sidecar.py "
+            # Resolve the full python3 path first — `setsid --fork python3` fails in
+            # some images where python3 is only in PATH under login shells.
+            "PYTHON3=$(command -v python3 || command -v python) && "
+            "setsid --fork \"$PYTHON3\" /tmp/_cube_sidecar.py "
             "</dev/null >/tmp/_cube_sidecar.log 2>&1\n"
             "echo KICKED\n"
         )
