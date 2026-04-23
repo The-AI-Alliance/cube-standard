@@ -14,6 +14,7 @@ fields continue to type-check during the migration.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict
@@ -22,6 +23,8 @@ from pydantic import Field
 
 from cube.core import TypedBaseModel
 from cube.resource import ResourceHandle
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -139,6 +142,41 @@ class Container(ResourceHandle, ABC):
         and need an indirection property.
         """
         return self
+
+
+def relocate_if_readonly(
+    container: Container,
+    working_dir: str,
+    new_wd: str,
+    *,
+    extra_setup: str | None = None,
+) -> str:
+    """Copy *working_dir* to *new_wd* if it isn't writable by the runtime user.
+
+    Returns the effective working directory (either the original if writable, or
+    *new_wd* after the copy).  Cubes that need additional setup after the copy
+    (e.g. ``git config safe.directory``) can pass the commands as *extra_setup*
+    — they are appended to the ``cp -a`` invocation with ``&&``.
+
+    Typical usage in a cube's ``_build_tool()``::
+
+        new_wd = relocate_if_readonly(
+            self._container, self.tool_config.working_dir, "/tmp/testbed",
+            extra_setup="git config --global --add safe.directory /tmp/testbed",
+        )
+        self._tool = self.tool_config.model_copy(update={"working_dir": new_wd}).make(
+            container=self._container
+        )
+    """
+    probe = container.exec(f"test -w {working_dir} && echo W || echo R", timeout=30)
+    if "W" in probe.stdout:
+        return working_dir
+    logger.info("%s not writable by runtime user — copying to %s", working_dir, new_wd)
+    cmd = f"cp -a {working_dir} {new_wd}"
+    if extra_setup:
+        cmd += f" && {extra_setup}"
+    container.exec(cmd, timeout=300)
+    return new_wd
 
 
 def port_from_url(url: str) -> int:
