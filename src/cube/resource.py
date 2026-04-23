@@ -163,6 +163,18 @@ class VMResourceConfig(ResourceConfig):
     """Boot the VM with UEFI firmware (OVMF) instead of SeaBIOS. Required for Windows 11."""
     tpm: bool = False
     """Attach an emulated TPM 2.0 device via swtpm. Required for Windows 11."""
+    os_type: Literal["linux", "windows"] = "linux"
+    """Guest operating system. Infras branch on this to pick the correct os_profile
+    (linux_configuration with SSH key vs windows_configuration with admin password),
+    image os_type, and platform-specific bootstrap steps."""
+    specialized: bool = False
+    """If True, the image is a byte-for-byte clone of a specific VM (hostname, SID,
+    user accounts, credentials all preserved). Azure deploys it without applying
+    os_profile at launch — admin_username / admin_password / SSH keys must already
+    be baked into the image. Right choice for agent-sandbox images where
+    deterministic starting state matters more than multi-tenant identity
+    isolation. If False, the image was sysprep /generalize'd and Azure applies
+    fresh os_profile at first boot."""
 
     def requirements(self) -> set[str]:
         return {"kvm"} if self.requires_kvm else set()

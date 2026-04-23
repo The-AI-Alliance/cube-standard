@@ -73,7 +73,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -190,6 +190,76 @@ for fs in run sys proc dev/pts dev; do umount "/mnt/guest/$fs" 2>/dev/null || tr
 umount /mnt/guest
 losetup -d "$LOOP" 2>/dev/null || true
 echo "[bootstrap] VHD prepared"
+
+# ── upload ────────────────────────────────────────────────────────────────────
+echo "[bootstrap] Uploading to Azure Blob Storage..."
+azcopy copy /data/output.vhd "{vhd_sas_url}" --blob-type PageBlob
+echo "[bootstrap] Upload complete"
+
+# ── signal done ───────────────────────────────────────────────────────────────
+curl -s -X PUT -H "x-ms-blob-type: BlockBlob" -H "Content-Length: 0" "{sentinel_sas_url}"
+echo "[bootstrap] Done at $(date)"
+"""
+
+
+# ── Windows bootstrap script ──────────────────────────────────────────────────
+# Placeholders: {hf_url}, {vhd_sas_url}, {sentinel_sas_url}, {failed_sas_url}
+# Used when the VMResourceConfig declares os_type="windows".  The prepared
+# Windows image is expected to arrive with OpenSSH Server + Azure VM Agent +
+# authorized_keys already baked in and sysprepped (see waa-cube's Packer
+# pipeline), so this script does download → convert-to-fixed-VHD → upload
+# only.  No NTFS mount / chroot — we can't customize Windows from a Linux
+# bootstrap VM.
+
+_WINDOWS_BOOTSTRAP_SCRIPT = """\
+#!/bin/bash
+set -eo pipefail
+exec > /var/log/cube-bootstrap.log 2>&1
+
+on_error() {{
+    msg="[bootstrap] FAILED at line $1: $2"
+    echo "$msg"
+    curl -s -X PUT -H "x-ms-blob-type: BlockBlob" \\
+         -H "Content-Length: ${{#msg}}" -d "$msg" "{failed_sas_url}" || true
+    exit 1
+}}
+trap 'on_error $LINENO "$BASH_COMMAND"' ERR
+
+echo "[bootstrap] Starting (Windows) at $(date)"
+
+mkdir -p /data
+
+# ── install tools ─────────────────────────────────────────────────────────────
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq qemu-utils wget curl unzip file
+
+wget -q "https://aka.ms/downloadazcopy-v10-linux" -O /tmp/azcopy.tar.gz
+tar -xzf /tmp/azcopy.tar.gz -C /tmp --wildcards "*/azcopy" 2>/dev/null || \\
+    tar -xzf /tmp/azcopy.tar.gz -C /tmp
+find /tmp -name azcopy -type f | head -1 | xargs -I{{}} mv {{}} /usr/local/bin/azcopy
+chmod +x /usr/local/bin/azcopy
+echo "[bootstrap] Tools ready"
+
+# ── download ──────────────────────────────────────────────────────────────────
+echo "[bootstrap] Downloading: {hf_url}"
+wget --progress=dot:giga -O /data/source.download "{hf_url}"
+echo "[bootstrap] Downloaded: $(du -sh /data/source.download)"
+
+# ── unzip if needed ───────────────────────────────────────────────────────────
+if file /data/source.download | grep -qi "zip archive"; then
+    echo "[bootstrap] Unzipping..."
+    unzip -q /data/source.download -d /data/
+    SRC=$(find /data -maxdepth 2 \\( -name "*.qcow2" -o -name "*.vhd" -o -name "*.img" \\) | head -1)
+    echo "[bootstrap] Unzipped: $SRC"
+else
+    SRC=/data/source.download
+fi
+
+# ── convert → fixed VHD (auto-detect source format) ───────────────────────────
+echo "[bootstrap] Converting → fixed VHD..."
+qemu-img convert -O vpc -o subformat=fixed,force_size "$SRC" /data/output.vhd
+echo "[bootstrap] Converted: $(du -sh /data/output.vhd)"
 
 # ── upload ────────────────────────────────────────────────────────────────────
 echo "[bootstrap] Uploading to Azure Blob Storage..."
@@ -425,9 +495,13 @@ class AzureInfraConfig(InfraConfig):
     bootstrap_gallery_image: str = "cube-ubuntu-22-04"
     bootstrap_gallery_image_ver: str = "1.0.0"
     bootstrap_os_disk_gb: int = 128
+    windows_admin_username: str = "cubeadmin"
+    """Administrator username injected into Windows VMs at first boot via os_profile."""
     windows_admin_password: str | None = Field(default=None, repr=False, exclude=True)
-    """Administrator password for the WAA Windows image.
-    Required when bootstrapping a Windows qcow2. Used for WinRM auth during sysprep.
+    """Administrator password for Windows VMs.
+    Required for any VMResourceConfig with os_type="windows". Azure applies it to
+    admin_username via the Windows VM Agent at first boot and rejects it unless it
+    meets Azure's complexity rules (12-72 chars, 3 of 4 char classes).
     Set via WAA_WINDOWS_ADMIN_PASSWORD env var in your recipe.
     Never stored in ProvisionStore or logs.
     """
@@ -456,7 +530,7 @@ class AzureInfraConfig(InfraConfig):
             ]
         )
         if needs_azure_discovery:
-            from azure.identity import AzureCliCredential
+            from azure.identity import DefaultAzureCredential
             from azure.mgmt.network import NetworkManagementClient
             from azure.mgmt.storage import StorageManagementClient
 
@@ -483,7 +557,7 @@ class AzureInfraConfig(InfraConfig):
                     )
                 object.__setattr__(self, "subscription", result.stdout.strip())
 
-            cred = AzureCliCredential()
+            cred = DefaultAzureCredential()
             nc = NetworkManagementClient(cred, self.subscription)
             sc = StorageManagementClient(cred, self.subscription)
 
@@ -641,6 +715,10 @@ class AzureInfraConfig(InfraConfig):
                 url=resource.source_url,
                 image_name=image_name,
                 version=version,
+                os_type=resource.os_type,
+                uefi=resource.uefi,
+                trusted_launch=resource.uefi or resource.tpm,
+                specialized=resource.specialized,
             )
 
         store.put(
@@ -765,40 +843,86 @@ class AzureInfraConfig(InfraConfig):
         logger.info("launch: creating VM %s (%s)  image=%s/%s", vm_name, self.vm_size, image_def, version)
         t0 = time.time()
 
-        # Generalized gallery image: os_profile injects the caller's SSH key via
-        # linux_configuration.ssh.public_keys. ARM waits for waagent to signal back.
+        is_windows = isinstance(resource, VMResourceConfig) and resource.os_type == "windows"
+        uefi = isinstance(resource, VMResourceConfig) and resource.uefi
+        tpm = isinstance(resource, VMResourceConfig) and resource.tpm
+        specialized = isinstance(resource, VMResourceConfig) and resource.specialized
+
+        vm_spec: dict[str, Any] = {
+            "location": self.location,
+            "tags": vm_tags,
+            "hardware_profile": {"vm_size": self.vm_size},
+            "storage_profile": {
+                "image_reference": {"id": image_id},
+                "os_disk": {
+                    "create_option": "FromImage",
+                    "managed_disk": {"storage_account_type": "Standard_LRS"},
+                    "delete_option": "Delete",
+                },
+            },
+            "network_profile": {"network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]},
+        }
+
+        # Specialized images are byte-for-byte clones — admin user, password,
+        # hostname, SSH keys all baked in. Azure REJECTS os_profile for these
+        # (source must supply credentials). Nothing to inject at launch time.
+        if specialized:
+            logger.info("launch: specialized image — skipping os_profile")
+        elif is_windows:
+            if not self.windows_admin_password:
+                raise ValueError(
+                    "Launching a generalized Windows VM requires windows_admin_password on "
+                    "AzureInfraConfig (e.g. via WAA_WINDOWS_ADMIN_PASSWORD env var). "
+                    "For specialized images, set VMResourceConfig.specialized=True instead."
+                )
+            # Generalized Windows: the prepared image ships administrators_authorized_keys
+            # with our pubkey pre-baked. admin_password is still required — Azure rejects a
+            # Windows os_profile without one — and gives us an RDP fallback.
+            vm_spec["os_profile"] = {
+                "computer_name": vm_name[:15],  # NetBIOS 15-char limit
+                "admin_username": self.windows_admin_username,
+                "admin_password": self.windows_admin_password,
+                "windows_configuration": {
+                    "provision_vm_agent": True,
+                    "enable_automatic_updates": False,
+                },
+            }
+        else:
+            # Generalized Linux: Azure injects the caller's SSH key via linux_configuration
+            # at first boot; waagent inside the image signals back to ARM when provisioning
+            # is done.
+            vm_spec["os_profile"] = {
+                "computer_name": vm_name,
+                "admin_username": "cube",
+                "linux_configuration": {
+                    "disable_password_authentication": True,
+                    "ssh": {
+                        "public_keys": [
+                            {
+                                "path": "/home/cube/.ssh/authorized_keys",
+                                "key_data": pubkey,
+                            }
+                        ]
+                    },
+                },
+            }
+
+        # Trusted Launch (vTPM + Secure Boot) is required for Windows 11 and needed
+        # whenever the resource asks for uefi or tpm. The gallery image definition
+        # must already be marked TrustedLaunchSupported (handled in provision()).
+        if uefi or tpm:
+            vm_spec["security_profile"] = {
+                "security_type": "TrustedLaunch",
+                "uefi_settings": {
+                    "secure_boot_enabled": True,
+                    "v_tpm_enabled": tpm,
+                },
+            }
+
         poller = compute.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
             self.resource_group,
             vm_name,
-            {  # type: ignore[arg-type]
-                "location": self.location,
-                "tags": vm_tags,
-                "hardware_profile": {"vm_size": self.vm_size},
-                "storage_profile": {
-                    "image_reference": {"id": image_id},
-                    "os_disk": {
-                        "create_option": "FromImage",
-                        "managed_disk": {"storage_account_type": "Standard_LRS"},
-                        "delete_option": "Delete",
-                    },
-                },
-                "os_profile": {
-                    "computer_name": vm_name,
-                    "admin_username": "cube",
-                    "linux_configuration": {
-                        "disable_password_authentication": True,
-                        "ssh": {
-                            "public_keys": [
-                                {
-                                    "path": "/home/cube/.ssh/authorized_keys",
-                                    "key_data": pubkey,
-                                }
-                            ]
-                        },
-                    },
-                },
-                "network_profile": {"network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]},
-            },
+            vm_spec,  # type: ignore[arg-type]
         )
         poller.result()
         elapsed = time.time() - t0
@@ -811,12 +935,18 @@ class AzureInfraConfig(InfraConfig):
         # SSH + tunnel — clean up VM on any failure to avoid orphaned resources.
         try:
             logger.info("launch: waiting for SSH on %s…", public_ip)
+            if is_windows:
+                primary_user = self.windows_admin_username
+                fallback_users = ["Administrator"]
+            else:
+                primary_user = "cube"
+                fallback_users = ["ubuntu", "azureuser", "root"]
             active_user = wait_for_ssh(
                 public_ip,
-                "cube",
+                primary_user,
                 self.ssh_privkey_path,
-                fallback_users=["ubuntu", "azureuser", "root"],
-                timeout=900,  # VM boot (~5-8 min) + waagent provisioning on Generalized image
+                fallback_users=fallback_users,
+                timeout=900,  # VM boot (~5-8 min) + waagent / VM Agent provisioning on Generalized image
             )
 
             if isinstance(resource, DockerServiceConfig):
@@ -1088,9 +1218,13 @@ class AzureInfraConfig(InfraConfig):
     # ── Private Azure SDK methods ─────────────────────────────────────────────
 
     def _cred(self) -> Any:
-        from azure.identity import AzureCliCredential
+        # DefaultAzureCredential tries (in order): env vars, Managed Identity,
+        # Shared Token Cache, Azure CLI, VS Code, PowerShell. Lets the same code
+        # run on a dev laptop (az login) and on an Azure VM (managed identity)
+        # without any changes.
+        from azure.identity import DefaultAzureCredential
 
-        return AzureCliCredential()
+        return DefaultAzureCredential()
 
     def _compute(self) -> Any:
         from azure.mgmt.compute import ComputeManagementClient
@@ -1333,8 +1467,21 @@ class AzureInfraConfig(InfraConfig):
             ).result()
         return self.gallery_name
 
-    def _create_image_definition(self, name: str, os_state: str = "Generalized") -> str:
-        """Create a gallery image definition (idempotent). Returns definition name."""
+    def _create_image_definition(
+        self,
+        name: str,
+        os_state: Literal["Generalized", "Specialized"] = "Generalized",
+        os_type: Literal["linux", "windows"] = "linux",
+        uefi: bool = False,
+        trusted_launch: bool = False,
+    ) -> str:
+        """Create a gallery image definition (idempotent). Returns definition name.
+
+        ``uefi=True`` selects Hyper-V Generation 2 (required for Windows 11, UEFI Linux).
+        ``trusted_launch=True`` adds the ``TrustedLaunchSupported`` feature, which is
+        required to later attach a ``security_profile`` (vTPM, secure boot) on VMs
+        created from this image.
+        """
         self._ensure_gallery()
         compute = self._compute()
         try:
@@ -1344,19 +1491,31 @@ class AzureInfraConfig(InfraConfig):
         except Exception:
             pass
 
-        logger.info("_create_image_definition: %s (%s, HyperV V1)", name, os_state)
+        hyper_v = "V2" if uefi else "V1"
+        logger.info(
+            "_create_image_definition: %s (%s, HyperV %s, os=%s%s)",
+            name,
+            os_state,
+            hyper_v,
+            os_type,
+            ", TrustedLaunch" if trusted_launch else "",
+        )
+        props: dict[str, Any] = {
+            "location": self.location,
+            "tags": self.tags,
+            "os_type": "Windows" if os_type == "windows" else "Linux",
+            "os_state": os_state,
+            "hyper_v_generation": hyper_v,
+            "identifier": {"publisher": "cube", "offer": name, "sku": os_type},
+        }
+        if trusted_launch:
+            props["features"] = [{"name": "SecurityType", "value": "TrustedLaunchSupported"}]
+
         compute.gallery_images.begin_create_or_update(  # type: ignore[call-overload]
             self.resource_group,
             self.gallery_name,
             name,
-            {  # type: ignore[arg-type]
-                "location": self.location,
-                "tags": self.tags,
-                "os_type": "Linux",
-                "os_state": os_state,
-                "hyper_v_generation": "V1",
-                "identifier": {"publisher": "cube", "offer": name, "sku": "linux"},
-            },
+            props,  # type: ignore[arg-type]
         ).result()
         logger.info("_create_image_definition: created %s", name)
         return name
@@ -1416,7 +1575,16 @@ class AzureInfraConfig(InfraConfig):
         logger.info("_create_image_version: done in %.0fs: %s", time.time() - t0, version_obj.id)
         return version_obj.id or ""
 
-    def _ensure_resource_from_blob(self, vhd_blob_name: str, name: str, version: str = "1.0.0") -> str:
+    def _ensure_resource_from_blob(
+        self,
+        vhd_blob_name: str,
+        name: str,
+        version: str = "1.0.0",
+        os_type: Literal["linux", "windows"] = "linux",
+        uefi: bool = False,
+        trusted_launch: bool = False,
+        specialized: bool = False,
+    ) -> str:
         """Import VHD blob → disk → gallery image definition + version.
 
         Idempotent at each step. Returns the gallery image version resource ID.
@@ -1424,7 +1592,13 @@ class AzureInfraConfig(InfraConfig):
         blob_url = f"https://{self.storage_account}.blob.core.windows.net/{self.container_name}/{vhd_blob_name}"
         disk_name = f"cube-disk-{name}"
         self._import_disk(blob_url, disk_name)
-        self._create_image_definition(name)
+        self._create_image_definition(
+            name,
+            os_state="Specialized" if specialized else "Generalized",
+            os_type=os_type,
+            uefi=uefi,
+            trusted_launch=trusted_launch,
+        )
         image_id = self._create_image_version(name, version, disk_name)
         logger.info("_ensure_resource_from_blob: image ready: %s/%s", name, version)
 
@@ -1714,7 +1888,16 @@ class AzureInfraConfig(InfraConfig):
             except Exception as exc:
                 logger.warning("_delete_network_resources: could not delete %s %s: %s", resource_type, name, exc)
 
-    def _bootstrap(self, url: str, image_name: str, version: str = "1.0.0") -> str:
+    def _bootstrap(
+        self,
+        url: str,
+        image_name: str,
+        version: str = "1.0.0",
+        os_type: Literal["linux", "windows"] = "linux",
+        uefi: bool = False,
+        trusted_launch: bool = False,
+        specialized: bool = False,
+    ) -> str:
         """In-cloud bootstrap: spin up Azure VM to download, convert, and upload the image.
 
         Idempotent — skips the VM phase if the sentinel blob already exists.
@@ -1731,7 +1914,10 @@ class AzureInfraConfig(InfraConfig):
             vhd_sas_url = self.generate_sas_url(blob_name, expiry_hours=8, write=True)
             sentinel_sas_url = self.generate_sas_url(sentinel_name, expiry_hours=8, write=True)
             failed_sas_url = self.generate_sas_url(failed_name, expiry_hours=8, write=True)
-            script = _AZURE_BOOTSTRAP_SCRIPT.format(
+            # Windows images arrive pre-prepared (OpenSSH + VM Agent + sysprep, via Packer),
+            # so we use a script that skips the Linux-only chroot customization step.
+            template = _WINDOWS_BOOTSTRAP_SCRIPT if os_type == "windows" else _AZURE_BOOTSTRAP_SCRIPT
+            script = template.format(
                 hf_url=url,
                 vhd_sas_url=vhd_sas_url,
                 sentinel_sas_url=sentinel_sas_url,
@@ -1755,7 +1941,15 @@ class AzureInfraConfig(InfraConfig):
         else:
             logger.info("_bootstrap: sentinel exists — skipping VM phase")
 
-        return self._ensure_resource_from_blob(blob_name, image_name, version)
+        return self._ensure_resource_from_blob(
+            blob_name,
+            image_name,
+            version,
+            os_type=os_type,
+            uefi=uefi,
+            trusted_launch=trusted_launch,
+            specialized=specialized,
+        )
 
     def list_images(self) -> list[dict]:
         """Return all image definitions in the gallery (informational)."""
