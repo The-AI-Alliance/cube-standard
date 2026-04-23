@@ -1,8 +1,8 @@
-"""Security + correctness tests for the toolkit sidecar server.
+"""Security + correctness tests for the toolkit exec relay server.
 
 These tests run the server as a subprocess on localhost — no toolkit/eai
 dependency. They cover the security surface we documented in
-cube_infra_toolkit/_sidecar_server.py.
+cube_infra_toolkit/_exec_relay_server.py.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from pathlib import Path
 
 SERVER_PATH = (
     Path(__file__).parent.parent.parent
-    / "cube-resources" / "cube-infra-toolkit" / "src" / "cube_infra_toolkit" / "_sidecar_server.py"
+    / "cube-resources" / "cube-infra-toolkit" / "src" / "cube_infra_toolkit" / "_exec_relay_server.py"
 )
 
 
@@ -45,13 +45,13 @@ def _wait_for(url: str, timeout: float = 5.0) -> None:
 @contextmanager
 def _server(token: str = "x" * 48):
     port = _free_port()
-    tok_path = Path(f"/tmp/_cube_sidecar_test_token_{os.getpid()}_{port}")
+    tok_path = Path(f"/tmp/_cube_exec_relay_test_token_{os.getpid()}_{port}")
     tok_path.write_text(token)
     try:
         env = {
             **os.environ,
-            "CUBE_SIDECAR_PORT": str(port),
-            "CUBE_SIDECAR_TOKEN_FILE": str(tok_path),
+            "CUBE_EXEC_RELAY_PORT": str(port),
+            "CUBE_EXEC_RELAY_TOKEN_FILE": str(tok_path),
         }
         proc = subprocess.Popen(
             [sys.executable, str(SERVER_PATH)],
@@ -212,14 +212,14 @@ def test_malformed_json():
 
 
 def test_token_file_env_redacted_from_child():
-    """SECURITY: child process must NOT see CUBE_SIDECAR_TOKEN_FILE env var,
+    """SECURITY: child process must NOT see CUBE_EXEC_RELAY_TOKEN_FILE env var,
     otherwise a malicious command could read the token file path and exfiltrate
     the secret."""
     with _server() as (port, tok, _):
         status, body = _post(
             port,
             tok,
-            {"command": "env | grep -c CUBE_SIDECAR_TOKEN_FILE || true"},
+            {"command": "env | grep -c CUBE_EXEC_RELAY_TOKEN_FILE || true"},
         )
     assert status == 200
     # Either grep found 0 matches (exit 1 → printed '0') or -c returned 0
@@ -240,13 +240,13 @@ def test_short_token_startup_fails():
     """SECURITY: server refuses to start with a short token (prevents accidental
     weak-secret deployments)."""
     port = _free_port()
-    tok_path = Path(f"/tmp/_cube_sidecar_test_short_{os.getpid()}")
+    tok_path = Path(f"/tmp/_cube_exec_relay_test_short_{os.getpid()}")
     tok_path.write_text("short")
     try:
         env = {
             **os.environ,
-            "CUBE_SIDECAR_PORT": str(port),
-            "CUBE_SIDECAR_TOKEN_FILE": str(tok_path),
+            "CUBE_EXEC_RELAY_PORT": str(port),
+            "CUBE_EXEC_RELAY_TOKEN_FILE": str(tok_path),
         }
         proc = subprocess.run(
             [sys.executable, str(SERVER_PATH)],
@@ -262,8 +262,8 @@ def test_short_token_startup_fails():
 
 def test_missing_token_file_startup_fails():
     port = _free_port()
-    env = {**os.environ, "CUBE_SIDECAR_PORT": str(port)}
-    env.pop("CUBE_SIDECAR_TOKEN_FILE", None)
+    env = {**os.environ, "CUBE_EXEC_RELAY_PORT": str(port)}
+    env.pop("CUBE_EXEC_RELAY_TOKEN_FILE", None)
     proc = subprocess.run(
         [sys.executable, str(SERVER_PATH)],
         env=env,

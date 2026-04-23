@@ -8,8 +8,6 @@ factory; new code should use ``ToolkitInfraConfig`` from this package.
 from __future__ import annotations
 
 import base64
-import gzip
-import importlib.resources
 import json
 import logging
 import os
@@ -40,39 +38,14 @@ from cube.container import (
     ExecResult,
 )
 
-_SIDECAR_SERVER_PATH = Path(__file__).parent / "_sidecar_server.py"
-_SIDECAR_CONTAINER_PORT = 8787
-_SIDECAR_BOOTSTRAP_TIMEOUT = 15  # commands complete in <5s; short so CLOSE_WAIT fails fast
-_SIDECAR_HEALTH_TIMEOUT = 15
-# /dev/shm is a tmpfs that is exec-able on virtually all Linux containers.
-# /tmp is often mounted noexec on hardened runtimes (e.g. Toolkit yul101).
-_SIDECAR_BINARY_CONTAINER_PATH = "/dev/shm/_cube_sidecar"
-
-# Architecture token → subdirectory name inside _bin/
-_ARCH_MAP: dict[str, str] = {
-    "x86_64": "linux-amd64",
-    "aarch64": "linux-arm64",
-    "arm64": "linux-arm64",
-}
+_EXEC_RELAY_SERVER_PATH = Path(__file__).parent / "_exec_relay_server.py"
+_EXEC_RELAY_PORT = 8787
+_EXEC_RELAY_KICK_TIMEOUT = 15  # eai exec calls during bootstrap; short so CLOSE_WAIT fails fast
+_EXEC_RELAY_HEALTH_TIMEOUT = 15
 
 
-def _load_sidecar_binary(arch_dir: str) -> bytes:
-    """Return bytes of the pre-built static cube-sidecar binary for ``arch_dir``.
-
-    ``arch_dir`` is one of the keys in ``_ARCH_MAP`` values, e.g. 'linux-amd64'.
-    Raises ``FileNotFoundError`` if the binary is absent (e.g. dev checkout
-    without running ``make`` in sidecar-go/).
-    """
-    pkg = importlib.resources.files("cube_infra_toolkit")
-    binary_path = pkg / "_bin" / arch_dir / "cube-sidecar"
-    try:
-        return binary_path.read_bytes()
-    except (FileNotFoundError, TypeError) as exc:
-        raise FileNotFoundError(f"Pre-built sidecar binary not found at _bin/{arch_dir}/cube-sidecar") from exc
-
-
-class _SidecarUnavailable(Exception):
-    """Raised when the sidecar is unreachable for a single call; triggers fallback to direct exec."""
+class _ExecRelayUnavailable(Exception):
+    """Raised when the exec relay is unreachable for a single call; triggers fallback to direct exec."""
 
 
 logger = logging.getLogger(__name__)
@@ -174,15 +147,43 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def relay_startup_args(token: str) -> list[str]:
+    """Return the ``['/bin/sh', '-c', <script>]`` args for a job launch command.
+
+    Embeds the exec relay script + token directly in the job's startup command so
+    the relay is running before the first port-forward — eliminating all bootstrap
+    ``eai job exec`` calls for images that already have python3.
+    """
+    script_b64 = base64.b64encode(_EXEC_RELAY_SERVER_PATH.read_bytes()).decode()
+    token_b64 = base64.b64encode(token.encode()).decode()
+    startup = (
+        f"printf '%s' '{token_b64}' | base64 -d > /tmp/.cube_exec_relay_token && "
+        f"printf '%s' '{script_b64}' | base64 -d > /tmp/_cube_exec_relay.py && "
+        "chmod 600 /tmp/.cube_exec_relay_token /tmp/_cube_exec_relay.py && "
+        f"CUBE_EXEC_RELAY_PORT={_EXEC_RELAY_PORT} "
+        "CUBE_EXEC_RELAY_TOKEN_FILE=/tmp/.cube_exec_relay_token "
+        "nohup python3 /tmp/_cube_exec_relay.py "
+        "</dev/null >/tmp/_cube_exec_relay.log 2>&1 & "
+        "exec sleep infinity"
+    )
+    return ["/bin/sh", "-c", startup]
+
+
 class ToolkitContainer(Container):
     """Runtime handle backed by an EAI Toolkit job.
 
-    Exec routing: `eai job exec` has a known TCP half-close bug that hangs
-    ~6% of calls. By default (exec_mode="sidecar") we bootstrap a small HTTP
-    server inside the container at launch and route all `.exec()` calls via
-    an `eai job port-forward` tunnel to it. The direct `eai job exec` path
-    is still used for bootstrap + as a fallback. See ``_sidecar_server.py``
-    for the server-side security posture.
+    Exec routing: a small HTTP server (exec relay) runs inside the container,
+    started as part of the job's launch command and tunneled via
+    ``eai job port-forward``.  All ``.exec()`` calls go through the relay,
+    bypassing the ``eai job exec`` CLOSE_WAIT hang bug entirely.
+
+    Fallback chain when the relay is unavailable:
+      1. Fast path: relay pre-started at job launch (relay_prestarted_token set).
+         Only a health check is needed — no eai exec for bootstrap.
+      2. Slow path: relay not pre-started or python3 was absent at launch.
+         Bootstrap via eai exec (install python3 if needed, kick the relay).
+      3. Direct exec: relay bootstrap failed entirely; fall back to eai job exec
+         with the CLOSE_WAIT sentinel + retry logic.
     """
 
     def __init__(
@@ -190,8 +191,9 @@ class ToolkitContainer(Container):
         job_id: str,
         profile: str | None = None,
         account: str | None = None,
-        exec_mode: Literal["sidecar", "direct"] = "sidecar",
+        exec_mode: Literal["exec_relay", "direct"] = "exec_relay",
         eai_path: str = "eai",
+        relay_prestarted_token: str | None = None,
     ) -> None:
         super().__init__()  # populates ResourceHandle fields with defaults
         self._job_id = job_id
@@ -202,41 +204,22 @@ class ToolkitContainer(Container):
         self._port_forwards: dict[int, subprocess.Popen] = {}
         self._port_map: dict[int, int] = {}
         self._port_forward_logs: dict[int, str] = {}
-        self._sidecar_token: str | None = None
-        self._sidecar_local_port: int | None = None
-        self._sidecar_ready = False
+        # Token is set either at construction (pre-started) or after bootstrap.
+        self._relay_token: str | None = relay_prestarted_token
+        self._relay_local_port: int | None = None
+        self._relay_ready = False
 
     @property
     def id(self) -> str:
         return self._job_id
 
-    # ------------------------- sidecar bootstrap -------------------------
-
-    def _detect_arch(self) -> str:
-        """Return the arch dir name ('linux-amd64' or 'linux-arm64') for the container."""
-        result = _run_eai(
-            ["job", "exec", self._job_id, "--", "uname", "-m"],
-            eai_path=self._eai_path,
-            profile=self._profile,
-            account=self._account,
-            timeout=15,
-            retries=1,
-        )
-        machine = result.stdout.strip()
-        arch_dir = _ARCH_MAP.get(machine)
-        if not arch_dir:
-            raise ContainerLaunchError(f"Unsupported container architecture: {machine!r}")
-        return arch_dir
+    # ------------------------- exec relay bootstrap -------------------------
 
     def _ensure_python3(self) -> None:
-        """Install python3 via apt if the image doesn't have it.
-
-        The sidecar server is a Python script — it can't start without python3.
-        Minimal images (bare LaTeX, Alpine-derived, etc.) often omit it.
-        Uses direct eai exec (bypasses sidecar which doesn't exist yet).
-        """
+        """Install python3 via apt if the image doesn't have it (slow path only)."""
         check = _run_eai(
-            ["job", "exec", self._job_id, "--", "bash", "-c", "python3 --version 2>/dev/null && echo HAS_PYTHON || echo NO_PYTHON"],
+            ["job", "exec", self._job_id, "--", "bash", "-c",
+             "python3 --version 2>/dev/null && echo HAS_PYTHON || echo NO_PYTHON"],
             eai_path=self._eai_path,
             profile=self._profile,
             account=self._account,
@@ -256,141 +239,30 @@ class ToolkitContainer(Container):
             retries=1,
         )
 
-    def _bootstrap_sidecar(self) -> None:
-        """Upload sidecar, launch, port-forward, health-check.
-
-        Strategy (in order):
-        1. Go static binary (no python3 dependency) — up to 2 attempts.
-        2. Python script fallback (fast ~5 KB upload) — up to 2 attempts.
-        3. Direct exec fallback (CLOSE_WAIT-susceptible, used as last resort).
-        """
-        if self._sidecar_ready or self._exec_mode == "direct":
-            return
-
-        binary: bytes | None = None
-        try:
-            arch_dir = self._detect_arch()
-            binary = _load_sidecar_binary(arch_dir)
-            logger.info("Go sidecar binary available (%s, %d bytes) for job %s",
-                        arch_dir, len(binary), self._job_id[:8])
-        except (FileNotFoundError, ContainerLaunchError) as exc:
-            logger.info("Go binary unavailable for job %s (%s)", self._job_id[:8], exc)
-
-        token = secrets.token_urlsafe(32)
-        # Open tunnel BEFORE the first exec — avoids gateway corruption on hang.
-        local_port = self.forward_port(_SIDECAR_CONTAINER_PORT)
-        last_diag = ""
-
-        # Phase 1: try Go binary (2 attempts).
-        if binary is not None:
-            for attempt in range(2):
-                self._kick_sidecar_binary(token, binary)
-                if self._probe_health(local_port, timeout=_SIDECAR_HEALTH_TIMEOUT):
-                    self._sidecar_token = token
-                    self._sidecar_local_port = local_port
-                    self._sidecar_ready = True
-                    logger.info("Go sidecar ready for job %s (attempt %d)", self._job_id[:8], attempt + 1)
-                    return
-                last_diag = self._fetch_sidecar_diagnostics()
-                logger.warning("Go sidecar health failed on attempt %d/2 for job %s. Diag:\n%s",
-                               attempt + 1, self._job_id[:8], last_diag)
-            logger.info("Go binary bootstrap failed for job %s; switching to Python sidecar", self._job_id[:8])
-
-        # Phase 2: Python sidecar (2 attempts, install python3 if needed).
-        self._ensure_python3()
-        for attempt in range(2):
-            self._kick_sidecar_python(token)
-            if self._probe_health(local_port, timeout=_SIDECAR_HEALTH_TIMEOUT):
-                self._sidecar_token = token
-                self._sidecar_local_port = local_port
-                self._sidecar_ready = True
-                logger.info("Python sidecar ready for job %s (attempt %d)", self._job_id[:8], attempt + 1)
-                return
-            last_diag = self._fetch_sidecar_diagnostics()
-            logger.warning("Python sidecar health failed on attempt %d/2 for job %s. Diag:\n%s",
-                           attempt + 1, self._job_id[:8], last_diag)
-
-        logger.warning("Sidecar bootstrap failed for job %s — falling back to direct exec mode. Last diag:\n%s",
-                       self._job_id[:8], last_diag)
-        self._exec_mode = "direct"
-
-    def _kick_sidecar_binary(self, token: str, binary: bytes) -> None:
-        """Upload the static binary via stdin (gzip-compressed), write token, start detached."""
-        compressed = gzip.compress(binary, compresslevel=6)
-        logger.info("Uploading Go sidecar binary to job %s (%d→%d bytes gzipped) …",
-                    self._job_id[:8], len(binary), len(compressed))
-        # gzip -d reads compressed data from stdin and writes raw binary to stdout.
-        dest = _SIDECAR_BINARY_CONTAINER_PATH
-        upload_script = (
-            "umask 077\n"
-            "pgrep -f _cube_sidecar 2>/dev/null | grep -vw \"$$\" | xargs -r kill 2>/dev/null || true\n"
-            f"gzip -d > {dest} && chmod 700 {dest}\n"
-            "echo UPLOADED\n"
-        )
-        try:
-            _run_eai(
-                ["job", "exec", self._job_id, "--", "bash", "-c", upload_script],
-                eai_path=self._eai_path,
-                profile=self._profile,
-                account=self._account,
-                timeout=120,
-                retries=1,
-                input=compressed,
-            )
-        except ContainerExecError as exc:
-            logger.info("Binary upload timed out for job %s (%s); health probe will decide",
-                        self._job_id[:8], exc)
-            return
-
-        token_file = f"{dest}.token"
-        log_file = f"{dest}.log"
-        start_script = (
-            f"cat > {token_file} <<'CUBE_TOKEN_EOF'\n"
-            f"{token}\n"
-            "CUBE_TOKEN_EOF\n"
-            f"chmod 600 {token_file}\n"
-            f"export CUBE_SIDECAR_PORT={_SIDECAR_CONTAINER_PORT}\n"
-            f"export CUBE_SIDECAR_TOKEN_FILE={token_file}\n"
-            f"nohup {dest} </dev/null >{log_file} 2>&1 &\n"
-            "echo KICKED\n"
-        )
-        try:
-            _run_eai(
-                ["job", "exec", self._job_id, "--", "bash", "-c", start_script],
-                eai_path=self._eai_path,
-                profile=self._profile,
-                account=self._account,
-                timeout=_SIDECAR_BOOTSTRAP_TIMEOUT,
-                retries=0,
-            )
-        except ContainerExecError as exc:
-            logger.info("Start RPC timed out for job %s (%s); health probe will decide",
-                        self._job_id[:8], exc)
-
-    def _kick_sidecar_python(self, token: str) -> None:
-        """Upload the Python sidecar script + token, kill any prior instance, start detached."""
-        server_src = _SIDECAR_SERVER_PATH.read_text()
+    def _kick_relay_python(self, token: str) -> None:
+        """Upload the Python relay script + token, kill any prior instance, start detached."""
+        server_src = _EXEC_RELAY_SERVER_PATH.read_text()
         server_b64 = base64.b64encode(server_src.encode()).decode()
         token_b64 = base64.b64encode(token.encode()).decode()
         script = (
             "umask 077\n"
-            "pgrep -f _cube_sidecar.py 2>/dev/null "
+            "pgrep -f _cube_exec_relay.py 2>/dev/null "
             "| grep -vw \"$$\" "
             "| xargs -r kill 2>/dev/null || true\n"
             "sleep 0.3\n"
-            f"printf '%s' '{server_b64}' | base64 -d > /tmp/_cube_sidecar.py\n"
-            f"printf '%s' '{token_b64}' | base64 -d > /tmp/.cube_sidecar_token\n"
-            "chmod 600 /tmp/.cube_sidecar_token /tmp/_cube_sidecar.py\n"
-            f"export CUBE_SIDECAR_PORT={_SIDECAR_CONTAINER_PORT}\n"
-            "export CUBE_SIDECAR_TOKEN_FILE=/tmp/.cube_sidecar_token\n"
+            f"printf '%s' '{server_b64}' | base64 -d > /tmp/_cube_exec_relay.py\n"
+            f"printf '%s' '{token_b64}' | base64 -d > /tmp/.cube_exec_relay_token\n"
+            "chmod 600 /tmp/.cube_exec_relay_token /tmp/_cube_exec_relay.py\n"
+            f"export CUBE_EXEC_RELAY_PORT={_EXEC_RELAY_PORT}\n"
+            "export CUBE_EXEC_RELAY_TOKEN_FILE=/tmp/.cube_exec_relay_token\n"
             "PYTHON3=$(command -v python3 || command -v python)\n"
             "echo \"PYTHON3=$PYTHON3\"\n"
             "[ -z \"$PYTHON3\" ] && echo 'ERROR: no python3 found' && exit 1\n"
-            "nohup \"$PYTHON3\" /tmp/_cube_sidecar.py "
-            "</dev/null >/tmp/_cube_sidecar.log 2>&1 &\n"
+            "nohup \"$PYTHON3\" /tmp/_cube_exec_relay.py "
+            "</dev/null >/tmp/_cube_exec_relay.log 2>&1 &\n"
             "echo KICKED\n"
         )
-        logger.info("Bootstrapping Python sidecar in job %s …", self._job_id[:8])
+        logger.info("Bootstrapping exec relay in job %s …", self._job_id[:8])
         # Retry the kick: CLOSE_WAIT hangs ~6% of exec calls; short timeout + retries
         # reduces P(all attempts hang) to near-zero without adding much latency.
         for kick_attempt in range(4):
@@ -400,39 +272,70 @@ class ToolkitContainer(Container):
                     eai_path=self._eai_path,
                     profile=self._profile,
                     account=self._account,
-                    timeout=_SIDECAR_BOOTSTRAP_TIMEOUT,
+                    timeout=_EXEC_RELAY_KICK_TIMEOUT,
                     retries=0,
                 )
-                logger.info("Python sidecar kick output for job %s: %s", self._job_id[:8], result.stdout.strip())
+                logger.info("Exec relay kick output for job %s: %s", self._job_id[:8], result.stdout.strip())
                 return  # kick sent; health probe decides if it worked
             except ContainerExecError:
                 if kick_attempt < 3:
-                    logger.warning("Python sidecar kick timed out for job %s (CLOSE_WAIT, attempt %d/4); retrying",
-                                   self._job_id[:8], kick_attempt + 1)
+                    logger.warning(
+                        "Exec relay kick timed out for job %s (CLOSE_WAIT, attempt %d/4); retrying",
+                        self._job_id[:8], kick_attempt + 1,
+                    )
                 else:
-                    logger.warning("Python sidecar kick failed after 4 attempts for job %s",
-                                   self._job_id[:8])
+                    logger.warning("Exec relay kick failed after 4 attempts for job %s", self._job_id[:8])
 
-    def _reset_sidecar_port_forward(self) -> None:
-        """Kill any existing port-forward for the sidecar port so forward_port reopens it."""
-        port = _SIDECAR_CONTAINER_PORT
-        proc = self._port_forwards.pop(port, None)
-        self._port_map.pop(port, None)
-        log_path = self._port_forward_logs.pop(port, None)
-        if proc is not None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=3)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-        if log_path:
-            try:
-                os.unlink(log_path)
-            except Exception:
-                pass
+    def _bootstrap_exec_relay(self) -> None:
+        """Port-forward + health-check the exec relay; kick via eai exec if needed.
+
+        Fast path (relay_prestarted_token set): relay was started as part of the
+        job launch command — just open the tunnel and health-check.  Zero eai execs.
+
+        Slow path (no token, or health check fails): install python3 if needed,
+        kick the relay via eai exec, health-check again.
+        """
+        if self._relay_ready or self._exec_mode == "direct":
+            return
+
+        local_port = self.forward_port(_EXEC_RELAY_PORT)
+
+        # Fast path: relay was pre-started at job launch.
+        if self._relay_token is not None:
+            if self._probe_health(local_port, timeout=_EXEC_RELAY_HEALTH_TIMEOUT):
+                self._relay_local_port = local_port
+                self._relay_ready = True
+                logger.info("Exec relay ready (pre-started) for job %s", self._job_id[:8])
+                return
+            logger.info(
+                "Pre-started relay not healthy for job %s — python3 likely absent; "
+                "bootstrapping via eai exec",
+                self._job_id[:8],
+            )
+
+        # Slow path: need to kick the relay manually via eai exec.
+        token = self._relay_token or secrets.token_urlsafe(32)
+        self._ensure_python3()
+        last_diag = ""
+        for attempt in range(2):
+            self._kick_relay_python(token)
+            if self._probe_health(local_port, timeout=_EXEC_RELAY_HEALTH_TIMEOUT):
+                self._relay_token = token
+                self._relay_local_port = local_port
+                self._relay_ready = True
+                logger.info("Exec relay ready (bootstrapped) for job %s (attempt %d)", self._job_id[:8], attempt + 1)
+                return
+            last_diag = self._fetch_relay_diagnostics()
+            logger.warning(
+                "Exec relay health failed on attempt %d/2 for job %s. Diag:\n%s",
+                attempt + 1, self._job_id[:8], last_diag,
+            )
+
+        logger.warning(
+            "Exec relay bootstrap failed for job %s — falling back to direct exec. Last diag:\n%s",
+            self._job_id[:8], last_diag,
+        )
+        self._exec_mode = "direct"
 
     def _probe_health(self, local_port: int, *, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
@@ -447,13 +350,13 @@ class ToolkitContainer(Container):
                 time.sleep(0.2)
         return False
 
-    def _fetch_sidecar_diagnostics(self) -> str:
+    def _fetch_relay_diagnostics(self) -> str:
         parts = []
         try:
             r = _run_eai(
                 ["job", "exec", self._job_id, "--", "bash", "-c",
-                 "tail -20 /dev/shm/_cube_sidecar.log /tmp/_cube_sidecar.log 2>/dev/null; "
-                 "echo ---ps---; ps -ef | grep _cube_sidecar | grep -vw grep; "
+                 "tail -20 /tmp/_cube_exec_relay.log 2>/dev/null; "
+                 "echo ---ps---; ps -ef | grep _cube_exec_relay | grep -vw grep; "
                  "echo ---curl---; curl -sS --max-time 2 http://127.0.0.1:8787/health 2>&1 | head -5"],
                 eai_path=self._eai_path,
                 profile=self._profile,
@@ -465,14 +368,14 @@ class ToolkitContainer(Container):
         except Exception as exc:
             parts.append(f"<diagnostics fetch failed: {exc}>")
 
-        log_path = self._port_forward_logs.get(_SIDECAR_CONTAINER_PORT)
+        log_path = self._port_forward_logs.get(_EXEC_RELAY_PORT)
         if log_path:
             try:
                 with open(log_path) as f:
                     pf_err = f.read().strip()
             except Exception as exc:
                 pf_err = f"<read failed: {exc}>"
-            proc = self._port_forwards.get(_SIDECAR_CONTAINER_PORT)
+            proc = self._port_forwards.get(_EXEC_RELAY_PORT)
             pf_alive = proc is not None and proc.poll() is None
             parts.append(f"---port-forward alive={pf_alive}---\n{pf_err or '<empty>'}")
 
@@ -489,33 +392,33 @@ class ToolkitContainer(Container):
     ) -> ExecResult:
         effective_timeout = timeout if timeout is not None else 120
 
-        if self._exec_mode == "sidecar":
+        if self._exec_mode == "exec_relay":
             try:
-                if not self._sidecar_ready:
-                    self._bootstrap_sidecar()
-                # _bootstrap_sidecar may have silently fallen back to direct
+                if not self._relay_ready:
+                    self._bootstrap_exec_relay()
+                # _bootstrap_exec_relay may have silently fallen back to direct
                 # mode (e.g. image has no python3); re-check before dispatching.
-                if self._sidecar_ready:
-                    return self._exec_via_sidecar(command, effective_timeout, workdir, env)
-            except _SidecarUnavailable as exc:
+                if self._relay_ready:
+                    return self._exec_via_relay(command, effective_timeout, workdir, env)
+            except _ExecRelayUnavailable as exc:
                 logger.warning(
-                    "Sidecar exec failed for job %s, falling back to direct eai exec: %s",
+                    "Exec relay failed for job %s, falling back to direct eai exec: %s",
                     self._job_id[:8],
                     exc,
                 )
-                self._sidecar_ready = False
+                self._relay_ready = False
                 self._exec_mode = "direct"
 
         return self._exec_direct(command, effective_timeout, workdir, env)
 
-    def _exec_via_sidecar(
+    def _exec_via_relay(
         self,
         command: str,
         timeout: int,
         workdir: str | None,
         env: Dict[str, str] | None,
     ) -> ExecResult:
-        assert self._sidecar_ready and self._sidecar_token and self._sidecar_local_port
+        assert self._relay_ready and self._relay_token and self._relay_local_port
         payload: dict = {"command": command, "timeout": timeout}
         if workdir:
             payload["workdir"] = workdir
@@ -524,25 +427,25 @@ class ToolkitContainer(Container):
         data = json.dumps(payload).encode("utf-8")
 
         req = urllib.request.Request(
-            f"http://127.0.0.1:{self._sidecar_local_port}/exec",
+            f"http://127.0.0.1:{self._relay_local_port}/exec",
             data=data,
             method="POST",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._sidecar_token}",
+                "Authorization": f"Bearer {self._relay_token}",
             },
         )
-        logger.info("exec [%s] (sidecar): %s", self._job_id[:8], command)
+        logger.info("exec [%s] (relay): %s", self._job_id[:8], command)
         start = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=timeout + 30) as r:
                 body = json.loads(r.read().decode("utf-8"))
         except (urllib.error.URLError, ConnectionError, OSError, json.JSONDecodeError) as exc:
-            raise _SidecarUnavailable(str(exc)) from exc
+            raise _ExecRelayUnavailable(str(exc)) from exc
 
         duration = time.monotonic() - start
         logger.info(
-            "exec [%s] (sidecar): done in %.1fs, exit_code=%s",
+            "exec [%s] (relay): done in %.1fs, exit_code=%s",
             self._job_id[:8],
             duration,
             body.get("exit_code"),

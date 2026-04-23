@@ -1,16 +1,16 @@
 """
-Cube Toolkit sidecar exec server — runs INSIDE the container.
+Cube Toolkit exec relay server — runs INSIDE the container.
 
 Purpose: provide a reliable HTTP channel for command execution, bypassing
 `eai job exec` which has a known TCP half-close bug hanging ~6% of calls.
 
-Security posture (see docs/toolkit-sidecar-security.md for full threat model):
+Security posture:
 
   1. Bind address: 127.0.0.1 only. NEVER 0.0.0.0 — other pods sharing the
      cluster network must not reach this endpoint. `eai job port-forward`
      tunnels into pod-local loopback, so 127.0.0.1 is sufficient.
   2. Authentication: 256-bit random bearer token, passed via the
-     CUBE_SIDECAR_TOKEN_FILE env var (path to a file containing the token).
+     CUBE_EXEC_RELAY_TOKEN_FILE env var (path to a file containing the token).
      Token is never on argv (avoids /proc/<pid>/cmdline leaks) and never
      logged. Comparison uses hmac.compare_digest (timing-safe).
   3. Request body cap: 1 MiB. Prevents memory exhaustion on malformed input.
@@ -25,12 +25,12 @@ Security posture (see docs/toolkit-sidecar-security.md for full threat model):
 
 Invocation (from the cube client):
 
-    nohup python3 /tmp/_cube_sidecar.py >/dev/null 2>&1 &
+    nohup python3 /tmp/_cube_exec_relay.py >/dev/null 2>&1 &
     disown
 
 Env vars read at startup:
-    CUBE_SIDECAR_PORT         — port to bind on 127.0.0.1 (default 8787)
-    CUBE_SIDECAR_TOKEN_FILE   — path to file containing the bearer token
+    CUBE_EXEC_RELAY_PORT         — port to bind on 127.0.0.1 (default 8787)
+    CUBE_EXEC_RELAY_TOKEN_FILE   — path to file containing the bearer token
 
 This file is stdlib-only (http.server, json, subprocess, secrets, hmac,
 socket) so it runs on any Python 3.8+ image with no pip install.
@@ -53,9 +53,9 @@ _BIND_ADDR = "127.0.0.1"  # SECURITY: never change to 0.0.0.0
 
 
 def _load_token() -> str:
-    path = os.environ.get("CUBE_SIDECAR_TOKEN_FILE")
+    path = os.environ.get("CUBE_EXEC_RELAY_TOKEN_FILE")
     if not path:
-        sys.stderr.write("CUBE_SIDECAR_TOKEN_FILE not set\n")
+        sys.stderr.write("CUBE_EXEC_RELAY_TOKEN_FILE not set\n")
         sys.exit(2)
     with open(path, "r", encoding="utf-8") as f:
         tok = f.read().strip()
@@ -79,8 +79,8 @@ def _check_auth(header_value: str | None) -> bool:
 def _run_command(command: str, timeout: float, workdir: str | None, env_overrides: dict[str, str] | None) -> dict:
     env = os.environ.copy()
     # Redact our own secret from the child process environment so the
-    # executed command cannot trivially exfiltrate the sidecar token.
-    env.pop("CUBE_SIDECAR_TOKEN_FILE", None)
+    # executed command cannot trivially exfiltrate the relay token.
+    env.pop("CUBE_EXEC_RELAY_TOKEN_FILE", None)
     if env_overrides:
         for k, v in env_overrides.items():
             if not isinstance(k, str) or not isinstance(v, str):
@@ -104,7 +104,7 @@ def _run_command(command: str, timeout: float, workdir: str | None, env_override
         exit_code = 124  # GNU timeout convention
         stdout = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         stderr = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-        stderr = (stderr + f"\n[sidecar] timed out after {timeout}s\n").lstrip("\n")
+        stderr = (stderr + f"\n[exec_relay] timed out after {timeout}s\n").lstrip("\n")
     duration = time.monotonic() - start
 
     return {
@@ -195,11 +195,11 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    port = int(os.environ.get("CUBE_SIDECAR_PORT", _DEFAULT_PORT))
+    port = int(os.environ.get("CUBE_EXEC_RELAY_PORT", _DEFAULT_PORT))
     # ThreadingHTTPServer so /health can respond while a long /exec is running.
     server = ThreadingHTTPServer((_BIND_ADDR, port), _Handler)
     # stderr banner (no token) so bootstrap can confirm startup from the log.
-    sys.stderr.write(f"cube-sidecar listening on {_BIND_ADDR}:{port}\n")
+    sys.stderr.write(f"cube-exec-relay listening on {_BIND_ADDR}:{port}\n")
     sys.stderr.flush()
     server.serve_forever()
 

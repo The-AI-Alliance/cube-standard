@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -25,7 +26,7 @@ from cube.resource import (
     ResourceConfig,
     UnsupportedResourceType,
 )
-from cube_infra_toolkit.container import ToolkitContainer, _run_eai
+from cube_infra_toolkit.container import ToolkitContainer, _run_eai, relay_startup_args
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +48,10 @@ class ToolkitInfraConfig(InfraConfig):
     account: str | None = None
     preemptable: bool = False
     launch_timeout_seconds: int = 600
-    # "sidecar" routes .exec() via an in-container HTTP server (bypasses the
+    # "exec_relay" routes .exec() via an in-container HTTP server (bypasses the
     # eai-exec CLOSE_WAIT hang bug); "direct" keeps every .exec() on the flaky
-    # eai job exec RPC.  Sidecar is strongly preferred; direct is a debug/fallback.
-    exec_mode: Literal["sidecar", "direct"] = "sidecar"
+    # eai job exec RPC.  exec_relay is strongly preferred; direct is a debug/fallback.
+    exec_mode: Literal["exec_relay", "direct"] = "exec_relay"
     # Override when eai is not on PATH (e.g. installed in ~/bin via .zshrc).
     eai_path: str = "eai"
 
@@ -97,19 +98,28 @@ class ToolkitInfraConfig(InfraConfig):
         # should override in a subclass or declare via a DockerServiceConfig extension.
         cpu, mem_gb = 2, 4
 
+        # Generate a relay token now so we can embed it in the job startup command.
+        # The relay server starts with the job — eliminating bootstrap eai execs
+        # for images that already have python3 (the common case).
+        relay_token = secrets.token_urlsafe(32) if self.exec_mode == "exec_relay" else None
+
         cmd: list[str] = ["job", "new"]
         if self.preemptable:
             cmd.append("--preemptable")
         else:
             cmd.append("--non-preemptable")
-        # --tunnel enables the sidecar gateway used by `eai job port-forward`,
-        # which ToolkitContainer's sidecar exec_mode relies on.
+        # --tunnel enables the port-forward gateway used by ToolkitContainer.
         cmd += ["--tunnel"]
         cmd += ["--format", "json", "--no-header"]
         cmd += ["-i", image]
         cmd += ["--cpu", str(cpu)]
         cmd += ["--mem", str(mem_gb)]
-        cmd += ["--", "sleep", "infinity"]
+        if relay_token is not None:
+            # Embed relay startup + token into the job command; relay is up before
+            # port-forward is established — no bootstrap eai execs needed.
+            cmd += ["--"] + relay_startup_args(relay_token)
+        else:
+            cmd += ["--", "sleep", "infinity"]
 
         logger.info("Submitting EAI job for %r (image=%s)…", resource.name, image)
         # retries=0: `eai job new` is not idempotent — a timeout mid-creation
@@ -136,6 +146,7 @@ class ToolkitInfraConfig(InfraConfig):
         container = ToolkitContainer(
             job_id, profile=profile, account=self.account,
             exec_mode=self.exec_mode, eai_path=self.eai_path,
+            relay_prestarted_token=relay_token,
         )
         logger.info("EAI job %s RUNNING", job_id)
 
