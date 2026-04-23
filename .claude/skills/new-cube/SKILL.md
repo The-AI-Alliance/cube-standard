@@ -93,7 +93,7 @@ This ordering is a hard requirement for Option B: the JSON must exist before the
 
 Per layer:
 1. Read `references/todo-checklist.md` for that layer's guidance.
-2. For the tool layer specifically, re-check `references/shared-packages.md` — prefer importing/subclassing `cube-browser-tool` (web) or `cube-computer-tool` (CUA/desktop) over writing from scratch. Only subclass `Tool` directly if neither fits.
+2. For the tool layer specifically, list `cube-tools/` and `cube-resources/` subdirectories to discover available packages — new ones may have been added since `references/shared-packages.md` was written. Prefer importing/subclassing an existing package over writing from scratch.
 3. Write a **Layer Plan** (≤1 page markdown) listing every TODO and your proposed fill. Show it; wait for approval.
 4. Edit files. Keep diffs small and focused.
 5. Move on to the next layer after the user OKs the diff.
