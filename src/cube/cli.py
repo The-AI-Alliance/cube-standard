@@ -19,7 +19,8 @@ Usage:
                         entry-point name (e.g. counter-cube) or a dotted module
                         path (e.g. counter_cube.debug).  When an entry-point name
                         is given the debug module is auto-derived from the
-                        registered benchmark module.
+                        registered benchmark module.  Use --demo-reset-repro to
+                        preview the reset-reproducibility error panel after a clean run.
     cube registry add   Generate a cube-registry-entry.yaml from the pyproject.toml
     [PATH]              in PATH (default: cwd).  Pass --submit to fork
                         The-AI-Alliance/cube-registry, upload the entry, and open a
@@ -40,7 +41,7 @@ import textwrap
 import time
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from rich import box
 from rich.console import Console, Group
@@ -51,6 +52,8 @@ from rich.text import Text
 from rich.theme import Theme
 
 from cube import __version__
+from cube.core import Observation
+from cube.testing import RESET_REPRO_OBS_MISMATCH_MSG, format_observation_diff
 
 # ── Console setup ─────────────────────────────────────────────────────────────
 
@@ -123,6 +126,57 @@ def _stress_fill_bar(fraction: float, width: int) -> str:
 
 # Aggregate episode_time_s below this is treated as timer noise — avoid tasks/min in the billions.
 _THROUGHPUT_MIN_TOTAL_S = 0.01
+_RESET_DIFF_DISPLAY_MAX = 24_000
+
+
+def _truncate_reset_diff_text(diff: str) -> str:
+    """Cap reset-repro diff size for terminal and CI logs (matches dashboard truncation)."""
+    d = diff.rstrip("\n")
+    if len(d) > _RESET_DIFF_DISPLAY_MAX:
+        d = d[:_RESET_DIFF_DISPLAY_MAX] + "\n... [diff truncated]\n"
+    return d
+
+
+def _emit_reset_repro_plain(reset_msg: str, reset_diff: str, *, file: TextIO) -> None:
+    """Plain-text reset-repro error (no Rich markup on user-controlled *reset_msg*)."""
+    print("\nReset reproducibility error:", file=file)
+    if reset_diff.strip():
+        if reset_msg == RESET_REPRO_OBS_MISMATCH_MSG:
+            print(f"  (first task, two fresh Task instances): {reset_msg}", file=file)
+        else:
+            print(f"  {reset_msg}", file=file)
+        print("  A mismatch is not always a bug (e.g. time-dependent observations).", file=file)
+        print(_truncate_reset_diff_text(reset_diff), file=file)
+    else:
+        print(f"  {reset_msg}", file=file)
+
+
+# Shown only with ``cube test NAME --demo-reset-repro`` (or CUBE_DEMO_RESET_REPRO=1) when the real
+# suite passes but you want to preview reset-repro failure (plain-text block + compliance row).
+_DEMO_RESET_REPRO_MSG = (
+    "first observation differed between two fresh Task instances "
+    "(demo preview — run without --demo-reset-repro for real compliance)."
+)
+_DEMO_RESET_REPRO_DIFF = format_observation_diff(
+    Observation.from_text("Counter starts at 0. Use 'increment' action to reach 3."),
+    Observation.from_text("Counter starts at 0. Use 'increment' action to reach 3. (demo token: a1b2c3d4e5f6)"),
+)
+
+
+def _print_reset_reproducibility_error_block(
+    out: Console,
+    *,
+    reset_ok: bool,
+    reset_msg: str,
+    reset_diff: str,
+    panel_width: int | None,
+) -> None:
+    """Print reset-repro mismatch before the main stress-test panel (plain text; Rich reserved for dashboard)."""
+    if reset_ok:
+        return
+    _file = getattr(out, "file", None) or sys.stdout
+    _emit_reset_repro_plain(reset_msg, reset_diff, file=_file)
+    print(file=_file)
 
 
 def _format_small_seconds(sec: float) -> str:
@@ -352,13 +406,19 @@ def cmd_test(
     max_steps: int = 20,
     output_path: str | None = None,
     ci_mode: bool = False,
+    demo_reset_repro: bool = False,
 ) -> None:
     """Import *module_name* (or resolve an entry-point name) and run the debug compliance suite.
 
     When *ci_mode* is True (or ``CUBE_CI=1`` is set), the Rich terminal dashboard is suppressed
     and only plain-text compliance results are printed — suitable for GitHub Actions logs.
+
+    When *demo_reset_repro* is True (or ``CUBE_DEMO_RESET_REPRO=1``), after a successful run the
+    non-CI dashboard shows sample reset-reproducibility failure output (plain-text block + compliance)
+    for UI review; the process still exits 0 if all tasks passed. Ignored when *ci_mode* is True.
     """
     ci_mode = ci_mode or bool(os.environ.get("CUBE_CI"))
+    demo_reset_repro = demo_reset_repro or (os.environ.get("CUBE_DEMO_RESET_REPRO") == "1")
     from cube.testing import (
         aggregate_profiling,
         build_stress_test_report,
@@ -443,7 +503,7 @@ def cmd_test(
             failures.append(r)
 
     # ── Extra compliance checks (stress_test_specs.md) ─────────────────────────────
-    reset_ok, _ = check_reset_reproducibility(module)
+    reset_ok, reset_msg, reset_diff = check_reset_reproducibility(module)
     meta_ok, _ = check_benchmark_metadata(module)
     close_idempotent_ok = all(r.get("close_idempotent_ok", False) for r in results)
     tools_list_ok = all(r.get("tools_list_ok", False) for r in results)
@@ -472,6 +532,14 @@ def cmd_test(
         compliance_passed.append("test_benchmark_metadata")
     else:
         compliance_failed.append("test_benchmark_metadata")
+
+    if demo_reset_repro and not ci_mode and not failures and reset_ok:
+        if "test_reset_reproducibility" in compliance_passed:
+            compliance_passed.remove("test_reset_reproducibility")
+        compliance_failed.append("test_reset_reproducibility")
+        reset_ok = False
+        reset_msg = _DEMO_RESET_REPRO_MSG
+        reset_diff = _DEMO_RESET_REPRO_DIFF
 
     # ── Latency: p50, p95, p99 from step_times_s across all episodes ────────────
     all_step_times: list[float] = []
@@ -503,6 +571,8 @@ def cmd_test(
             print(f"  PASS  {name}")
         for name in compliance_failed:
             print(f"  FAIL  {name}")
+        if not reset_ok:
+            _emit_reset_repro_plain(reset_msg, reset_diff, file=sys.stdout)
         report = build_stress_test_report(resolved, results, compliance_passed, compliance_failed)
         if output_path:
             report.save(output_path)
@@ -548,7 +618,6 @@ def cmd_test(
     ok_reset = "[success]✓[/success]" if reset_ok else "[error]✗[/error]"
     ok_close = "[success]✓[/success]" if close_idempotent_ok else "[error]✗[/error]"
 
-    compliance_header = Text.from_markup("[bold]COMPLIANCE[/bold]")
     compliance_checks_table = Table(
         show_header=False,
         box=box.SIMPLE,
@@ -577,6 +646,15 @@ def cmd_test(
             compliance_checks_table.add_row(ln, ls, rn, rs)
         else:
             compliance_checks_table.add_row(ln, ls, "", "")
+
+    n_comp_pass = len(compliance_passed)
+    n_comp_fail = len(compliance_failed)
+    if n_comp_fail:
+        compliance_banner = Text.from_markup(
+            f"[bold]COMPLIANCE[/bold]  [success]{n_comp_pass} passed[/success]  [error]· {n_comp_fail} failed[/error]"
+        )
+    else:
+        compliance_banner = Text.from_markup(f"[bold]COMPLIANCE[/bold]  [success]{n_comp_pass} passed[/success]")
 
     max_lat = max(p50_s, p95_s, p99_s, 0.001)
     latency_section = Table(show_header=False, box=None, padding=(0, 0), show_edge=False)
@@ -747,9 +825,17 @@ def cmd_test(
         report.save(output_path)
         console.print(f"[dim]Baseline saved to [file]{output_path}[/file][/dim]")
 
-    border = "green" if not failures else "red"
+    if failures:
+        border = "red"
+    elif compliance_failed:
+        border = "cyan"
+    else:
+        border = "green"
+    comp_sub = ""
+    if compliance_failed and not failures:
+        comp_sub = f"  [warning]· {len(compliance_failed)} compliance failed[/warning]"
     status_sub = (
-        f"[success]{n_tasks} task(s) passed[/success]"
+        f"[success]{n_tasks} task(s) passed[/success]{comp_sub}"
         if not failures
         else f"[error]{len(failures)} / {n_tasks} failed[/error]"
     )
@@ -757,7 +843,7 @@ def cmd_test(
     body_parts: list = [
         header_grid,
         Rule(style="dim"),
-        compliance_header,
+        compliance_banner,
         compliance_checks_table,
         Rule(style="dim"),
         latency_section,
@@ -776,7 +862,15 @@ def cmd_test(
         box=box.HEAVY,
         padding=(0, 1),
     )
-    _make_console(width=_display_width).print(stress_panel)
+    dash_console = _make_console(width=_display_width)
+    _print_reset_reproducibility_error_block(
+        dash_console,
+        reset_ok=reset_ok,
+        reset_msg=reset_msg,
+        reset_diff=reset_diff,
+        panel_width=_display_width,
+    )
+    dash_console.print(stress_panel)
 
     if failures:
         console.print(
@@ -1159,8 +1253,9 @@ def _print_help() -> None:
         "cube test NAME",
         "Run the debug compliance suite — NAME is a benchmark entry-point name or a dotted module path. "
         "Options: [cmd]--ci[/cmd] (plain-text CI output, also set via CUBE_CI=1), "
-        "[cmd]--output=PATH[/cmd] (save JSON report), [cmd]--max-steps=N[/cmd]",
-        "cube test counter-cube --ci --output=results.json",
+        "[cmd]--output=PATH[/cmd] (save JSON report), [cmd]--max-steps=N[/cmd], "
+        "[cmd]--demo-reset-repro[/cmd] (preview reset-repro output, non-CI; also [cmd]CUBE_DEMO_RESET_REPRO=1[/cmd])",
+        "cube test counter-cube --demo-reset-repro",
     )
     table.add_row(
         "cube registry add [PATH]",
@@ -1215,6 +1310,7 @@ def main() -> None:
         max_steps = 20
         output_path = None
         ci_mode = False
+        demo_reset_repro = False
         remaining = args[2:]
         for opt in remaining:
             if opt.startswith("--max-steps="):
@@ -1225,7 +1321,15 @@ def main() -> None:
                 output_path = "cube_stress_test_baseline.json"
             elif opt == "--ci":
                 ci_mode = True
-        cmd_test(args[1], max_steps=max_steps, output_path=output_path, ci_mode=ci_mode)
+            elif opt == "--demo-reset-repro":
+                demo_reset_repro = True
+        cmd_test(
+            args[1],
+            max_steps=max_steps,
+            output_path=output_path,
+            ci_mode=ci_mode,
+            demo_reset_repro=demo_reset_repro,
+        )
     elif command == "registry":
         subcmd = args[1] if len(args) > 1 else ""
         if subcmd != "add":
