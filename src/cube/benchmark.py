@@ -55,6 +55,7 @@ import json
 import logging
 import sys
 from abc import ABC, abstractmethod
+from collections import Counter
 from pathlib import Path
 from typing import Any, ClassVar, Generator
 
@@ -179,6 +180,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
     container_backend: ContainerBackend | None = Field(
         default=None,
         description="Optional container backend passed through to every spawned task.",
+        deprecated=True,
     )
     default_tool_config: ToolConfig | None = Field(
         default=None,
@@ -282,9 +284,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         these dynamically (e.g. ``CompositeBenchmarkConfig``) just declare
         them as ``@property`` and the validation steps out of the way.
 
-        ``task_config_class`` is only required when the subclass uses the
-        default ``get_task_configs``; overriding ``get_task_configs`` makes
-        it optional. ``benchmark_class`` is always required.
+        ``task_config_class`` and ``benchmark_class`` are always required.
         """
         super().__init_subclass__(**kwargs)
 
@@ -292,26 +292,15 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         if getattr(cls, "__abstractmethods__", None):
             return
 
-        _SENTINEL = object()
         module_file = getattr(sys.modules.get(cls.__module__), "__file__", None)
         module_dir = Path(module_file).resolve().parent if module_file else None
 
         def _is_dynamic(name: str) -> bool:
-            """True iff a descriptor (e.g. @property) named *name* is declared on this class.
-
-            Walks the MRO up to but not including ``BenchmarkConfig`` itself;
-            a descriptor anywhere in the chain means the attribute is
-            computed, not a stored ClassVar value.
+            """True iff *name* is declared as a ``@property`` somewhere in the MRO
+            below ``BenchmarkConfig`` — meaning the attribute is computed at access
+            time and should not be overwritten with a file-loaded ClassVar value.
             """
-            for klass in cls.__mro__:
-                if klass is BenchmarkConfig:
-                    break
-                attr = klass.__dict__.get(name)
-                if isinstance(attr, property) or (attr is not None and hasattr(attr, "__get__")):
-                    # type / BenchmarkMetadata / dict are *values*, not descriptors we want to route around.
-                    if not isinstance(attr, (type, BenchmarkMetadata, dict)):
-                        return True
-            return False
+            return any(isinstance(klass.__dict__.get(name), property) for klass in cls.__mro__)
 
         # ── benchmark_metadata ───────────────────────────────────────────────
         if not _is_dynamic("benchmark_metadata"):
@@ -328,7 +317,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
                             break
                 if loaded is not None:
                     cls.benchmark_metadata = loaded
-                elif getattr(cls, "benchmark_metadata", _SENTINEL) is _SENTINEL:
+                elif not hasattr(cls, "benchmark_metadata"):
                     raise TypeError(
                         f"Concrete benchmark config class {cls.__name__} must define "
                         f"'benchmark_metadata' as a ClassVar, declare it as a @property, "
@@ -357,7 +346,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
                             break
                 if loaded is not None:
                     cls.task_metadata = loaded
-                elif getattr(cls, "task_metadata", _SENTINEL) is _SENTINEL:
+                elif not hasattr(cls, "task_metadata"):
                     raise TypeError(
                         f"{cls.__name__} must declare 'task_metadata' as a ClassVar, declare it as a "
                         f"@property, or ship 'task_metadata.json' / '.csv' next to the module."
@@ -368,31 +357,23 @@ class BenchmarkConfig(TypedBaseModel, ABC):
                 raise TypeError(f"'task_metadata' in {cls.__name__} must be a dict, not {type(task_meta).__name__}")
 
         # ── task_config_class ───────────────────────────────────────────────
-        # Required only when the default ``get_task_configs`` is in use.
-        # Overriding ``get_task_configs`` (e.g. CompositeBenchmarkConfig) means
-        # the subclass emits its own configs and doesn't need the factory.
-        overrides_get_task_configs = any(
-            "get_task_configs" in klass.__dict__ for klass in cls.__mro__ if klass is not BenchmarkConfig
-        )
-        task_cfg = getattr(cls, "task_config_class", _SENTINEL)
-        if task_cfg is _SENTINEL:
-            if not overrides_get_task_configs:
-                raise TypeError(
-                    f"Concrete benchmark config class {cls.__name__} must define "
-                    f"'task_config_class' as a ClassVar (or override get_task_configs())."
-                )
-        elif not (isinstance(task_cfg, type) and issubclass(task_cfg, TaskConfig)):
-            raise TypeError(f"'task_config_class' in {cls.__name__} must be a subclass of TaskConfig, not {task_cfg!r}")
+        # Always required. Subclasses that override ``get_task_configs`` (and
+        # therefore don't use the factory) can set ``task_config_class = TaskConfig``
+        # as a placeholder — see ``CompositeBenchmarkConfig``.
+        task_cfg = getattr(cls, "task_config_class", None)
+        if not (isinstance(task_cfg, type) and issubclass(task_cfg, TaskConfig)):
+            raise TypeError(
+                f"Concrete benchmark config class {cls.__name__} must define "
+                f"'task_config_class' as a ClassVar subclass of TaskConfig, not {task_cfg!r}."
+            )
 
         # ── benchmark_class ─────────────────────────────────────────────────
-        bench_cls = getattr(cls, "benchmark_class", _SENTINEL)
-        if bench_cls is _SENTINEL:
+        bench_cls = getattr(cls, "benchmark_class", None)
+        if not (isinstance(bench_cls, type) and issubclass(bench_cls, Benchmark)):
             raise TypeError(
-                f"Concrete benchmark config class {cls.__name__} must define 'benchmark_class' "
-                f"(the runtime Benchmark subclass produced by ``make(infra)``)"
+                f"Concrete benchmark config class {cls.__name__} must define "
+                f"'benchmark_class' as a ClassVar subclass of Benchmark, not {bench_cls!r}."
             )
-        if not isinstance(bench_cls, type) or not issubclass(bench_cls, Benchmark):
-            raise TypeError(f"'benchmark_class' in {cls.__name__} must be a subclass of Benchmark, not {bench_cls!r}")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Views
@@ -489,13 +470,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
             raise ValueError(f"The following specified tasks do not exist in the benchmark: {invalid}")
 
         # Deduplicate while preserving first-occurrence order.
-        seen: set[str] = set()
-        ordered: list[str] = []
-        for tid in task_ids:
-            if tid not in seen:
-                seen.add(tid)
-                ordered.append(tid)
-
+        ordered = list(dict.fromkeys(task_ids))
         return self.model_copy(update={"task_ids": ordered})
 
     def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "BenchmarkConfig":
@@ -817,12 +792,19 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
                 ...
     """
 
-    # Composite doesn't emit a single TaskConfig class — each sub_config's
-    # TaskConfig subclass is preserved through the clone in get_task_configs().
-    # task_config_class is intentionally omitted (get_task_configs is overridden).
+    # benchmark_metadata: ClassVar[BenchmarkMetadata]
+    # task_metadata: ClassVar[dict[str, TaskMetadata]]
     # benchmark_metadata / task_metadata are declared below as @property so
     # they reflect the current sub_bench_configs at access time; BenchmarkConfig's
     # __init_subclass__ detects the descriptors and skips file auto-load.
+
+    task_config_class: ClassVar[type[TaskConfig]] = TaskConfig
+    # Composite doesn't emit a single TaskConfig class — each sub_config's
+    # TaskConfig subclass is preserved through the clone in get_task_configs().
+    # task_config_class is set to the abstract base as a placeholder to satisfy
+    # __init_subclass__ validation; it is never instantiated (get_task_configs
+    # is overridden to yield sub-configs directly).
+
     benchmark_class: ClassVar[type[Benchmark]] = CompositeBenchmark
 
     # SerializeAsAny forces each element to serialize using its runtime type's
@@ -841,19 +823,16 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
         default="composite",
         description="Display name for this composite; surfaces in benchmark_metadata.name.",
     )
-    composite_version: str = Field(default="0.0.0", description="Version label for this composite.")
-    composite_description: str = Field(default="", description="Description for this composite.")
+    composite_version: str = Field(
+        default="0.0.0", description="Version label for this composite; surfaces in benchmark_metadata.version."
+    )
+    composite_description: str = Field(
+        default="", description="Description for this composite; surfaces in benchmark_metadata.description."
+    )
 
     def __init__(self, **data: Any) -> None:
         super().__init__(**data)
-        # Check sub-benchmark name uniqueness at construction time.
-        seen: set[str] = set()
-        duplicates: list[str] = []
-        for sub in self.sub_bench_configs:
-            name = sub.name
-            if name in seen:
-                duplicates.append(name)
-            seen.add(name)
+        duplicates = [name for name, count in Counter(s.name for s in self.sub_bench_configs).items() if count > 1]
         if duplicates:
             raise ValueError(
                 f"CompositeBenchmarkConfig requires unique sub-benchmark names; found duplicates: {duplicates}"
@@ -896,14 +875,15 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
         ``task_ids`` (instance-level subset) filters at the composite level:
         if set, only prefixed ids in the list are emitted.
         """
-        allowed: set[str] | None = set(self.task_ids) if self.task_ids is not None else None
-        for sub in self.sub_bench_configs:
-            sub_bench_name = sub.name
-            for inner in sub.get_task_configs():
-                prefixed_id = f"{sub_bench_name}/{inner.task_id}"
-                if allowed is not None and prefixed_id not in allowed:
+        allowed_task_ids: set[str] | None = set(self.task_ids) if self.task_ids is not None else None
+        for sub_bench_config in self.sub_bench_configs:
+            sub_bench_name = sub_bench_config.name
+            for task_config in sub_bench_config.get_task_configs():
+                prefixed_id = f"{sub_bench_name}/{task_config.task_id}"
+                # skip if this task is not in the allowed set
+                if allowed_task_ids is not None and prefixed_id not in allowed_task_ids:
                     continue
-                yield inner.model_copy(update={"task_id": prefixed_id, "sub_bench_name": sub_bench_name})
+                yield task_config.model_copy(update={"task_id": prefixed_id, "sub_bench_name": sub_bench_name})
 
     def make(self, infra: InfraConfig | None = None) -> CompositeBenchmark:
         """Instantiate every sub-benchmark and wire them into a CompositeBenchmark.
@@ -913,8 +893,8 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
         """
         composite = CompositeBenchmark(config=self)
         try:
-            for sub in self.sub_bench_configs:
-                composite.sub_benchmarks[sub.name] = sub.make(infra)
+            for sub_bench_config in self.sub_bench_configs:
+                composite.sub_benchmarks[sub_bench_config.name] = sub_bench_config.make(infra)
         except Exception:
             for sub_bench in composite.sub_benchmarks.values():
                 try:
@@ -931,10 +911,10 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
 
     def install(self) -> None:  # type: ignore[override]
         """Install every sub-config. Idempotent; safe to call multiple times."""
-        for sub in self.sub_bench_configs:
-            sub.install()
+        for sub_bench_config in self.sub_bench_configs:
+            sub_bench_config.install()
 
     def uninstall(self) -> None:  # type: ignore[override]
         """Uninstall every sub-config."""
-        for sub in self.sub_bench_configs:
-            sub.uninstall()
+        for sub_bench_config in self.sub_bench_configs:
+            sub_bench_config.uninstall()
