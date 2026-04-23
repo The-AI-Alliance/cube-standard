@@ -141,22 +141,33 @@ class DaytonaInfraConfig(InfraConfig):
                 else:
                     raise
 
-        container = DaytonaContainer(sandbox, client)
-        logger.info("Daytona sandbox live: %s (%s)", container.id, resource.name)
+        # Wrap construction + bookkeeping so any failure after sandbox creation
+        # deletes the sandbox — DaytonaContainer.__init__ calls create_session()
+        # which can raise on transient API errors.
+        try:
+            container = DaytonaContainer(sandbox, client)
+            logger.info("Daytona sandbox live: %s (%s)", container.id, resource.name)
 
-        # Populate ResourceHandle bookkeeping on the container itself — a
-        # DaytonaContainer IS a ResourceHandle (no wrapper).
-        effective_ttl = (
-            self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
-        )
-        container.run_id = str(uuid.uuid4())
-        container.resource = resource
-        container.infra = self
-        container.endpoint = None  # Daytona sandboxes don't expose an eager endpoint
-        container.endpoints = {}
-        container.created_at = datetime.now()
-        container.expires_at = container.created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
-        return container
+            # Populate ResourceHandle bookkeeping on the container itself — a
+            # DaytonaContainer IS a ResourceHandle (no wrapper).
+            effective_ttl = (
+                self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
+            )
+            container.run_id = str(uuid.uuid4())
+            container.resource = resource
+            container.infra = self
+            container.endpoint = None  # Daytona sandboxes don't expose an eager endpoint
+            container.endpoints = {}
+            container.created_at = datetime.now()
+            container.expires_at = container.created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
+            return container
+        except Exception:
+            logger.exception("DaytonaContainer setup failed; deleting sandbox %s", getattr(sandbox, "id", "<unknown>"))
+            try:
+                client.delete(sandbox)
+            except Exception as delete_exc:
+                logger.warning("Failed to delete Daytona sandbox during cleanup: %s", delete_exc)
+            raise
 
     def list_active(self, run_id: str | None = None) -> list[DaytonaContainer]:
         """Not implemented — Daytona's API doesn't tag sandboxes with our run_id today.
