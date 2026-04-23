@@ -65,12 +65,12 @@ class FailOnResetTask(Task):
 
 class DoneTaskConfig(TaskConfig):
     def make(self, runtime_context=None, container_backend=None) -> DoneTask:
-        return DoneTask(metadata=TaskMetadata(id=self.task_id), tool_config=NoopToolConfig())
+        return DoneTask(metadata=self.metadata, tool_config=NoopToolConfig())
 
 
 class FailTaskConfig(TaskConfig):
     def make(self, runtime_context=None, container_backend=None) -> FailOnResetTask:
-        return FailOnResetTask(metadata=TaskMetadata(id=self.task_id), tool_config=NoopToolConfig())
+        return FailOnResetTask(metadata=self.metadata, tool_config=NoopToolConfig())
 
 
 class DoneBenchmark(Benchmark):
@@ -232,7 +232,7 @@ def test_suite_parallel_workers_collects_all_episode_results_when_first_task_rai
         def make(self, runtime_context=None, container_backend=None):
             if self.task_id == "t1":
                 raise RuntimeError("t1 make failed")
-            return DoneTask(metadata=TaskMetadata(id=self.task_id), tool_config=NoopToolConfig())
+            return DoneTask(metadata=self.metadata, tool_config=NoopToolConfig())
 
     class FirstFailsBenchmarkConfig(DoneBenchmarkConfig):
         task_config_class: ClassVar = FirstFailsTaskConfig

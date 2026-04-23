@@ -38,7 +38,7 @@ class _Task(Task):
 class _TaskConfig(TaskConfig):
     def make(self, runtime_context: RuntimeContext | None = None, container_backend: ContainerBackend | None = None):
         return _Task(
-            metadata=TaskMetadata(id=self.task_id),
+            metadata=self.metadata,
             tool_config=self.tool_config or _ToolConfig(),
             runtime_context=runtime_context,
             container_backend=container_backend,

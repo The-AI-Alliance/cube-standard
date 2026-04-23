@@ -92,37 +92,42 @@ and initialises `_runtime_context: RuntimeContext = {}`.
 **Invariant:** `Benchmark` instances never exist in an uninitialized state —
 `make()` always calls `setup()` before returning.
 
-## ADDED — `CompositeBenchmarkConfig`, `CompositeBenchmark`, `CompositeTaskConfig`
+## ADDED — `CompositeBenchmarkConfig`, `CompositeBenchmark`
 **Spec:** benchmark
 
 `CompositeBenchmarkConfig(BenchmarkConfig)` holds `sub_configs: list[BenchmarkConfig]`:
 - Merged `task_metadata` prefixes keys with the sub-benchmark name
   (`"{sub.benchmark_metadata.name}/{task_id}"`).
 - Duplicate sub-benchmark names raise at construction.
-- `get_task_configs()` yields `CompositeTaskConfig` wrappers.
+- `get_task_configs()` emits each sub-config's TaskConfigs unchanged in
+  type (preserving subclass-specific fields and embedded `metadata`) with
+  only `task_id` (prefixed) and `sub_benchmark` (tag) updated. No wrapper
+  type.
 - `make(infra)` calls `sub.make(infra)` for each sub_config and returns a
   `CompositeBenchmark` holding `sub_benchmarks: dict[str, Benchmark]`.
-- Subset and named-subset methods are delegated / disabled at composite level
-  (use `subset_from_list` on individual sub_configs before composition).
-
-`CompositeTaskConfig(TaskConfig)`:
-- Fields: `sub_name: str`, `inner: TaskConfig`.
-- `task_id` defaults to `"{sub_name}/{inner.task_id}"` (prefixed; unique across
-  the composite).
-- `make(runtime_context, container_backend)` delegates to
-  `inner.make(runtime_context, container_backend)`.
 
 `CompositeBenchmark(Benchmark)`:
-- `spawn(CompositeTaskConfig)` routes to `sub_benchmarks[sub_name].spawn(inner)`.
+- `spawn(tc)` reads `tc.sub_benchmark` and routes by calling
+  `tc.make(runtime_context=sub_bench._runtime_context, ...)` directly.
+  Rejects configs with `sub_benchmark=None` or unknown names.
 - `close()` closes every sub-benchmark.
 
-## MODIFIED — `TaskConfig.make()` documentation
+## MODIFIED — `TaskConfig` shape
 **Spec:** task
 
-No signature change. Docstring updated to note that `task_metadata` is accessed
-via the class-level `BenchmarkConfig.task_metadata` ClassVar (not the instance),
-which is the reason subsetting via `task_ids` works on workers after
-deserialization.
+`TaskConfig` now carries metadata directly:
+- New field: `metadata: TaskMetadata` — stamped onto each emitted config by
+  `BenchmarkConfig.get_task_configs()`. `make()` uses `self.metadata`
+  directly; workers never import the owning BenchmarkConfig for lookups.
+- New field: `sub_benchmark: str | None = None` — routing hint set by
+  `CompositeBenchmarkConfig.get_task_configs()`. Standalone benchmarks
+  leave it None.
+
+This is the single most important invariant change in the layer: the
+serialization boundary is now self-describing. Benchmarks with heavy
+install-time data override `get_task_configs()` to merge
+`load_task_execution_info(task_id)` into `metadata.extra_info` at emit
+time (on the driver), so workers never touch disk.
 
 ## MODIFIED — Debug-flow infra injection (closes #96)
 **Spec:** testing

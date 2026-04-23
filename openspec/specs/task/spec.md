@@ -101,8 +101,10 @@ concurrent tasks. Writes are not safe across workers.
 ```python
 class TaskConfig(TypedBaseModel, ABC):
     task_id: str
+    metadata: TaskMetadata                      # travels with the config
     seed: int | None = None
     tool_config: ToolConfig | None = None
+    sub_benchmark: str | None = None            # composite routing hint
 
     @abstractmethod
     def make(
@@ -112,35 +114,29 @@ class TaskConfig(TypedBaseModel, ABC):
     ) -> Task
 ```
 
-Minimal JSON-serializable handle that workers receive. `make()` runs on the worker,
-looks up `TaskMetadata` via `task_id` from the owning `BenchmarkConfig`'s
-class-level `task_metadata` dict, potentially merges in heavy fields from
-`BenchmarkConfig.load_task_execution_info(task_id)`, and constructs the Task.
+**Self-contained unit.** Workers receive a `TaskConfig` and have everything
+they need — metadata is embedded via the `metadata` field (stamped on each
+emitted config by `BenchmarkConfig.get_task_configs()` on the driver).
+`make()` uses `self.metadata` directly; no import of the owning
+`BenchmarkConfig` is needed on the worker. This is the single most important
+invariant of the layer: the serialization boundary is self-describing.
 
-Class-level lookup is stable across subsetting: `BenchmarkConfig.subset_from_*`
-narrows the view via the instance-level `task_ids` field without touching the
-ClassVar. Workers can therefore deserialize a `TaskConfig` in isolation and
-always find a valid `TaskMetadata` entry by id.
+Subclasses that carry heavy install-time data (e.g. SWE-bench problem
+statements, OSWorld evaluator configs) override
+`BenchmarkConfig.get_task_configs()` to merge
+`load_task_execution_info(task_id)` into `metadata.extra_info` at emit time,
+so the worker never touches disk.
 
-### `CompositeTaskConfig`
+**`sub_benchmark`** is an optional routing tag. Standalone benchmarks leave
+it None. `CompositeBenchmarkConfig.get_task_configs()` sets it to the
+origin sub-benchmark's name so `CompositeBenchmark.spawn()` can route the
+task back to the correct sub-benchmark's `_runtime_context`. No separate
+wrapper type is needed — the emitted TaskConfig stays the sub-config's
+native subclass.
 
-```python
-class CompositeTaskConfig(TaskConfig):
-    sub_name: str                    # key into CompositeBenchmark.sub_benchmarks
-    inner: TaskConfig                # the underlying sub-config's TaskConfig
-
-    def make(self, runtime_context=None, container_backend=None) -> Task:
-        return self.inner.make(runtime_context, container_backend)
-```
-
-Wrapper emitted by `CompositeBenchmarkConfig.get_task_configs()`. Its
-`task_id` is the composite-prefixed id (`"{sub_name}/{inner.task_id}"`) so
-every emitted id is unique across the composite; `inner.task_id` keeps the
-native un-prefixed id so the sub-benchmark's ClassVar lookup still works on
-workers. `make()` delegates to the inner — routing matters only at
-`CompositeBenchmark.spawn()` time. Because the wrapper is itself a
-`TaskConfig`, every generic path that consumes `TaskConfig`s works
-unchanged.
+**`task_id` in composites** is prefixed with the sub-benchmark's name
+(`"{sub_benchmark}/{task_id}"`) so every id across the composite is
+unique, while `metadata.id` keeps the native un-prefixed id.
 
 ## Invariants
 

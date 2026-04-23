@@ -33,14 +33,17 @@ Subsetting
 ----------
 ``subset_from_list`` / ``subset_from_glob`` / ``named_subset`` return a new
 ``BenchmarkConfig`` with its ``task_ids`` field narrowed. The class-level
-``task_metadata`` dict remains the authoritative registry — subsets only select
-which ids are emitted by ``get_task_configs``. ``TaskConfig.make`` on a worker
-still looks up ``OwnerBenchmarkConfig.task_metadata[self.task_id]`` and works
-identically under any subset.
+``task_metadata`` dict remains the driver-side registry; ``get_task_configs``
+stamps each emitted ``TaskConfig`` with its full ``TaskMetadata`` so workers
+have everything they need without importing the owning ``BenchmarkConfig``.
 
 Composition
 -----------
-See ``cube.benchmark`` later additions for ``CompositeBenchmarkConfig``.
+``CompositeBenchmarkConfig`` holds a list of ``BenchmarkConfig``s and emits
+each sub-config's TaskConfigs unchanged in type, with ``task_id`` prefixed by
+the sub-benchmark's name and a ``sub_benchmark`` routing tag set.
+``CompositeBenchmark.spawn()`` reads ``sub_benchmark`` to route the task to
+its origin sub-benchmark's ``_runtime_context``.
 """
 
 from __future__ import annotations
@@ -62,7 +65,7 @@ from cube.container import ContainerBackend
 from cube.core import TypedBaseModel
 from cube.resource import InfraConfig, ResourceConfig
 from cube.seed import AbstractSeedGenerator
-from cube.task import CompositeTaskConfig, RuntimeContext, Task, TaskConfig, TaskMetadata
+from cube.task import RuntimeContext, Task, TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
 
 logger = logging.getLogger(__name__)
@@ -156,11 +159,6 @@ class BenchmarkConfig(TypedBaseModel, ABC):
     task_metadata: ClassVar[dict[str, TaskMetadata]]
     task_config_class: ClassVar[type[TaskConfig]]
     benchmark_class: ClassVar[type["Benchmark"]]
-
-    # Opt-out marker: set to True on subclasses that populate the ClassVars
-    # dynamically (e.g. CompositeBenchmarkConfig) to skip file auto-load and
-    # registry validation in ``__init_subclass__``.
-    _skip_init_subclass_checks: ClassVar[bool] = False
 
     # ── Instance fields (user-configurable; safely serializable) ──────────────
     task_ids: list[str] | None = Field(
@@ -276,13 +274,17 @@ class BenchmarkConfig(TypedBaseModel, ABC):
     # ──────────────────────────────────────────────────────────────────────────
 
     def __init_subclass__(cls, **kwargs):
-        """Validate that every concrete subclass wires the four class-level registries.
+        """Validate that every concrete subclass wires the class-level registries.
 
-        For ``benchmark_metadata`` and ``task_metadata``, attempt auto-load from
-        files next to the module if the attribute is not declared on the class
-        (including via inheritance). Subclasses that populate the registries
-        dynamically (e.g. ``CompositeBenchmarkConfig``) can set
-        ``_skip_init_subclass_checks = True`` to opt out entirely.
+        Auto-loads ``benchmark_metadata`` / ``task_metadata`` from files next
+        to the module if neither a ClassVar value nor a descriptor (e.g.
+        ``@property``) is declared on the subclass. Subclasses that compute
+        these dynamically (e.g. ``CompositeBenchmarkConfig``) just declare
+        them as ``@property`` and the validation steps out of the way.
+
+        ``task_config_class`` is only required when the subclass uses the
+        default ``get_task_configs``; overriding ``get_task_configs`` makes
+        it optional. ``benchmark_class`` is always required.
         """
         super().__init_subclass__(**kwargs)
 
@@ -290,75 +292,96 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         if getattr(cls, "__abstractmethods__", None):
             return
 
-        # Dynamic-registry classes opt out via a class-level flag.
-        if cls.__dict__.get("_skip_init_subclass_checks"):
-            return
-
         _SENTINEL = object()
         module_file = getattr(sys.modules.get(cls.__module__), "__file__", None)
         module_dir = Path(module_file).resolve().parent if module_file else None
 
-        # ── benchmark_metadata ───────────────────────────────────────────────
-        # Check own dict first (explicit declaration); if missing, try file
-        # auto-load; otherwise fall back to inherited value from a parent.
-        if "benchmark_metadata" not in cls.__dict__:
-            loaded = None
-            if module_dir:
-                for fname, loader in [
-                    ("benchmark_metadata.json", BenchmarkConfig.benchmark_metadata_from_json),
-                    ("benchmark_metadata.csv", BenchmarkConfig.benchmark_metadata_from_csv),
-                ]:
-                    candidate = module_dir / fname
-                    if candidate.exists():
-                        loaded = loader(candidate)
-                        break
-            if loaded is not None:
-                cls.benchmark_metadata = loaded
-            elif getattr(cls, "benchmark_metadata", _SENTINEL) is _SENTINEL:
-                raise TypeError(
-                    f"Concrete benchmark config class {cls.__name__} must define "
-                    f"'benchmark_metadata' as a ClassVar or ship a "
-                    f"'benchmark_metadata.json' / 'benchmark_metadata.csv' file next to the module."
-                )
+        def _is_dynamic(name: str) -> bool:
+            """True iff a descriptor (e.g. @property) named *name* is declared on this class.
 
-        bench_meta = getattr(cls, "benchmark_metadata", None)
-        if not isinstance(bench_meta, BenchmarkMetadata):
-            raise TypeError(
-                f"'benchmark_metadata' in {cls.__name__} must be a BenchmarkMetadata instance, "
-                f"not {type(bench_meta).__name__}"
-            )
+            Walks the MRO up to but not including ``BenchmarkConfig`` itself;
+            a descriptor anywhere in the chain means the attribute is
+            computed, not a stored ClassVar value.
+            """
+            for klass in cls.__mro__:
+                if klass is BenchmarkConfig:
+                    break
+                attr = klass.__dict__.get(name)
+                if isinstance(attr, property) or (attr is not None and hasattr(attr, "__get__")):
+                    # type / BenchmarkMetadata / dict are *values*, not descriptors we want to route around.
+                    if not isinstance(attr, (type, BenchmarkMetadata, dict)):
+                        return True
+            return False
+
+        # ── benchmark_metadata ───────────────────────────────────────────────
+        if not _is_dynamic("benchmark_metadata"):
+            if "benchmark_metadata" not in cls.__dict__:
+                loaded = None
+                if module_dir:
+                    for fname, loader in [
+                        ("benchmark_metadata.json", BenchmarkConfig.benchmark_metadata_from_json),
+                        ("benchmark_metadata.csv", BenchmarkConfig.benchmark_metadata_from_csv),
+                    ]:
+                        candidate = module_dir / fname
+                        if candidate.exists():
+                            loaded = loader(candidate)
+                            break
+                if loaded is not None:
+                    cls.benchmark_metadata = loaded
+                elif getattr(cls, "benchmark_metadata", _SENTINEL) is _SENTINEL:
+                    raise TypeError(
+                        f"Concrete benchmark config class {cls.__name__} must define "
+                        f"'benchmark_metadata' as a ClassVar, declare it as a @property, "
+                        f"or ship 'benchmark_metadata.json' / '.csv' next to the module."
+                    )
+
+            bench_meta = getattr(cls, "benchmark_metadata", None)
+            if not isinstance(bench_meta, BenchmarkMetadata):
+                raise TypeError(
+                    f"'benchmark_metadata' in {cls.__name__} must be a BenchmarkMetadata instance, "
+                    f"not {type(bench_meta).__name__}"
+                )
 
         # ── task_metadata ────────────────────────────────────────────────────
-        if "task_metadata" not in cls.__dict__:
-            loaded = None
-            if module_dir:
-                for fname, loader in [
-                    ("task_metadata.json", BenchmarkConfig.task_metadata_from_json),
-                    ("task_metadata.csv", BenchmarkConfig.task_metadata_from_csv),
-                ]:
-                    candidate = module_dir / fname
-                    if candidate.exists():
-                        loaded = loader(candidate)
-                        break
-            if loaded is not None:
-                cls.task_metadata = loaded
-            elif getattr(cls, "task_metadata", _SENTINEL) is _SENTINEL:
-                raise TypeError(
-                    f"{cls.__name__} must declare 'task_metadata' as a ClassVar or ship a "
-                    f"task_metadata.json / task_metadata.csv file next to the module."
-                )
+        if not _is_dynamic("task_metadata"):
+            if "task_metadata" not in cls.__dict__:
+                loaded = None
+                if module_dir:
+                    for fname, loader in [
+                        ("task_metadata.json", BenchmarkConfig.task_metadata_from_json),
+                        ("task_metadata.csv", BenchmarkConfig.task_metadata_from_csv),
+                    ]:
+                        candidate = module_dir / fname
+                        if candidate.exists():
+                            loaded = loader(candidate)
+                            break
+                if loaded is not None:
+                    cls.task_metadata = loaded
+                elif getattr(cls, "task_metadata", _SENTINEL) is _SENTINEL:
+                    raise TypeError(
+                        f"{cls.__name__} must declare 'task_metadata' as a ClassVar, declare it as a "
+                        f"@property, or ship 'task_metadata.json' / '.csv' next to the module."
+                    )
 
-        task_meta = getattr(cls, "task_metadata", None)
-        if not isinstance(task_meta, dict):
-            raise TypeError(f"'task_metadata' in {cls.__name__} must be a dict, not {type(task_meta).__name__}")
+            task_meta = getattr(cls, "task_metadata", None)
+            if not isinstance(task_meta, dict):
+                raise TypeError(f"'task_metadata' in {cls.__name__} must be a dict, not {type(task_meta).__name__}")
 
         # ── task_config_class ───────────────────────────────────────────────
+        # Required only when the default ``get_task_configs`` is in use.
+        # Overriding ``get_task_configs`` (e.g. CompositeBenchmarkConfig) means
+        # the subclass emits its own configs and doesn't need the factory.
+        overrides_get_task_configs = any(
+            "get_task_configs" in klass.__dict__ for klass in cls.__mro__ if klass is not BenchmarkConfig
+        )
         task_cfg = getattr(cls, "task_config_class", _SENTINEL)
         if task_cfg is _SENTINEL:
-            raise TypeError(
-                f"Concrete benchmark config class {cls.__name__} must define 'task_config_class' as a ClassVar"
-            )
-        if not isinstance(task_cfg, type) or not issubclass(task_cfg, TaskConfig):
+            if not overrides_get_task_configs:
+                raise TypeError(
+                    f"Concrete benchmark config class {cls.__name__} must define "
+                    f"'task_config_class' as a ClassVar (or override get_task_configs())."
+                )
+        elif not (isinstance(task_cfg, type) and issubclass(task_cfg, TaskConfig)):
             raise TypeError(f"'task_config_class' in {cls.__name__} must be a subclass of TaskConfig, not {task_cfg!r}")
 
         # ── benchmark_class ─────────────────────────────────────────────────
@@ -401,18 +424,28 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         return {tid: full[tid] for tid in self.task_ids}
 
     def get_task_configs(self) -> Generator[TaskConfig, None, None]:
-        """Yield one ``TaskConfig`` per task (expanded by seed_generator if set)."""
+        """Yield one ``TaskConfig`` per task (expanded by seed_generator if set).
+
+        Stamps full ``TaskMetadata`` onto each emitted config so workers never
+        need to import the owning ``BenchmarkConfig`` class to resolve metadata.
+        Subclasses that carry install-time heavy data (e.g. SWE-bench problem
+        statements, OSWorld evaluator configs) should override this method to
+        merge ``load_task_execution_info(task_id)`` into ``metadata.extra_info``
+        at emit time.
+        """
         for tm in self.tasks().values():
             if self.seed_generator is not None:
                 for seed in self.seed_generator(tm):
                     yield self.task_config_class(
                         task_id=tm.id,
+                        metadata=tm,
                         tool_config=self.default_tool_config,
                         seed=seed,
                     )
             else:
                 yield self.task_config_class(
                     task_id=tm.id,
+                    metadata=tm,
                     tool_config=self.default_tool_config,
                     seed=None,
                 )
@@ -703,10 +736,11 @@ class Benchmark(ABC):
 class CompositeBenchmark(Benchmark):
     """Runtime pair of ``CompositeBenchmarkConfig``.
 
-    Holds a dict of live sub-benchmarks keyed by sub_name and routes
-    ``spawn(CompositeTaskConfig)`` to the matching sub-benchmark. Does not
-    own any shared infrastructure of its own — each sub-benchmark has its
-    own ``_runtime_context`` and its own provisioned resources.
+    Holds a dict of live sub-benchmarks keyed by sub-benchmark name. Routes
+    ``spawn(task_config)`` to the matching sub-benchmark by reading
+    ``task_config.sub_benchmark``. Does not own any shared infrastructure of its
+    own — each sub-benchmark has its own ``_runtime_context`` and its own
+    provisioned resources.
     """
 
     def __init__(self, config: "CompositeBenchmarkConfig") -> None:
@@ -730,16 +764,29 @@ class CompositeBenchmark(Benchmark):
                 logger.exception("Error closing sub-benchmark %r", sub_name)
 
     def spawn(self, task_config: TaskConfig) -> Task:
-        if not isinstance(task_config, CompositeTaskConfig):
+        """Route the task to its origin sub-benchmark via ``sub_benchmark``.
+
+        Bypasses the sub-benchmark's own ``spawn`` validation (which would
+        reject the prefixed ``task_id`` because it's not in the sub's
+        ``config.tasks()``) by calling ``task_config.make()`` directly with
+        the sub's ``_runtime_context``. The TaskConfig is self-contained —
+        its ``metadata`` and ``tool_config`` are already populated.
+        """
+        if task_config.sub_benchmark is None:
             raise ValueError(
-                f"CompositeBenchmark.spawn() expects a CompositeTaskConfig (wrap your TaskConfig first), "
-                f"got {type(task_config).__name__}"
+                f"CompositeBenchmark.spawn() expects a TaskConfig with sub_benchmark set "
+                f"(emitted by CompositeBenchmarkConfig.get_task_configs()); "
+                f"got {type(task_config).__name__} with sub_benchmark=None"
             )
-        if task_config.sub_name not in self.sub_benchmarks:
+        if task_config.sub_benchmark not in self.sub_benchmarks:
             raise ValueError(
-                f"Unknown sub-benchmark {task_config.sub_name!r}; known: {list(self.sub_benchmarks.keys())}"
+                f"Unknown sub-benchmark {task_config.sub_benchmark!r}; known: {list(self.sub_benchmarks.keys())}"
             )
-        return self.sub_benchmarks[task_config.sub_name].spawn(task_config.inner)
+        sub_bench = self.sub_benchmarks[task_config.sub_benchmark]
+        return task_config.make(
+            runtime_context=sub_bench._runtime_context,
+            container_backend=sub_bench.config.container_backend,
+        )
 
 
 class CompositeBenchmarkConfig(BenchmarkConfig):
@@ -770,12 +817,12 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
                 ...
     """
 
-    _skip_init_subclass_checks: ClassVar[bool] = True
-
-    # Fixed ClassVars that satisfy BenchmarkConfig's contract without requiring
-    # user declaration. ``benchmark_metadata`` and ``task_metadata`` are
-    # overridden as @property below so they reflect the current sub_configs.
-    task_config_class: ClassVar[type[TaskConfig]] = CompositeTaskConfig
+    # Composite doesn't emit a single TaskConfig class — each sub_config's
+    # TaskConfig subclass is preserved through the clone in get_task_configs().
+    # task_config_class is intentionally omitted (get_task_configs is overridden).
+    # benchmark_metadata / task_metadata are declared below as @property so
+    # they reflect the current sub_configs at access time; BenchmarkConfig's
+    # __init_subclass__ detects the descriptors and skips file auto-load.
     benchmark_class: ClassVar[type[Benchmark]] = CompositeBenchmark
 
     # SerializeAsAny forces each element to serialize using its runtime type's
@@ -825,12 +872,12 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
 
     @property
     def task_metadata(self) -> dict[str, TaskMetadata]:  # type: ignore[override]
-        """Merged view with keys prefixed by sub-benchmark name (``"{sub_name}/{task_id}"``)."""
+        """Merged view with keys prefixed by sub-benchmark name (``"{sub_benchmark}/{task_id}"``)."""
         merged: dict[str, TaskMetadata] = {}
         for sub in self.sub_configs:
-            sub_name = sub.name
+            sub_benchmark = sub.name
             for tid, tm in sub.tasks().items():
-                merged[f"{sub_name}/{tid}"] = tm
+                merged[f"{sub_benchmark}/{tid}"] = tm
         return merged
 
     # tasks() is inherited from BenchmarkConfig and reads ``task_metadata`` (our
@@ -838,26 +885,25 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
     # work. Callers should use prefixed ids.
 
     def get_task_configs(self) -> Generator[TaskConfig, None, None]:  # type: ignore[override]
-        """Yield ``CompositeTaskConfig`` wrappers over each sub-config's task configs.
+        """Yield each sub-config's TaskConfigs, cloned with composite-level routing info.
+
+        Each emitted TaskConfig is the sub-config's own subclass (preserving
+        its native type, metadata, and any subclass-specific fields) with
+        ``task_id`` set to ``"{sub_benchmark}/{task_id}"`` and ``sub_benchmark``
+        set to the sub-benchmark's name. No wrapper type — the clone stays a
+        fully-functional TaskConfig whose ``make()`` works standalone.
 
         ``task_ids`` (instance-level subset) filters at the composite level:
-        if set, only prefixed ids in the list are emitted. Sub-configs still
-        emit their full configured sets — filtering is applied after wrapping.
+        if set, only prefixed ids in the list are emitted.
         """
         allowed: set[str] | None = set(self.task_ids) if self.task_ids is not None else None
         for sub in self.sub_configs:
-            sub_name = sub.name
+            sub_benchmark = sub.name
             for inner in sub.get_task_configs():
-                wrapped_id = f"{sub_name}/{inner.task_id}"
-                if allowed is not None and wrapped_id not in allowed:
+                prefixed_id = f"{sub_benchmark}/{inner.task_id}"
+                if allowed is not None and prefixed_id not in allowed:
                     continue
-                yield CompositeTaskConfig(
-                    task_id=wrapped_id,
-                    tool_config=inner.tool_config,
-                    seed=inner.seed,
-                    sub_name=sub_name,
-                    inner=inner,
-                )
+                yield inner.model_copy(update={"task_id": prefixed_id, "sub_benchmark": sub_benchmark})
 
     def make(self, infra: InfraConfig | None = None) -> CompositeBenchmark:
         """Instantiate every sub-benchmark and wire them into a CompositeBenchmark.

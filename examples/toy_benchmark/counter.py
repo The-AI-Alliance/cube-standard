@@ -172,14 +172,14 @@ class CounterTaskConfig(TaskConfig):
     ) -> ReachTargetTask:
         """Create task instance from config.
 
-        Looks up task metadata from CounterBenchmark.task_metadata by task_id.
+        Self-contained: ``self.metadata`` is populated on emit by
+        ``CounterBenchmarkConfig.get_task_configs()``.
         Builds CounterToolConfig from extra_info["tool_config"] if present, otherwise uses defaults.
         An explicit tool_config on this TaskConfig always takes precedence.
         """
-        task_metadata = CounterBenchmarkConfig.task_metadata[self.task_id]
-        tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
+        tool_cfg = self.tool_config or CounterToolConfig(**self.metadata.extra_info.get("tool_config", {}))
         return ReachTargetTask(
-            metadata=task_metadata,
+            metadata=self.metadata,
             tool_config=tool_cfg,
             runtime_context=runtime_context,
             container_backend=container_backend,

@@ -331,17 +331,38 @@ class Task(TypedBaseModel, ABC):
 
 
 class TaskConfig(ABC, TypedBaseModel):
-    """
-    Serializable task configuration (Pydantic BaseModel).
+    """Serializable task configuration — self-contained unit handed to workers.
 
-    Must be JSON-serializable to pass to workers.
-    Holds the minimal data needed to instantiate a Task: task_id, seed, and tool_config.
-    TaskMetadata is retrieved via task_id.
+    Carries everything needed to instantiate a Task, including its
+    ``TaskMetadata``. Workers never import the owning ``BenchmarkConfig`` to
+    look up metadata; the config arrives complete and ``make()`` just uses
+    ``self.metadata`` directly.
+
+    ``sub_benchmark`` is an optional routing hint used by
+    ``CompositeBenchmark.spawn`` to dispatch a task to its origin
+    sub-benchmark. Standalone benchmarks leave it None.
     """
 
     task_id: str
+    metadata: TaskMetadata = Field(
+        ...,
+        description=(
+            "Full task metadata. Stamped onto the config by "
+            "``BenchmarkConfig.get_task_configs()`` on the driver so ``make()`` "
+            "has everything it needs without importing the owning BenchmarkConfig."
+        ),
+    )
     seed: int | None = None
     tool_config: ToolConfig | None = None
+    sub_benchmark: str | None = Field(
+        default=None,
+        description=(
+            "Optional routing hint set by ``CompositeBenchmarkConfig.get_task_configs()``. "
+            "Names the sub-benchmark this task originated from; "
+            "``CompositeBenchmark.spawn()`` uses it to route to the right sub-benchmark's "
+            "runtime_context. None for standalone (non-composite) benchmarks."
+        ),
+    )
 
     @abstractmethod
     def make(
@@ -349,61 +370,21 @@ class TaskConfig(ABC, TypedBaseModel):
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> Task:
-        """
-        Instantiate a Task from this config.
-
-        Called on a worker after deserialization.
+        """Instantiate a Task from this config. Called on a worker after deserialization.
 
         Args:
-            runtime_context: Shared infrastructure references created by Benchmark._setup()
-                             (e.g. server URLs, database connections). Passed from Benchmark.spawn().
-            container_backend: HOW to run containers (local, Modal, ...) created by user and passed to benchmark constructor, then passed from Benchmark.spawn().
+            runtime_context: Shared infrastructure references created by
+                Benchmark._setup() (e.g. server URLs, database connections).
+                Passed from Benchmark.spawn().
+            container_backend: HOW to run containers (local, Modal, ...) —
+                read from the owning BenchmarkConfig by Benchmark.spawn().
 
         Example:
-        >>> task_metadata = MyBenchmarkConfig.task_metadata[self.task_id]
-        >>> task_execution_info = MyBenchmarkConfig.load_task_execution_info(self.task_id)
-        >>> task_metadata = task_metadata.model_copy(update={"extra_info": task_execution_info})
         >>> return MyTask(
-        ...     metadata=task_metadata,
-        ...     tool_config=self.tool_config,
+        ...     metadata=self.metadata,
+        ...     tool_config=self.tool_config or MyDefaultToolConfig(),
         ...     runtime_context=runtime_context,
         ...     container_backend=container_backend,
         ... )
         """
         pass
-
-
-class CompositeTaskConfig(TaskConfig):
-    """TaskConfig wrapper carrying composite routing info.
-
-    Composite benchmarks emit these from ``get_task_configs`` so that
-    ``CompositeBenchmark.spawn`` knows which sub-benchmark a given task
-    belongs to. The wrapper's ``task_id`` is prefixed with the sub-benchmark
-    name (``"{sub_name}/{inner.task_id}"``) for display/uniqueness; the
-    inner ``TaskConfig`` keeps its native un-prefixed id so each
-    sub-benchmark's ClassVar lookup still works on workers.
-
-    ``make()`` delegates to ``inner.make()`` — the wrapper is inert at the
-    task level, routing only matters at spawn time.
-    """
-
-    sub_name: str = Field(
-        ...,
-        description=("Name of the sub-benchmark this task belongs to (key into CompositeBenchmark.sub_benchmarks)."),
-    )
-    inner: TaskConfig = Field(
-        ...,
-        description=(
-            "The underlying TaskConfig emitted by the sub-benchmark. Its task_id is the native un-prefixed id."
-        ),
-    )
-
-    def make(
-        self,
-        runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
-    ) -> Task:
-        return self.inner.make(
-            runtime_context=runtime_context,
-            container_backend=container_backend,
-        )

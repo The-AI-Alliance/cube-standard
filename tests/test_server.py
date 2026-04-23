@@ -69,7 +69,7 @@ class _CounterTaskConfig(TaskConfig):
         container_backend: ContainerBackend | None = None,
     ) -> _CounterTask:
         return _CounterTask(
-            metadata=TaskMetadata(id=self.task_id),
+            metadata=self.metadata,
             tool_config=self.tool_config or _CounterToolConfig(),
             runtime_context=runtime_context,
             container_backend=container_backend,
@@ -108,8 +108,8 @@ _TASK_META_1 = {
 
 _TASK_META_2 = {**_TASK_META_1, "id": "task-2"}
 
-_TASK_CONFIG_1 = _CounterTaskConfig(task_id="task-1").model_dump(mode="json")
-_TASK_CONFIG_2 = _CounterTaskConfig(task_id="task-2").model_dump(mode="json")
+_TASK_CONFIG_1 = _CounterTaskConfig(task_id="task-1", metadata=TaskMetadata(id="task-1")).model_dump(mode="json")
+_TASK_CONFIG_2 = _CounterTaskConfig(task_id="task-2", metadata=TaskMetadata(id="task-2")).model_dump(mode="json")
 
 
 def _text_content(data: str, tool_call_id: str | None = None) -> dict:
@@ -149,7 +149,7 @@ def bench_client(benchmark):
 
 @pytest.fixture
 def task(benchmark):
-    t = benchmark.spawn(_CounterTaskConfig(task_id="task-1"))
+    t = benchmark.spawn(_CounterTaskConfig(task_id="task-1", metadata=TaskMetadata(id="task-1")))
     t.reset()
     return t
 

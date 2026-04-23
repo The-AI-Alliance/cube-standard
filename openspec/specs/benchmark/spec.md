@@ -238,7 +238,6 @@ freely.
 ```python
 class CompositeBenchmarkConfig(BenchmarkConfig):
     _skip_init_subclass_checks: ClassVar[bool] = True
-    task_config_class: ClassVar = CompositeTaskConfig
     benchmark_class: ClassVar = CompositeBenchmark
 
     sub_configs: list[SerializeAsAny[BenchmarkConfig]]
@@ -253,10 +252,10 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
   uniqueness across the composite even when two sub-benchmarks share a task id.
 - Construction raises `ValueError` if two sub-configs share a
   `benchmark_metadata.name`.
-- `get_task_configs()` wraps every emitted config in `CompositeTaskConfig`
-  (see `cube.task`). The wrapper's `task_id` is the prefixed id; the inner
-  config keeps its native un-prefixed id so the sub-benchmark's ClassVar
-  lookup still works on workers.
+- `get_task_configs()` emits each sub-config's TaskConfigs **unchanged in
+  type** — the clone preserves the sub's native `TaskConfig` subclass,
+  including its embedded `metadata`. Only `task_id` (prefixed) and
+  `sub_benchmark` (set to the sub's name) are updated. No wrapper class.
 - `task_ids` (instance-level subset) filters at the prefixed level.
 - `make(infra)` calls `sub.make(infra)` for every sub_config in order. On any
   failure, already-built sub-benchmarks are closed before the error
@@ -266,18 +265,15 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
   the base) that delegate to every `sub.install()` / `sub.uninstall()` —
   because the list of sub-configs is instance state.
 
-### `CompositeTaskConfig` (in `cube.task`)
-`TaskConfig` subclass that wraps a sub-config's `TaskConfig` with
-`sub_name: str` and `inner: TaskConfig`. `make()` delegates to
-`inner.make()`. The wrapper routes the task back to its source sub-benchmark
-at `CompositeBenchmark.spawn()` time.
-
 ### `CompositeBenchmark`
-Runtime pair. Holds `sub_benchmarks: dict[str, Benchmark]`. `spawn()` routes
-a `CompositeTaskConfig` to `sub_benchmarks[wrapper.sub_name].spawn(wrapper.inner)`;
-passing any other `TaskConfig` raises `ValueError`. `close()` closes every
-sub-benchmark; exceptions are logged but not re-raised so one failing
-sub-benchmark does not block teardown.
+Runtime pair. Holds `sub_benchmarks: dict[str, Benchmark]`. `spawn(task_config)`
+reads `task_config.sub_benchmark` and routes by calling
+`task_config.make(runtime_context=sub_bench._runtime_context, container_backend=sub_bench.config.container_backend)`
+directly — bypassing the sub-benchmark's own `spawn()` validation, which
+would reject the prefixed `task_id`. A TaskConfig with
+`sub_benchmark=None` or an unknown `sub_benchmark` raises `ValueError`.
+`close()` closes every sub-benchmark; exceptions are logged but not
+re-raised so one failing sub-benchmark does not block teardown.
 
 ### Usage
 ```python

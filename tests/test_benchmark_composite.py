@@ -1,7 +1,7 @@
-"""Tests for CompositeBenchmarkConfig / CompositeBenchmark / CompositeTaskConfig.
+"""Tests for CompositeBenchmarkConfig / CompositeBenchmark.
 
-Covers task-id prefixing, uniqueness enforcement, spawn() routing, and
-serialization round-trip of nested composites.
+Covers task-id prefixing, uniqueness enforcement, spawn() routing via the
+``sub_benchmark`` field, and serialization round-trip of nested composites.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from cube.benchmark import (
     CompositeBenchmarkConfig,
 )
 from cube.core import Observation
-from cube.task import CompositeTaskConfig, Task, TaskConfig, TaskMetadata
+from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
 
 # ── Minimal fixtures ──────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ class _Task(Task):
 class _TaskConfig(TaskConfig):
     def make(self, runtime_context=None, container_backend=None):
         return _Task(
-            metadata=TaskMetadata(id=self.task_id),
+            metadata=self.metadata,
             tool_config=self.tool_config or _ToolConfig(),
         )
 
@@ -131,25 +131,25 @@ def test_prefixing_disambiguates_duplicate_inner_ids():
     assert "bench-b/task-1" in suite.task_metadata
 
 
-# ── get_task_configs emits CompositeTaskConfig wrappers ──────────────────────
+# ── get_task_configs: emits native TaskConfigs tagged with sub_benchmark ─────
 
 
-def test_get_task_configs_emits_wrappers():
+def test_get_task_configs_emits_native_types_with_routing_tag():
+    """Each emitted config is the sub's own TaskConfig subclass, not a wrapper."""
     suite = CompositeBenchmarkConfig(sub_configs=[ConfigA(), ConfigB()])
     configs = list(suite.get_task_configs())
 
     assert len(configs) == 3
-    assert all(isinstance(c, CompositeTaskConfig) for c in configs)
+    # All emitted configs are the sub's native type — no wrapper class.
+    assert all(isinstance(c, _TaskConfig) for c in configs)
 
-    ids = [c.task_id for c in configs]
-    assert ids == ["bench-a/task-1", "bench-a/task-2", "bench-b/task-1"]
+    # task_id is prefixed; sub_benchmark tag is set; metadata is embedded.
+    assert [c.task_id for c in configs] == ["bench-a/task-1", "bench-a/task-2", "bench-b/task-1"]
+    assert [c.sub_benchmark for c in configs] == ["bench-a", "bench-a", "bench-b"]
 
-    # Inner configs keep their native un-prefixed ids so sub-benchmark ClassVar lookups still work.
-    inner_ids = [c.inner.task_id for c in configs]
-    assert inner_ids == ["task-1", "task-2", "task-1"]
-
-    # sub_name is set correctly
-    assert [c.sub_name for c in configs] == ["bench-a", "bench-a", "bench-b"]
+    # metadata is stamped and carries the original un-prefixed id.
+    metadata_ids = [c.metadata.id for c in configs]
+    assert metadata_ids == ["task-1", "task-2", "task-1"]
 
 
 def test_task_ids_subset_on_composite():
@@ -183,25 +183,26 @@ def test_spawn_routes_to_correct_sub_benchmark():
         for tc in configs:
             task = bench.spawn(tc)
             obs, _ = task.reset()
-            # Inner task sees its native un-prefixed id
-            assert obs == Observation.from_text(f"reset:{tc.inner.task_id}")
+            # The Task was built with the native (un-prefixed) TaskMetadata id.
+            assert obs == Observation.from_text(f"reset:{tc.metadata.id}")
             task.close()
 
 
-def test_spawn_rejects_non_composite_task_config():
+def test_spawn_rejects_config_without_sub_benchmark_tag():
     suite = CompositeBenchmarkConfig(sub_configs=[ConfigA(), ConfigB()])
     with suite.make() as bench:
-        with pytest.raises(ValueError, match="CompositeTaskConfig"):
-            bench.spawn(_TaskConfig(task_id="task-1"))
+        bare = _TaskConfig(task_id="task-1", metadata=TaskMetadata(id="task-1"))
+        with pytest.raises(ValueError, match="sub_benchmark"):
+            bench.spawn(bare)
 
 
-def test_spawn_rejects_unknown_sub_name():
+def test_spawn_rejects_unknown_sub_benchmark():
     suite = CompositeBenchmarkConfig(sub_configs=[ConfigA()])
     with suite.make() as bench:
-        bogus = CompositeTaskConfig(
+        bogus = _TaskConfig(
             task_id="bench-x/task-1",
-            sub_name="bench-x",
-            inner=_TaskConfig(task_id="task-1"),
+            metadata=TaskMetadata(id="task-1"),
+            sub_benchmark="bench-x",
         )
         with pytest.raises(ValueError, match="Unknown sub-benchmark"):
             bench.spawn(bogus)
@@ -211,8 +212,6 @@ def test_composite_close_closes_every_sub():
     closed: list[str] = []
 
     class RecordingBench(Benchmark):
-        name_tag: str
-
         def __init__(self, config, *, tag):
             super().__init__(config)
             self.name_tag = tag
@@ -235,8 +234,7 @@ def test_composite_close_closes_every_sub():
         task_config_class = _TaskConfig
         benchmark_class = RecordingBench
 
-    # Manually wire tag because our subclass expects a kwarg; simpler to wrap via make path:
-    # Instead, test via CompositeBenchmark.close() directly on pre-wired sub_benchmarks.
+    # Wire sub_benchmarks manually (RecordingBench needs a tag kwarg, which make() can't provide).
     suite = CompositeBenchmarkConfig(sub_configs=[ConfigX(), ConfigY()])
     composite = CompositeBenchmark(config=suite)
     composite.sub_benchmarks["x"] = RecordingBench(ConfigX(), tag="x")
@@ -302,6 +300,17 @@ def test_composite_json_round_trip():
     assert list(reloaded.task_metadata.keys()) == list(suite.task_metadata.keys())
 
 
+def test_emitted_task_config_round_trip_is_self_contained():
+    """A single emitted TaskConfig round-trips alone — metadata travels with it."""
+    suite = CompositeBenchmarkConfig(sub_configs=[ConfigA()])
+    tc = next(iter(suite.get_task_configs()))
+    payload = tc.model_dump_json()
+    reloaded = _TaskConfig.model_validate_json(payload)
+    assert reloaded.task_id == "bench-a/task-1"
+    assert reloaded.metadata.id == "task-1"
+    assert reloaded.sub_benchmark == "bench-a"
+
+
 def test_composite_of_composite():
     """Composites nest: a CompositeBenchmarkConfig can be a sub_config of another."""
     inner = CompositeBenchmarkConfig(
@@ -313,8 +322,6 @@ def test_composite_of_composite():
         composite_name="outer-suite",
     )
     # Outer merges inner (prefixed by inner-suite) and ConfigA (prefixed by bench-a).
-    # But inner-suite contains bench-a under "bench-a/…". Inner is not a name collision
-    # with the second ConfigA because inner.name == "inner-suite" != "bench-a".
     assert set(outer.task_metadata.keys()) == {
         "inner-suite/bench-a/task-1",
         "inner-suite/bench-a/task-2",

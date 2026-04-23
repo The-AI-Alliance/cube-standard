@@ -37,7 +37,7 @@ class _Task(Task):
 class _TaskConfig(TaskConfig):
     def make(self, runtime_context=None, container_backend=None):
         return _Task(
-            metadata=TaskMetadata(id=self.task_id),
+            metadata=self.metadata,
             tool_config=self.tool_config or _ToolConfig(),
         )
 
@@ -133,6 +133,13 @@ def test_tasks_filters_by_task_ids():
 def test_get_task_configs_yields_one_per_task():
     configs = list(MyBenchmarkConfig().get_task_configs())
     assert {c.task_id for c in configs} == {"t1", "t2", "t3", "t4"}
+
+
+def test_get_task_configs_stamps_metadata_on_each_config():
+    """Each emitted TaskConfig carries the full TaskMetadata for its task."""
+    configs = {c.task_id: c for c in MyBenchmarkConfig().get_task_configs()}
+    assert configs["t1"].metadata == MyBenchmarkConfig.task_metadata["t1"]
+    assert configs["t4"].metadata == MyBenchmarkConfig.task_metadata["t4"]
 
 
 def test_get_task_configs_honours_subset():
@@ -347,7 +354,7 @@ def test_benchmark_is_context_manager():
 
 def test_spawn_returns_ready_task():
     bench = MyBenchmarkConfig().make()
-    task = bench.spawn(_TaskConfig(task_id="t1"))
+    task = bench.spawn(_TaskConfig(task_id="t1", metadata=TaskMetadata(id="t1")))
     assert isinstance(task, Task)
     obs, _ = task.reset()
     assert obs == Observation.from_text("ready")
@@ -356,7 +363,7 @@ def test_spawn_returns_ready_task():
 def test_spawn_unknown_task_raises():
     bench = MyBenchmarkConfig().make()
     with pytest.raises(ValueError, match="not found"):
-        bench.spawn(_TaskConfig(task_id="nonexistent"))
+        bench.spawn(_TaskConfig(task_id="nonexistent", metadata=TaskMetadata(id="nonexistent")))
 
 
 def test_spawn_respects_subset():
@@ -364,7 +371,7 @@ def test_spawn_respects_subset():
     bench = MyBenchmarkConfig().subset_from_list(["t1", "t2"]).make()
     # t3 is not in the subset — spawn must refuse
     with pytest.raises(ValueError, match="not found"):
-        bench.spawn(_TaskConfig(task_id="t3"))
+        bench.spawn(_TaskConfig(task_id="t3", metadata=TaskMetadata(id="t3")))
 
 
 # ── Round-trip serialization ──────────────────────────────────────────────────
@@ -385,6 +392,8 @@ def test_subsetted_config_make_and_spawn():
     cfg = MyBenchmarkConfig().subset_from_list(["t1"])
     reloaded = MyBenchmarkConfig.model_validate_json(cfg.model_dump_json())
     with reloaded.make() as bench:
-        task = bench.spawn(_TaskConfig(task_id="t1"))
+        # Use a TaskConfig emitted by the reloaded benchmark — metadata is stamped for us.
+        tc = next(iter(reloaded.get_task_configs()))
+        task = bench.spawn(tc)
         obs, _ = task.reset()
         assert obs == Observation.from_text("ready")
