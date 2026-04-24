@@ -485,6 +485,11 @@ def run_debug_suite(
                 if on_episode_done is not None:
                     on_episode_done(results[-1])
         else:
+            # Snapshot _runtime_context key→value-identity before parallel run.
+            # Any mutation (new key, deleted key, or reassigned value) during
+            # episode execution is a thread-safety bug — warn immediately.
+            _ctx_before = {k: id(v) for k, v in benchmark._runtime_context.items()}
+
             # Fire start callbacks upfront — all tasks launch simultaneously.
             if on_episode_start is not None:
                 for tc in task_configs:
@@ -508,6 +513,20 @@ def run_debug_suite(
                     results[idx] = report
                     if on_episode_done is not None:
                         on_episode_done(report)
+
+            _ctx_after = {k: id(v) for k, v in benchmark._runtime_context.items()}
+            if _ctx_before != _ctx_after:
+                added = set(_ctx_after) - set(_ctx_before)
+                removed = set(_ctx_before) - set(_ctx_after)
+                mutated = {k for k in _ctx_before if k in _ctx_after and _ctx_before[k] != _ctx_after[k]}
+                logger.warning(
+                    "[run_debug_suite] benchmark=%r _runtime_context mutated during parallel episodes "
+                    "(added=%r removed=%r reassigned=%r) — likely thread-safety bug",
+                    benchmark_name,
+                    added,
+                    removed,
+                    mutated,
+                )
     finally:
         # Step 3: close the benchmark to free resources.
         if benchmark is not None:
