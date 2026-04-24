@@ -41,7 +41,7 @@ import platform
 import time
 import types
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from cube import __version__  # report.cube_version and .save()
@@ -270,6 +270,10 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str, st
     Calls benchmark.install() and .setup() before get_task_configs(), and
     .close() when done, so the benchmark is in a consistent state.
 
+    The two Task instances are created in separate threads so tools with their own
+    event loops (e.g. Playwright sync API) don't collide — each thread owns its
+    own event loop.
+
     Returns:
         (ok, message, diff): ``diff`` lists mismatched key paths with truncated
         leaf values when the two first observations differ; otherwise ``""``.
@@ -286,41 +290,31 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str, st
         if not configs:
             return False, "no debug task configs", ""
         tc = configs[0]
-        # Tasks are created and closed sequentially so that tools that manage
-        # their own event loops (e.g. Playwright sync API) don't collide.
-        t1 = None
-        try:
-            t1 = tc.make(
-                runtime_context=getattr(benchmark, "_runtime_context", None),
-                container_backend=getattr(benchmark, "container_backend", None),
-            )
-            obs1, _ = t1.reset()
-            dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else str(obs1)
-        except Exception as e:
-            return False, str(e), ""
-        finally:
-            if t1 is not None:
+        runtime_context = getattr(benchmark, "_runtime_context", None)
+        container_backend = getattr(benchmark, "container_backend", None)
+
+        def _reset_once() -> object:
+            t = tc.make(runtime_context=runtime_context, container_backend=container_backend)
+            try:
+                obs, _ = t.reset()
+                return obs.model_dump() if hasattr(obs, "model_dump") else str(obs)
+            finally:
                 try:
-                    t1.close()
+                    t.close()
                 except Exception:
                     pass
 
-        t2 = None
-        try:
-            t2 = tc.make(
-                runtime_context=getattr(benchmark, "_runtime_context", None),
-                container_backend=getattr(benchmark, "container_backend", None),
-            )
-            obs2, _ = t2.reset()
-            dump2 = obs2.model_dump() if hasattr(obs2, "model_dump") else str(obs2)
-        except Exception as e:
-            return False, str(e), ""
-        finally:
-            if t2 is not None:
-                try:
-                    t2.close()
-                except Exception:
-                    pass
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(_reset_once)
+            f2 = pool.submit(_reset_once)
+            try:
+                dump1 = f1.result()
+            except Exception as e:
+                return False, str(e), ""
+            try:
+                dump2 = f2.result()
+            except Exception as e:
+                return False, str(e), ""
 
         ok = dump1 == dump2
         diff_str = "" if ok else format_observation_diff(dump1, dump2)
@@ -402,7 +396,7 @@ def run_debug_suite(
     *,
     max_steps: int = 20,
     print_json: bool = True,
-    workers: int = 1,
+    workers: int = 0,
     on_episode_start: Callable[[str], None] | None = None,
     on_episode_done: Callable[[dict], None] | None = None,
 ) -> list[dict]:
@@ -415,24 +409,27 @@ def run_debug_suite(
                           ``make_debug_agent(task_id)``.
         max_steps:        Safety cap passed to ``run_debug_episode`` (default 20).
         print_json:       If True, print the JSON report to stdout (default True).
-        workers:          Number of threads for episode execution (default 1). Values
-                          greater than 1 require tasks not to mutate
-                          ``benchmark._runtime_context`` after ``setup()``; see module
-                          docstring.
+        workers:          Number of threads for episode execution. ``0`` (default)
+                          means auto: one thread per task (all tasks in parallel).
+                          ``1`` runs sequentially. Values > 1 require tasks not to
+                          mutate ``benchmark._runtime_context`` after ``setup()``;
+                          see module docstring.
         on_episode_start: Optional callback called with ``task_id`` just before each
-                          episode starts (sequential mode only, ignored for workers>1).
+                          episode starts. In parallel mode all start callbacks fire
+                          upfront before any episode finishes.
         on_episode_done:  Optional callback called with the episode report dict just
-                          after each episode finishes (sequential mode only).
+                          after each episode finishes (fires in completion order for
+                          parallel runs).
 
     Returns:
         List of per-episode report dicts (same schema as ``run_debug_episode``),
         in ``get_task_configs()`` order.
 
     Raises:
-        ValueError: If ``workers < 1``.
+        ValueError: If ``workers < 0``.
     """
-    if workers < 1:
-        raise ValueError("workers must be >= 1")
+    if workers < 0:
+        raise ValueError("workers must be >= 0")
 
     benchmark = None
     results = []
@@ -445,9 +442,10 @@ def run_debug_suite(
 
         # Step 2: iterate task configs from the benchmark and run episodes.
         task_configs = list(benchmark.get_task_configs())
+        effective_workers = len(task_configs) if workers == 0 else workers
         logger.info(
             f"[run_debug_suite] benchmark={benchmark_name!r}  running {len(task_configs)} task(s) "
-            f"workers={workers}: {[tc.task_id for tc in task_configs]}"
+            f"workers={effective_workers}: {[tc.task_id for tc in task_configs]}"
         )
 
         def _episode_for_config(tc):
@@ -463,7 +461,23 @@ def run_debug_suite(
                 ) from exc
             return run_debug_episode(task, module.make_debug_agent(tc.task_id), max_steps=max_steps)
 
-        if workers == 1:
+        def _make_error_report(tc, exc: Exception) -> dict:
+            return {
+                "task_id": tc.task_id,
+                "done": False,
+                "reward": 0.0,
+                "steps": 0,
+                "episode_time_s": 0.0,
+                "step_times_s": [],
+                "error": f"{type(exc).__name__}: {exc}",
+                "tools_list_ok": False,
+                "tools_list_error": "",
+                "reset_time_s": 0.0,
+                "close_idempotent_ok": False,
+                "profiling": [],
+            }
+
+        if effective_workers <= 1:
             for tc in task_configs:
                 if on_episode_start is not None:
                     on_episode_start(tc.task_id)
@@ -471,35 +485,29 @@ def run_debug_suite(
                 if on_episode_done is not None:
                     on_episode_done(results[-1])
         else:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(_episode_for_config, tc) for tc in task_configs]
-                # Call .result() on every future so exceptions in later tasks are not lost
-                # when an earlier future raises (list comprehension would stop early).
-                for tc, fut in zip(task_configs, futures, strict=True):
+            # Fire start callbacks upfront — all tasks launch simultaneously.
+            if on_episode_start is not None:
+                for tc in task_configs:
+                    on_episode_start(tc.task_id)
+            results = [None] * len(task_configs)
+            tc_index = {id(tc): i for i, tc in enumerate(task_configs)}
+            with ThreadPoolExecutor(max_workers=effective_workers) as pool:
+                future_to_tc = {pool.submit(_episode_for_config, tc): tc for tc in task_configs}
+                for fut in as_completed(future_to_tc):
+                    tc = future_to_tc[fut]
+                    idx = tc_index[id(tc)]
                     try:
-                        results.append(fut.result())
+                        report = fut.result()
                     except Exception as exc:
                         logger.exception(
                             "[run_debug_suite] benchmark=%r parallel episode failed task_id=%r",
                             benchmark_name,
                             tc.task_id,
                         )
-                        results.append(
-                            {
-                                "task_id": tc.task_id,
-                                "done": False,
-                                "reward": 0.0,
-                                "steps": 0,
-                                "episode_time_s": 0.0,
-                                "step_times_s": [],
-                                "error": f"{type(exc).__name__}: {exc}",
-                                "tools_list_ok": False,
-                                "tools_list_error": "",
-                                "reset_time_s": 0.0,
-                                "close_idempotent_ok": False,
-                                "profiling": [],
-                            }
-                        )
+                        report = _make_error_report(tc, exc)
+                    results[idx] = report
+                    if on_episode_done is not None:
+                        on_episode_done(report)
     finally:
         # Step 3: close the benchmark to free resources.
         if benchmark is not None:

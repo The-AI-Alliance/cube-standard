@@ -233,7 +233,7 @@ def test_cmd_test_stress_runs_four_times(fake_debug_in_sys_modules):
         with patch("cube.testing.run_debug_suite", return_value=results) as mock_suite:
             cmd_test("fake_debug.debug", stress_test=True)
     assert mock_suite.call_count == 4
-    assert [c.kwargs.get("workers") for c in mock_suite.call_args_list] == [1, 1, 2, 4]
+    assert [c.kwargs.get("workers") for c in mock_suite.call_args_list] == [0, 1, 2, 4]
 
 
 def test_cmd_test_exits_1_on_failure(fake_debug_in_sys_modules):
@@ -303,7 +303,7 @@ def test_cmd_test_passes_max_steps(fake_debug_in_sys_modules):
         fake_debug_in_sys_modules,
         max_steps=5,
         print_json=False,
-        workers=1,
+        workers=0,
         on_episode_start=mock_suite.call_args.kwargs["on_episode_start"],
         on_episode_done=mock_suite.call_args.kwargs["on_episode_done"],
     )
@@ -473,7 +473,13 @@ def test_main_test_dispatches_with_default_max_steps():
         with patch.object(sys, "argv", ["cube", "test", "counter-cube"]):
             main()
     mock_test.assert_called_once_with(
-        "counter-cube", max_steps=20, output_path=None, ci_mode=False, demo_reset_repro=False, stress_test=False
+        "counter-cube",
+        max_steps=20,
+        output_path=None,
+        ci_mode=False,
+        demo_reset_repro=False,
+        stress_test=False,
+        reset_check=True,
     )
 
 
@@ -482,7 +488,13 @@ def test_main_test_dispatches_with_custom_max_steps():
         with patch.object(sys, "argv", ["cube", "test", "counter-cube", "--max-steps=5"]):
             main()
     mock_test.assert_called_once_with(
-        "counter-cube", max_steps=5, output_path=None, ci_mode=False, demo_reset_repro=False, stress_test=False
+        "counter-cube",
+        max_steps=5,
+        output_path=None,
+        ci_mode=False,
+        demo_reset_repro=False,
+        stress_test=False,
+        reset_check=True,
     )
 
 
@@ -491,7 +503,13 @@ def test_main_test_dispatches_demo_reset_repro():
         with patch.object(sys, "argv", ["cube", "test", "counter-cube", "--demo-reset-repro"]):
             main()
     mock_test.assert_called_once_with(
-        "counter-cube", max_steps=20, output_path=None, ci_mode=False, demo_reset_repro=True, stress_test=False
+        "counter-cube",
+        max_steps=20,
+        output_path=None,
+        ci_mode=False,
+        demo_reset_repro=True,
+        stress_test=False,
+        reset_check=True,
     )
 
 
