@@ -3,6 +3,8 @@
 This directory is the canonical starting point for a new CUBE benchmark package.
 Copy it, rename things, and follow the TODOs in each file.
 
+> **New to CUBE?** Read the [Authoring a CUBE guide](https://the-ai-alliance.github.io/cube-standard/authoring-a-cube) for the end-to-end walkthrough — interviewer skill, implementation order, validation, and publishing.
+
 **If you copy-paste manually** (rather than using `cube init`), find every placeholder
 that needs renaming:
 
@@ -64,6 +66,8 @@ See `examples/counter-cube/` in the cube-standard repo for a complete reference 
 - [ ] `debug.py` — add one entry to `_TASK_ACTIONS` per task
 - [ ] `pyproject.toml` — update `name`, `description`, and the `cube.benchmarks` entry-point key
 - [ ] Run `cube test <your-benchmark-name>` — all tasks must pass
+- [ ] Run `/review-cube ./` in Claude Code for a pre-submission self-audit
+- [ ] Submit to the registry with `cube registry add --submit`
 
 ## Key invariants
 
