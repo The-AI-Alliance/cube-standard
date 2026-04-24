@@ -59,7 +59,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, ClassVar, Generator
 
-from pydantic import ConfigDict, Field, SerializeAsAny
+from pydantic import Field, SerializeAsAny
 
 from cube import get_cache_dir
 from cube.container import ContainerBackend
@@ -170,32 +170,32 @@ class BenchmarkConfig(TypedBaseModel, ABC):
             "``named_subset`` to narrow the set without touching the ClassVar."
         ),
     )
-    resources: list[ResourceConfig] = Field(
+    # ``SerializeAsAny`` on every polymorphic field so subclass-specific state
+    # survives JSON round-trip. Without it Pydantic dumps only the declared
+    # base type's fields — subclass extras are silently stripped and the
+    # reloaded value is semantically different from the original. Required for
+    # reliable cross-process transport via ``make_benchmark_rpc_server`` and
+    # any future Ray / storage round-trip.
+    resources: list[SerializeAsAny[ResourceConfig]] = Field(
         default_factory=list,
         description=(
             "Declared resource dependencies. ``make(infra)`` calls ``infra.provision(r)`` "
             "for each entry whose ``provision_status`` is not ``ready`` before setup runs."
         ),
     )
-    container_backend: ContainerBackend | None = Field(
+    container_backend: SerializeAsAny[ContainerBackend] | None = Field(
         default=None,
         description="Optional container backend passed through to every spawned task.",
         deprecated=True,
     )
-    default_tool_config: ToolConfig | None = Field(
+    default_tool_config: SerializeAsAny[ToolConfig] | None = Field(
         default=None,
         description="Default tool configuration for tasks that do not supply their own.",
     )
-    seed_generator: AbstractSeedGenerator | None = Field(
+    seed_generator: SerializeAsAny[AbstractSeedGenerator] | None = Field(
         default=None,
         description="Optional seed generator yielding per-task seeds during get_task_configs().",
     )
-
-    # ``AbstractSeedGenerator`` is a Pydantic ``BaseModel`` (not TypedBaseModel);
-    # ``ContainerBackend`` is TypedBaseModel but its live handles aren't always
-    # JSON-roundtrippable. ``arbitrary_types_allowed`` matches the pre-split shape
-    # and is kept for that reason.
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # ──────────────────────────────────────────────────────────────────────────
     # File-loading helpers

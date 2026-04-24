@@ -14,12 +14,11 @@ import hashlib
 import random
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel
-
+from cube.core import TypedBaseModel
 from cube.task import TaskMetadata
 
 
-class AbstractSeedGenerator(ABC, BaseModel):
+class AbstractSeedGenerator(ABC, TypedBaseModel):
     @abstractmethod
     def __call__(self, task_metadata: TaskMetadata) -> list[int]:
         """Given task metadata, return a list of seeds to use for that task."""

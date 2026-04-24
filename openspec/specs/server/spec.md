@@ -83,24 +83,30 @@ def make_task_rpc_server(
 ) -> (Process, str)
 ```
 
-- Benchmark → **subprocess** (BenchmarkConfig + InfraConfig are passed directly;
-  multiprocessing pickles them across the spawn/fork boundary — pickle handles
-  `TypedBaseModel` polymorphism correctly. The worker calls `config.make(infra)`
-  locally; the live Benchmark never crosses the process boundary).
-- Task → **subprocess** (TaskConfig is picklable; Task is not).
+- Benchmark → **subprocess** (BenchmarkConfig + InfraConfig are JSON-dumped on
+  the caller side and rehydrated inside the worker via `TypedBaseModel._type`
+  polymorphic dispatch. The worker calls `config.make(infra)` locally; the
+  live Benchmark never crosses the process boundary).
+- Task → **subprocess** (TaskConfig + runtime_context JSON-dumped the same
+  way; worker calls `task_config.make(runtime_context)`).
 
 ## Serialization boundaries
 
-- **TaskConfig** is the unit of serialization across process boundaries for tasks.
-  Always picklable. Self-contained after the Option 1 refactor — carries its own
-  `TaskMetadata`, so workers never import the owning `BenchmarkConfig` to resolve
-  metadata. Subprocess entry points receive a `TaskConfig` and call
-  `task_config.make()` inside the worker.
-- **BenchmarkConfig** is the same boundary for benchmarks. Passed directly to
-  the subprocess; multiprocessing's pickle handles polymorphism. The worker
-  calls `config.make(infra)` locally.
+- **TaskConfig** is the unit of serialization across process boundaries for
+  tasks. Self-contained after the Option 1 refactor — carries its own
+  `TaskMetadata`, so workers never import the owning `BenchmarkConfig` to
+  resolve metadata. Subprocess entry points JSON-dump a `TaskConfig` on the
+  caller side and call `task_config.make()` inside the worker.
+- **BenchmarkConfig** is the same boundary for benchmarks. JSON-dumped and
+  rehydrated the same way; the worker calls `config.make(infra)` locally.
 - **Task** and **Benchmark** objects hold live resources — never cross a process
   boundary.
+
+JSON (instead of pickle) is used deliberately: same boundary as the network
+endpoint and any future Ray / storage dispatch, enforces that every
+polymorphic field carries `SerializeAsAny` so subclass state survives,
+catches non-portable state at development time instead of silently leaking
+through at scale.
 
 `cube/spawn` (network endpoint) vs `benchmark.spawn(task_config)` (Python API):
 - Network endpoint starts a subprocess, returns URL. Subprocess calls `task_config.make()`.
@@ -111,7 +117,8 @@ def make_task_rpc_server(
 1. Only one subprocess entry point exists for tasks: `_spawn_task_subprocess`.
    The benchmark equivalent is `_spawn_benchmark_subprocess`. Both are
    module-level functions (macOS/spawn-compat requirement — local closures can't
-   be pickled as targets).
+   be used as subprocess targets). Both receive JSON-dumped strings, never
+   live Pydantic objects.
 2. `container_backend` is NOT forwarded to task subprocesses — legacy parameter being
    replaced by the `infra` / `resource` pattern. Infra state goes via `runtime_context`.
 3. All benchmark methods are synchronous; `async def dispatch` is only for

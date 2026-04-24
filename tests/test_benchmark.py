@@ -8,6 +8,7 @@ import pytest
 
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata
 from cube.core import Observation
+from cube.seed import AbstractSeedGenerator
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
 
@@ -397,3 +398,63 @@ def test_subsetted_config_make_and_spawn():
         task = bench.spawn(tc)
         obs, _ = task.reset()
         assert obs == Observation.from_text("ready")
+
+
+def test_polymorphic_fields_preserve_subclass_state_through_json():
+    """Regression: JSON round-trip must preserve subclass-specific fields on every
+    polymorphic field of BenchmarkConfig / TaskConfig. Without ``SerializeAsAny``,
+    Pydantic silently drops subclass state — the reloaded config looks fine but
+    has lost the subclass's extra data.
+
+    Subclasses must be importable by ``TypedBaseModel`` via their ``_type``
+    path, so they're defined at module scope just below.
+    """
+    # BenchmarkConfig polymorphic fields
+    original = _BenchWithRichDefaults(
+        default_tool_config=_RichToolConfig(marker="tool-actual"),
+        seed_generator=_RichSeedGenerator(marker="seed-actual"),
+    )
+    reloaded = _BenchWithRichDefaults.model_validate_json(original.model_dump_json())
+
+    assert isinstance(reloaded.default_tool_config, _RichToolConfig)
+    assert reloaded.default_tool_config.marker == "tool-actual"
+    assert isinstance(reloaded.seed_generator, _RichSeedGenerator)
+    assert reloaded.seed_generator.marker == "seed-actual"
+
+    # TaskConfig polymorphic fields — every cube subclasses TaskMetadata with
+    # per-task data (domain, problem_statement, level, etc.), so this is the
+    # most important round-trip path.
+    rich_meta = _RichTaskMetadata(id="t1", marker="meta-actual")
+    tc = _TaskConfig(task_id="t1", metadata=rich_meta, tool_config=_RichToolConfig(marker="tc-tool"))
+    reloaded_tc = _TaskConfig.model_validate_json(tc.model_dump_json())
+    assert isinstance(reloaded_tc.metadata, _RichTaskMetadata)
+    assert reloaded_tc.metadata.marker == "meta-actual"
+    assert isinstance(reloaded_tc.tool_config, _RichToolConfig)
+    assert reloaded_tc.tool_config.marker == "tc-tool"
+
+
+# Module-level subclasses for the polymorphic round-trip regression test above.
+# Must live at module scope so ``TypedBaseModel._type`` can resolve them.
+class _RichToolConfig(_ToolConfig):
+    marker: str = "tool-default"
+
+    def make(self, container=None):
+        return _Tool()
+
+
+class _RichSeedGenerator(AbstractSeedGenerator):
+    marker: str = "seed-default"
+
+    def __call__(self, task_metadata):
+        return []
+
+
+class _RichTaskMetadata(TaskMetadata):
+    marker: str = "meta-default"
+
+
+class _BenchWithRichDefaults(BenchmarkConfig):
+    benchmark_metadata = BenchmarkMetadata(name="rich-defaults-bench", version="1", description="x")
+    task_metadata = {"t1": TaskMetadata(id="t1")}
+    task_config_class = _TaskConfig
+    benchmark_class = MyBenchmark

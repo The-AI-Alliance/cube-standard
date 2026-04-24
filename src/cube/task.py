@@ -21,7 +21,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Literal, Tuple
 
-from pydantic import ConfigDict, Field, PrivateAttr
+from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
 
 from cube.container import Container, ContainerBackend, ContainerConfig
 from cube.core import (
@@ -372,7 +372,11 @@ class TaskConfig(ABC, TypedBaseModel):
     """
 
     task_id: str
-    metadata: TaskMetadata = Field(
+    # ``SerializeAsAny`` preserves subclass-specific fields through JSON
+    # round-trip. Every cube subclasses TaskMetadata with extra
+    # per-task data — without this annotation those fields get silently
+    # stripped when the config crosses a process / network / storage boundary.
+    metadata: SerializeAsAny[TaskMetadata] = Field(
         ...,
         description=(
             "Full task metadata. Stamped onto the config by "
@@ -381,7 +385,9 @@ class TaskConfig(ABC, TypedBaseModel):
         ),
     )
     seed: int | None = None
-    tool_config: ToolConfig | None = None
+    # Same rationale for ToolConfig — cubes declare ToolConfig subclasses with
+    # their own fields.
+    tool_config: SerializeAsAny[ToolConfig] | None = None
     sub_bench_name: str | None = Field(
         default=None,
         description=(

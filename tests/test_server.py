@@ -324,3 +324,52 @@ def test_error_invalid_json(task_client):
 def test_error_invalid_request(task_client):
     resp = task_client.post("/", json={"method": "tools/list"})  # missing "jsonrpc"
     assert resp.json()["error"]["code"] == -32600
+
+
+# ── runtime_context JSON helpers ──────────────────────────────────────────────
+
+
+def test_runtime_context_round_trip_preserves_infra_instance():
+    """Regression: every cube that uses infra does ``_runtime_context["infra"] = self.infra``.
+    Plain ``json.dumps`` would raise on the Pydantic model. The server's helpers
+    must serialize TypedBaseModel values via their own ``model_dump(mode="json")``
+    and rehydrate via ``_type`` dispatch.
+    """
+    from cube.infra_local import LocalInfraConfig
+    from cube.server import _dump_runtime_context, _load_runtime_context
+
+    original = {
+        "infra": LocalInfraConfig(),
+        "server_url": "http://internal:8080",
+        "replicas": 3,
+    }
+    payload = _dump_runtime_context(original)
+    assert payload is not None  # non-empty dict
+
+    restored = _load_runtime_context(payload)
+    assert restored is not None
+    # JSON-native values unchanged
+    assert restored["server_url"] == "http://internal:8080"
+    assert restored["replicas"] == 3
+    # Pydantic model rehydrated to the correct concrete class
+    assert isinstance(restored["infra"], LocalInfraConfig)
+    assert restored["infra"] == original["infra"]
+
+
+def test_runtime_context_none_and_empty_return_none():
+    from cube.server import _dump_runtime_context, _load_runtime_context
+
+    assert _dump_runtime_context(None) is None
+    assert _dump_runtime_context({}) is None
+    assert _load_runtime_context(None) is None
+
+
+def test_runtime_context_rejects_non_json_non_pydantic_values():
+    """Non-JSON-native, non-TypedBaseModel values must fail loud rather than silently lose data."""
+    from cube.server import _dump_runtime_context
+
+    class _NotSerializable:
+        pass
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"bad": _NotSerializable()})
