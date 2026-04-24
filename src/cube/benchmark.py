@@ -40,7 +40,7 @@ from cube.container import ContainerBackend
 from cube.core import TypedBaseModel
 from cube.resource import ResourceConfig
 from cube.seed import AbstractSeedGenerator
-from cube.task import TaskConfig, TaskMetadata
+from cube.task import RuntimeContext, Task, TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
 
 logger = logging.getLogger(__name__)
@@ -64,15 +64,6 @@ class ResetIsolation(str, enum.Enum):
     RESTART = "restart"
     APP_LEVEL = "app_level"
     NEW_INSTANCE = "new_instance"
-
-
-RuntimeContext = dict[str, Any]
-"""
-Type alias for shared infrastructure references created during benchmark.setup().
-
-example:
-    {"container_id": "abc123", "vm_address": "http://12.34.56.78", "ssh_session": session}
-"""
 
 
 class BenchmarkMetadata(TypedBaseModel):
@@ -389,12 +380,9 @@ class Benchmark(TypedBaseModel, ABC):
                 if loaded is not None:
                     cls.task_metadata = loaded
                 else:
-                    # if no task_metadata file is found, assume install-time population via install().
-                    cls.task_metadata = {}
-                    logger.warning(
-                        f"{cls.__name__}.task_metadata is empty — no task_metadata.json/.csv found "
-                        f"next to the benchmark module. Call `{cls.__name__}.install()` to download "
-                        f"and cache task metadata before using this benchmark."
+                    raise TypeError(
+                        f"{cls.__name__} must declare 'task_metadata' as a class variable or ship a "
+                        f"task_metadata.json / task_metadata.csv file next to the benchmark module."
                     )
 
             task_meta = cls.__dict__["task_metadata"]
@@ -425,11 +413,6 @@ class Benchmark(TypedBaseModel, ABC):
         """
         Public method to setup the benchmark. Calls the internal _setup() implemented by the concrete subclass.
         """
-        if not self.task_metadata:
-            raise RuntimeError(
-                f"{type(self).__name__}.task_metadata is empty. "
-                f"Run `{type(self).__name__}.install()` first to download and cache task metadata."
-            )
         self._setup()
         # One debug line instead of four warnings — optional fields are unset for many minimal benchmarks.
         missing_optional: list[str] = []
@@ -537,8 +520,11 @@ class Benchmark(TypedBaseModel, ABC):
         # triggering Pydantic's ClassVar protection.
         new_instance = self.model_copy(deep=True)
         if new_instance.__pydantic_private__ is not None:
+            # Pydantic 2.13+ added a validated-data variant to default_factory's type
+            # signature; we only ever use 0-arg factories, so the call-arg ignore is safe.
             new_instance.__pydantic_private__ = {
-                k: fi.get_default() for k, fi in type(new_instance).__private_attributes__.items()
+                k: (fi.default_factory() if fi.default_factory is not None else fi.default)  # type: ignore[call-arg]
+                for k, fi in type(new_instance).__private_attributes__.items()
             }
         new_bm = copy.deepcopy(type(new_instance).benchmark_metadata)
         new_bm.name = f"{self.benchmark_metadata.name}_{benchmark_name_suffix}"
@@ -576,24 +562,34 @@ class Benchmark(TypedBaseModel, ABC):
         glob_key, glob_pattern = self.benchmark_metadata.named_subsets[name]
         return self.subset_from_glob(glob_key, glob_pattern)
 
-    def spawn(self, task_config: TaskConfig) -> str:
+    def spawn(self, task_config: TaskConfig) -> Task:
         """
-        Spawn a new RPC server for the specified task and return its endpoint URL.
+        Create and return a Task for the given config.
+
+        This is a pure creation call — no subprocess, no server, no network.
+        Callers that need a JSON-RPC server can do so in one extra line::
+
+            task = benchmark.spawn(task_config)
+            app  = make_task_jsonrpc_app(task)   # only if you need a server
+
+        The ``cube/spawn`` network endpoint (on a running benchmark server) is a
+        separate concept: it creates a task, wraps it in a JSON-RPC app, and spawns
+        a subprocess, then returns a URL.  That mixing of concerns is appropriate for
+        a remote API; it is not appropriate for the in-process Python API.
 
         Args:
             task_config: A TaskConfig produced by get_task_configs().
-        """
-        from cube.server import make_task_rpc_server
 
+        Returns:
+            The instantiated Task, ready to call reset() / step() / evaluate() on.
+        """
         if task_config.task_id not in self.task_metadata:
             raise ValueError(f"Task '{task_config.task_id}' not found in benchmark")
 
-        task = task_config.make(
+        return task_config.make(
             runtime_context=self._runtime_context,
             container_backend=self.container_backend,
         )
-        _app, _process, url = make_task_rpc_server(task)
-        return url
 
     @abstractmethod
     def close(self) -> None:

@@ -7,11 +7,18 @@ from unittest.mock import patch
 import pytest
 from pydantic import PrivateAttr
 
-from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext  # noqa: F401
+from cube.benchmark import Benchmark, BenchmarkMetadata
 from cube.container import Container
 from cube.core import Action, Observation
 from cube.task import STOP_ACTION, Task, TaskConfig, TaskMetadata
-from cube.testing import aggregate_profiling, assert_debug_tasks_reward_one, run_debug_episode, run_debug_suite
+from cube.testing import (
+    aggregate_profiling,
+    assert_debug_tasks_reward_one,
+    check_reset_reproducibility,
+    format_observation_diff,
+    run_debug_episode,
+    run_debug_suite,
+)
 from cube.tool import Tool, ToolConfig, tool_action
 
 # ── Shared test infrastructure ────────────────────────────────────────────────
@@ -73,7 +80,7 @@ class FailTaskConfig(TaskConfig):
 
 class DoneBenchmark(Benchmark):
     benchmark_metadata = BenchmarkMetadata(name="test-bench", version="0.1", description="test")
-    task_metadata = {}
+    task_metadata: ClassVar[dict[str, TaskMetadata]] = {"t1": TaskMetadata(id="t1")}
     task_config_class = DoneTaskConfig
 
     _install_calls: ClassVar[int] = 0  # class-level: install() is a classmethod
@@ -193,6 +200,48 @@ def test_suite_reports_contain_task_ids():
     assert {r["task_id"] for r in results} == {"alpha", "beta"}
 
 
+def test_suite_workers_preserves_get_task_configs_order():
+    mod, _ = _make_module(task_ids=("t1", "t2", "t3"))
+    seq = run_debug_suite("bench", mod, print_json=False, workers=1)
+    par = run_debug_suite("bench", mod, print_json=False, workers=2)
+    assert [r["task_id"] for r in seq] == ["t1", "t2", "t3"]
+    assert [r["task_id"] for r in par] == ["t1", "t2", "t3"]
+
+
+def test_suite_workers_must_be_non_negative():
+    mod, _ = _make_module()
+    with pytest.raises(ValueError, match="workers must be >= 0"):
+        run_debug_suite("bench", mod, print_json=False, workers=-1)
+
+
+def test_suite_parallel_workers_collects_all_episode_results_when_first_task_raises():
+    """Every future must get .result() so a failure in an earlier task does not swallow later ones."""
+
+    class FirstFailsTaskConfig(TaskConfig):
+        def make(self, runtime_context=None, container_backend=None):
+            if self.task_id == "t1":
+                raise RuntimeError("t1 make failed")
+            return DoneTask(metadata=TaskMetadata(id=self.task_id), tool_config=NoopToolConfig())
+
+    mod = ModuleType("fake_debug")
+    benchmark = DoneBenchmark()
+    object.__setattr__(
+        benchmark,
+        "task_metadata",
+        {"t1": TaskMetadata(id="t1"), "t2": TaskMetadata(id="t2")},
+    )
+    object.__setattr__(benchmark, "task_config_class", FirstFailsTaskConfig)
+    mod.get_debug_benchmark = lambda: benchmark  # type: ignore[attr-defined]
+    mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
+
+    results = run_debug_suite("bench", mod, print_json=False, workers=2)
+    assert len(results) == 2
+    assert results[0]["task_id"] == "t1"
+    assert results[0]["error"] is not None and "t1 make failed" in results[0]["error"]
+    assert results[1]["task_id"] == "t2"
+    assert results[1].get("error") in (None, "")  # second episode still ran
+
+
 # ── run_debug_suite — benchmark lifecycle ────────────────────────────────────
 
 
@@ -202,13 +251,9 @@ def test_double_setup_metadata_preserved():
 
     class DoubleSetupBenchmark(Benchmark):
         benchmark_metadata = BenchmarkMetadata(name="double-setup-bench", version="0.1", description="test")
-        task_metadata = {}
+        task_metadata = {tid: TaskMetadata(id=tid) for tid in task_ids}
         task_config_class = DoneTaskConfig
         _setup_calls: int = PrivateAttr(default=0)
-
-        @classmethod
-        def install(cls) -> None:
-            cls.task_metadata = {tid: TaskMetadata(id=tid) for tid in task_ids}
 
         def _setup(self) -> None:
             self._setup_calls += 1
@@ -216,7 +261,6 @@ def test_double_setup_metadata_preserved():
         def close(self) -> None:
             pass
 
-    DoubleSetupBenchmark.install()
     benchmark = DoubleSetupBenchmark()
     benchmark.setup()
     configs_first = list(benchmark.get_task_configs())
@@ -368,3 +412,117 @@ def test_aggregate_profiling_populated_in_episode_report():
         assert set(step_prof.keys()) == {"tool_execute", "obs_postprocess"}
         assert set(step_prof["tool_execute"].keys()) == {"total", "avg_per_action", "n_actions"}
         assert step_prof["tool_execute"]["n_actions"] == 1
+
+
+# ── check_reset_reproducibility ───────────────────────────────────────────────
+
+
+class _FakeObs:
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    def model_dump(self):
+        return dict(self._payload)
+
+
+class _FakeTaskForReset:
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    def reset(self):
+        return _FakeObs(self._payload), {}
+
+    def close(self):
+        pass
+
+
+class _FakeTaskConfig:
+    def __init__(self):
+        self._makes = 0
+
+    def make(self, **kwargs):
+        self._makes += 1
+        payload = {"token": self._makes}
+        return _FakeTaskForReset(payload)
+
+
+class _FakeBenchForReset:
+    def __init__(self):
+        self._tc = _FakeTaskConfig()
+
+    def install(self):
+        pass
+
+    def setup(self):
+        pass
+
+    def close(self):
+        pass
+
+    def get_task_configs(self):
+        return [self._tc]
+
+
+def test_check_reset_reproducibility_returns_unified_diff_when_obs_differ():
+    mod = ModuleType("fake_reset")
+    mod.get_debug_benchmark = lambda: _FakeBenchForReset()
+
+    ok, msg, diff = check_reset_reproducibility(mod)
+    assert ok is False
+    assert "differed" in msg
+    assert "Observation differences" in diff
+    assert "token" in diff
+    assert "first:" in diff and "second:" in diff
+
+
+def test_check_reset_reproducibility_ok_and_empty_diff_when_matching():
+    class _SameTC:
+        def make(self, **kwargs):
+            return _FakeTaskForReset({"x": 1})
+
+    class _SameBench:
+        def install(self):
+            pass
+
+        def setup(self):
+            pass
+
+        def close(self):
+            pass
+
+        def get_task_configs(self):
+            return [_SameTC()]
+
+    mod = ModuleType("fake_reset_ok")
+    mod.get_debug_benchmark = lambda: _SameBench()
+
+    ok, msg, diff = check_reset_reproducibility(mod)
+    assert ok is True
+    assert msg == ""
+    assert diff == ""
+
+
+def test_check_reset_reproducibility_errors_return_empty_diff():
+    mod = ModuleType("no_bench")
+    ok, msg, diff = check_reset_reproducibility(mod)
+    assert ok is False
+    assert "get_debug_benchmark" in msg
+    assert diff == ""
+
+
+def test_format_observation_diff_key_paths_and_truncates_leaves():
+    a = {"hint": "ok", "html": "<div>" + "x" * 500 + "</div>"}
+    b = {"hint": "ok", "html": "<div>" + "y" * 500 + "</div>"}
+    diff = format_observation_diff(a, b)
+    assert "html" in diff
+    assert "Observation differences" in diff
+    assert len(diff) < 900
+    assert "x" * 200 not in diff
+
+
+def test_format_observation_diff_truncates_long_data_urls():
+    a = {"screenshot": "data:image/png;base64," + "A" * 300}
+    b = {"screenshot": "data:image/png;base64," + "B" * 300}
+    diff = format_observation_diff(a, b)
+    assert "screenshot" in diff
+    assert len(diff) < 700

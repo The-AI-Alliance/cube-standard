@@ -49,12 +49,16 @@ class ModalContainer(Container):
     """Runtime handle backed by a Modal Sandbox."""
 
     def __init__(self, sandbox: modal.Sandbox) -> None:
+        super().__init__()  # populates ResourceHandle fields with defaults
         self._sandbox = sandbox
         self._url_cache: dict[int, str] = {}
 
     @property
     def id(self) -> str:
         return self._sandbox.object_id
+
+    def __repr__(self) -> str:
+        return f"ModalContainer(id={self.id!r}, run_id={self.run_id!r})"
 
     def exec(
         self,

@@ -20,9 +20,29 @@ This repo contains the code and documentation for the **AI Alliance: CUBE Standa
 
 Principal developer: [ServiceNow AI Research](https://servicenow.com/research).
 
+## Components
+
+CUBE Standard is organized into three layers:
+
+| Layer | Package | Description |
+| --- | --- | --- |
+| **Core** | `cube-standard` (this repo) | interfaces: `Tool`, `Task`, `Benchmark`, `Observation`, `Action` |
+| **Resources** | [`cube-resources/`](cube-resources/README.md) | Optional shared infrastructure (browser sessions, VM backends) |
+| **Tools** | [`cube-tools/`](cube-tools/README.md) | Optional action executors (browser tools, computer tools) |
+
+**Resources** are pieces of shared infrastructure — e.g. a running browser instance or a VM — that are launched once and shared across tasks. **Tools** execute agent actions against that infrastructure.
+
+```text
+Benchmark ──► TaskConfig ──► Task ──► Tool ──► Resource ──► Environment
+                                ▲               (cube-tools)  (cube-resources)
+                         cube-standard
+```
+
+See [`cube-resources/README.md`](cube-resources/README.md) and [`cube-tools/README.md`](cube-tools/README.md) for available implementations and usage examples.
+
 ## Installation
 
-Requires Python 3.13+. Install with [uv](https://docs.astral.sh/uv/):
+Requires Python 3.12+. Install with [uv](https://docs.astral.sh/uv/):
 
 ```sh
 uv add cube-standard
@@ -65,31 +85,18 @@ uv sync --extra dev
 
 ## For benchmark contributors
 
-**Fast path** — copy the reference implementation, rename, and iterate:
+Three ways to start:
 
-```sh
-cp -r examples/counter-cube my-bench
-cd my-bench && uv sync
-# Edit @tool_action decorated methods in src/*/tool.py
-# Edit reset() and evaluate() in src/*/task.py
-# Edit benchmark_metadata, task_metadata, task_config_class, _setup() and close() in src/*/benchmark.py
-# expose get_debug_benchmark and get_debug_agent in src/*/debug.py
-cube test my-bench
-```
+1. **Guided** — run `/new-cube` in [Claude Code](https://claude.ai/claude-code) with this repo checked out. The skill interviews you, scaffolds the package, fills TODOs, and validates end-to-end.
+2. **Copy** — `cp -r examples/counter-cube my-bench && cd my-bench && uv sync`, then edit the placeholders.
+3. **Scaffold** — `cube init my-bench && cd my-bench && uv sync`, then work through the `TODO` markers.
+
+Validate with `cube test my-bench` (every debug task must reach `reward == 1.0`), self-audit with `/review-cube ./my-bench`, and submit with `cube registry add --submit`.
+
+See the **[Authoring a CUBE guide](https://the-ai-alliance.github.io/cube-standard/authoring-a-cube)** for the full walkthrough. [CONTRIBUTING.md](CONTRIBUTING.md) covers framework invariants and the RFC process.
 
 > [!NOTE]
-> `cube test` discovers benchmarks via the `cube.benchmarks` entry point group. The benchmark package must be installed (e.g. `uv sync` or `pip install -e .`) before running `cube test`, otherwise the benchmark will not be found.
-
-Or scaffold from the template:
-
-```sh
-cube init my-bench    # scaffold a new benchmark package from the template
-cd my-bench
-uv sync
-cube test my-bench    # run the debug compliance suite
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the five-layer architecture and implementation order.
+> `cube test` discovers benchmarks via the `cube.benchmarks` entry point group. Install the package (`uv sync` or `pip install -e .`) before running.
 
 ## Getting Involved
 

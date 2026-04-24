@@ -19,6 +19,7 @@ from cube.cli import (
     cmd_test,
     main,
 )
+from cube.testing import RESET_REPRO_OBS_MISMATCH_MSG
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -220,28 +221,41 @@ def test_cmd_test_passes_on_all_tasks_passing(fake_debug_in_sys_modules):
     results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
 
     with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
-        with patch("cube.testing.run_debug_suite", return_value=results):
+        with patch("cube.testing.run_debug_suite", return_value=results) as mock_suite:
             cmd_test("fake_debug.debug")  # Should not raise
+    assert mock_suite.call_count == 1  # test mode: single compliance run only
+
+
+def test_cmd_test_stress_runs_four_times(fake_debug_in_sys_modules):
+    results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results) as mock_suite:
+            cmd_test("fake_debug.debug", stress_test=True)
+    assert mock_suite.call_count == 4
+    assert [c.kwargs.get("workers") for c in mock_suite.call_args_list] == [0, 1, 2, 4]
 
 
 def test_cmd_test_exits_1_on_failure(fake_debug_in_sys_modules):
     results = [{"task_id": "t1", "done": False, "reward": 0.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
 
     with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
-        with patch("cube.testing.run_debug_suite", return_value=results):
+        with patch("cube.testing.run_debug_suite", return_value=results) as mock_suite:
             with pytest.raises(SystemExit) as exc:
                 cmd_test("fake_debug.debug")
     assert exc.value.code == 1
+    assert mock_suite.call_count == 1  # test mode: single compliance run only
 
 
 def test_cmd_test_exits_1_on_task_with_error(fake_debug_in_sys_modules):
     results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": "boom"}]
 
     with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
-        with patch("cube.testing.run_debug_suite", return_value=results):
+        with patch("cube.testing.run_debug_suite", return_value=results) as mock_suite:
             with pytest.raises(SystemExit) as exc:
                 cmd_test("fake_debug.debug")
     assert exc.value.code == 1
+    assert mock_suite.call_count == 1  # test mode: single compliance run only
 
 
 def test_cmd_test_import_error_exits_1():
@@ -284,7 +298,15 @@ def test_cmd_test_passes_max_steps(fake_debug_in_sys_modules):
         with patch("cube.testing.run_debug_suite", return_value=results) as mock_suite:
             cmd_test("fake_debug.debug", max_steps=5)
 
-    mock_suite.assert_called_once_with("fake_debug.debug", fake_debug_in_sys_modules, max_steps=5, print_json=False)
+    mock_suite.assert_called_once_with(
+        "fake_debug.debug",
+        fake_debug_in_sys_modules,
+        max_steps=5,
+        print_json=False,
+        workers=0,
+        on_episode_start=mock_suite.call_args.kwargs["on_episode_start"],
+        on_episode_done=mock_suite.call_args.kwargs["on_episode_done"],
+    )
 
 
 def test_cmd_test_ci_mode_passes(fake_debug_in_sys_modules, capsys):
@@ -322,6 +344,80 @@ def test_cmd_test_ci_mode_via_env_var(fake_debug_in_sys_modules, monkeypatch, ca
 
     out = capsys.readouterr().out
     assert "PASSED" in out
+
+
+def test_cmd_test_ci_mode_with_demo_flag_does_not_inject_reset_fail(fake_debug_in_sys_modules, monkeypatch, capsys):
+    """--demo-reset-repro is ignored in CI so logs do not show FAIL reset + exit 0."""
+    monkeypatch.setenv("CUBE_CI", "1")
+    results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results):
+            with patch("cube.testing.check_reset_reproducibility", return_value=(True, "", "")):
+                cmd_test("fake_debug.debug", demo_reset_repro=True)
+
+    out = capsys.readouterr().out
+    assert "  PASS  test_reset_reproducibility" in out
+    assert "  FAIL  test_reset_reproducibility" not in out
+
+
+def test_cmd_test_ci_mode_reset_repro_brackets_in_message_no_crash(fake_debug_in_sys_modules, capsys):
+    """User/exception text must not be parsed as Rich markup (plain reset-repro path)."""
+    results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+    bad_msg = "reset failed: [red]x[/red]"
+
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results):
+            with patch("cube.testing.check_reset_reproducibility", return_value=(False, bad_msg, "")):
+                cmd_test("fake_debug.debug", ci_mode=True)
+
+    out = capsys.readouterr().out
+    assert bad_msg in out
+    assert "PASSED" in out
+
+
+def test_cmd_test_ci_mode_reset_repro_early_error_no_misleading_two_task_prefix(
+    fake_debug_in_sys_modules,
+    capsys,
+):
+    """Harness errors before two-task compare must not claim two fresh Task instances."""
+    results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+    for early_msg in ("no get_debug_benchmark", "no debug task configs"):
+        with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+            with patch("cube.testing.run_debug_suite", return_value=results):
+                with patch("cube.testing.check_reset_reproducibility", return_value=(False, early_msg, "")):
+                    cmd_test("fake_debug.debug", ci_mode=True)
+        out = capsys.readouterr().out
+        assert early_msg in out
+        assert "(first task, two fresh Task instances)" not in out
+
+
+def test_cmd_test_ci_mode_reset_repro_obs_mismatch_shows_two_task_prefix(fake_debug_in_sys_modules, capsys):
+    results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+    diff = "token:\n  first: 1\n  second: 2\n"
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results):
+            with patch(
+                "cube.testing.check_reset_reproducibility",
+                return_value=(False, RESET_REPRO_OBS_MISMATCH_MSG, diff),
+            ):
+                cmd_test("fake_debug.debug", ci_mode=True)
+    out = capsys.readouterr().out
+    assert "(first task, two fresh Task instances)" in out
+    assert RESET_REPRO_OBS_MISMATCH_MSG in out
+
+
+def test_cmd_test_ci_mode_truncates_large_reset_repro_diff(fake_debug_in_sys_modules, capsys):
+    """CI reset-repro diff must not dump unbounded bytes (matches dashboard cap)."""
+    results = [{"task_id": "t1", "done": True, "reward": 1.0, "steps": 3, "episode_time_s": 0.1, "error": None}]
+    huge = "x" * (cli._RESET_DIFF_DISPLAY_MAX + 500)
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results):
+            with patch("cube.testing.check_reset_reproducibility", return_value=(False, "mismatch", huge)):
+                cmd_test("fake_debug.debug", ci_mode=True)
+    out = capsys.readouterr().out
+    assert "... [diff truncated]" in out
+    assert huge not in out
 
 
 # ── main() ────────────────────────────────────────────────────────────────────
@@ -376,14 +472,75 @@ def test_main_test_dispatches_with_default_max_steps():
     with patch("cube.cli.cmd_test") as mock_test:
         with patch.object(sys, "argv", ["cube", "test", "counter-cube"]):
             main()
-    mock_test.assert_called_once_with("counter-cube", max_steps=20, output_path=None, ci_mode=False)
+    mock_test.assert_called_once_with(
+        "counter-cube",
+        max_steps=20,
+        output_path=None,
+        ci_mode=False,
+        demo_reset_repro=False,
+        stress_test=False,
+        reset_check=True,
+    )
 
 
 def test_main_test_dispatches_with_custom_max_steps():
     with patch("cube.cli.cmd_test") as mock_test:
         with patch.object(sys, "argv", ["cube", "test", "counter-cube", "--max-steps=5"]):
             main()
-    mock_test.assert_called_once_with("counter-cube", max_steps=5, output_path=None, ci_mode=False)
+    mock_test.assert_called_once_with(
+        "counter-cube",
+        max_steps=5,
+        output_path=None,
+        ci_mode=False,
+        demo_reset_repro=False,
+        stress_test=False,
+        reset_check=True,
+    )
+
+
+def test_main_test_dispatches_demo_reset_repro():
+    with patch("cube.cli.cmd_test") as mock_test:
+        with patch.object(sys, "argv", ["cube", "test", "counter-cube", "--demo-reset-repro"]):
+            main()
+    mock_test.assert_called_once_with(
+        "counter-cube",
+        max_steps=20,
+        output_path=None,
+        ci_mode=False,
+        demo_reset_repro=True,
+        stress_test=False,
+        reset_check=True,
+    )
+
+
+def test_cmd_test_demo_reset_repro_shows_reset_error_panel(fake_debug_in_sys_modules):
+    """When the real check passes, --demo-reset-repro still renders the red reset-repro block."""
+    results = [
+        {
+            "task_id": "t1",
+            "done": True,
+            "reward": 1.0,
+            "steps": 3,
+            "episode_time_s": 0.1,
+            "error": None,
+            "tools_list_ok": True,
+            "close_idempotent_ok": True,
+        }
+    ]
+
+    with patch("cube.cli._resolve_debug_module", return_value="fake_debug.debug"):
+        with patch("cube.testing.run_debug_suite", return_value=results):
+            with patch("cube.testing.check_reset_reproducibility", return_value=(True, "", "")):
+                with patch("cube.testing.check_benchmark_metadata", return_value=(True, "")):
+                    with patch(
+                        "cube.cli._print_reset_reproducibility_error_block",
+                        wraps=cli._print_reset_reproducibility_error_block,
+                    ) as spy:
+                        cmd_test("fake_debug.debug", demo_reset_repro=True)
+
+    spy.assert_called_once()
+    assert spy.call_args.kwargs["reset_ok"] is False
+    assert "demo token" in spy.call_args.kwargs["reset_diff"]
 
 
 # ── _guess_display_name ───────────────────────────────────────────────────────

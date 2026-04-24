@@ -16,12 +16,10 @@ Abstract classes:
         make(...) -> Task     instantiate the Task from serialized config data
 """
 
-from __future__ import annotations
-
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Tuple
+from typing import Any, Dict, List, Literal, Tuple
 
 from pydantic import ConfigDict, Field, PrivateAttr
 
@@ -36,10 +34,16 @@ from cube.core import (
     StructuredContent,
     TypedBaseModel,
 )
+from cube.resource import ResourceHandle
 from cube.tool import AbstractTool, ToolConfig
 
-if TYPE_CHECKING:
-    from cube.benchmark import RuntimeContext
+RuntimeContext = dict[str, Any]
+"""
+Type alias for shared infrastructure references created during benchmark.setup().
+
+example:
+    {"container_id": "abc123", "vm_address": "http://12.34.56.78", "ssh_session": session}
+"""
 
 logger = logging.getLogger(__name__)
 
@@ -93,10 +97,10 @@ class Task(TypedBaseModel, ABC):
 
     This class contains:
     1. task logic:
-        + evaluate(obs) -> (float, dict)           abstract — score the current state
-        - filter_actions(actions) -> actions       optional whitelist of tool actions
-        - obs_postprocess(obs) -> obs              optional observation post-processing
-        - finished(obs) -> bool                    optional early-termination check
+        + evaluate(obs?) -> (float, dict)         abstract — score the current state
+        - filter_actions(actions) -> actions      optional whitelist of tool actions
+        - obs_postprocess(obs) -> obs             optional observation post-processing
+        - finished(obs?) -> bool                  optional early-termination check
         - get_privileged_info() -> Content        optional privileged task info
 
     2. gym-like environment dynamics:
@@ -127,14 +131,34 @@ class Task(TypedBaseModel, ABC):
     # Non-serializable runtime state, set during model_post_init
     _tool: AbstractTool | None = PrivateAttr(default=None)
     _container: Container | None = PrivateAttr(default=None)
+    _resource_handle: ResourceHandle | None = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
         """Called after Pydantic __init__. Launches container if configured, then creates tool."""
-        # Launch container first so it can be passed to the tool factory
-        if self.container_backend is not None and self.metadata.container_config is not None:
-            self._container = self.container_backend.launch(self.metadata.container_config)
+        cc = self.metadata.container_config
+        if self.runtime_context is not None and "infra" in self.runtime_context:
+            if cc is not None:
+                from cube.task_infra import launch_task_container  # local import avoids circular dep
 
-        # Create tool, passing the container so it can connect to it
+                self._resource_handle, self._container = launch_task_container(
+                    self.runtime_context,
+                    name=self.metadata.id,
+                    image=cc.image,
+                    ram_gb=cc.ram_gb,
+                    cpu_cores=cc.cpu_cores,
+                )
+        elif self.container_backend is not None and cc is not None:
+            self._container = self.container_backend.launch(cc)
+
+        self._build_tool()
+
+    def _build_tool(self) -> None:
+        """Create ``self._tool`` from ``self.tool_config``.
+
+        Override in subclasses to run cube-specific setup (e.g. relocating a
+        read-only working directory) before calling ``tool_config.make()``.
+        ``self._container`` is already set when this is called.
+        """
         self._tool = self.tool_config.make(container=self._container)
 
     @property
@@ -325,6 +349,13 @@ class Task(TypedBaseModel, ABC):
         - Close network connections
         """
         self.tool.close()
+        if self._resource_handle is not None:
+            self._resource_handle.close()
+            self._resource_handle = None
+            self._container = None
+        elif self._container is not None:
+            self._container.stop()
+            self._container = None
 
 
 class TaskConfig(ABC, TypedBaseModel):
