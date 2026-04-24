@@ -15,15 +15,17 @@ _USER_AGENT = "cube-web-tool/1.0"
 class WebFetchToolConfig(ToolConfig):
     """Configuration for WebFetchTool."""
 
-    fetch_llm_model: str = "gpt-5.4-mini"
+    query_llm_model: str | None
     max_fetch_chars: int = 20_000
 
     def make(self, container=None) -> "WebFetchTool":
-        return WebFetchTool(config=self)
+        if self.query_llm_model is None:
+            return WebFetchURLOnlyTool(config=self)
+        return WebFetchWithQueryTool(config=self)
 
 
 class WebFetchTool(Tool):
-    """Tool for fetching web pages and extracting relevant content via LLM."""
+    """Base for web fetch tools. Owns HTTP/markdown plumbing but exposes no actions."""
 
     def __init__(self, config: WebFetchToolConfig) -> None:
         self.config = config
@@ -33,14 +35,7 @@ class WebFetchTool(Tool):
     def close(self) -> None:
         self._http_client.close()
 
-    @tool_action
-    def web_fetch(self, url: str, query: str) -> str:
-        """Fetch a web page, convert it to markdown, and extract information relevant to the query.
-
-        Args:
-            url: The URL to fetch.
-            query: The research question to extract information for.
-        """
+    def _fetch_markdown(self, url: str) -> str:
         try:
             result = self._markitdown.convert_url(url)
             markdown = result.text_content
@@ -53,11 +48,27 @@ class WebFetchTool(Tool):
             except Exception as e:
                 return f"Fetch error: {e}"
 
-        truncated = markdown[: self.config.max_fetch_chars]
+        return markdown[: self.config.max_fetch_chars]
+
+
+class WebFetchWithQueryTool(WebFetchTool):
+    """Fetch a page and LLM-extract information relevant to a query."""
+
+    @tool_action
+    def web_fetch(self, url: str, query: str) -> str:
+        """Fetch a web page, convert it to markdown, and extract information relevant to the query.
+
+        Args:
+            url: The URL to fetch.
+            query: The research question to extract information for.
+        """
+        truncated = self._fetch_markdown(url)
+        if truncated.startswith("Fetch error: "):
+            return truncated
 
         try:
             completion = litellm.completion(
-                model=self.config.fetch_llm_model,
+                model=self.config.query_llm_model,
                 messages=[
                     {
                         "role": "user",
@@ -73,3 +84,16 @@ class WebFetchTool(Tool):
         except Exception as e:
             logger.warning("web_fetch LLM extraction failed: %s", e)
             return truncated
+
+
+class WebFetchURLOnlyTool(WebFetchTool):
+    """Fetch a page and return the truncated markdown directly, without LLM extraction."""
+
+    @tool_action
+    def web_fetch(self, url: str) -> str:
+        """Fetch a web page and return its content as truncated markdown.
+
+        Args:
+            url: The URL to fetch.
+        """
+        return self._fetch_markdown(url)
