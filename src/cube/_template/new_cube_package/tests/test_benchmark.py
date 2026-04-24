@@ -5,12 +5,12 @@ Run with:  pytest tests/
 
 import cube_package.debug as _debug_mod
 from cube.testing import assert_debug_tasks_reward_one
-from cube_package.benchmark import CubeBenchmark
+from cube_package.benchmark import CubeBenchmarkConfig
 
 
 def test_benchmark_metadata() -> None:
     """Benchmark metadata is valid, non-empty, and has no unfilled placeholders."""
-    meta = CubeBenchmark.benchmark_metadata
+    meta = CubeBenchmarkConfig.benchmark_metadata
     assert meta.name, "benchmark name must not be empty"
     assert meta.version, "benchmark version must not be empty"
     assert meta.description, "benchmark description must not be empty"
@@ -19,7 +19,7 @@ def test_benchmark_metadata() -> None:
 
 def test_task_metadata_keys_match() -> None:
     """Every task_metadata key matches its TaskMetadata.id field."""
-    for key, meta in CubeBenchmark.task_metadata.items():
+    for key, meta in CubeBenchmarkConfig.task_metadata.items():
         assert key == meta.id, f"Key {key!r} does not match TaskMetadata.id {meta.id!r}"
 
 

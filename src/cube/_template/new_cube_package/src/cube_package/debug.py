@@ -1,11 +1,11 @@
-"""Deterministic debug agent for testing CubeBenchmark end-to-end without an LLM.
+"""Deterministic debug agent for testing CubeBenchmarkConfig end-to-end without an LLM.
 
 Each debug task has a hardcoded action sequence that completes it successfully.
 Used to validate the CUBE task loop in CI or local development.
 
 Public API
 ----------
-get_debug_benchmark()        → CubeBenchmark
+get_debug_benchmark()        → CubeBenchmarkConfig
 make_debug_agent(task_id)    → DebugAgent
 
 Usage::
@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 
 from cube.core import Action, ActionSchema, Observation
-from cube_package.benchmark import CubeBenchmark
+from cube_package.benchmark import CubeBenchmarkConfig
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _TASK_ACTIONS: dict[str, list[Action]] = {
-    # TODO: add one entry per task defined in CubeBenchmark.task_metadata.
+    # TODO: add one entry per task defined in CubeBenchmarkConfig.task_metadata.
     # The key must match the task ID exactly.
     # Example:
     #   "example-task": [
@@ -96,19 +96,18 @@ class DebugAgent:
 # ---------------------------------------------------------------------------
 
 
-def get_debug_benchmark() -> CubeBenchmark:
-    """Return a CubeBenchmark instance scoped to the debug tasks.
+def get_debug_benchmark() -> CubeBenchmarkConfig:
+    """Return a CubeBenchmarkConfig scoped to the debug tasks.
 
-    Called once by cube.testing before any debug episodes run.
-    The harness will call benchmark.install() and benchmark.setup() on the
-    returned instance, iterate benchmark.get_task_configs() to discover tasks,
-    and call benchmark.close() at the end to free resources.
+    Called once by cube.testing before any debug episodes run. The harness
+    calls config.install(), config.make() to get a live Benchmark, then
+    benchmark.close() at the end.
 
     If only a subset of tasks has debug sequences, use subset_from_list::
 
-        return CubeBenchmark().subset_from_list(list(_TASK_ACTIONS))
+        return CubeBenchmarkConfig().subset_from_list(list(_TASK_ACTIONS))
     """
-    return CubeBenchmark()
+    return CubeBenchmarkConfig()
 
 
 def make_debug_agent(task_id: str) -> DebugAgent:
