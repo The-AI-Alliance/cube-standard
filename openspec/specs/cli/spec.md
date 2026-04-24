@@ -28,7 +28,7 @@ Runs the debug compliance suite. `NAME` is either:
 - A dotted module path (e.g. `counter_cube.debug`)
 
 The resolved module must expose:
-- `get_debug_benchmark() -> Benchmark`
+- `get_debug_benchmark() -> BenchmarkConfig`
 - `make_debug_agent(task_id: str) -> Callable[[Observation, list[ActionSchema]], Action]`
 
 Exits non-zero if any debug task fails to reach `reward == 1.0`.

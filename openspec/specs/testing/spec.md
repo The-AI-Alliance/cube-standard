@@ -47,9 +47,9 @@ Report schema:
 }
 ```
 
-### `run_debug_suite(benchmark_name, module, *, max_steps=20, workers=1, infra=None) -> list[dict]`
-Discovers tasks via `module.get_debug_benchmark(infra).get_task_configs()`,
-calls `config.install()` then `config.make(infra)` to obtain a live Benchmark,
+### `run_debug_suite(benchmark_name, module, *, max_steps=20, workers=1) -> list[dict]`
+Discovers tasks via `module.get_debug_benchmark().get_task_configs()`,
+calls `config.install()` then `config.make()` to obtain a live Benchmark,
 runs each task with `module.make_debug_agent(task_id)`, and returns a list of
 episode reports. Always calls `benchmark.close()` in a `finally` block.
 
@@ -57,7 +57,7 @@ episode reports. Always calls `benchmark.close()` in a `finally` block.
 by reference. After `make()` returns, concurrent episodes must treat that object
 as read-only. Writes from multiple workers are not safe.
 
-### `assert_debug_tasks_reward_one(module, *, infra=None, max_steps=20) -> None`
+### `assert_debug_tasks_reward_one(module, *, max_steps=20) -> None`
 Runs `run_debug_suite` and asserts every task reaches `reward == 1.0`.
 Raises `AssertionError` otherwise. Drop-in for pytest:
 
@@ -69,8 +69,8 @@ def test_debug_tasks():
 ```
 
 ### Compliance checks (used by `cube test`)
-- `check_benchmark_metadata(module, *, infra=None)` → `(ok, err)` — verifies `BenchmarkMetadata` required fields on the config returned by `get_debug_benchmark`
-- `check_reset_reproducibility(module, *, infra=None)` → `(ok, err)` — same TaskConfig × 2 `make()` + `reset()` → identical first obs. Also calls `config.install()` and `config.make(infra)` to bring up the benchmark.
+- `check_benchmark_metadata(module)` → `(ok, err)` — verifies `BenchmarkMetadata` required fields on the config returned by `get_debug_benchmark`
+- `check_reset_reproducibility(module)` → `(ok, err)` — same TaskConfig × 2 `make()` + `reset()` → identical first obs. Also calls `config.install()` and `config.make()` to bring up the benchmark.
 - `aggregate_profiling(reports)` — roll-up of per-step profiling dicts
 - `build_stress_test_report(...)` — assembles the full compliance report
 
