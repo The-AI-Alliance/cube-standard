@@ -407,8 +407,16 @@ def cmd_test(
     output_path: str | None = None,
     ci_mode: bool = False,
     demo_reset_repro: bool = False,
+    stress_test: bool = False,
+    reset_check: bool = True,
 ) -> None:
     """Import *module_name* (or resolve an entry-point name) and run the debug compliance suite.
+
+    When *stress_test* is False (default), the suite runs once and shows per-task progress.
+    When *stress_test* is True (``--stress``), throughput is measured at 1, 2, and 4 workers.
+
+    When *reset_check* is False (``--no-reset-check``), the reset-reproducibility compliance
+    check is skipped entirely — useful in CI where the extra two resets are expensive.
 
     When *ci_mode* is True (or ``CUBE_CI=1`` is set), the Rich terminal dashboard is suppressed
     and only plain-text compliance results are printed — suitable for GitHub Actions logs.
@@ -477,11 +485,30 @@ def cmd_test(
             )
             sys.exit(1)
 
-    with console.status(
-        f"[info]Running debug suite for[/info] [file]{resolved}[/file]…",
-        spinner="dots",
-    ):
-        results = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False, workers=1)
+    _done_count = [0]
+    _total_count = [0]
+
+    def _on_start(task_id: str) -> None:
+        _total_count[0] += 1
+        console.print(f"  [dim]→ {task_id}[/dim]")
+
+    def _on_done(report: dict) -> None:
+        _done_count[0] += 1
+        ok = report["reward"] == 1.0 and not report["error"]
+        icon = "[success]✓[/success]" if ok else "[error]✗[/error]"
+        wall = _episode_wall_display_s(report)
+        console.print(f"  {icon} [file]{report['task_id']}[/file]  [dim]{wall}[/dim]")
+
+    console.print(f"[info]Running debug suite:[/info] [file]{resolved}[/file]")
+    results = run_debug_suite(
+        resolved,
+        module,
+        max_steps=max_steps,
+        print_json=False,
+        workers=0,
+        on_episode_start=_on_start,
+        on_episode_done=_on_done,
+    )
 
     if not results:
         err_console.print(
@@ -503,7 +530,11 @@ def cmd_test(
             failures.append(r)
 
     # ── Extra compliance checks (stress_test_specs.md) ─────────────────────────────
-    reset_ok, reset_msg, reset_diff = check_reset_reproducibility(module)
+    if reset_check:
+        console.print("[dim]  Checking reset reproducibility (2 resets in parallel)…[/dim]")
+        reset_ok, reset_msg, reset_diff = check_reset_reproducibility(module)
+    else:
+        reset_ok, reset_msg, reset_diff = True, "", ""
     meta_ok, _ = check_benchmark_metadata(module)
     close_idempotent_ok = all(r.get("close_idempotent_ok", False) for r in results)
     tools_list_ok = all(r.get("tools_list_ok", False) for r in results)
@@ -516,7 +547,9 @@ def cmd_test(
         compliance_passed.append("test_full_episode")
     else:
         compliance_failed.append("test_full_episode")
-    if reset_ok:
+    if not reset_check:
+        pass  # skipped via --no-reset-check; omit from compliance lists
+    elif reset_ok:
         compliance_passed.append("test_reset_reproducibility")
     else:
         compliance_failed.append("test_reset_reproducibility")
@@ -571,6 +604,8 @@ def cmd_test(
             print(f"  PASS  {name}")
         for name in compliance_failed:
             print(f"  FAIL  {name}")
+        if not reset_check:
+            print("  SKIP  test_reset_reproducibility")
         if not reset_ok:
             _emit_reset_repro_plain(reset_msg, reset_diff, file=sys.stdout)
         report = build_stress_test_report(resolved, results, compliance_passed, compliance_failed)
@@ -588,20 +623,20 @@ def cmd_test(
     progress_done = len(results) - len(failures)
     progress_total = len(results)
     workers_avail = max(1, os.cpu_count() or 1)
-    workers_active = 1
+    workers_active = max(1, len(results))  # auto mode uses one thread per task
 
     bench_label = module_name if len(module_name) <= 40 else resolved
     if len(bench_label) > 40:
         bench_label = bench_label[:37] + "…"
 
+    suite_mode = "parallel" if workers_active > 1 else "sequential"
     header_grid = Table(show_header=False, box=None, expand=True, padding=(0, 1))
     header_grid.add_column("left", ratio=1)
     header_grid.add_column("right", justify="right", ratio=1)
     header_grid.add_row(
         Text.from_markup(
             f"Benchmark: [file]{bench_label}[/file]\n"
-            # Debug suite runs one task at a time; second number is host CPU count, not pool size.
-            f"Suite: [dim]sequential[/dim] · workers [bold]{workers_active}[/bold] · "
+            f"Suite: [dim]{suite_mode}[/dim] · workers [bold]{workers_active}[/bold] · "
             f"host CPUs [dim]{workers_avail}[/dim]"
         ),
         Text.from_markup(
@@ -615,7 +650,7 @@ def cmd_test(
     ok_agent = "[success]✓[/success]" if results else "[dim]—[/dim]"
     ok_tools = "[success]✓[/success]" if tools_list_ok else "[error]✗[/error]"
     ok_meta = "[success]✓[/success]" if meta_ok else "[error]✗[/error]"
-    ok_reset = "[success]✓[/success]" if reset_ok else "[error]✗[/error]"
+    ok_reset = "[dim]N/A[/dim]" if not reset_check else ("[success]✓[/success]" if reset_ok else "[error]✗[/error]")
     ok_close = "[success]✓[/success]" if close_idempotent_ok else "[error]✗[/error]"
 
     compliance_checks_table = Table(
@@ -677,7 +712,11 @@ def cmd_test(
     throughput_rows: list[tuple[int, float, float, float]] = []
     throughput_blocks: list = []
     throughput_blocks.append(Text.from_markup("[bold]THROUGHPUT (tasks/min)[/bold]"))
-    if total_ep_s >= _THROUGHPUT_MIN_TOTAL_S:
+    if not stress_test:
+        throughput_blocks.append(
+            Text.from_markup("[dim]Skipped in test mode. Use [cmd]cube test --stress[/cmd] to measure.[/dim]")
+        )
+    elif total_ep_s >= _THROUGHPUT_MIN_TOTAL_S:
         # Second 1-worker pass (warm): rate_1 uses wall time comparable to 2/4 worker passes below
         # (the compliance run above is a cold start; discarding it for throughput avoids biased scaling).
         with console.status(
@@ -797,13 +836,14 @@ def cmd_test(
         padding=(0, 1),
         show_edge=False,
         header_style="bold",
+        expand=True,
     )
-    task_results_table.add_column("task", style="file", no_wrap=True)
-    task_results_table.add_column("done", justify="center")
-    task_results_table.add_column("rwd", justify="right")
-    task_results_table.add_column("st", justify="right")
-    task_results_table.add_column("wall", justify="right")
-    task_results_table.add_column("err", style="error")
+    task_results_table.add_column("task", style="file", ratio=3, no_wrap=True, overflow="ellipsis")
+    task_results_table.add_column("done", justify="center", no_wrap=True, min_width=4)
+    task_results_table.add_column("rwd", justify="right", no_wrap=True, min_width=4)
+    task_results_table.add_column("st", justify="right", no_wrap=True, min_width=3)
+    task_results_table.add_column("wall", justify="right", no_wrap=True, min_width=6)
+    task_results_table.add_column("err", style="error", ratio=1)
 
     for r in results:
         done_str = "[success]✓[/success]" if r["done"] else "[error]✗[/error]"
@@ -1252,10 +1292,12 @@ def _print_help() -> None:
     table.add_row(
         "cube test NAME",
         "Run the debug compliance suite — NAME is a benchmark entry-point name or a dotted module path. "
-        "Options: [cmd]--ci[/cmd] (plain-text CI output, also set via CUBE_CI=1), "
+        "Options: [cmd]--stress[/cmd] (add throughput measurement at 1/2/4 workers), "
+        "[cmd]--no-reset-check[/cmd] (skip reset-reproducibility check — saves ~1 extra reset in CI), "
+        "[cmd]--ci[/cmd] (plain-text CI output, also set via CUBE_CI=1), "
         "[cmd]--output=PATH[/cmd] (save JSON report), [cmd]--max-steps=N[/cmd], "
         "[cmd]--demo-reset-repro[/cmd] (preview reset-repro output, non-CI; also [cmd]CUBE_DEMO_RESET_REPRO=1[/cmd])",
-        "cube test counter-cube --demo-reset-repro",
+        "cube test counter-cube --stress",
     )
     table.add_row(
         "cube registry add [PATH]",
@@ -1311,6 +1353,8 @@ def main() -> None:
         output_path = None
         ci_mode = False
         demo_reset_repro = False
+        stress_test = False
+        reset_check = True
         remaining = args[2:]
         for opt in remaining:
             if opt.startswith("--max-steps="):
@@ -1321,6 +1365,10 @@ def main() -> None:
                 output_path = "cube_stress_test_baseline.json"
             elif opt == "--ci":
                 ci_mode = True
+            elif opt == "--stress":
+                stress_test = True
+            elif opt == "--no-reset-check":
+                reset_check = False
             elif opt == "--demo-reset-repro":
                 demo_reset_repro = True
         cmd_test(
@@ -1329,6 +1377,8 @@ def main() -> None:
             output_path=output_path,
             ci_mode=ci_mode,
             demo_reset_repro=demo_reset_repro,
+            stress_test=stress_test,
+            reset_check=reset_check,
         )
     elif command == "registry":
         subcmd = args[1] if len(args) > 1 else ""
