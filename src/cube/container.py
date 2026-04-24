@@ -1,5 +1,20 @@
+"""Container — a ``ResourceHandle`` that adds exec / port-forwarding.
+
+A ``Container`` IS a ``ResourceHandle``.  ``InfraConfig.launch()`` returns one
+directly — no wrapper indirection.  Subclasses carry the handle bookkeeping
+(run_id / resource / infra / created_at / expires_at) alongside their driver-
+specific state.
+
+``ContainerBackend`` and ``ContainerConfig`` below are the pre-``InfraConfig``
+factory + config.  They are **deprecated** — use ``InfraConfig.launch()`` with
+``DockerImageConfig`` or ``DockerServiceConfig`` (in ``cube.resource``) instead.
+Kept here only so existing ``Task.container_backend`` / ``Benchmark.container_backend``
+fields continue to type-check during the migration.
+"""
+
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict
@@ -7,17 +22,9 @@ from typing import Any, Dict
 from pydantic import Field
 
 from cube.core import TypedBaseModel
+from cube.resource import ResourceHandle
 
-
-class ContainerConfig(TypedBaseModel):
-    """Declarative description of *what* to run — owned by the benchmark."""
-
-    image: str
-    ram_gb: float = 4.0
-    cpu_cores: float = 2.0
-    gpu: bool = False
-    disk_gb: float = 10.0
-    ports: list[int] | None = None
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -56,11 +63,16 @@ class ContainerExecError(ContainerError):
     """Raised when command execution inside a container fails."""
 
 
-class Container(ABC):
-    """Runtime handle to a running container (not serializable)."""
+class Container(ResourceHandle, ABC):
+    """Live handle to a running container.
 
-    def __repr__(self) -> str:
-        return f"<{type(self).__name__} id={self.id}>"
+    Inherits ``ResourceHandle`` bookkeeping (run_id, resource, infra, created_at,
+    expires_at, endpoint, endpoints) and adds the container-specific capability
+    surface: exec / port-forward / status / id.
+
+    ``ResourceHandle.close()`` is satisfied by delegating to ``stop()`` so callers
+    can treat the handle uniformly via the ``with`` statement or ``close()``.
+    """
 
     @abstractmethod
     def exec(
@@ -71,6 +83,30 @@ class Container(ABC):
         env: Dict[str, str] | None = None,
     ) -> ExecResult:
         """Execute *command* inside the container."""
+
+    def exec_long_running(
+        self,
+        command: str,
+        *,
+        timeout: int,
+        poll_interval: int = 30,
+        workdir: str | None = None,
+        env: Dict[str, str] | None = None,
+    ) -> ExecResult:
+        """Execute a long-running *command*, decoupled from any RPC channel.
+
+        Default implementation is just ``exec(command, timeout=timeout)`` —
+        fine for backends with reliable exec streaming (LocalContainer,
+        DaytonaContainer, ModalContainer).  Backends whose exec primitive
+        has reliability issues on long-running commands (notably
+        ToolkitContainer — see `docs/toolkit-exec-relay-design.md`) override
+        this to kick off the command in the background inside the
+        container and poll a sentinel file for completion.  Each individual
+        RPC call under this override is short (< 1 s), so a transient CLI
+        hang can be retried cheaply instead of re-running a 30-minute
+        pytest.
+        """
+        return self.exec(command, timeout=timeout, workdir=workdir, env=env)
 
     @abstractmethod
     def forward_port(self, container_port: int) -> int:
@@ -93,9 +129,97 @@ class Container(ABC):
     def id(self) -> str:
         """Unique, backend-specific container identifier."""
 
+    def close(self) -> None:
+        """Delegates to ``stop()`` — satisfies ``ResourceHandle.close()``."""
+        self.stop()
+
+    @property
+    def container(self) -> "Container":
+        """Return self — Container IS ResourceHandle, no wrapper.
+
+        Kept for uniformity with legacy handle types (e.g.
+        ``LocalDockerServiceHandle.container``) that wrap multiple containers
+        and need an indirection property.
+        """
+        return self
+
+
+def relocate_if_readonly(
+    container: Container,
+    working_dir: str,
+    new_wd: str,
+    *,
+    extra_setup: str | None = None,
+) -> str:
+    """Copy *working_dir* to *new_wd* if it isn't writable by the runtime user.
+
+    Returns the effective working directory (either the original if writable, or
+    *new_wd* after the copy).  Cubes that need additional setup after the copy
+    (e.g. ``git config safe.directory``) can pass the commands as *extra_setup*
+    — they are appended to the ``cp -a`` invocation with ``&&``.
+
+    Typical usage in a cube's ``_build_tool()``::
+
+        new_wd = relocate_if_readonly(
+            self._container, self.tool_config.working_dir, "/tmp/testbed",
+            extra_setup="git config --global --add safe.directory /tmp/testbed",
+        )
+        self._tool = self.tool_config.model_copy(update={"working_dir": new_wd}).make(
+            container=self._container
+        )
+    """
+    probe = container.exec(f"test -w {working_dir} && echo W || echo R", timeout=30)
+    if "W" in probe.stdout:
+        return working_dir
+    logger.info("%s not writable by runtime user — copying to %s", working_dir, new_wd)
+    cmd = f"cp -a {working_dir} {new_wd}"
+    if extra_setup:
+        cmd += f" && {extra_setup}"
+    container.exec(cmd, timeout=300)
+    return new_wd
+
+
+def port_from_url(url: str) -> int:
+    """Extract the effective port from a URL (443 for https, 80 for http)."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.port is not None:
+        return parsed.port
+    if parsed.scheme == "https":
+        return 443
+    if parsed.scheme == "http":
+        return 80
+    raise ContainerError(f"Could not determine port from URL: {url}")
+
+
+# ── Deprecated pre-InfraConfig API ───────────────────────────────────────────
+
+
+class ContainerConfig(TypedBaseModel):
+    """DEPRECATED.  Use ``cube.resource.DockerImageConfig`` instead.
+
+    Kept only so existing ``TaskMetadata.container_config`` fields continue to
+    type-check during the infra migration.  No per-instance warning — would be
+    noisy across CSV task-metadata loads.
+    """
+
+    image: str
+    ram_gb: float = 4.0
+    cpu_cores: float = 2.0
+    gpu: bool = False
+    disk_gb: float = 10.0
+    ports: list[int] | None = None
+
 
 class ContainerBackend(TypedBaseModel, ABC):
-    """Serializable configuration for *how* to run containers."""
+    """DEPRECATED.  Use ``cube.resource.InfraConfig`` + ``InfraConfig.launch(resource)`` instead.
+
+    Kept only so existing ``Task.container_backend`` / ``Benchmark.container_backend``
+    fields continue to type-check during the infra migration.  Subclasses emit a
+    one-shot ``DeprecationWarning`` at *import* time (see ``cube.backends.*``),
+    not per instantiation.
+    """
 
     timeout_seconds: int = 1800
     backend_config: Dict[str, Any] = Field(default_factory=dict)
@@ -120,17 +244,3 @@ class ContainerBackend(TypedBaseModel, ABC):
         except Exception as exc:
             container.stop()
             raise HealthCheckError(f"Health check raised an exception: {exc}") from exc
-
-
-def port_from_url(url: str) -> int:
-    """Extract the effective port from a URL (443 for https, 80 for http)."""
-    from urllib.parse import urlparse
-
-    parsed = urlparse(url)
-    if parsed.port is not None:
-        return parsed.port
-    if parsed.scheme == "https":
-        return 443
-    if parsed.scheme == "http":
-        return 80
-    raise ContainerError(f"Could not determine port from URL: {url}")
