@@ -63,10 +63,11 @@ with `Model.model_validate(params["key"])`.
 - Single module-level entry point `_spawn_task_subprocess(task_config, runtime_ctx, host, port)`
   used by both `cube/spawn` and `make_task_rpc_server` — avoids local-closure pickling
   failure on macOS/Windows (spawn start method).
-- `make_benchmark_rpc_server` uses a **daemon thread** (not a subprocess) because
-  `Benchmark` is not guaranteed picklable.
-  TODO: switch to subprocess once `BenchmarkConfig` lands
-  ([RFC: BenchmarkConfig and scaling](https://github.com/The-AI-Alliance/cube-harness/blob/rfc/benchmark-config-and-scaling/docs/rfc-benchmark-config-and-scaling.md)).
+- `make_benchmark_rpc_server` accepts a `BenchmarkConfig` (+ optional
+  `InfraConfig`) and runs it in a **subprocess**. The worker calls
+  `config.make(infra)` locally; the live `Benchmark` never crosses the process
+  boundary. This mirrors `make_task_rpc_server` — both use a subprocess and a
+  serializable config at the boundary.
 
 **Readiness polling:** `wait_for_server` posts `{}` (valid JSON, invalid JSON-RPC) and
 checks for HTTP 200.  Works for both server types with no shared method name.

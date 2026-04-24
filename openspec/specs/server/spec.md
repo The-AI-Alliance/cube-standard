@@ -73,21 +73,34 @@ ASGI host (Modal, fly.io, Cloud Run, …).
 
 ### Server launchers (convenience)
 ```python
-def make_benchmark_rpc_server(benchmark, host="127.0.0.1", port=8000) -> (Thread, str)
-def make_task_rpc_server(task_config, host="127.0.0.1", port=8000, runtime_context=None) -> (Process, str)
+def make_benchmark_rpc_server(
+    config: BenchmarkConfig, *, infra: InfraConfig | None = None,
+    host="127.0.0.1", port=8000,
+) -> (Process, str)
+
+def make_task_rpc_server(
+    task_config: TaskConfig, host="127.0.0.1", port=8000, runtime_context=None,
+) -> (Process, str)
 ```
 
-- Benchmark → daemon **thread** (Benchmark holds live resources, not picklable)
-- Task → **subprocess** (TaskConfig is picklable; Task is not)
+- Benchmark → **subprocess** (BenchmarkConfig + InfraConfig are passed directly;
+  multiprocessing pickles them across the spawn/fork boundary — pickle handles
+  `TypedBaseModel` polymorphism correctly. The worker calls `config.make(infra)`
+  locally; the live Benchmark never crosses the process boundary).
+- Task → **subprocess** (TaskConfig is picklable; Task is not).
 
 ## Serialization boundaries
 
-- **TaskConfig** is the unit of serialization across process boundaries. Always
-  picklable. Subprocess entry points receive a `TaskConfig` and call
+- **TaskConfig** is the unit of serialization across process boundaries for tasks.
+  Always picklable. Self-contained after the Option 1 refactor — carries its own
+  `TaskMetadata`, so workers never import the owning `BenchmarkConfig` to resolve
+  metadata. Subprocess entry points receive a `TaskConfig` and call
   `task_config.make()` inside the worker.
-- **Task** objects hold live resources — never cross a process boundary.
-- **Benchmark** instances are also not guaranteed picklable — may hold SSH sessions,
-  container handles.
+- **BenchmarkConfig** is the same boundary for benchmarks. Passed directly to
+  the subprocess; multiprocessing's pickle handles polymorphism. The worker
+  calls `config.make(infra)` locally.
+- **Task** and **Benchmark** objects hold live resources — never cross a process
+  boundary.
 
 `cube/spawn` (network endpoint) vs `benchmark.spawn(task_config)` (Python API):
 - Network endpoint starts a subprocess, returns URL. Subprocess calls `task_config.make()`.
@@ -95,23 +108,23 @@ def make_task_rpc_server(task_config, host="127.0.0.1", port=8000, runtime_conte
 
 ## Invariants
 
-1. Only one subprocess entry point exists for tasks: `_spawn_task_subprocess`. Both
-   `cube/spawn` and `make_task_rpc_server` use it. This is a macOS/spawn-compat
-   requirement (module-level function, not a local closure).
+1. Only one subprocess entry point exists for tasks: `_spawn_task_subprocess`.
+   The benchmark equivalent is `_spawn_benchmark_subprocess`. Both are
+   module-level functions (macOS/spawn-compat requirement — local closures can't
+   be pickled as targets).
 2. `container_backend` is NOT forwarded to task subprocesses — legacy parameter being
    replaced by the `infra` / `resource` pattern. Infra state goes via `runtime_context`.
 3. All benchmark methods are synchronous; `async def dispatch` is only for
    `await request.json()`. Long-running sync work must use `asyncio.to_thread()`.
 4. Results are serialized with `model.model_dump(mode="json")`. Non-JSON-serializable
    fields without a Pydantic serializer are silently excluded.
+5. `_spawn_benchmark_subprocess` calls `benchmark.close()` in a `finally` block
+   so the worker tears down L2 resources even on uvicorn shutdown or signal.
 
 ## Gotchas
 
-- Readiness race in `cube/spawn` — the URL is returned immediately, but uvicorn starts
-  asynchronously. Clients must poll until the server responds before sending requests.
+- Readiness race in `cube/spawn` and both `make_*_rpc_server` launchers — the URL
+  is returned immediately, but uvicorn starts asynchronously. Clients must poll
+  until the server responds before sending requests.
 - `_find_free_port()` has a TOCTOU window: between port detection and bind, another
   process could claim the port. Callers should retry on `OSError: Address already in use`.
-- `make_benchmark_rpc_server` uses a thread (not a process) because Benchmark isn't
-  picklable. True process isolation requires running `server.py` as a standalone script.
-- TODO tracked in source: once `BenchmarkConfig` lands, `make_benchmark_rpc_server`
-  can use a subprocess, mirroring `make_task_rpc_server`.

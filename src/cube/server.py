@@ -69,20 +69,17 @@ These are two separate things:
 Note on serialization boundaries
 ---------------------------------
 **TaskConfig** (Pydantic model) is the unit of serialization across process
-boundaries.  Task objects hold live resources (tool connections, containers,
-…) and are never pickled.  All subprocess entry points receive a TaskConfig
-and call ``task_config.make()`` inside the worker.
+boundaries for tasks.  Task objects hold live resources (tool connections,
+containers, …) and are never pickled.  All subprocess entry points receive a
+TaskConfig and call ``task_config.make()`` inside the worker.
 
-**Benchmark** instances are similarly not guaranteed to be picklable — they
-may hold SSH sessions, container handles, or other OS-level resources created
-in ``_setup()``.
-
-TODO: once ``BenchmarkConfig`` lands (see
-  https://github.com/The-AI-Alliance/cube-harness/blob/rfc/benchmark-config-and-scaling/docs/rfc-benchmark-config-and-scaling.md),
-  ``make_benchmark_rpc_server`` should accept a ``BenchmarkConfig``, call
-  ``config.make()`` inside the subprocess, and provide real process isolation
-  without ever pickling a live Benchmark.  Until then, the benchmark server
-  launcher uses a thread (shared memory, no pickling).
+**BenchmarkConfig** (Pydantic model) is the same boundary for benchmarks.
+``make_benchmark_rpc_server`` accepts a ``BenchmarkConfig`` and optional
+``InfraConfig`` and passes both directly to a subprocess, which calls
+``config.make(infra)`` locally.  Multiprocessing's pickle handles
+``TypedBaseModel`` polymorphism across the boundary.  Live ``Benchmark``
+instances never cross the process boundary — real process isolation, no
+shared-memory thread fallback.
 
 Note on deployment
 ------------------
@@ -98,15 +95,15 @@ wrappers for local development and testing.
 import logging
 import multiprocessing
 import socket
-import threading
 from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from cube.benchmark import Benchmark
+from cube.benchmark import Benchmark, BenchmarkConfig
 from cube.core import Action, Observation
+from cube.resource import InfraConfig
 from cube.task import Task, TaskConfig
 
 logger = logging.getLogger(__name__)
@@ -149,6 +146,34 @@ def _spawn_task_subprocess(
     """
     task = task_config.make(runtime_context=runtime_ctx)
     uvicorn.run(make_task_jsonrpc_app(task), host=host, port=port)
+
+
+def _spawn_benchmark_subprocess(
+    config: BenchmarkConfig,
+    infra: InfraConfig | None,
+    host: str,
+    port: int,
+) -> None:
+    """Subprocess entry point: call ``config.make(infra)``, then serve.
+
+    Receives ``BenchmarkConfig`` and ``InfraConfig`` as live Pydantic models;
+    multiprocessing pickles them across the spawn/fork boundary, which handles
+    ``TypedBaseModel`` polymorphism correctly.  The benchmark is produced
+    *inside* the subprocess so runtime handles (container backend,
+    runtime_context, etc.) are owned by the worker and torn down when the
+    process exits.
+
+    ``benchmark.close()`` runs in a ``finally`` so the worker releases
+    resources even if uvicorn exits via a signal or error.
+    """
+    benchmark = config.make(infra)
+    try:
+        uvicorn.run(make_benchmark_jsonrpc_app(benchmark), host=host, port=port)
+    finally:
+        try:
+            benchmark.close()
+        except Exception:
+            logger.exception("Error while closing benchmark in subprocess")
 
 
 # ── JSON-RPC 2.0 error codes ──────────────────────────────────────────────────
@@ -379,41 +404,38 @@ def make_task_jsonrpc_app(task: Task) -> FastAPI:
 
 
 def make_benchmark_rpc_server(
-    benchmark: Benchmark,
+    config: BenchmarkConfig,
+    *,
+    infra: InfraConfig | None = None,
     host: str = "127.0.0.1",
     port: int = 8000,
-) -> tuple[threading.Thread, str]:
-    """Serve a benchmark JSON-RPC app in a background daemon thread.
+) -> tuple[multiprocessing.Process, str]:
+    """Spawn a benchmark JSON-RPC server in a subprocess.
 
-    Uses a **thread** (not a subprocess) because Benchmark instances are not
-    guaranteed to be picklable.  They may hold live OS-level resources created
-    in ``_setup()`` — SSH sessions, container handles, database connections —
-    that cannot survive serialisation.  A thread shares memory with the caller,
-    so the Benchmark is accessed directly without any pickling.
+    Accepts a ``BenchmarkConfig`` (the serialisation boundary for benchmarks)
+    and an optional ``InfraConfig``.  Both are passed directly to the
+    subprocess; multiprocessing pickles them at spawn, which handles
+    ``TypedBaseModel`` polymorphism correctly.  The worker then calls
+    ``config.make(infra)`` to produce the live ``Benchmark``.  Live benchmarks
+    never cross the process boundary — real process isolation, symmetric with
+    ``make_task_rpc_server``.
 
-    The thread is a daemon, so it stops automatically when the main process
-    exits.  To stop the server explicitly, use uvicorn's shutdown API or
-    terminate the process.
-
-    TODO: once BenchmarkConfig lands (see
-      https://github.com/The-AI-Alliance/cube-harness/blob/rfc/benchmark-config-and-scaling/docs/rfc-benchmark-config-and-scaling.md),
-      change this to accept a BenchmarkConfig, call ``config.make()`` inside a
-      ``multiprocessing.Process`` (mirroring ``make_task_rpc_server``), and
-      provide real process isolation.  Until then, process isolation requires
-      running ``server.py`` as a standalone script and launching the client
-      separately.
+    The subprocess owns its own resources: container handles, runtime_context,
+    shared servers launched inside ``_setup()``.  When the subprocess exits
+    (signal, uvicorn shutdown, or parent teardown), ``benchmark.close()`` runs
+    in a ``finally`` inside the worker.
 
     Returns:
-        ``(thread, url)`` — the background thread and the server base URL.
+        ``(process, url)`` — the subprocess handle and the server base URL.
+        The subprocess starts uvicorn asynchronously; poll the URL until it
+        responds before sending requests.
     """
-    app = make_benchmark_jsonrpc_app(benchmark)
-    thread = threading.Thread(
-        target=uvicorn.run,
-        kwargs={"app": app, "host": host, "port": port},
-        daemon=True,
+    process = multiprocessing.Process(
+        target=_spawn_benchmark_subprocess,
+        args=(config, infra, host, port),
     )
-    thread.start()
-    return thread, f"http://{host}:{port}"
+    process.start()
+    return process, f"http://{host}:{port}"
 
 
 def make_task_rpc_server(
