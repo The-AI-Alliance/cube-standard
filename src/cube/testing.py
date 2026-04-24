@@ -49,6 +49,9 @@ from cube.core import Action, ActionSchema, Observation
 from cube.resource import InfraConfig
 from cube.task import Task
 
+# Returned when two ``reset()`` observations differ; CLI uses this to decide contextual wording.
+RESET_REPRO_OBS_MISMATCH_MSG = "first observation differed between two resets"
+
 logger = logging.getLogger(__name__)
 
 
@@ -186,6 +189,80 @@ def run_debug_episode(
     return report
 
 
+def _truncate_leaf_value(val: object, max_len: int) -> str:
+    """Short single-line preview for mismatch reporting."""
+    if val is None:
+        return "null"
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    if isinstance(val, int | float):
+        return repr(val)
+    if isinstance(val, str):
+        if len(val) <= max_len:
+            return val
+        return val[:max_len] + f"… (+{len(val) - max_len} chars)"
+    if isinstance(val, (dict, list, tuple)):
+        s = json.dumps(val, sort_keys=True, default=str)
+    else:
+        s = repr(val)
+    if len(s) <= max_len:
+        return s
+    return s[:max_len] + f"… (+{len(s) - max_len} chars)"
+
+
+def _structural_mismatch_lines(
+    path: str,
+    a: object,
+    b: object,
+    lines: list[str],
+    max_len: int,
+) -> None:
+    if a == b:
+        return
+    if isinstance(a, dict) and isinstance(b, dict):
+        for k in sorted(set(a) | set(b)):
+            p = f"{path}.{k}" if path else str(k)
+            if k not in a:
+                lines.append(f"{p}\n  first:  <missing>\n  second: {_truncate_leaf_value(b[k], max_len)}")
+            elif k not in b:
+                lines.append(f"{p}\n  first:  {_truncate_leaf_value(a[k], max_len)}\n  second: <missing>")
+            else:
+                _structural_mismatch_lines(p, a[k], b[k], lines, max_len)
+        return
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        la, lb = list(a), list(b)
+        if len(la) != len(lb):
+            lp = f"{path}.__len__" if path else "__len__"
+            lines.append(f"{lp}\n  first:  len={len(la)}\n  second: len={len(lb)}")
+        for i in range(min(len(la), len(lb))):
+            p = f"{path}[{i}]" if path else f"[{i}]"
+            _structural_mismatch_lines(p, la[i], lb[i], lines, max_len)
+        return
+    p = path or "<observation>"
+    lines.append(f"{p}\n  first:  {_truncate_leaf_value(a, max_len)}\n  second: {_truncate_leaf_value(b, max_len)}")
+
+
+def _observation_key_path_diff_report(
+    dump_a: object,
+    dump_b: object,
+    *,
+    max_value_len: int = 120,
+) -> str:
+    """Human-readable mismatches: dotted key paths and [i] indices; leaf values truncated."""
+    out: list[str] = []
+    _structural_mismatch_lines("", dump_a, dump_b, out, max_value_len)
+    if not out:
+        return ""
+    header = "Observation differences\n\n"
+    return header + "\n\n".join(out)
+
+
+def format_observation_diff(obs_a: object, obs_b: object) -> str:
+    """Key-path observation diff (same text as reset-repro when first observations differ)."""
+    da = obs_a.model_dump() if hasattr(obs_a, "model_dump") else obs_a
+    db = obs_b.model_dump() if hasattr(obs_b, "model_dump") else obs_b
+    return _observation_key_path_diff_report(da, db)
+
 def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig | None = None) -> tuple[bool, str]:
     """
     Same seed → identical first observation (stress_test_specs.md).
@@ -202,7 +279,7 @@ def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig 
     try:
         configs = list(config.get_task_configs())
         if not configs:
-            return False, "no debug task configs"
+            return False, "no debug task configs", ""
         tc = configs[0]
         t1 = t2 = None
         try:
@@ -219,8 +296,9 @@ def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig 
             dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else str(obs1)
             dump2 = obs2.model_dump() if hasattr(obs2, "model_dump") else str(obs2)
             ok = dump1 == dump2
+            diff_str = "" if ok else format_observation_diff(dump1, dump2)
         except Exception as e:
-            return False, str(e)
+            return False, str(e), ""
         finally:
             for t in (t1, t2):
                 if t is not None:
@@ -228,7 +306,9 @@ def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig 
                         t.close()
                     except Exception:
                         pass
-        return ok, "" if ok else "first observation differed between two resets"
+        if ok:
+            return True, "", ""
+        return False, RESET_REPRO_OBS_MISMATCH_MSG, diff_str
     finally:
         try:
             benchmark.close()

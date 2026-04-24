@@ -497,7 +497,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
             ]
         if not matches:
             raise ValueError(f"No tasks found matching glob pattern '{glob_pattern}' on key '{glob_key}'")
-        return self.subset_from_list([tm.id for tm in matches])
+        return self.subset_from_list(tasks=matches, benchmark_name_suffix=f"[{glob_key}={glob_pattern}]")
 
     @classmethod
     def named_subsets(cls) -> list[str]:

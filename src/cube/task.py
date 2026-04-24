@@ -34,6 +34,7 @@ from cube.core import (
     StructuredContent,
     TypedBaseModel,
 )
+from cube.resource import ResourceHandle
 from cube.tool import AbstractTool, ToolConfig
 
 RuntimeContext = dict[str, Any]
@@ -130,14 +131,34 @@ class Task(TypedBaseModel, ABC):
     # Non-serializable runtime state, set during model_post_init
     _tool: AbstractTool | None = PrivateAttr(default=None)
     _container: Container | None = PrivateAttr(default=None)
+    _resource_handle: ResourceHandle | None = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
         """Called after Pydantic __init__. Launches container if configured, then creates tool."""
-        # Launch container first so it can be passed to the tool factory
-        if self.container_backend is not None and self.metadata.container_config is not None:
-            self._container = self.container_backend.launch(self.metadata.container_config)
+        cc = self.metadata.container_config
+        if self.runtime_context is not None and "infra" in self.runtime_context:
+            if cc is not None:
+                from cube.task_infra import launch_task_container  # local import avoids circular dep
 
-        # Create tool, passing the container so it can connect to it
+                self._resource_handle, self._container = launch_task_container(
+                    self.runtime_context,
+                    name=self.metadata.id,
+                    image=cc.image,
+                    ram_gb=cc.ram_gb,
+                    cpu_cores=cc.cpu_cores,
+                )
+        elif self.container_backend is not None and cc is not None:
+            self._container = self.container_backend.launch(cc)
+
+        self._build_tool()
+
+    def _build_tool(self) -> None:
+        """Create ``self._tool`` from ``self.tool_config``.
+
+        Override in subclasses to run cube-specific setup (e.g. relocating a
+        read-only working directory) before calling ``tool_config.make()``.
+        ``self._container`` is already set when this is called.
+        """
         self._tool = self.tool_config.make(container=self._container)
 
     @property
@@ -328,6 +349,13 @@ class Task(TypedBaseModel, ABC):
         - Close network connections
         """
         self.tool.close()
+        if self._resource_handle is not None:
+            self._resource_handle.close()
+            self._resource_handle = None
+            self._container = None
+        elif self._container is not None:
+            self._container.stop()
+            self._container = None
 
 
 class TaskConfig(ABC, TypedBaseModel):
