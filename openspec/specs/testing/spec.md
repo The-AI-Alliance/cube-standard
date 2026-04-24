@@ -13,20 +13,14 @@ benchmark-specific imports required.
 Benchmark packages expose `<package>.debug` with two callables:
 
 ```python
-def get_debug_benchmark(infra: InfraConfig | None = None) -> BenchmarkConfig:
+def get_debug_benchmark() -> BenchmarkConfig:
     """Return a BenchmarkConfig, optionally pre-filtered to debug tasks via
-    subset_from_list. The base harness calls config.install() then
-    config.make(infra) to obtain a live Benchmark, and benchmark.close() on
-    exit. The infra argument is forwarded to both calls (closes #96) — it is
-    ignored by benchmarks that don't need infra."""
+    subset_from_list. The harness calls config.install() then config.make(infra)
+    to obtain a live Benchmark, and benchmark.close() on exit."""
 
 def make_debug_agent(task_id: str) -> Callable[[Observation, list[ActionSchema]], Action]:
     """Return a deterministic agent that solves the named task."""
 ```
-
-For backwards compatibility during migration, `run_debug_suite` uses
-`inspect.signature` to detect whether `get_debug_benchmark` declares an `infra`
-parameter and forwards it only when the signature accepts it.
 
 ## Public API
 

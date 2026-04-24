@@ -134,7 +134,7 @@ def _make_module(task_ids=("t1",), *, fail=False) -> tuple[ModuleType, DoneBench
     config_cls = FailingDoneBenchmarkConfig if fail else DoneBenchmarkConfig
     config = config_cls().subset_from_list(list(task_ids))
 
-    def get_debug_benchmark(infra=None):
+    def get_debug_benchmark():
         return config
 
     mod.get_debug_benchmark = get_debug_benchmark  # type: ignore[attr-defined]
@@ -246,7 +246,7 @@ def test_suite_parallel_workers_collects_all_episode_results_when_first_task_rai
 
     mod = ModuleType("fake_debug")
     config = FirstFailsBenchmarkConfig().subset_from_list(["t1", "t2"])
-    mod.get_debug_benchmark = lambda infra=None: config  # type: ignore[attr-defined]
+    mod.get_debug_benchmark = lambda: config  # type: ignore[attr-defined]
     mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
 
     results = run_debug_suite("bench", mod, print_json=False, workers=2)
@@ -278,7 +278,7 @@ def test_suite_calls_install_then_make_then_close():
             cls._install_count += 1
 
     mod = ModuleType("fake_debug")
-    mod.get_debug_benchmark = lambda infra=None: CapturingConfig().subset_from_list(["t1"])  # type: ignore[attr-defined]
+    mod.get_debug_benchmark = lambda: CapturingConfig().subset_from_list(["t1"])  # type: ignore[attr-defined]
     mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
 
     run_debug_suite("bench", mod, print_json=False)
@@ -315,7 +315,7 @@ def test_suite_benchmark_closed_even_when_get_task_configs_raises():
             raise RuntimeError("config error")
 
     mod = ModuleType("fake_debug")
-    mod.get_debug_benchmark = lambda infra=None: FailingTaskConfigsConfig()  # type: ignore[attr-defined]
+    mod.get_debug_benchmark = lambda: FailingTaskConfigsConfig()  # type: ignore[attr-defined]
     mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
 
     with pytest.raises(RuntimeError, match="config error"):

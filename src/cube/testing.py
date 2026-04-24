@@ -11,7 +11,7 @@ Module protocol (for ``assert_debug_tasks_reward_one`` and ``run_debug_suite``)
 -------------------------------------------------------------------------------
 The ``module`` argument must expose two callables:
 
-    get_debug_benchmark(infra: InfraConfig | None = None) -> BenchmarkConfig
+    get_debug_benchmark() -> BenchmarkConfig
         Return a BenchmarkConfig (optionally pre-filtered to the debug subset
         via ``subset_from_list``). The harness calls ``config.install()`` then
         ``config.make(infra)`` to obtain a live ``Benchmark`` ready to spawn
@@ -279,7 +279,7 @@ def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig 
     bench_fn = getattr(module, "get_debug_benchmark", None)
     if not callable(bench_fn):
         return False, "no get_debug_benchmark", ""
-    config = bench_fn(infra) if _accepts_infra(bench_fn) else bench_fn()
+    config = bench_fn()
     config.install()  # classmethod on BenchmarkConfig; accessing via instance is idiomatic
     benchmark = config.make(infra)
     try:
@@ -322,7 +322,7 @@ def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig 
             pass
 
 
-def check_benchmark_metadata(module: types.ModuleType, *, infra: InfraConfig | None = None) -> tuple[bool, str]:
+def check_benchmark_metadata(module: types.ModuleType) -> tuple[bool, str]:
     """
     Benchmark has non-empty name and version (stress_test_specs.md).
     Gets metadata from the BenchmarkConfig returned by ``get_debug_benchmark()``.
@@ -330,26 +330,11 @@ def check_benchmark_metadata(module: types.ModuleType, *, infra: InfraConfig | N
     bench_fn = getattr(module, "get_debug_benchmark", None)
     if not callable(bench_fn):
         return False, "no get_debug_benchmark"
-    config = bench_fn(infra) if _accepts_infra(bench_fn) else bench_fn()
+    config = bench_fn()
     meta = config.benchmark_metadata
     if meta is None:
         return False, "no benchmark_metadata"
     return True, ""
-
-
-def _accepts_infra(fn: Callable) -> bool:
-    """Return True if ``fn`` declares a positional/keyword ``infra`` parameter.
-
-    Allows ``get_debug_benchmark`` to be either ``() -> BenchmarkConfig`` or
-    ``(infra) -> BenchmarkConfig`` during the migration window.
-    """
-    import inspect
-
-    try:
-        sig = inspect.signature(fn)
-    except (TypeError, ValueError):
-        return False
-    return "infra" in sig.parameters
 
 
 def aggregate_profiling(episode_reports: list[dict]) -> dict[str, float]:
@@ -413,7 +398,7 @@ def run_debug_suite(
 
     Args:
         benchmark_name: Label used in the JSON output (e.g. ``"osworld-cube"``).
-        module:         A module exposing ``get_debug_benchmark(infra=None) -> BenchmarkConfig``
+        module:         A module exposing ``get_debug_benchmark() -> BenchmarkConfig``
                         and ``make_debug_agent(task_id)``.
         max_steps:      Safety cap passed to ``run_debug_episode`` (default 20).
         print_json:     If True, print the JSON report to stdout (default True).
@@ -422,8 +407,7 @@ def run_debug_suite(
                         ``benchmark._runtime_context`` after ``make()``; see module
                         docstring.
         infra:          Optional ``InfraConfig`` passed to ``config.make(infra)`` for
-                        resource provisioning. Forwarded to ``get_debug_benchmark`` if
-                        that function accepts an ``infra`` parameter (resolves #96).
+                        resource provisioning.
 
     Returns:
         List of per-episode report dicts (same schema as ``run_debug_episode``),
@@ -441,7 +425,7 @@ def run_debug_suite(
         # Step 1: resolve the BenchmarkConfig and bring a live Benchmark into existence.
         logger.info(f"[run_debug_suite] benchmark={benchmark_name!r}  calling get_debug_benchmark()")
         bench_fn = module.get_debug_benchmark
-        config = bench_fn(infra) if _accepts_infra(bench_fn) else bench_fn()
+        config = bench_fn()
         config.install()  # classmethod on BenchmarkConfig; accessing via instance is idiomatic
         benchmark = config.make(infra)
 
@@ -616,10 +600,9 @@ def assert_debug_tasks_reward_one(
             assert_debug_tasks_reward_one(mod)
 
     Args:
-        module:    A module exposing ``get_debug_benchmark(infra=None) -> BenchmarkConfig``
+        module:    A module exposing ``get_debug_benchmark() -> BenchmarkConfig``
                    and ``make_debug_agent(task_id)``.
-        infra:     Optional ``InfraConfig`` forwarded to ``get_debug_benchmark`` and
-                   ``config.make(infra)``.
+        infra:     Optional ``InfraConfig`` passed to ``config.make(infra)``.
         max_steps: Safety cap passed to ``run_debug_episode`` (default 20).
 
     Raises:
