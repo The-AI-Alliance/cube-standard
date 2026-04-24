@@ -1,0 +1,28 @@
+[project]
+name = "cube-infra-daytona"
+version = "0.1.0"
+description = "Daytona InfraConfig for CUBE resource lifecycle — per-task sandbox containers"
+authors = [
+    { name = "Alexandre Lacoste", email = "alexandre.lacoste@servicenow.com" },
+]
+requires-python = ">=3.12"
+dependencies = [
+    "cube-standard",
+    "daytona>=0.21",
+    "tenacity>=8.5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cube_infra_daytona"]
+
+[tool.uv.sources]
+cube-standard = { workspace = true }
