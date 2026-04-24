@@ -118,4 +118,6 @@ Ways to reach us:
 - [openspec/specs/](https://github.com/The-AI-Alliance/cube-standard/tree/main/openspec/specs) — formal per-layer contracts
 - [cube-registry](https://github.com/The-AI-Alliance/cube-registry) — submission YAML template and compliance tiers
 - [cube-tools/](https://github.com/The-AI-Alliance/cube-standard/tree/main/cube-tools) — reusable tool packages (browser, computer, chat)
+- [cube-resources/](https://github.com/The-AI-Alliance/cube-standard/tree/main/cube-resources) — reusable resource packages (playwright browser, chat sessions, AWS/Azure infra, VM backend)
+
 - [DeepWiki](https://deepwiki.com/The-AI-Alliance/cube-standard) — full API reference
