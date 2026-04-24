@@ -1,5 +1,7 @@
 # Contributing to CUBE Standard
 
+> **Building a new CUBE benchmark?** Start with the [Authoring a CUBE guide](https://the-ai-alliance.github.io/cube-standard/authoring-a-cube) — three starting paths, implementation order, validation, and submission. Come back here for framework invariants and the RFC process when you need them. This file covers contributing to the cube-standard **framework itself** (adding features, changing specs, modifying the template).
+
 ## Repo layout
 
 ```
@@ -45,20 +47,11 @@ Read the module docstrings — they are the authoritative spec:
 
 ## Writing a new cube package
 
-```sh
-cube init my-env       # scaffold from _template/new_cube_package
-cd my-env && uv sync
-cube test my_env       # must reach reward == 1.0 on every debug task
-```
+Full walkthrough lives in the [Authoring a CUBE guide](https://the-ai-alliance.github.io/cube-standard/authoring-a-cube) — three starting paths (`/new-cube` skill, copy counter-cube, `cube init`), implementation order, validation with `cube test` and `/review-cube`, and submission via `cube registry add --submit`.
 
-Work through the `TODO` comments in this order:
+Short form: `cube init my-env` → fill TODOs in `tool.py` → `task.py` → `benchmark.py` → `debug.py` (in that order) → `cube test my_env` must reach `reward == 1.0` on every debug task.
 
-1. [`tool.py`](src/cube/_template/new_cube_package/src/cube_package/tool.py) — define `CubeEnv`, add `@tool_action` methods
-2. [`task.py`](src/cube/_template/new_cube_package/src/cube_package/task.py) — implement `reset()` and `evaluate()`
-3. [`benchmark.py`](src/cube/_template/new_cube_package/src/cube_package/benchmark.py) — fill metadata (inline or via CSV/JSON)
-4. [`debug.py`](src/cube/_template/new_cube_package/src/cube_package/debug.py) — write deterministic action sequences for each task
-
-The counter-cube example covers all five layers concretely:
+The counter-cube example covers all layers concretely:
 - Tool with conditional `action_set` filtering → [`examples/counter-cube/src/counter_cube/tool.py`](examples/counter-cube/src/counter_cube/tool.py)
 - Partial-progress reward and early termination → [`examples/counter-cube/src/counter_cube/task.py`](examples/counter-cube/src/counter_cube/task.py)
 - Hardcoded debug sequences → [`examples/counter-cube/src/counter_cube/debug.py`](examples/counter-cube/src/counter_cube/debug.py)
