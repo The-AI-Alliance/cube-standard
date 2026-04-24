@@ -4,7 +4,7 @@ CUBE testing utilities — framework-level harness for debug episodes.
 Public API
 ----------
 run_debug_episode(task, agent, *, max_steps)  →  dict
-run_debug_suite(benchmark_name, module, *, max_steps, workers=1)  →  list[dict]
+run_debug_suite(benchmark_name, module, *, max_steps, workers=0)  →  list[dict]
 assert_debug_tasks_reward_one(module, *, max_steps)  →  None
 
 Module protocol (for assert_debug_tasks_reward_one and run_debug_suite)
@@ -20,10 +20,10 @@ The ``module`` argument must expose two callables:
     make_debug_agent(task_id: str) -> Callable[[Observation, list[ActionSchema]], Action]
         Return a deterministic agent for the given task_id.
 
-    Parallel runs (``run_debug_suite(..., workers>1)``): tasks share the benchmark's
-    ``_runtime_context`` by reference. After ``setup()`` returns, concurrent episodes
-    must treat that object as read-only; writing to it during execution is not safe
-    with multiple workers.
+    Parallel runs (``workers > 1``, or ``workers=0`` for auto): tasks share the
+    benchmark's ``_runtime_context`` by reference. After ``setup()`` returns,
+    concurrent episodes must treat that object as read-only; writing to it during
+    execution is not safe with multiple workers.
 
 Example usage in a test file::
 
@@ -631,6 +631,11 @@ def assert_debug_tasks_reward_one(
     Raises:
         AssertionError: If any episode does not complete, errors, or gets
                         reward < 1.0.
+
+    Note:
+        Tasks run in parallel by default (``workers=0``). The benchmark's
+        ``_runtime_context`` is shared across threads — treat it as read-only
+        after ``setup()`` returns.
     """
     for report in run_debug_suite(module.__name__, module, max_steps=max_steps):
         task_id = report["task_id"]

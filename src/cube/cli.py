@@ -489,7 +489,7 @@ def cmd_test(
     _total_count = [0]
 
     def _on_start(task_id: str) -> None:
-        _total_count[0] = _total_count[0]  # populated after first call; use running index
+        _total_count[0] += 1
         console.print(f"  [dim]→ {task_id}[/dim]")
 
     def _on_done(report: dict) -> None:
