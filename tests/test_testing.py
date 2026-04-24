@@ -452,18 +452,24 @@ class _FakeTaskConfig:
         return _FakeTaskForReset(payload)
 
 
-class _FakeBenchForReset:
+class _FakeBenchmark:
+    def __init__(self):
+        self._runtime_context: dict = {}
+
+    def close(self):
+        pass
+
+
+class _FakeBenchmarkConfig:
     def __init__(self):
         self._tc = _FakeTaskConfig()
+        self.container_backend = None
 
     def install(self):
         pass
 
-    def setup(self):
-        pass
-
-    def close(self):
-        pass
+    def make(self, infra=None):
+        return _FakeBenchmark()
 
     def get_task_configs(self):
         return [self._tc]
@@ -471,7 +477,7 @@ class _FakeBenchForReset:
 
 def test_check_reset_reproducibility_returns_unified_diff_when_obs_differ():
     mod = ModuleType("fake_reset")
-    mod.get_debug_benchmark = lambda: _FakeBenchForReset()
+    mod.get_debug_benchmark = lambda: _FakeBenchmarkConfig()
 
     ok, msg, diff = check_reset_reproducibility(mod)
     assert ok is False
@@ -486,21 +492,28 @@ def test_check_reset_reproducibility_ok_and_empty_diff_when_matching():
         def make(self, **kwargs):
             return _FakeTaskForReset({"x": 1})
 
-    class _SameBench:
-        def install(self):
-            pass
-
-        def setup(self):
-            pass
+    class _SameBenchmark:
+        def __init__(self):
+            self._runtime_context: dict = {}
 
         def close(self):
             pass
+
+    class _SameBenchmarkConfig:
+        def __init__(self):
+            self.container_backend = None
+
+        def install(self):
+            pass
+
+        def make(self, infra=None):
+            return _SameBenchmark()
 
         def get_task_configs(self):
             return [_SameTC()]
 
     mod = ModuleType("fake_reset_ok")
-    mod.get_debug_benchmark = lambda: _SameBench()
+    mod.get_debug_benchmark = lambda: _SameBenchmarkConfig()
 
     ok, msg, diff = check_reset_reproducibility(mod)
     assert ok is True

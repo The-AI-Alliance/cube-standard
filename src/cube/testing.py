@@ -264,16 +264,21 @@ def format_observation_diff(obs_a: object, obs_b: object) -> str:
     return _observation_key_path_diff_report(da, db)
 
 
-def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig | None = None) -> tuple[bool, str]:
+def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig | None = None) -> tuple[bool, str, str]:
     """
     Same seed → identical first observation (stress_test_specs.md).
     Uses first task config only: make() twice, reset() each, compare first obs.
     Calls ``config.install()`` and ``config.make(infra)`` before iterating
     ``get_task_configs``, and ``benchmark.close()`` when done.
+
+    Returns:
+        (ok, message, diff): ``diff`` lists mismatched key paths with truncated
+        leaf values when the two first observations differ; otherwise ``""``.
+        ``message`` is empty when ``ok``.
     """
     bench_fn = getattr(module, "get_debug_benchmark", None)
     if not callable(bench_fn):
-        return False, "no get_debug_benchmark"
+        return False, "no get_debug_benchmark", ""
     config = bench_fn(infra) if _accepts_infra(bench_fn) else bench_fn()
     config.install()  # classmethod on BenchmarkConfig; accessing via instance is idiomatic
     benchmark = config.make(infra)
