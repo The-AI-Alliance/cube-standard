@@ -58,7 +58,13 @@ class BraveWebSearchTool(WebSearchTool):
             raise ValueError("BRAVE_API_KEY not set in config or environment")
         return key
 
+    @tool_action
     def web_search(self, query: str) -> str:
+        """Search the web and return a list of results.
+
+        Args:
+            query: The search query string.
+        """
         try:
             api_key = self._resolve_brave_api_key()
         except ValueError as e:
