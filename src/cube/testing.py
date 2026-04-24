@@ -263,6 +263,7 @@ def format_observation_diff(obs_a: object, obs_b: object) -> str:
     db = obs_b.model_dump() if hasattr(obs_b, "model_dump") else obs_b
     return _observation_key_path_diff_report(da, db)
 
+
 def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig | None = None) -> tuple[bool, str]:
     """
     Same seed → identical first observation (stress_test_specs.md).
