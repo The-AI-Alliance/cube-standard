@@ -286,31 +286,44 @@ def check_reset_reproducibility(module: types.ModuleType) -> tuple[bool, str, st
         if not configs:
             return False, "no debug task configs", ""
         tc = configs[0]
-        t1 = t2 = None
+        # Tasks are created and closed sequentially so that tools that manage
+        # their own event loops (e.g. Playwright sync API) don't collide.
+        t1 = None
         try:
             t1 = tc.make(
                 runtime_context=getattr(benchmark, "_runtime_context", None),
                 container_backend=getattr(benchmark, "container_backend", None),
             )
+            obs1, _ = t1.reset()
+            dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else str(obs1)
+        except Exception as e:
+            return False, str(e), ""
+        finally:
+            if t1 is not None:
+                try:
+                    t1.close()
+                except Exception:
+                    pass
+
+        t2 = None
+        try:
             t2 = tc.make(
                 runtime_context=getattr(benchmark, "_runtime_context", None),
                 container_backend=getattr(benchmark, "container_backend", None),
             )
-            obs1, _ = t1.reset()
             obs2, _ = t2.reset()
-            dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else str(obs1)
             dump2 = obs2.model_dump() if hasattr(obs2, "model_dump") else str(obs2)
-            ok = dump1 == dump2
-            diff_str = "" if ok else format_observation_diff(dump1, dump2)
         except Exception as e:
             return False, str(e), ""
         finally:
-            for t in (t1, t2):
-                if t is not None:
-                    try:
-                        t.close()
-                    except Exception:
-                        pass
+            if t2 is not None:
+                try:
+                    t2.close()
+                except Exception:
+                    pass
+
+        ok = dump1 == dump2
+        diff_str = "" if ok else format_observation_diff(dump1, dump2)
         if ok:
             return True, "", ""
         return False, RESET_REPRO_OBS_MISMATCH_MSG, diff_str
@@ -390,20 +403,26 @@ def run_debug_suite(
     max_steps: int = 20,
     print_json: bool = True,
     workers: int = 1,
+    on_episode_start: Callable[[str], None] | None = None,
+    on_episode_done: Callable[[dict], None] | None = None,
 ) -> list[dict]:
     """
     Run all debug tasks for a benchmark and optionally print a JSON report.
 
     Args:
-        benchmark_name: Label used in the JSON output (e.g. ``"osworld-cube"``).
-        module:         A module exposing ``get_debug_benchmark()`` and
-                        ``make_debug_agent(task_id)``.
-        max_steps:      Safety cap passed to ``run_debug_episode`` (default 20).
-        print_json:     If True, print the JSON report to stdout (default True).
-        workers:        Number of threads for episode execution (default 1). Values
-                        greater than 1 require tasks not to mutate
-                        ``benchmark._runtime_context`` after ``setup()``; see module
-                        docstring.
+        benchmark_name:   Label used in the JSON output (e.g. ``"osworld-cube"``).
+        module:           A module exposing ``get_debug_benchmark()`` and
+                          ``make_debug_agent(task_id)``.
+        max_steps:        Safety cap passed to ``run_debug_episode`` (default 20).
+        print_json:       If True, print the JSON report to stdout (default True).
+        workers:          Number of threads for episode execution (default 1). Values
+                          greater than 1 require tasks not to mutate
+                          ``benchmark._runtime_context`` after ``setup()``; see module
+                          docstring.
+        on_episode_start: Optional callback called with ``task_id`` just before each
+                          episode starts (sequential mode only, ignored for workers>1).
+        on_episode_done:  Optional callback called with the episode report dict just
+                          after each episode finishes (sequential mode only).
 
     Returns:
         List of per-episode report dicts (same schema as ``run_debug_episode``),
@@ -446,7 +465,11 @@ def run_debug_suite(
 
         if workers == 1:
             for tc in task_configs:
+                if on_episode_start is not None:
+                    on_episode_start(tc.task_id)
                 results.append(_episode_for_config(tc))
+                if on_episode_done is not None:
+                    on_episode_done(results[-1])
         else:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = [pool.submit(_episode_for_config, tc) for tc in task_configs]
