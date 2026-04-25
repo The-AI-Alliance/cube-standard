@@ -19,14 +19,14 @@ Infer register from vocabulary (ML jargon vs. product/infra jargon) and from wha
 ## Guardrails — enforce every turn
 
 - `@tool_action` on every tool method the agent should see. Forgetting this is the #1 bug.
-- `task_metadata` is a `ClassVar` on **`Benchmark`**, not inside `TaskConfig`. `TaskConfig.make()` reads `Benchmark.task_metadata[self.task_id]` by importing the benchmark class. Redirect anyone trying to inline metadata into `TaskConfig` — it must stay lean.
-- `TaskConfig.make()` imports the Benchmark class **inside the method**, not at module top. Importing at top causes a circular import because `benchmark.py` already imports the `TaskConfig` via `task_config_class`.
+- `task_metadata` is a `ClassVar` on **`BenchmarkConfig`**, not on `TaskConfig`. `get_task_configs()` stamps each emitted `TaskConfig` with the right `metadata` — workers are self-contained.
 - `Task.reset()` must call `self.tool.reset()`.
 - `Task.evaluate()` is pure — no state mutation.
-- `Benchmark.install()`, `Benchmark._setup()`, and `Benchmark.close()` must all be idempotent. The compliance suite calls `close()` twice.
+- `BenchmarkConfig.install()`, `Benchmark._setup()`, and `Benchmark.close()` must all be idempotent. The compliance suite calls `close()` twice.
 - Debug agent must reach `reward == 1.0` on every debug task.
+- `get_debug_benchmark()` in `debug.py` takes **no arguments** and returns a `BenchmarkConfig`. Infra is injected at `config.make(infra)` time, not at config construction.
+- The `cube.benchmarks` entry-point group advertises `BenchmarkConfig` subclasses (not `Benchmark` subclasses).
 - **Not yet supported** (flag, and suggest a scoped-down starting point):
-  - **Per-task Docker images** (different image per task) — tracked in cube-standard #111 and cube-harness #300.
   - **Streaming actions** and **streaming observations** (common for audio/video benchmarks) — not in the current protocol.
   - **Multi-agent** and **async tools** — partial coverage only; check `openspec/changes/core-extensions/` before committing.
   > **Skill maintenance TODO:** when any of the above land, update this guardrail and `references/pitfalls.md`.
@@ -67,7 +67,7 @@ Write a **Requirements Summary** (markdown, in chat, ≤1 page) covering:
 - Scoring logic (how `evaluate()` decides reward)
 - Infra model (self-contained / shared env / per-task env)
 - Task count + data source; whether task metadata will be **Option A (inline ClassVars)** or **Option B (generated JSON file)**. Most cubes pick B.
-- Whether any per-task data is heavy enough to live in `extra_info` (loaded lazily in `TaskConfig.make()` from a cache populated by `Benchmark.install()`).
+- Whether any per-task data is heavy enough to live in `extra_info` (merged into `metadata.extra_info` at `get_task_configs()` emit time on the driver via `load_task_execution_info()`, from a cache populated by `BenchmarkConfig.install()`). Workers receive fully-stamped `TaskConfig`s and never touch disk.
 - **Reusable building blocks** — which `cube-tools/*` and `cube-resources/*` packages apply, and how (import directly, subclass, or not applicable). Consult `references/shared-packages.md`.
 - Closest archetype match from `references/archetypes.md`. If ≥80% fit, say so and fetch that archetype's code (local `cube-harness/cubes/<name>` on `main` preferred, else WebFetch).
 
