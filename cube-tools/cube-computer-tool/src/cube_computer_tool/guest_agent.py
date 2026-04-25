@@ -11,9 +11,11 @@ import logging
 import random
 import time
 import traceback
+from io import BytesIO
 from typing import Any
 
 import requests
+from PIL import Image, UnidentifiedImageError
 
 logger = logging.getLogger(__name__)
 
@@ -691,10 +693,22 @@ class GuestAgent:
     def _is_valid_image(content_type: str, data: bytes | None) -> bool:
         if not isinstance(data, (bytes, bytearray)) or not data:
             return False
-        if len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n":
+        # Magic-byte check is necessary but not sufficient — a truncated PNG with
+        # a valid 8-byte header still passes here and chokes PIL downstream
+        # ("broken PNG file (chunk b'\\x00\\x00\\x00\\x00')"). Verify the image
+        # actually decodes before declaring it valid.
+        header_ok = (
+            (len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n")
+            or (len(data) >= 3 and data[:3] == b"\xff\xd8\xff")
+            or (content_type and any(t in content_type for t in ("image/png", "image/jpeg", "image/jpg")))
+        )
+        if not header_ok:
+            return False
+        try:
+            # load() actually decodes the bytes — catches truncation that
+            # verify() may pass and that magic-byte checks definitely pass.
+            Image.open(BytesIO(data)).load()
             return True
-        if len(data) >= 3 and data[:3] == b"\xff\xd8\xff":
-            return True
-        if content_type and any(t in content_type for t in ("image/png", "image/jpeg", "image/jpg")):
-            return True
+        except (UnidentifiedImageError, SyntaxError, OSError, ValueError):
+            return False
         return False

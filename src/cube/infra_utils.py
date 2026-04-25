@@ -7,13 +7,17 @@ Used by cube-infra-aws, cube-infra-azure, and any future cloud backends.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import socket
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
+
+_TUNNEL_LOG_DIR = Path(os.environ.get("CUBE_SSH_TUNNEL_LOG_DIR", "/tmp/cube-tunnels"))
 
 # ── SSH utilities ─────────────────────────────────────────────────────────────
 
@@ -41,11 +45,19 @@ def open_tunnel(
 
     Returns the subprocess — caller must .terminate() it.
     Waits 2 seconds for the tunnel to establish.
+
+    SSH stderr is captured to ``$CUBE_SSH_TUNNEL_LOG_DIR/<vm_ip>_<local>_<remote>.log``
+    (default /tmp/cube-tunnels/) so the close reason is preserved even after the
+    tunnel exits. Use ``-vv`` so we get connection-level events, not just errors.
     """
+    _TUNNEL_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _TUNNEL_LOG_DIR / f"{vm_ip}_{local_port}_{remote_port}.log"
+    log_fh = open(log_path, "w")
     proc = subprocess.Popen(
         [
             "ssh",
             "-N",
+            "-vv",  # log connection-level events to stderr; captured in log_fh
             "-L",
             f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
             "-i",
@@ -59,10 +71,19 @@ def open_tunnel(
             "-o",
             "ServerAliveInterval=30",
             "-o",
+            # Default ServerAliveCountMax=3 → ssh exits after 90s of network silence.
+            # Bumping to 30 means we tolerate up to 15 min of host-side network blips
+            # before the tunnel gives up. Mac networks have intermittent multi-second
+            # hiccups (DNS, WiFi roaming, VPN reconnect) that would otherwise drop
+            # 8+ parallel tunnels simultaneously.
+            "ServerAliveCountMax=30",
+            "-o",
+            "TCPKeepAlive=yes",
+            "-o",
             "IdentitiesOnly=yes",
             f"{ssh_user}@{vm_ip}",
         ],
-        stderr=subprocess.DEVNULL,
+        stderr=log_fh,
     )
     time.sleep(2)
     return proc

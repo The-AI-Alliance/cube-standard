@@ -1191,23 +1191,34 @@ class AzureInfraConfig(InfraConfig):
         if is_windows:
             logger.info("launch: injecting SSH key + firewall rule via RunCommand for %s", vm_name)
             escaped_pubkey = pubkey.replace("'", "''")
-            try:
-                compute.virtual_machines.begin_run_command(
-                    self.resource_group,
-                    vm_name,
-                    {
-                        "command_id": "RunPowerShellScript",
-                        "script": [
-                            f"Set-Content -Path 'C:\\ProgramData\\ssh\\administrators_authorized_keys' -Value '{escaped_pubkey}'",
-                            "icacls 'C:\\ProgramData\\ssh\\administrators_authorized_keys' /inheritance:r /grant 'SYSTEM:(F)' /grant 'BUILTIN\\Administrators:(F)'",
-                            'netsh advfirewall firewall add rule name="OpenSSH-Server-In-TCP" dir=in action=allow protocol=TCP localport=22',
-                            "Start-Service sshd",
-                        ],
-                    },
-                ).result(timeout=300)
-                logger.info("launch: SSH key injected and firewall rule opened for %s", vm_name)
-            except Exception as exc:
-                logger.warning("launch: RunCommand failed for %s: %s — proceeding anyway", vm_name, exc)
+            run_cmd_payload = {
+                "command_id": "RunPowerShellScript",
+                "script": [
+                    f"Set-Content -Path 'C:\\ProgramData\\ssh\\administrators_authorized_keys' -Value '{escaped_pubkey}'",
+                    "icacls 'C:\\ProgramData\\ssh\\administrators_authorized_keys' /inheritance:r /grant 'SYSTEM:(F)' /grant 'BUILTIN\\Administrators:(F)'",
+                    'netsh advfirewall firewall add rule name="OpenSSH-Server-In-TCP" dir=in action=allow protocol=TCP localport=22',
+                    "Start-Service sshd",
+                ],
+            }
+            last_exc: Exception | None = None
+            for attempt in range(1, 6):
+                try:
+                    compute.virtual_machines.begin_run_command(
+                        self.resource_group, vm_name, run_cmd_payload
+                    ).result(timeout=300)
+                    logger.info("launch: SSH key injected and firewall rule opened for %s", vm_name)
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning(
+                        "launch: RunCommand attempt %d/5 failed for %s: %s", attempt, vm_name, exc
+                    )
+                    time.sleep(min(2**attempt, 30))
+            if last_exc is not None:
+                raise RuntimeError(
+                    f"RunCommand failed for {vm_name} after 5 attempts; last error: {last_exc}"
+                ) from last_exc
 
         # SSH + tunnel — clean up VM on any failure to avoid orphaned resources.
         primary_user = self.windows_admin_username if is_windows else "cube"
@@ -1244,6 +1255,21 @@ class AzureInfraConfig(InfraConfig):
                 endpoint = f"http://localhost:{local_port}"
                 endpoints = {}
                 tunnels = [tunnel]
+                # Open additional tunnels for ports the resource asks to expose.
+                # Each gets a unique host freeport so parallel workers don't collide.
+                extra_ports = getattr(resource, "forwarded_ports", []) or []
+                for vm_port in extra_ports:
+                    extra_local = free_port()
+                    logger.info(
+                        "launch: opening extra tunnel localhost:%d → %s:%d",
+                        extra_local,
+                        public_ip,
+                        vm_port,
+                    )
+                    tunnels.append(
+                        open_tunnel(public_ip, active_user, self.ssh_privkey_path, extra_local, vm_port)
+                    )
+                    endpoints[f"vm_port_{vm_port}"] = f"http://localhost:{extra_local}"
         except Exception:
             logger.warning("launch: SSH/tunnel failed — cleaning up VM %s", vm_name)
             self._delete_vm(vm_name, pip_name, nic_name)

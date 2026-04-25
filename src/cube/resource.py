@@ -173,6 +173,13 @@ class VMResourceConfig(ResourceConfig):
     os_profile at launch — admin credentials and SSH keys must already be baked into
     the image. If False, the image was sysprep /generalize'd and Azure applies fresh
     os_profile at first boot."""
+    forwarded_ports: list[int] = []
+    """Additional VM ports to expose on the host beyond the guest-agent port.
+    Each port gets its own SSH tunnel from a free host port to the named VM port.
+    The host-side URL appears in ResourceHandle.endpoints under the key
+    ``"vm_port_{port}"`` (e.g. ``"vm_port_9222"`` → ``"http://localhost:54321"``).
+    Use a freeport indirection — never assume host port == VM port — so multiple
+    parallel workers can share a host without colliding on a fixed local port."""
 
     def requirements(self) -> set[str]:
         return {"kvm"} if self.requires_kvm else set()
