@@ -7,6 +7,7 @@ Read them alongside tool.py, task.py, and benchmark.py.
 import pytest
 
 from cube.core import Action, Observation
+from cube.task import TaskMetadata
 from counter_cube import CounterBenchmarkConfig, CounterTaskConfig, CounterTool, CounterToolConfig
 from counter_cube.pluggable_tool import CounterToolPluggable
 
@@ -192,7 +193,7 @@ def test_increment_by_task(task_configs):
 def test_toolconfig_override():
     """Explicit tool_config on TaskConfig takes precedence over metadata defaults."""
     cfg = CounterTaskConfig(
-        task_id="count-to-3",
+        metadata=TaskMetadata(id="count-to-3", extra_info={"target": 3}),
         tool_config=CounterToolConfig(enable_increment_by=True),
     )
     task = cfg.make()

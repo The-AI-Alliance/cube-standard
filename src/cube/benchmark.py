@@ -418,14 +418,12 @@ class BenchmarkConfig(TypedBaseModel, ABC):
             if self.seed_generator is not None:
                 for seed in self.seed_generator(tm):
                     yield self.task_config_class(
-                        task_id=tm.id,
                         metadata=tm,
                         tool_config=self.default_tool_config,
                         seed=seed,
                     )
             else:
                 yield self.task_config_class(
-                    task_id=tm.id,
                     metadata=tm,
                     tool_config=self.default_tool_config,
                     seed=None,
@@ -879,9 +877,11 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
 
         Each emitted TaskConfig is the sub-config's own subclass (preserving
         its native type, metadata, and any subclass-specific fields) with
-        ``task_id`` set to ``"{sub_bench_name}/{task_id}"`` and ``sub_bench_name``
-        set to the sub-benchmark's name. No wrapper type — the clone stays a
-        fully-functional TaskConfig whose ``make()`` works standalone.
+        ``sub_bench_name`` set to the sub-benchmark's name. ``task_id`` is
+        derived from ``metadata.id`` and ``sub_bench_name`` by ``TaskConfig``
+        itself, so the prefix appears automatically. No wrapper type — the
+        clone stays a fully-functional TaskConfig whose ``make()`` works
+        standalone.
 
         ``task_ids`` (instance-level subset) filters at the composite level:
         if set, only prefixed ids in the list are emitted.
@@ -894,7 +894,7 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
                 # skip if this task is not in the allowed set
                 if allowed_task_ids is not None and prefixed_id not in allowed_task_ids:
                     continue
-                yield task_config.model_copy(update={"task_id": prefixed_id, "sub_bench_name": sub_bench_name})
+                yield task_config.model_copy(update={"sub_bench_name": sub_bench_name})
 
     def make(self, infra: InfraConfig | None = None) -> CompositeBenchmark:
         """Instantiate every sub-benchmark and wire them into a CompositeBenchmark.

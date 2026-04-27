@@ -21,7 +21,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Literal, Tuple
 
-from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny, model_validator
+from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
 
 from cube.container import Container, ContainerBackend, ContainerConfig
 from cube.core import (
@@ -366,12 +366,15 @@ class TaskConfig(ABC, TypedBaseModel):
     look up metadata; the config arrives complete and ``make()`` just uses
     ``self.metadata`` directly.
 
+    ``task_id`` is derived from ``metadata.id`` (prefixed with
+    ``sub_bench_name`` for composite-routed configs) so there is a single
+    source of truth.
+
     ``sub_bench_name`` is an optional routing hint used by
     ``CompositeBenchmark.spawn`` to dispatch a task to its origin
     sub-benchmark. Standalone benchmarks leave it None.
     """
 
-    task_id: str
     # ``SerializeAsAny`` preserves subclass-specific fields through JSON
     # round-trip. Every cube subclasses TaskMetadata with extra
     # per-task data — without this annotation those fields get silently
@@ -398,26 +401,13 @@ class TaskConfig(ABC, TypedBaseModel):
         ),
     )
 
-    @model_validator(mode="after")
-    def _check_metadata_stamp(self) -> "TaskConfig":
-        """Fail loudly on the driver if a custom ``get_task_configs()`` override
-        forgot to stamp the right ``TaskMetadata``.
-
-        Standalone configs: ``metadata.id`` must equal ``task_id``.
-        Composite-routed configs: ``task_id`` must be ``f"{sub_bench_name}/{metadata.id}"``.
-        Surfaces a clear error at emit time instead of a confusing
-        worker-side failure later.
-        """
-        expected = f"{self.sub_bench_name}/{self.metadata.id}" if self.sub_bench_name is not None else self.metadata.id
-        if self.task_id != expected:
-            raise ValueError(
-                f"TaskConfig metadata stamp mismatch: task_id={self.task_id!r} "
-                f"but metadata.id={self.metadata.id!r}"
-                + (f" with sub_bench_name={self.sub_bench_name!r}" if self.sub_bench_name else "")
-                + ". A custom BenchmarkConfig.get_task_configs() override must stamp "
-                "the matching TaskMetadata onto each emitted TaskConfig."
-            )
-        return self
+    @property
+    def task_id(self) -> str:
+        """Derived task identifier. Prefixed with ``sub_bench_name`` when set
+        (composite routing), otherwise just ``metadata.id``."""
+        if self.sub_bench_name is not None:
+            return f"{self.sub_bench_name}/{self.metadata.id}"
+        return self.metadata.id
 
     @abstractmethod
     def make(
