@@ -65,10 +65,14 @@ time — `install()` MUST NOT mutate it.
 ```python
 task_ids: list[str] | None = None          # None = all; populated by subset_from_*
 resources: list[ResourceConfig] = []       # resource dependencies (L2/L3)
-container_backend: ContainerBackend | None # forwarded to each Task
+container_backend: ContainerBackend | None # forwarded to each Task; DEPRECATED
 default_tool_config: ToolConfig | None     # default for tasks without their own
 seed_generator: AbstractSeedGenerator | None # yields seeds per TaskMetadata
 ```
+
+`container_backend` is deprecated (`Field(deprecated=True)`) and slated for
+removal once all in-tree benchmarks migrate to declaring container needs via
+`resources`. Setting it still works and is forwarded to every spawned task.
 
 Subsets are represented entirely by `task_ids` — no ClassVar shadowing or
 private-attr hacks. `model_copy(update={"task_ids": [...]})` is all that

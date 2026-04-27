@@ -471,6 +471,8 @@ class BenchmarkConfig(TypedBaseModel, ABC):
 
         # Deduplicate while preserving first-occurrence order.
         ordered = list(dict.fromkeys(task_ids))
+        if not ordered:
+            raise ValueError("The resulting task list cannot be empty.")
         return self.model_copy(update={"task_ids": ordered})
 
     def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "BenchmarkConfig":
@@ -557,7 +559,13 @@ class BenchmarkConfig(TypedBaseModel, ABC):
 
     @classmethod
     def load_task_execution_info(cls, task_id: str) -> dict[str, Any]:
-        """Read heavy per-task execution data from the cache. Called from ``TaskConfig.make`` on workers.
+        """Read heavy per-task execution data from the cache.
+
+        Called from ``BenchmarkConfig.get_task_configs()`` on the driver to
+        stamp ``TaskConfig.metadata.extra_info`` before configs are shipped
+        to workers, so workers never touch disk. Subclasses with heavy
+        install-time data override ``get_task_configs()`` to merge the
+        result into ``metadata.extra_info`` at emit time.
 
         Raises ``RuntimeError`` if the cache file is missing — signals that
         ``install()`` has not been run. Callers should not silently swallow

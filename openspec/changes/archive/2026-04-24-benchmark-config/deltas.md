@@ -38,7 +38,10 @@ identity and task registry.
 - `task_ids: list[str] | None = None` — new. `None` means all tasks in the
   ClassVar; subsetting sets it to a filtered list.
 - `resources: list[ResourceConfig] = []`
-- `container_backend: ContainerBackend | None = None`
+- `container_backend: ContainerBackend | None = None` — kept on
+  `BenchmarkConfig` for migration but marked `Field(deprecated=True)`.
+  Slated for removal once in-tree benchmarks declare container needs via
+  `resources`.
 - `default_tool_config: ToolConfig | None = None`
 - `seed_generator: AbstractSeedGenerator | None = None`
 
@@ -132,9 +135,10 @@ time (on the driver), so workers never touch disk.
 ## MODIFIED — Debug-flow infra injection (closes #96)
 **Spec:** testing
 
-- Module protocol: `get_debug_benchmark(infra: InfraConfig | None = None) -> BenchmarkConfig`.
+- Module protocol: `get_debug_benchmark() -> BenchmarkConfig` (zero args; infra
+  is supplied separately to the suite, not threaded through the factory).
 - `run_debug_suite(benchmark_name, module, *, max_steps, workers, infra=None)`
-  calls `module.get_debug_benchmark(infra)` then `config.make(infra)` under
+  calls `module.get_debug_benchmark()` then `config.make(infra)` under
   try/finally.
 - `assert_debug_tasks_reward_one(module, *, infra=None, max_steps)` — adds
   `infra` kwarg.
