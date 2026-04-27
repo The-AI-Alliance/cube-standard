@@ -16,13 +16,16 @@ Abstract classes:
         make(...) -> Task     instantiate the Task from serialized config data
 """
 
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Tuple
 
 from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
 
+from cube import get_cache_dir
 from cube.container import Container, ContainerBackend, ContainerConfig
 from cube.core import (
     Action,
@@ -53,7 +56,17 @@ STOP_ACTION = ActionSchema(name="final_step", description="Stop the task executi
 
 class TaskMetadata(TypedBaseModel):
     """
-    Metadata describing a task.
+    Lightweight, eager-loaded metadata describing a task.
+
+    Lives in the wheel — ships next to the cube package and powers
+    ``cube list``, registry listings, glob-based subsetting, and human
+    inspection. Heavy per-task data (problem statements, patches, archives,
+    evaluator scripts, …) does NOT belong here; put it on a
+    ``TaskExecutionInfo`` subclass and surface it via ``Task.execution_info``.
+
+    Cube authors needing per-task fields beyond the defaults subclass
+    ``TaskMetadata`` with named, typed fields. Polymorphism is preserved
+    through the ``TypedBaseModel`` ``_type`` discriminator.
 
     Used by:
     - Task: metadata attribute
@@ -65,7 +78,6 @@ class TaskMetadata(TypedBaseModel):
         abstract_description (str): Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.reset(). (default: "")
         recommended_max_steps (int | None): Recommended maximum number of steps to help harness prevent infinite running agents. Not a hard limit, the task can still run longer if needed. (default: None)
         container_config (ContainerConfig | None): Optional container configuration for this task (default: None, meaning no container needed).
-        extra_info (dict[str, Any]): Additional task metadata, eg: difficulty level, domain, etc. (default: empty dict)
     """
 
     id: str = Field(..., description="Unique task identifier")
@@ -82,9 +94,23 @@ class TaskMetadata(TypedBaseModel):
         default=None,
         description="Optional container configuration for this task (defaults to None, meaning no container needed).",
     )
-    extra_info: dict[str, Any] = Field(
-        default_factory=dict, description="Additional task metadata, eg: difficulty level, domain, etc."
-    )
+
+
+class TaskExecutionInfo(TypedBaseModel):
+    """Heavy, lazy per-task execution data surfaced via ``Task.execution_info``.
+
+    Cube authors subclass with typed named fields (problem statements,
+    patches, archives, evaluator scripts, …). Polymorphic via the
+    ``TypedBaseModel`` ``_type`` discriminator.
+
+    Populated on the worker — typically inside ``TaskConfig.make()`` by
+    validating ``cls.load_task_execution_info(task_id)`` against the
+    subclass, but ``Task.model_post_init`` and ``Task.reset()`` are also
+    valid hydration points.
+
+    Cubes with no heavy data leave the slot ``None``; the base class is
+    instantiable but carries no fields.
+    """
 
 
 class Task(TypedBaseModel, ABC):
@@ -113,6 +139,16 @@ class Task(TypedBaseModel, ABC):
 
     # Serializable fields
     metadata: TaskMetadata
+    # ``SerializeAsAny`` preserves subclass-specific fields on the
+    # ``TaskExecutionInfo`` polymorphic value through JSON round-trip.
+    execution_info: SerializeAsAny[TaskExecutionInfo] | None = Field(
+        default=None,
+        description=(
+            "Heavy, lazy per-task execution data (problem statements, patches, archives, …). "
+            "Populated inside ``TaskConfig.make()`` / ``Task.model_post_init`` / "
+            "``Task.reset()``. Cubes with no heavy data leave this None."
+        ),
+    )
     tool_config: ToolConfig = Field(description="Tool configuration used to instantiate the tool.")
     container_backend: ContainerBackend | None = Field(
         default=None, description="Optional backend used to launch a container during model_post_init."
@@ -420,5 +456,66 @@ class TaskConfig(ABC, TypedBaseModel):
         ...     runtime_context=runtime_context,
         ...     container_backend=container_backend,
         ... )
+
+        Cubes with heavy execution data (problem statements, patches, …)
+        subclass ``TaskExecutionInfo`` and populate ``Task.execution_info``
+        in this method, typically by calling
+        ``MyTaskExecutionInfo.model_validate(cls.load_task_execution_info(self.task_id))``.
+        By convention, implementations call ``type(self).verify_installed()``
+        at the top so misconfigured workers fail fast with an actionable
+        error.
         """
         pass
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Per-task execution cache (worker-side)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @classmethod
+    def task_execution_cache_dir(cls) -> Path:
+        """Directory where heavy per-task execution data is cached on this worker.
+
+        Default: ``~/.cube/<top-level-package-name>/tasks_execution_info/``
+        where ``<top-level-package-name>`` is ``cls.__module__.split(".")[0]``.
+        Override on subclasses whose owning benchmark uses a non-default
+        cache layout (e.g. when the benchmark display name differs from the
+        Python package name).
+
+        ``BenchmarkConfig.install()`` writes via
+        ``cls.task_config_class.task_execution_cache_dir()`` so the path is
+        defined exactly once.
+        """
+        return get_cache_dir(cls.__module__.split(".")[0]) / "tasks_execution_info"
+
+    @classmethod
+    def load_task_execution_info(cls, task_id: str) -> dict[str, Any]:
+        """Read the per-task execution-info dict written by ``BenchmarkConfig.install()``.
+
+        Returns the raw JSON-loaded dict. Cube authors typically wrap this in
+        ``MyTaskExecutionInfo.model_validate(...)`` inside ``make()`` to get
+        a typed ``TaskExecutionInfo`` instance.
+
+        Raises ``RuntimeError`` with an actionable message if the cache file
+        is missing — signals that ``install()`` has not run on this worker.
+        """
+        cache_file = cls.task_execution_cache_dir() / f"{task_id}.json"
+        if not cache_file.exists():
+            raise RuntimeError(
+                f"No execution data for task_id={task_id!r} at {cache_file}. "
+                f"Run `cube install <bench>` (or `<OwnerBenchmarkConfig>.install()`) "
+                f"to populate the per-task execution cache on this worker."
+            )
+        return json.loads(cache_file.read_text())
+
+    @classmethod
+    def verify_installed(cls) -> None:
+        """Optional fail-fast check that data this task relies on is locally available.
+
+        Default: no-op. Cube authors override with a check appropriate to
+        their cache (e.g. ``not list(cls.task_execution_cache_dir().iterdir())``
+        or ``HF_HOME / 'datasets' / '...'.exists()``).
+
+        Convention: ``TaskConfig.make()`` calls ``type(self).verify_installed()``
+        at the top so misconfigured workers fail fast with an actionable
+        error instead of timing out on a surprise download.
+        """

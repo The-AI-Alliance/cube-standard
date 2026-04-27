@@ -103,7 +103,6 @@ _TASK_META_1 = {
     "abstract_description": "",
     "recommended_max_steps": None,
     "container_config": None,
-    "extra_info": {},
 }
 
 _TASK_META_2 = {**_TASK_META_1, "id": "task-2"}
