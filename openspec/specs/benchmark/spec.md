@@ -33,8 +33,11 @@ class BenchmarkMetadata(TypedBaseModel):
     tags: list[str] = []
     reset_isolation: ResetIsolation | None = None  # snapshot/restart/app_level/new_instance
     named_subsets: dict[str, tuple[str, str]] = {} # name → (glob_key, glob_pattern)
-    extra_info: dict[str, Any] = {}
 ```
+
+Cube authors needing additional benchmark-level fields subclass
+`BenchmarkMetadata` with named typed fields. The base class accepts only
+the framework-defined fields above.
 
 `reset_isolation` is informational for harness users to reason about parallelism:
 - `SNAPSHOT` — VM reverts to savestate (~5s)
@@ -91,31 +94,41 @@ happens.
 - `subset_from_list(tasks, benchmark_name_suffix="custom")` → new
   `BenchmarkConfig` with `task_ids` populated. Accepts ids or `TaskMetadata`
   objects. Duplicates deduped (first-wins order).
-- `subset_from_glob(glob_key, pattern)` → new `BenchmarkConfig`. `glob_key` can
-  be any `TaskMetadata` field or `extra_info.<key>` via dot-notation.
+- `subset_from_glob(glob_key, pattern)` → new `BenchmarkConfig`. `glob_key` is
+  any top-level field on the (subclassed) `TaskMetadata` — built-ins like
+  `id` / `split` / `abstract_description`, or any named field declared by a
+  `TaskMetadata` subclass.
 - `named_subsets()` (classmethod) → list of names from
   `benchmark_metadata.named_subsets`.
 - `named_subset(name)` → new `BenchmarkConfig` via `subset_from_glob(*...)`.
 
 **Class-level data lifecycle (classmethods):**
 
-- `install()` — populate `task_execution_cache_dir()` with per-task heavy data
-  needed at task-run time (SWE-bench problem statements, OSWorld evaluator
-  configs). Default: no-op. Must be idempotent. MUST NOT mutate
-  `task_metadata`.
+- `install()` — populate the per-task execution cache with heavy data
+  needed at task-run time (SWE-bench problem statements, OSWorld
+  evaluator configs). Default: no-op. Must be idempotent. MUST NOT
+  mutate `task_metadata`. By convention writes one JSON per task to
+  `cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"` —
+  the path has a single owner (`TaskConfig`), and the same cache dir is
+  read back on workers via `TaskConfig.load_task_execution_info(task_id)`.
 - `uninstall()` — remove assets installed by `install()`. Default: no-op.
 - `cache_dir()` → `~/.cube/<name>/` (overridable).
-- `task_execution_cache_dir()` → `~/.cube/<name>/tasks_execution_info/`.
-- `load_task_execution_info(task_id)` → dict. Reads
-  `{cache_dir}/tasks_execution_info/{task_id}.json`; raises `RuntimeError` if
-  missing. Called from `TaskConfig.make` on workers.
+
+The per-task execution cache helpers (`task_execution_cache_dir()`,
+`load_task_execution_info()`, `verify_installed()`) live on `TaskConfig`,
+not on `BenchmarkConfig` — see [task/spec.md](../task/spec.md) for the
+worker-side surface. `BenchmarkConfig.install()` writes via
+`cls.task_config_class.task_execution_cache_dir()` so the path has a
+single definition.
 
 **Metadata loaders (staticmethods, also usable at class definition):**
 - `benchmark_metadata_from_{json,csv}(path)` → `BenchmarkMetadata`
 - `task_metadata_from_{json,csv}(path)` → `dict[str, TaskMetadata]`
 
-CSV complex fields (`authors`, `tags`, `requirements`, `extra_info`,
-`container_config`) must be JSON-encoded strings in their cells.
+CSV complex fields (`authors`, `tags`, `requirements`, `container_config`)
+must be JSON-encoded strings in their cells. Subclass-specific fields are
+encoded as their own columns; complex types in subclass fields go through
+JSON-encoded strings as well.
 
 **The factory:**
 - `make(infra: InfraConfig | None = None) -> Benchmark` — for every
@@ -173,9 +186,9 @@ passed to every Task spawned from that benchmark.
    and MUST NOT mutate `task_metadata`.
 5. `spawn()` is pure creation — no subprocesses, no servers, no network.
    Server semantics live in the server layer.
-6. `TaskConfig.make()` on a worker looks up metadata via
-   `OwnerBenchmarkConfig.task_metadata[self.task_id]` — class-level access is
-   stable across subsets.
+6. `TaskConfig` is self-contained on workers. `metadata` (and any
+   `execution_info` populated inside `make()`) travel with the config;
+   workers never import the owning `BenchmarkConfig`.
 
 ## Contracts for implementers
 
@@ -202,7 +215,10 @@ class SWEBenchConfig(BenchmarkConfig):
     @classmethod
     def install(cls) -> None:
         # Download problem statements, patches, tests — write per-task JSON to
-        # cls.task_execution_cache_dir(). Idempotent. task_metadata untouched.
+        # cls.task_config_class.task_execution_cache_dir(). Idempotent.
+        # task_metadata untouched. Read back on workers via
+        # TaskConfig.load_task_execution_info(task_id) and validated against
+        # a typed TaskExecutionInfo subclass surfaced as Task.execution_info.
         ...
 ```
 
@@ -220,7 +236,7 @@ class MyBench(Benchmark):
 
 **Typical usage:**
 ```python
-config = MyBenchmarkConfig().named_subset("l1").subset_from_glob("extra_info.difficulty", "easy")
+config = MyBenchmarkConfig().named_subset("l1").subset_from_glob("difficulty", "easy")
 config.install()                    # one-time: populate task-exec cache
 with config.make(infra) as bench:   # resources provisioned + setup() run
     for tc in config.get_task_configs():
@@ -314,5 +330,6 @@ with suite.make(infra) as bench:
 - `install()` never populates `task_metadata`. That registry is declared at
   class-definition time (directly or via file auto-load). `install()` writes
   heavy execution-time data to the per-task cache under
-  `task_execution_cache_dir()`, read back by `TaskConfig.make` via
-  `load_task_execution_info(task_id)`.
+  `cls.task_config_class.task_execution_cache_dir()`, read back on workers
+  via `TaskConfig.load_task_execution_info(task_id)` and surfaced as
+  `Task.execution_info` (a typed `TaskExecutionInfo` subclass).

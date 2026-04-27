@@ -19,17 +19,55 @@ class TaskMetadata(TypedBaseModel):
     abstract_description: str = ""             # for search/filtering only — NOT the objective
     recommended_max_steps: int | None = None   # harness hint, not enforced
     container_config: ContainerConfig | None = None
-    extra_info: dict[str, Any] = {}
 ```
+
+`TaskMetadata` is the lightweight, eager-loaded view of a task: it ships in
+the wheel and powers `cube list`, registry listings, glob-based subsetting,
+and human inspection. Cube authors needing additional per-task fields
+subclass `TaskMetadata` with named typed fields; polymorphism is preserved
+through the `TypedBaseModel` `_type` discriminator. The base class accepts
+only the framework-defined fields above.
+
+Heavy per-task data (problem statements, patches, archives, evaluator
+scripts, …) lives on a `TaskExecutionInfo` subclass surfaced via
+`Task.execution_info`, not on `TaskMetadata`. See below.
 
 The actual task objective is surfaced in the first `Observation` returned by `reset()`.
 `abstract_description` is for tooling (search, subsetting), never to be shown to the agent.
+
+### `TaskExecutionInfo` (serializable)
+```python
+class TaskExecutionInfo(TypedBaseModel):
+    """Heavy, lazy per-task execution data."""
+```
+
+Subclassed by cubes that need heavy per-task data, e.g.:
+```python
+class SWEBenchExecutionInfo(TaskExecutionInfo):
+    problem_statement: str
+    patch: str
+    test_patch: str
+    fail_to_pass: list[str]
+    pass_to_pass: list[str]
+```
+
+Polymorphic via the `TypedBaseModel` `_type` discriminator. Populated on
+the worker — typically inside `TaskConfig.make()` by validating
+`cls.load_task_execution_info(self.task_id)` against the subclass, but
+`Task.model_post_init` and `Task.reset()` are also valid hydration points.
+The framework never reads `execution_info` itself; it is for cube authors
+to surface domain-specific heavy data with autocomplete and Pydantic
+validation.
+
+Cubes with no heavy data leave the slot `None`; the base class is
+instantiable but carries no fields.
 
 ### `Task` (abstract, Pydantic)
 ```python
 class Task(TypedBaseModel, ABC):
     # Serializable fields
     metadata: TaskMetadata
+    execution_info: TaskExecutionInfo | None = None    # heavy lazy data; populated on the worker
     tool_config: ToolConfig
     container_backend: ContainerBackend | None = None
     runtime_context: RuntimeContext | None = None      # from Benchmark._setup()
@@ -40,6 +78,18 @@ class Task(TypedBaseModel, ABC):
     _tool: AbstractTool | None
     _container: Container | None
 ```
+
+`execution_info` is the typed surface for heavy per-task data. Cubes
+populate it from one of three places:
+- inside `TaskConfig.make()` — most common; validate
+  `cls.load_task_execution_info(self.task_id)` against the cube's
+  `TaskExecutionInfo` subclass and pass to the `Task` constructor.
+- inside `Task.model_post_init` — for cubes that prefer hydration during
+  Task construction.
+- inside `Task.reset()` — for cubes that defer hydration to first reset.
+
+Tasks read typed fields directly: `self.execution_info.problem_statement`,
+`self.execution_info.patch`, …
 
 `model_post_init` (runs after Pydantic `__init__`):
 1. If `container_backend` and `metadata.container_config` are both set, launch the container.
@@ -112,6 +162,18 @@ class TaskConfig(TypedBaseModel, ABC):
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> Task
+
+    @classmethod
+    def task_execution_cache_dir(cls) -> Path:
+        """Default: ~/.cube/<top-level-package-name>/tasks_execution_info/."""
+
+    @classmethod
+    def load_task_execution_info(cls, task_id: str) -> dict[str, Any]:
+        """Read processed per-task data written by BenchmarkConfig.install()."""
+
+    @classmethod
+    def verify_installed(cls) -> None:
+        """Optional fail-fast check. Default: no-op."""
 ```
 
 **Self-contained unit.** Workers receive a `TaskConfig` and have everything
@@ -122,10 +184,37 @@ emitted config by `BenchmarkConfig.get_task_configs()` on the driver).
 invariant of the layer: the serialization boundary is self-describing.
 
 Subclasses that carry heavy install-time data (e.g. SWE-bench problem
-statements, OSWorld evaluator configs) override
-`BenchmarkConfig.get_task_configs()` to merge
-`load_task_execution_info(task_id)` into `metadata.extra_info` at emit time,
-so the worker never touches disk.
+statements, OSWorld evaluator configs) declare a `TaskExecutionInfo`
+subclass for the heavy fields and populate `Task.execution_info` inside
+`TaskConfig.make()` — typically by calling
+`cls.load_task_execution_info(self.task_id)` (read from the per-task
+on-disk cache) and validating the resulting dict against the
+`TaskExecutionInfo` subclass. The cache itself is written by
+`BenchmarkConfig.install()` — operators run `cube install <bench>` once
+per worker environment.
+
+**Per-task cache helpers (worker-side classmethods).**
+- `task_execution_cache_dir()` — default
+  `~/.cube/<top-level-package-name>/tasks_execution_info/` where
+  `<top-level-package-name>` is `cls.__module__.split(".")[0]`. Override
+  on subclasses whose owning benchmark uses a non-default cache layout
+  (e.g. when the benchmark display name differs from the Python package
+  name). `BenchmarkConfig.install()` writes via
+  `cls.task_config_class.task_execution_cache_dir()` so the path has a
+  single owner.
+- `load_task_execution_info(task_id)` — reads
+  `task_execution_cache_dir() / f"{task_id}.json"`. Raises `RuntimeError`
+  with an actionable remediation message if the file is missing.
+- `verify_installed()` — optional fail-fast check that data this task
+  relies on is locally available on this worker. Default: no-op. Cube
+  authors override with a check appropriate to their cache. Convention:
+  `TaskConfig.make()` calls `type(self).verify_installed()` at the top
+  so misconfigured workers fail fast with an actionable error instead of
+  timing out on a surprise download.
+
+These helpers live on `TaskConfig` (worker-side) so workers do not need
+to import the owning `BenchmarkConfig` to verify their environment or
+resolve the cache path.
 
 **`sub_bench_name`** is an optional routing tag. Standalone benchmarks leave
 it None. `CompositeBenchmarkConfig.get_task_configs()` sets it to the
