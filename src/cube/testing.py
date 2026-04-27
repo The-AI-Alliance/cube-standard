@@ -292,7 +292,7 @@ def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig 
             return False, "no debug task configs", ""
         tc = configs[0]
         runtime_context = getattr(benchmark, "_runtime_context", None)
-        container_backend = getattr(benchmark, "container_backend", None)
+        container_backend = getattr(config, "container_backend", None)
 
         def _reset_once() -> object:
             t = tc.make(runtime_context=runtime_context, container_backend=container_backend)
