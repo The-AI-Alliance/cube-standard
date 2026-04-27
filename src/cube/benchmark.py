@@ -471,6 +471,8 @@ class BenchmarkConfig(TypedBaseModel, ABC):
 
         # Deduplicate while preserving first-occurrence order.
         ordered = list(dict.fromkeys(task_ids))
+        if not ordered:
+            raise ValueError("The resulting task list cannot be empty.")
         return self.model_copy(update={"task_ids": ordered})
 
     def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "BenchmarkConfig":
