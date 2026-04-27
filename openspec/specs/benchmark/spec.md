@@ -74,6 +74,13 @@ seed_generator: AbstractSeedGenerator | None # yields seeds per TaskMetadata
 removal once all in-tree benchmarks migrate to declaring container needs via
 `resources`. Setting it still works and is forwarded to every spawned task.
 
+`seed_generator` accepts any `AbstractSeedGenerator` subclass. Note that
+`AbstractSeedGenerator` is itself a `TypedBaseModel` (changed from a plain
+`BaseModel` in the BenchmarkConfig split): cube authors with custom seed
+generators must ensure their subclasses inherit through `TypedBaseModel` and
+populate the `_type` discriminator, otherwise deserialization on workers will
+fail with a `_type`-not-found error.
+
 Subsets are represented entirely by `task_ids` — no ClassVar shadowing or
 private-attr hacks. `model_copy(update={"task_ids": [...]})` is all that
 happens.

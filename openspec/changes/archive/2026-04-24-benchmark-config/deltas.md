@@ -169,6 +169,17 @@ authors inside `_setup()`, now handled by the factory).
 - `cube list`, `cube test` surface `BenchmarkConfig` classes; `cube test`
   accepts `--infra-config` to inject an `InfraConfig` into the debug flow.
 
+## MODIFIED — `AbstractSeedGenerator` is a `TypedBaseModel`
+**Spec:** benchmark
+
+`AbstractSeedGenerator` was changed from a plain Pydantic `BaseModel` to a
+`TypedBaseModel`. This is a **silent breaking change** for cubes that
+declare a custom seed generator: subclasses authored against the old base
+will deserialize on workers without the `_type` discriminator and fail
+with a `_type`-not-found error. Migration: re-import nothing — the symbol
+is the same — but ensure any custom subclass survives a JSON round-trip
+through `TypedBaseModel.model_validate(json.loads(json.dumps(seed_gen.model_dump(mode="json"))))`.
+
 ---
 
 See [proposal.md](proposal.md) for rationale and the migration plan.
