@@ -143,7 +143,7 @@ mkdir -p /data
 # ── install tools ─────────────────────────────────────────────────────────────
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq qemu-utils qemu-system-x86 ovmf wget curl unzip netcat-openbsd
+apt-get install -y -qq qemu-utils qemu-system-x86 ovmf wget curl unzip netcat-openbsd aria2
 
 wget -q "https://aka.ms/downloadazcopy-v10-linux" -O /tmp/azcopy.tar.gz
 tar -xzf /tmp/azcopy.tar.gz -C /tmp --wildcards "*/azcopy" 2>/dev/null || \\
@@ -158,7 +158,10 @@ if [ -n "{cache_sas_url}" ]; then
     azcopy copy "{cache_sas_url}" /data/source.download --blob-type BlockBlob
 else
     echo "[bootstrap] Downloading: {hf_url}"
-    wget --progress=dot:giga -O /data/source.download "{hf_url}"
+    # aria2c with 16 parallel connections — single-threaded wget capped at 2-8 MB/s
+    # from HF→Azure long-haul; parallel chunks typically reach 50-200 MB/s.
+    aria2c --console-log-level=warn --summary-interval=10 -x 16 -s 16 \\
+           -d /data -o source.download "{hf_url}"
 fi
 echo "[bootstrap] Downloaded: $(du -sh /data/source.download)"
 
