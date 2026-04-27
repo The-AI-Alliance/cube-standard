@@ -4,7 +4,6 @@
     "split": "test",
     "abstract_description": "TODO: one-sentence description of what this task tests",
     "recommended_max_steps": 10,
-    "container_config": null,
-    "extra_info": {}
+    "container_config": null
   }
 ]

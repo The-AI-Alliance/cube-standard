@@ -30,7 +30,10 @@ if your tasks are self-contained.
 
 install() / uninstall() are optional classmethods on BenchmarkConfig for
 one-time setup such as downloading datasets or pulling Docker images.  The base
-class provides no-op defaults.
+class provides no-op defaults.  When your cube ships heavy per-task data,
+write each task's processed JSON to
+``cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"`` —
+workers read it back via ``TaskConfig.load_task_execution_info(task_id)``.
 """
 
 from typing import ClassVar
@@ -68,21 +71,39 @@ class CubeBenchmarkConfig(BenchmarkConfig):
         requirements={},  # e.g. {"docker": True}
         num_tasks=1,  # update when you add more tasks
         tags=[],  # e.g. ["web", "navigation"]
-        extra_info={},
     )
 
     task_metadata: ClassVar[dict[str, TaskMetadata]] = {
-        # TODO: add one TaskMetadata per task.
-        # Keys must match TaskMetadata.id exactly.
+        # TODO: add one TaskMetadata per task. Keys must match TaskMetadata.id.
+        #
+        # For per-task fields beyond the defaults (id, split, abstract_description,
+        # recommended_max_steps, container_config), declare a TaskMetadata
+        # subclass with named typed fields and use it here. Heavy data
+        # (problem statements, patches, archives) goes on a TaskExecutionInfo
+        # subclass instead — see task.py and CubeBenchmarkConfig.install() below.
         "example-task": TaskMetadata(
             id="example-task",
             split="test",  # "train", "val", or "test"
             abstract_description="TODO: one-sentence description of what this task tests",
             recommended_max_steps=10,
             container_config=None,  # set if task needs a container
-            extra_info={},  # reserved for heavy execution data too large for task_metadata.json (e.g. problem statements, patches); merge in via get_task_configs() + load_task_execution_info(). For lightweight per-task params, add typed fields to a TaskMetadata subclass instead.
         ),
     }
 
     task_config_class: ClassVar[type[TaskConfig]] = CubeTaskConfig
     benchmark_class: ClassVar[type[Benchmark]] = CubeBenchmark
+
+    # Optional: override install() to populate the per-task execution cache
+    # with heavy data (problem statements, patches, archives, …). Each
+    # processed task is written to
+    # ``cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"``
+    # and read back by workers via ``TaskConfig.load_task_execution_info``.
+    #
+    # @classmethod
+    # def install(cls) -> None:
+    #     import json
+    #     cache_dir = cls.task_config_class.task_execution_cache_dir()
+    #     cache_dir.mkdir(parents=True, exist_ok=True)
+    #     for task_id, _meta in cls.task_metadata.items():
+    #         payload = {"instruction": "..."}  # whatever fields CubeExecutionInfo declares
+    #         (cache_dir / f"{task_id}.json").write_text(json.dumps(payload))

@@ -40,8 +40,10 @@ class CubeToolConfig(ToolConfig):
     """Serialisable configuration that controls which actions are available.
 
     Add boolean / int / str fields here to toggle optional actions or tune
-    the environment.  CubeTaskConfig.make() picks these up from
-    metadata.extra_info["tool_config"] (see task.py).
+    the environment. ``CubeTaskConfig.make()`` instantiates the default
+    config when no per-task override is set; pass a populated
+    ``CubeToolConfig`` on the ``TaskConfig`` instance to vary tool behaviour
+    per task or per experiment.
     """
 
     # TODO: add config fields, e.g.:
