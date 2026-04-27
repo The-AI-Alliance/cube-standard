@@ -19,10 +19,10 @@ The compliance suite is strict: every debug task must reach full reward. Off-by-
 ## Subtler traps
 
 ### Heavy data inlined into task_metadata
-Keep the shipped JSON lean (~1 byte per task average — ~1 MB for 1000 tasks, ~2 MB for 2000 tasks). If you need MB of per-task data, populate the cache via `BenchmarkConfig.install()`, then merge into `metadata.extra_info` inside `BenchmarkConfig.get_task_configs()` (override it to call `self.load_task_execution_info(task_id)` and stamp into each emitted `TaskConfig`). Workers receive fully-populated `TaskConfig`s and never touch disk. See `cube-harness/cubes/swebench-live-cube`.
+Keep the shipped JSON lean (~1 KB per task average — ~1 MB for 1000 tasks, ~2 MB for 2000 tasks). If you need more than that, declare a typed `TaskExecutionInfo` subclass for it, populate the on-disk cache one-time per worker environment via `BenchmarkConfig.install()` (writing one JSON per task to `cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"`), and hydrate `Task.execution_info` inside `TaskConfig.make()` by validating `cls.load_task_execution_info(self.task_id)` against the subclass. See `cube-harness/cubes/swebench-live-cube` for the canonical pattern; operators run `cube install <bench>` (Dockerfile / init container / shared volume) so workers never download lazily.
 
-### Using `extra_info` for light structured fields
-If you're reaching for `extra_info` to hold per-task metadata (repo, base_commit, instruction, splits, log_parser, container image, …), promote those to first-class fields on a custom `TaskMetadata` subclass instead. `extra_info` is reserved for heavy runtime data populated lazily via `install()`, not light structured metadata. `extra_info` should be empty in the shipped `task_metadata.json`.
+### Using stringly-typed dicts for per-task fields
+For per-task metadata (repo, base_commit, instruction, splits, log_parser, container image, …), declare a `TaskMetadata` subclass with named typed fields. The base `TaskMetadata` accepts only the framework-defined fields; everything else goes on a subclass.
 
 ### Bulk data committed under src/<pkg>/
 Datasets, archives, fixtures, etc. should be auto-downloaded by `scripts/create_task_metadata.py` into `benchmark.cache_dir()` (typically `~/.cube/<benchmark-id>/`), not committed under `src/<pkg>/data/` or similar. In-tree data bloats wheels, complicates distribution, and hides the regeneration path.

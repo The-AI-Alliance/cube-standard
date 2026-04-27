@@ -15,8 +15,7 @@ Registered in the registry today:
 
 There are also cubes in `cube-harness/cubes/` that are **not yet in the registry** but are useful as shape references:
 
-- `swebench-verified`, `swebench-live-cube` — per-task Docker images (currently limited by #300; use for the `extra_info` + `install()` pattern)
-- `terminalbench` — shell / terminal-based tasks (per-task Docker)
+- `swebench-verified-cube`, `swebench-live-cube`, `terminalbench-cube` — share the same shape: typed `TaskMetadata` subclass (lightweight public fields like `repo`, `base_commit`, `version`, `difficulty`, `tags`), typed `TaskExecutionInfo` subclass for heavy per-task data (problem statement, patch, test patch, archive, instruction), `BenchmarkConfig.install()` writes the per-task cache, and per-task containers are launched via `infra.launch()` (typed `infra: InfraConfig` field on the BenchmarkConfig subclass). Use these as the canonical reference for any "wrap a coding / shell / patch benchmark with heavy per-task data" shape.
 
 ## Fetch strategy
 
@@ -41,8 +40,8 @@ Pull at minimum: `benchmark.py`, `task.py`, `tool.py`, `debug.py`, `pyproject.to
 | "Web pages", "HTML", "DOM", "click / type / submit" | `miniwob` or `webarena-verified` |
 | "Desktop", "Ubuntu", "LibreOffice", "screenshot + click" | `osworld-cube` |
 | "ServiceNow" / "enterprise SaaS" / "our platform already has tasks" | `workarena` |
-| "Terminal", "shell commands", "file system" | `terminalbench` (per-task Docker — flag #300) |
-| "Coding", "repo", "fix the bug", "patch" | `swebench-verified` / `swebench-live-cube` (per-task Docker + heavy `extra_info` — flag #300; show `extra_info` pattern) |
+| "Terminal", "shell commands", "file system" | `terminalbench-cube` (per-task containers via `infra.launch()`, typed `TaskExecutionInfo` for the per-task archive + instruction) |
+| "Coding", "repo", "fix the bug", "patch" | `swebench-verified-cube` / `swebench-live-cube` (per-task containers via `infra.launch()`, typed `TaskExecutionInfo` for problem statement + patch + tests; show the install-time data pattern) |
 | "Audio", "video", "stream" | **Unsupported** — streaming not in protocol yet. Flag. |
 | "Multiple agents cooperating" | **Unsupported** — single-agent only for now. Flag; suggest modeling as richer action set. |
 

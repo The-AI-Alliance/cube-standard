@@ -64,25 +64,52 @@ class MyTaskMetadata(TaskMetadata):
     log_parser: str
 ```
 
-**Keep it lightweight.** Target ~1 byte per task average (~1 MB for 1000 tasks, ~2 MB for 2000 tasks). `extra_info` stays empty here; use it only for the heavy-data pattern below.
+**Keep it lightweight.** Target ~1 KB per task average (~1 MB for 1000 tasks, ~2 MB for 2000 tasks). Anything heavier goes on a typed `TaskExecutionInfo` subclass via the install pattern below.
 
-### Heavy per-task data: use `extra_info`, not the shipped JSON
+### Heavy per-task data: typed `TaskExecutionInfo` + `BenchmarkConfig.install()`
 
-If a task needs heavy data (problem statements, binaries, evaluation code, patches), do NOT put it in the shipped `task_metadata`. Pattern:
+If a task needs heavy data (problem statements, binaries, evaluation code, patches, archives), declare a `TaskExecutionInfo` subclass for it and populate `Task.execution_info` lazily on workers. Pattern:
 
-1. `BenchmarkConfig.install()` populates a per-task execution cache on disk (HF download, repo clone, archive extraction, …). **Cache is NOT committed.**
-2. Override `BenchmarkConfig.get_task_configs()` to merge in the heavy bits at emit time on the driver:
+1. Declare the typed shape next to your `TaskConfig`:
    ```python
-   def get_task_configs(self):
-       for tc in super().get_task_configs():
-           exec_info = self.load_task_execution_info(tc.task_id)
-           stamped = tc.model_copy(update={"metadata": tc.metadata.model_copy(update={"extra_info": exec_info})})
-           yield stamped
-   ```
-3. Workers receive fully-stamped `TaskConfig`s — they read `self.metadata.extra_info` directly, no disk access needed.
-4. The harness is expected to call `BenchmarkConfig.install()` before dispatching tasks.
+   from cube.task import TaskExecutionInfo
 
-Reference: `cube-harness/cubes/swebench-live-cube/src/swebench_live_cube/benchmark.py`.
+   class MyExecutionInfo(TaskExecutionInfo):
+       problem_statement: str
+       patch: str
+       test_patch: str
+       fail_to_pass: list[str]
+       pass_to_pass: list[str]
+   ```
+2. `BenchmarkConfig.install()` writes one JSON per task to
+   `cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"`
+   (HF download, repo clone, archive extraction, …). Operators run
+   `cube install <bench>` once per worker environment (Dockerfile / init
+   container / shared volume) — **the cache is NOT committed.**
+3. `TaskConfig.make()` hydrates `Task.execution_info` from the cache:
+   ```python
+   class MyTaskConfig(TaskConfig):
+       @classmethod
+       def verify_installed(cls) -> None:
+           if not list(cls.task_execution_cache_dir().iterdir()):
+               raise RuntimeError("Run `cube install <bench>` first.")
+
+       def make(self, runtime_context=None, container_backend=None):
+           type(self).verify_installed()
+           exec_info = MyExecutionInfo.model_validate(
+               self.load_task_execution_info(self.task_id)
+           )
+           return MyTask(
+               metadata=self.metadata,
+               execution_info=exec_info,
+               tool_config=self.tool_config or MyToolConfig(),
+               runtime_context=runtime_context,
+               container_backend=container_backend,
+           )
+   ```
+4. The task reads typed fields directly: `self.execution_info.problem_statement`, `self.execution_info.patch`, etc. — autocomplete, validation, no string keys.
+
+Reference: `cube-harness/cubes/swebench-live-cube/src/swebench_live_cube/`.
 
 ### Layer 2 checklist
 - [ ] `reset()` calls `self.tool.reset()`.
@@ -158,7 +185,7 @@ Users get `benchmark.subset_from_name("test")`. Do NOT ship separate metadata fi
 - [ ] `close()` tears down whatever `_setup()` created, idempotently.
 - [ ] If Option B: `scripts/create_task_metadata.py` exists, is idempotent, and has been run.
 - [ ] If splits: declared as `named_subsets`, not separate files.
-- [ ] If heavy per-task data: loaded lazily via `install()` + `extra_info`.
+- [ ] If heavy per-task data: declared on a typed `TaskExecutionInfo` subclass, written to the per-task cache by `install()`, hydrated on workers in `TaskConfig.make()` via `cls.load_task_execution_info(self.task_id)`.
 
 ## Layer 4 — `debug.py`
 
