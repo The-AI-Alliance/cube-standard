@@ -178,7 +178,6 @@ def test_benchmark_info(bench_client):
         "tags": [],
         "reset_isolation": None,
         "named_subsets": {},
-        "extra_info": {},
     }
 
 

@@ -125,10 +125,9 @@ class BenchmarkMetadata(TypedBaseModel):
         description=(
             "Named subsets of this benchmark, as a mapping from subset name to "
             "(glob_key, glob_pattern) passed to BenchmarkConfig.subset_from_glob(). "
-            "Example: {'lite': ('extra_info', '*\"lite\"*')}"
+            "Example: {'train_only': ('split', 'train')}"
         ),
     )
-    extra_info: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
 
 class BenchmarkConfig(TypedBaseModel, ABC):
@@ -212,10 +211,12 @@ class BenchmarkConfig(TypedBaseModel, ABC):
     def benchmark_metadata_from_csv(path: str | Path) -> "BenchmarkMetadata":
         """Load ``BenchmarkMetadata`` from a single-row CSV.
 
-        Complex fields (``authors``, ``tags``, ``requirements``, ``extra_info``)
-        must be stored as JSON-encoded strings.
+        Complex fields (``authors``, ``tags``, ``requirements``) must be
+        stored as JSON-encoded strings. Subclass-specific fields are
+        encoded as their own columns; complex types in subclass fields go
+        through JSON-encoded strings just like the built-in complex fields.
         """
-        _JSON_FIELDS = ("authors", "tags", "requirements", "extra_info")
+        _JSON_FIELDS = ("authors", "tags", "requirements")
         with open(path, newline="") as f:
             reader = csv.DictReader(f)
             row = next(reader, None)
@@ -255,10 +256,12 @@ class BenchmarkConfig(TypedBaseModel, ABC):
     def task_metadata_from_csv(path: str | Path) -> dict[str, TaskMetadata]:
         """Load ``task_metadata`` from a CSV file.
 
-        Each row is one task. ``id`` is required. Complex fields (``extra_info``,
-        ``tags``, ``container_config``) must be JSON-encoded strings.
+        Each row is one task. ``id`` is required. Complex built-in fields
+        (``container_config``) must be JSON-encoded strings. Subclass-specific
+        fields are encoded as their own columns; complex types in subclass
+        fields go through JSON-encoded strings as well.
         """
-        _JSON_FIELDS = ("extra_info", "tags", "container_config")
+        _JSON_FIELDS = ("container_config",)
         tasks = []
         with open(path, newline="") as f:
             for row in csv.DictReader(f):
@@ -409,10 +412,11 @@ class BenchmarkConfig(TypedBaseModel, ABC):
 
         Stamps full ``TaskMetadata`` onto each emitted config so workers never
         need to import the owning ``BenchmarkConfig`` class to resolve metadata.
-        Subclasses that carry install-time heavy data (e.g. SWE-bench problem
-        statements, OSWorld evaluator configs) should override this method to
-        merge ``load_task_execution_info(task_id)`` into ``metadata.extra_info``
-        at emit time.
+
+        Cubes with heavy execution data (problem statements, patches, …)
+        populate ``Task.execution_info`` inside ``TaskConfig.make()`` by
+        validating ``cls.load_task_execution_info(task_id)`` against a typed
+        ``TaskExecutionInfo`` subclass — no override of this method needed.
         """
         for tm in self.tasks().values():
             if self.seed_generator is not None:
@@ -478,25 +482,17 @@ class BenchmarkConfig(TypedBaseModel, ABC):
     def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "BenchmarkConfig":
         """Return a new ``BenchmarkConfig`` containing only tasks whose ``glob_key`` matches ``glob_pattern``.
 
-        ``glob_key`` accepts any top-level ``TaskMetadata`` field (``id``,
-        ``split``, ``abstract_description``, ``recommended_max_steps``) or
-        ``extra_info.<key>`` via dot-notation. ``glob_pattern`` is a standard
-        Unix shell wildcard.
+        ``glob_key`` is any top-level field on the (subclassed) ``TaskMetadata``
+        — built-ins like ``id`` / ``split`` / ``abstract_description``, or any
+        named field declared by a ``TaskMetadata`` subclass.
+        ``glob_pattern`` is a standard Unix shell wildcard.
         """
         current = self.tasks()
-        if glob_key.startswith("extra_info."):
-            extra_key = glob_key[len("extra_info.") :]
-            matches = [
-                tm
-                for tm in current.values()
-                if extra_key in tm.extra_info and fnmatch.fnmatch(str(tm.extra_info[extra_key]), glob_pattern)
-            ]
-        else:
-            matches = [
-                tm
-                for tm in current.values()
-                if hasattr(tm, glob_key) and fnmatch.fnmatch(str(getattr(tm, glob_key)), glob_pattern)
-            ]
+        matches = [
+            tm
+            for tm in current.values()
+            if hasattr(tm, glob_key) and fnmatch.fnmatch(str(getattr(tm, glob_key)), glob_pattern)
+        ]
         if not matches:
             raise ValueError(f"No tasks found matching glob pattern '{glob_pattern}' on key '{glob_key}'")
         return self.subset_from_list(tasks=matches, benchmark_name_suffix=f"[{glob_key}={glob_pattern}]")
@@ -530,11 +526,15 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         SWE-bench problem statements, OSWorld evaluator configs). The default
         is a no-op.
 
+        Convention: write each task's processed data as a JSON file at
+        ``cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"``
+        — that path is the single source of truth, owned by ``TaskConfig``,
+        and read back by workers via
+        ``TaskConfig.load_task_execution_info(task_id)``.
+
         ``install()`` MUST NOT mutate ``task_metadata`` — that registry is
         populated at class-definition time from a shipped file (or declared
-        directly) and is the stable source of truth. Heavy execution data
-        belongs in per-task JSON files under ``task_execution_cache_dir()``,
-        read back later via ``load_task_execution_info(task_id)``.
+        directly) and is the stable source of truth.
 
         Must be idempotent.
         """
@@ -551,32 +551,6 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         caching strategy is required.
         """
         return get_cache_dir(cls.benchmark_metadata.name)
-
-    @classmethod
-    def task_execution_cache_dir(cls) -> Path:
-        """Directory where per-task execution data is cached by ``install()``."""
-        return cls.cache_dir() / "tasks_execution_info"
-
-    @classmethod
-    def load_task_execution_info(cls, task_id: str) -> dict[str, Any]:
-        """Read heavy per-task execution data from the cache.
-
-        Called from ``BenchmarkConfig.get_task_configs()`` on the driver to
-        stamp ``TaskConfig.metadata.extra_info`` before configs are shipped
-        to workers, so workers never touch disk. Subclasses with heavy
-        install-time data override ``get_task_configs()`` to merge the
-        result into ``metadata.extra_info`` at emit time.
-
-        Raises ``RuntimeError`` if the cache file is missing — signals that
-        ``install()`` has not been run. Callers should not silently swallow
-        this.
-        """
-        cache_file = cls.task_execution_cache_dir() / f"{task_id}.json"
-        if not cache_file.exists():
-            raise RuntimeError(
-                f"No execution data for {task_id!r}. Run `{cls.__name__}.install()` to populate the execution cache."
-            )
-        return json.loads(cache_file.read_text())
 
     # ──────────────────────────────────────────────────────────────────────────
     # The factory

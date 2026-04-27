@@ -90,7 +90,6 @@ def test_benchmark_metadata_defaults():
         num_tasks=0,
         license="",
         requirements={},
-        extra_info={},
         named_subsets={},
         reset_isolation=None,
     )
