@@ -38,7 +38,10 @@ identity and task registry.
 - `task_ids: list[str] | None = None` — new. `None` means all tasks in the
   ClassVar; subsetting sets it to a filtered list.
 - `resources: list[ResourceConfig] = []`
-- `container_backend: ContainerBackend | None = None`
+- `container_backend: ContainerBackend | None = None` — kept on
+  `BenchmarkConfig` for migration but marked `Field(deprecated=True)`.
+  Slated for removal once in-tree benchmarks declare container needs via
+  `resources`.
 - `default_tool_config: ToolConfig | None = None`
 - `seed_generator: AbstractSeedGenerator | None = None`
 
