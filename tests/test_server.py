@@ -107,8 +107,8 @@ _TASK_META_1 = {
 
 _TASK_META_2 = {**_TASK_META_1, "id": "task-2"}
 
-_TASK_CONFIG_1 = _CounterTaskConfig(task_id="task-1", metadata=TaskMetadata(id="task-1")).model_dump(mode="json")
-_TASK_CONFIG_2 = _CounterTaskConfig(task_id="task-2", metadata=TaskMetadata(id="task-2")).model_dump(mode="json")
+_TASK_CONFIG_1 = _CounterTaskConfig(metadata=TaskMetadata(id="task-1")).model_dump(mode="json")
+_TASK_CONFIG_2 = _CounterTaskConfig(metadata=TaskMetadata(id="task-2")).model_dump(mode="json")
 
 
 def _text_content(data: str, tool_call_id: str | None = None) -> dict:
@@ -148,7 +148,7 @@ def bench_client(benchmark):
 
 @pytest.fixture
 def task(benchmark):
-    t = benchmark.spawn(_CounterTaskConfig(task_id="task-1", metadata=TaskMetadata(id="task-1")))
+    t = benchmark.spawn(_CounterTaskConfig(metadata=TaskMetadata(id="task-1")))
     t.reset()
     return t
 
@@ -371,3 +371,30 @@ def test_runtime_context_rejects_non_json_non_pydantic_values():
 
     with pytest.raises(TypeError, match="not JSON-serializable"):
         _dump_runtime_context({"bad": _NotSerializable()})
+
+
+def test_runtime_context_rejects_non_json_native_builtin_types():
+    """Builtin types that aren't JSON-native (set, datetime, function) must also fail loud."""
+    import datetime
+
+    from cube.server import _dump_runtime_context
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"bad": {1, 2, 3}})
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"bad": datetime.datetime(2026, 1, 1)})
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"bad": lambda x: x})
+
+
+def test_runtime_context_rejects_nested_non_json_native_value():
+    """A bad value buried in a nested dict/list must still surface as TypeError."""
+    from cube.server import _dump_runtime_context
+
+    class _Bad:
+        pass
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"outer": {"inner": [1, _Bad()]}})

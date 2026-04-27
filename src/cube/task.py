@@ -402,12 +402,15 @@ class TaskConfig(ABC, TypedBaseModel):
     look up metadata; the config arrives complete and ``make()`` just uses
     ``self.metadata`` directly.
 
+    ``task_id`` is derived from ``metadata.id`` (prefixed with
+    ``sub_bench_name`` for composite-routed configs) so there is a single
+    source of truth.
+
     ``sub_bench_name`` is an optional routing hint used by
     ``CompositeBenchmark.spawn`` to dispatch a task to its origin
     sub-benchmark. Standalone benchmarks leave it None.
     """
 
-    task_id: str
     # ``SerializeAsAny`` preserves subclass-specific fields through JSON
     # round-trip. Every cube subclasses TaskMetadata with extra
     # per-task data — without this annotation those fields get silently
@@ -433,6 +436,14 @@ class TaskConfig(ABC, TypedBaseModel):
             "runtime_context. None for standalone (non-composite) benchmarks."
         ),
     )
+
+    @property
+    def task_id(self) -> str:
+        """Derived task identifier. Prefixed with ``sub_bench_name`` when set
+        (composite routing), otherwise just ``metadata.id``."""
+        if self.sub_bench_name is not None:
+            return f"{self.sub_bench_name}/{self.metadata.id}"
+        return self.metadata.id
 
     @abstractmethod
     def make(

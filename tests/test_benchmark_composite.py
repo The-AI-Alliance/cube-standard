@@ -191,7 +191,7 @@ def test_spawn_routes_to_correct_sub_benchmark():
 def test_spawn_rejects_config_without_sub_benchmark_tag():
     suite = CompositeBenchmarkConfig(sub_bench_configs=[ConfigA(), ConfigB()])
     with suite.make() as bench:
-        bare = _TaskConfig(task_id="task-1", metadata=TaskMetadata(id="task-1"))
+        bare = _TaskConfig(metadata=TaskMetadata(id="task-1"))
         with pytest.raises(ValueError, match="sub_bench_name"):
             bench.spawn(bare)
 
@@ -200,7 +200,6 @@ def test_spawn_rejects_unknown_sub_benchmark():
     suite = CompositeBenchmarkConfig(sub_bench_configs=[ConfigA()])
     with suite.make() as bench:
         bogus = _TaskConfig(
-            task_id="bench-x/task-1",
             metadata=TaskMetadata(id="task-1"),
             sub_bench_name="bench-x",
         )

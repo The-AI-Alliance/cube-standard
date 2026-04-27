@@ -363,7 +363,7 @@ def test_benchmark_is_context_manager():
 
 def test_spawn_returns_ready_task():
     bench = MyBenchmarkConfig().make()
-    task = bench.spawn(_TaskConfig(task_id="t1", metadata=TaskMetadata(id="t1")))
+    task = bench.spawn(_TaskConfig(metadata=TaskMetadata(id="t1")))
     assert isinstance(task, Task)
     obs, _ = task.reset()
     assert obs == Observation.from_text("ready")
@@ -372,7 +372,7 @@ def test_spawn_returns_ready_task():
 def test_spawn_unknown_task_raises():
     bench = MyBenchmarkConfig().make()
     with pytest.raises(ValueError, match="not found"):
-        bench.spawn(_TaskConfig(task_id="nonexistent", metadata=TaskMetadata(id="nonexistent")))
+        bench.spawn(_TaskConfig(metadata=TaskMetadata(id="nonexistent")))
 
 
 def test_spawn_respects_subset():
@@ -380,7 +380,7 @@ def test_spawn_respects_subset():
     bench = MyBenchmarkConfig().subset_from_list(["t1", "t2"]).make()
     # t3 is not in the subset — spawn must refuse
     with pytest.raises(ValueError, match="not found"):
-        bench.spawn(_TaskConfig(task_id="t3", metadata=TaskMetadata(id="t3")))
+        bench.spawn(_TaskConfig(metadata=TaskMetadata(id="t3")))
 
 
 # ── Round-trip serialization ──────────────────────────────────────────────────
@@ -433,7 +433,7 @@ def test_polymorphic_fields_preserve_subclass_state_through_json():
     # per-task data (domain, problem_statement, level, etc.), so this is the
     # most important round-trip path.
     rich_meta = _RichTaskMetadata(id="t1", marker="meta-actual")
-    tc = _TaskConfig(task_id="t1", metadata=rich_meta, tool_config=_RichToolConfig(marker="tc-tool"))
+    tc = _TaskConfig(metadata=rich_meta, tool_config=_RichToolConfig(marker="tc-tool"))
     reloaded_tc = _TaskConfig.model_validate_json(tc.model_dump_json())
     assert isinstance(reloaded_tc.metadata, _RichTaskMetadata)
     assert reloaded_tc.metadata.marker == "meta-actual"

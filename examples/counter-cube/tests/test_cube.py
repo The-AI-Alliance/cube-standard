@@ -47,7 +47,6 @@ def test_run_debug_episode_max_steps_cap():
     """max_steps caps the episode before completion."""
     # Build a task with a high target so the agent can't finish in 2 steps
     cfg = CounterTaskConfig(
-        task_id="count-to-3",
         metadata=CounterTaskMetadata(id="count-to-3", target=10),
     )
     task = cfg.make()

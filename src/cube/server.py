@@ -160,7 +160,14 @@ def _dump_runtime_context(ctx: dict[str, Any] | None) -> str | None:
 
 
 def _load_runtime_context(payload: str | None) -> dict[str, Any] | None:
-    """Inverse of ``_dump_runtime_context``: rehydrate TypedBaseModel sub-values via ``_type``."""
+    """Inverse of ``_dump_runtime_context``: rehydrate TypedBaseModel sub-values via ``_type``.
+
+    ``_rehydrate`` recurses into nested dicts/lists with no explicit depth
+    limit. Runtime contexts are expected to be shallow and acyclic — the
+    payload was produced by ``_dump_runtime_context`` via ``json.dumps``,
+    which already rejects cycles, so any structure that round-trips through
+    JSON is safe to walk recursively here.
+    """
     if payload is None:
         return None
 
