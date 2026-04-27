@@ -4,7 +4,7 @@ CUBE testing utilities — framework-level harness for debug episodes.
 Public API
 ----------
 run_debug_episode(task, agent, *, max_steps)  →  dict
-run_debug_suite(benchmark_name, module, *, max_steps, workers=1, infra=None)  →  list[dict]
+run_debug_suite(benchmark_name, module, *, max_steps, workers=0, infra=None)  →  list[dict]
 assert_debug_tasks_reward_one(module, *, infra=None, max_steps)  →  None
 
 Module protocol (for ``assert_debug_tasks_reward_one`` and ``run_debug_suite``)
@@ -20,8 +20,8 @@ The ``module`` argument must expose two callables:
     make_debug_agent(task_id: str) -> Callable[[Observation, list[ActionSchema]], Action]
         Return a deterministic agent for the given task_id.
 
-    Parallel runs (``run_debug_suite(..., workers>1)``): tasks share the benchmark's
-    ``_runtime_context`` by reference. After ``make()`` returns, concurrent episodes
+    Parallel runs (``workers > 1``, or ``workers=0`` for auto): tasks share the benchmark's
+    ``_runtime_context`` by reference. After ``bench_config.make()`` returns, concurrent episodes
     must treat that object as read-only; writing to it during execution is not safe
     with multiple workers.
 
@@ -41,7 +41,7 @@ import platform
 import time
 import types
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from cube import __version__  # report.cube_version and .save()
@@ -271,6 +271,10 @@ def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig 
     Calls ``config.install()`` and ``config.make(infra)`` before iterating
     ``get_task_configs``, and ``benchmark.close()`` when done.
 
+    The two Task instances are created in separate threads so tools with their own
+    event loops (e.g. Playwright sync API) don't collide — each thread owns its
+    own event loop.
+
     Returns:
         (ok, message, diff): ``diff`` lists mismatched key paths with truncated
         leaf values when the two first observations differ; otherwise ``""``.
@@ -287,31 +291,34 @@ def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig 
         if not configs:
             return False, "no debug task configs", ""
         tc = configs[0]
-        t1 = t2 = None
-        try:
-            t1 = tc.make(
-                runtime_context=benchmark._runtime_context,
-                container_backend=config.container_backend,
-            )
-            t2 = tc.make(
-                runtime_context=benchmark._runtime_context,
-                container_backend=config.container_backend,
-            )
-            obs1, _ = t1.reset()
-            obs2, _ = t2.reset()
-            dump1 = obs1.model_dump() if hasattr(obs1, "model_dump") else str(obs1)
-            dump2 = obs2.model_dump() if hasattr(obs2, "model_dump") else str(obs2)
-            ok = dump1 == dump2
-            diff_str = "" if ok else format_observation_diff(dump1, dump2)
-        except Exception as e:
-            return False, str(e), ""
-        finally:
-            for t in (t1, t2):
-                if t is not None:
-                    try:
-                        t.close()
-                    except Exception:
-                        pass
+        runtime_context = getattr(benchmark, "_runtime_context", None)
+        container_backend = getattr(benchmark, "container_backend", None)
+
+        def _reset_once() -> object:
+            t = tc.make(runtime_context=runtime_context, container_backend=container_backend)
+            try:
+                obs, _ = t.reset()
+                return obs.model_dump() if hasattr(obs, "model_dump") else str(obs)
+            finally:
+                try:
+                    t.close()
+                except Exception:
+                    pass
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(_reset_once)
+            f2 = pool.submit(_reset_once)
+            try:
+                dump1 = f1.result()
+            except Exception as e:
+                return False, str(e), ""
+            try:
+                dump2 = f2.result()
+            except Exception as e:
+                return False, str(e), ""
+
+        ok = dump1 == dump2
+        diff_str = "" if ok else format_observation_diff(dump1, dump2)
         if ok:
             return True, "", ""
         return False, RESET_REPRO_OBS_MISMATCH_MSG, diff_str
@@ -390,34 +397,43 @@ def run_debug_suite(
     *,
     max_steps: int = 20,
     print_json: bool = True,
-    workers: int = 1,
+    workers: int = 0,
     infra: InfraConfig | None = None,
+    on_episode_start: Callable[[str], None] | None = None,
+    on_episode_done: Callable[[dict], None] | None = None,
 ) -> list[dict]:
     """
     Run all debug tasks for a benchmark and optionally print a JSON report.
 
     Args:
-        benchmark_name: Label used in the JSON output (e.g. ``"osworld-cube"``).
-        module:         A module exposing ``get_debug_benchmark() -> BenchmarkConfig``
-                        and ``make_debug_agent(task_id)``.
-        max_steps:      Safety cap passed to ``run_debug_episode`` (default 20).
-        print_json:     If True, print the JSON report to stdout (default True).
-        workers:        Number of threads for episode execution (default 1). Values
-                        greater than 1 require tasks not to mutate
-                        ``benchmark._runtime_context`` after ``make()``; see module
-                        docstring.
-        infra:          Optional ``InfraConfig`` passed to ``config.make(infra)`` for
-                        resource provisioning.
+        benchmark_name:   Label used in the JSON output (e.g. ``"osworld-cube"``).
+        module:           A module exposing ``get_debug_benchmark() -> BenchmarkConfig``
+                          and ``make_debug_agent(task_id)``.
+        max_steps:        Safety cap passed to ``run_debug_episode`` (default 20).
+        print_json:       If True, print the JSON report to stdout (default True).
+        workers:          Number of threads for episode execution. ``0`` (default)
+                          means auto: one thread per task (all tasks in parallel).
+                          ``1`` runs sequentially. Values > 1 require tasks not to
+                          mutate ``benchmark._runtime_context`` after ``setup()``;
+                          see module docstring.
+        infra:            Optional ``InfraConfig`` passed to ``config.make(infra)`` for
+                          resource provisioning.
+        on_episode_start: Optional callback called with ``task_id`` just before each
+                          episode starts. In parallel mode all start callbacks fire
+                          upfront before any episode finishes.
+        on_episode_done:  Optional callback called with the episode report dict just
+                          after each episode finishes (fires in completion order for
+                          parallel runs).
 
     Returns:
         List of per-episode report dicts (same schema as ``run_debug_episode``),
         in ``config.get_task_configs()`` order.
 
     Raises:
-        ValueError: If ``workers < 1``.
+        ValueError: If ``workers < 0``.
     """
-    if workers < 1:
-        raise ValueError("workers must be >= 1")
+    if workers < 0:
+        raise ValueError("workers must be >= 0")
 
     benchmark = None
     results = []
@@ -429,11 +445,13 @@ def run_debug_suite(
         config.install()  # classmethod on BenchmarkConfig; accessing via instance is idiomatic
         benchmark = config.make(infra)
 
-        # Step 2: iterate task configs from the config and run episodes.
+        # Step 2: iterate task configs from the benchmark config and run episodes.
         task_configs = list(config.get_task_configs())
+        effective_workers = len(task_configs) if workers == 0 else workers
+
         logger.info(
             f"[run_debug_suite] benchmark={benchmark_name!r}  running {len(task_configs)} task(s) "
-            f"workers={workers}: {[tc.task_id for tc in task_configs]}"
+            f"workers={effective_workers}: {[tc.task_id for tc in task_configs]}"
         )
 
         def _episode_for_config(tc):
@@ -450,39 +468,72 @@ def run_debug_suite(
                 ) from exc
             return run_debug_episode(task, module.make_debug_agent(tc.task_id), max_steps=max_steps)
 
-        if workers == 1:
+        def _make_error_report(tc, exc: Exception) -> dict:
+            return {
+                "task_id": tc.task_id,
+                "done": False,
+                "reward": 0.0,
+                "steps": 0,
+                "episode_time_s": 0.0,
+                "step_times_s": [],
+                "error": f"{type(exc).__name__}: {exc}",
+                "tools_list_ok": False,
+                "tools_list_error": "",
+                "reset_time_s": 0.0,
+                "close_idempotent_ok": False,
+                "profiling": [],
+            }
+
+        if effective_workers <= 1:
             for tc in task_configs:
+                if on_episode_start is not None:
+                    on_episode_start(tc.task_id)
                 results.append(_episode_for_config(tc))
+                if on_episode_done is not None:
+                    on_episode_done(results[-1])
         else:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(_episode_for_config, tc) for tc in task_configs]
-                # Call .result() on every future so exceptions in later tasks are not lost
-                # when an earlier future raises (list comprehension would stop early).
-                for tc, fut in zip(task_configs, futures, strict=True):
+            # Snapshot _runtime_context key→value-identity before parallel run.
+            # Any mutation (new key, deleted key, or reassigned value) during
+            # episode execution is a thread-safety bug — warn immediately.
+            _ctx_before = {k: id(v) for k, v in benchmark._runtime_context.items()}
+
+            # Fire start callbacks upfront — all tasks launch simultaneously.
+            if on_episode_start is not None:
+                for tc in task_configs:
+                    on_episode_start(tc.task_id)
+            results = [None] * len(task_configs)
+            tc_index = {id(tc): i for i, tc in enumerate(task_configs)}
+            with ThreadPoolExecutor(max_workers=effective_workers) as pool:
+                future_to_tc = {pool.submit(_episode_for_config, tc): tc for tc in task_configs}
+                for fut in as_completed(future_to_tc):
+                    tc = future_to_tc[fut]
+                    idx = tc_index[id(tc)]
                     try:
-                        results.append(fut.result())
+                        report = fut.result()
                     except Exception as exc:
                         logger.exception(
                             "[run_debug_suite] benchmark=%r parallel episode failed task_id=%r",
                             benchmark_name,
                             tc.task_id,
                         )
-                        results.append(
-                            {
-                                "task_id": tc.task_id,
-                                "done": False,
-                                "reward": 0.0,
-                                "steps": 0,
-                                "episode_time_s": 0.0,
-                                "step_times_s": [],
-                                "error": f"{type(exc).__name__}: {exc}",
-                                "tools_list_ok": False,
-                                "tools_list_error": "",
-                                "reset_time_s": 0.0,
-                                "close_idempotent_ok": False,
-                                "profiling": [],
-                            }
-                        )
+                        report = _make_error_report(tc, exc)
+                    results[idx] = report
+                    if on_episode_done is not None:
+                        on_episode_done(report)
+
+            _ctx_after = {k: id(v) for k, v in benchmark._runtime_context.items()}
+            if _ctx_before != _ctx_after:
+                added = set(_ctx_after) - set(_ctx_before)
+                removed = set(_ctx_before) - set(_ctx_after)
+                mutated = {k for k in _ctx_before if k in _ctx_after and _ctx_before[k] != _ctx_after[k]}
+                logger.warning(
+                    "[run_debug_suite] benchmark=%r _runtime_context mutated during parallel episodes "
+                    "(added=%r removed=%r reassigned=%r) — likely thread-safety bug",
+                    benchmark_name,
+                    added,
+                    removed,
+                    mutated,
+                )
     finally:
         # Step 3: close the benchmark to free resources.
         if benchmark is not None:
@@ -608,6 +659,11 @@ def assert_debug_tasks_reward_one(
     Raises:
         AssertionError: If any episode does not complete, errors, or gets
                         reward < 1.0.
+
+    Note:
+        Tasks run in parallel by default (``workers=0``). The benchmark's
+        ``_runtime_context`` is shared across threads — treat it as read-only
+        after ``setup()`` returns.
     """
     for report in run_debug_suite(module.__name__, module, max_steps=max_steps, infra=infra):
         task_id = report["task_id"]

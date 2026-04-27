@@ -47,19 +47,23 @@ Report schema:
 }
 ```
 
-### `run_debug_suite(benchmark_name, module, *, max_steps=20, workers=1) -> list[dict]`
-Discovers tasks via `module.get_debug_benchmark().get_task_configs()`,
-calls `config.install()` then `config.make()` to obtain a live Benchmark,
+### `run_debug_suite(benchmark_name, module, *, max_steps=20, workers=0, infra=None, on_episode_start=None, on_episode_done=None) -> list[dict]`
+Discovers benchmark `config` via `module.get_debug_benchmark()`,
+calls `config.install()` then `config.make()` to obtain a live Benchmark.
+Discovers tasks via `config.get_task_configs()`,
 runs each task with `module.make_debug_agent(task_id)`, and returns a list of
 episode reports. Always calls `benchmark.close()` in a `finally` block.
 
-**Parallel runs (`workers > 1`):** tasks share the benchmark's `_runtime_context`
-by reference. After `make()` returns, concurrent episodes must treat that object
-as read-only. Writes from multiple workers are not safe.
+`workers=0` (default) runs one thread per task automatically. `workers=1` is sequential.
+
+**Parallel runs (`workers=0` or `workers > 1`):** tasks share the benchmark's
+`_runtime_context` by reference. After `congig.make()` returns, concurrent episodes must
+treat that object as read-only. Writes from multiple workers are not safe.
 
 ### `assert_debug_tasks_reward_one(module, *, max_steps=20) -> None`
 Runs `run_debug_suite` and asserts every task reaches `reward == 1.0`.
-Raises `AssertionError` otherwise. Drop-in for pytest:
+Raises `AssertionError` otherwise. Tasks run in parallel by default — treat the
+benchmark's `_runtime_context` as read-only after `setup()`. Drop-in for pytest:
 
 ```python
 def test_debug_tasks():
