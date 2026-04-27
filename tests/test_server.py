@@ -373,3 +373,30 @@ def test_runtime_context_rejects_non_json_non_pydantic_values():
 
     with pytest.raises(TypeError, match="not JSON-serializable"):
         _dump_runtime_context({"bad": _NotSerializable()})
+
+
+def test_runtime_context_rejects_non_json_native_builtin_types():
+    """Builtin types that aren't JSON-native (set, datetime, function) must also fail loud."""
+    import datetime
+
+    from cube.server import _dump_runtime_context
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"bad": {1, 2, 3}})
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"bad": datetime.datetime(2026, 1, 1)})
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"bad": lambda x: x})
+
+
+def test_runtime_context_rejects_nested_non_json_native_value():
+    """A bad value buried in a nested dict/list must still surface as TypeError."""
+    from cube.server import _dump_runtime_context
+
+    class _Bad:
+        pass
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"outer": {"inner": [1, _Bad()]}})
