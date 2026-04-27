@@ -226,10 +226,10 @@ def test_suite_workers_preserves_get_task_configs_order():
     assert [r["task_id"] for r in par] == ["t1", "t2", "t3"]
 
 
-def test_suite_workers_must_be_positive():
+def test_suite_workers_must_be_non_negative():
     mod, _ = _make_module()
-    with pytest.raises(ValueError, match="workers must be >= 1"):
-        run_debug_suite("bench", mod, print_json=False, workers=0)
+    with pytest.raises(ValueError, match="workers must be >= 0"):
+        run_debug_suite("bench", mod, print_json=False, workers=-1)
 
 
 def test_suite_parallel_workers_collects_all_episode_results_when_first_task_raises():
