@@ -766,6 +766,9 @@ class CompositeBenchmark(Benchmark):
                 f"Unknown sub-benchmark {task_config.sub_bench_name!r}; known: {list(self.sub_benchmarks.keys())}"
             )
         sub_bench = self.sub_benchmarks[task_config.sub_bench_name]
+        # Call ``task_config.make()`` directly instead of ``sub_bench.spawn()``:
+        # the latter would re-validate ``task_id`` against the sub's
+        # ``config.tasks()`` and reject the composite-prefixed id.
         return task_config.make(
             runtime_context=sub_bench._runtime_context,
             container_backend=sub_bench.config.container_backend,
