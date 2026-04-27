@@ -4,14 +4,23 @@ This example is structurally identical to toy_benchmark/counter.py, except that
 CounterBenchmark does not define benchmark_metadata or task_metadata inline.
 They are automatically loaded from benchmark_metadata.json and task_metadata.json
 sitting next to this file.
+
+Note on TaskMetadata subclasses + JSON auto-loading
+---------------------------------------------------
+``BenchmarkConfig.task_metadata_from_json`` validates each entry as the base
+``TaskMetadata`` class — which dispatches to the right subclass when the JSON
+entry includes a ``"_type"`` field (TypedBaseModel's polymorphic discriminator).
+``task_metadata.json`` here uses ``"_type": "__main__.CounterTaskMetadata"``
+so each entry is loaded as a typed ``CounterTaskMetadata`` with ``target`` and
+the optional ``tool_overrides`` populated.
 """
 
-from typing import Any, ClassVar, Dict, Tuple
+from typing import Any, ClassVar, Dict, Literal, Tuple
 
 from cube.benchmark import Benchmark, BenchmarkConfig, RuntimeContext
 from cube.container import Container, ContainerBackend
 from cube.core import Action, ActionSchema, Observation
-from cube.task import Task, TaskConfig
+from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
 
 
@@ -58,10 +67,20 @@ class CounterToolConfig(ToolConfig):
         return ConfigurableCounterTool(increment_by=self.increment_by, enable_decrement=self.enable_decrement)
 
 
+class CounterTaskMetadata(TaskMetadata):
+    """Per-task metadata with a typed ``target`` and an optional tool override."""
+
+    target: int
+    difficulty: Literal["easy", "medium", "hard"] = "easy"
+    tool_overrides: CounterToolConfig | None = None
+
+
 class ReachTargetTask(Task):
+    metadata: CounterTaskMetadata  # type: ignore[assignment]
+
     @property
     def target(self) -> int:
-        return self.metadata.extra_info["target"]
+        return self.metadata.target
 
     def reset(self) -> Tuple[Observation, Dict[str, Any]]:
         self.tool.reset()
@@ -84,7 +103,7 @@ class CounterTaskConfig(TaskConfig):
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> ReachTargetTask:
-        tool_cfg = self.tool_config or CounterToolConfig(**self.metadata.extra_info.get("tool_config", {}))
+        tool_cfg = self.tool_config or self.metadata.tool_overrides or CounterToolConfig()
         return ReachTargetTask(
             metadata=self.metadata,
             tool_config=tool_cfg,

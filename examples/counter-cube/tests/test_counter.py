@@ -9,6 +9,7 @@ import pytest
 from cube.core import Action, Observation
 from counter_cube import CounterBenchmarkConfig, CounterTaskConfig, CounterTool, CounterToolConfig
 from counter_cube.pluggable_tool import CounterToolPluggable
+from counter_cube.task import CounterTaskMetadata
 
 INCREMENT = Action(name="increment", arguments={})
 DECREMENT = Action(name="decrement", arguments={})
@@ -193,6 +194,7 @@ def test_toolconfig_override():
     """Explicit tool_config on TaskConfig takes precedence over metadata defaults."""
     cfg = CounterTaskConfig(
         task_id="count-to-3",
+        metadata=CounterTaskMetadata(id="count-to-3", target=3),
         tool_config=CounterToolConfig(enable_increment_by=True),
     )
     task = cfg.make()

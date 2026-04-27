@@ -1,20 +1,34 @@
 [
   {
+    "_type": "__main__.CounterTaskMetadata",
     "id": "count-to-3",
     "abstract_description": "Increment counter to reach value 3",
     "recommended_max_steps": 5,
-    "extra_info": {"target": 3, "difficulty": "easy"}
+    "target": 3,
+    "difficulty": "easy"
   },
   {
+    "_type": "__main__.CounterTaskMetadata",
     "id": "count-to-3-with-decrement",
     "abstract_description": "Increment counter to reach value 3, with decrement available",
     "recommended_max_steps": 7,
-    "extra_info": {"target": 3, "difficulty": "easy", "tool_config": {"enable_decrement": true}}
+    "target": 3,
+    "difficulty": "easy",
+    "tool_overrides": {
+      "_type": "__main__.CounterToolConfig",
+      "enable_decrement": true
+    }
   },
   {
+    "_type": "__main__.CounterTaskMetadata",
     "id": "count-by-2",
     "abstract_description": "Counter with custom increment amount",
     "recommended_max_steps": 4,
-    "extra_info": {"target": 4, "difficulty": "easy", "tool_config": {"increment_by": 2}}
+    "target": 4,
+    "difficulty": "easy",
+    "tool_overrides": {
+      "_type": "__main__.CounterToolConfig",
+      "increment_by": 2
+    }
   }
 ]

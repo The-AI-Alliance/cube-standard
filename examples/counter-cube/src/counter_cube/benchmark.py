@@ -12,7 +12,8 @@ from typing import ClassVar
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata
 from cube.task import TaskConfig, TaskMetadata
 
-from counter_cube.task import CounterTaskConfig
+from counter_cube.task import CounterTaskConfig, CounterTaskMetadata
+from counter_cube.tool import CounterToolConfig
 
 
 class CounterBenchmark(Benchmark):
@@ -38,23 +39,25 @@ class CounterBenchmarkConfig(BenchmarkConfig):
 
     task_metadata: ClassVar[dict[str, TaskMetadata]] = {
         # Simplest task: increment 3 times, no extra actions.
-        "count-to-3": TaskMetadata(
+        "count-to-3": CounterTaskMetadata(
             id="count-to-3",
             abstract_description="Increment counter to reach value 3",
             recommended_max_steps=5,
-            extra_info={"target": 3, "difficulty": "easy"},
+            target=3,
         ),
-        "count-to-3-with-decrement": TaskMetadata(
+        "count-to-3-with-decrement": CounterTaskMetadata(
             id="count-to-3-with-decrement",
             abstract_description="Increment counter to reach value 3, with decrement available",
             recommended_max_steps=7,
-            extra_info={"target": 3, "difficulty": "easy", "tool_config": {"enable_decrement": True}},
+            target=3,
+            tool_overrides=CounterToolConfig(enable_decrement=True),
         ),
-        "count-by-2": TaskMetadata(
+        "count-by-2": CounterTaskMetadata(
             id="count-by-2",
             abstract_description="Reach 4 using an increment-by-2 tool",
             recommended_max_steps=4,
-            extra_info={"target": 4, "difficulty": "easy", "tool_config": {"enable_increment_by": True}},
+            target=4,
+            tool_overrides=CounterToolConfig(enable_increment_by=True),
         ),
     }
 
