@@ -103,7 +103,7 @@ class CubeResourcesServer:
 
     def __init__(self, config: BenchmarkConfig, infra: InfraConfig | None = None) -> None:
         self.config = config
-        type(config).install()  # classmethod on BenchmarkConfig: populates task execution cache
+        config.install()  # populates task execution cache; CompositeBenchmarkConfig overrides as instance method
         self.benchmark: Benchmark = config.make(infra)
         self._task_configs: list[TaskConfig] = list(config.get_task_configs())
         self._sessions: dict[str, Task] = {}
