@@ -249,6 +249,12 @@ unique, while `metadata.id` keeps the native un-prefixed id.
 
 ## Gotchas
 
+- `task_execution_cache_dir()` uses the Python **package** name (underscores), not the
+  benchmark display name (which may use hyphens). For example, a benchmark named
+  `"osworld-cube"` (in `BenchmarkMetadata`) whose `TaskConfig` lives in the
+  `osworld_cube` package caches at `~/.cube/osworld_cube/`, not
+  `~/.cube/osworld-cube/`. Override `task_execution_cache_dir()` on the subclass if
+  the two diverge and you need a specific path.
 - `validate_per_step=True` means `evaluate()` runs every step — expensive. Default is
   only on termination.
 - STOP_ACTION is not automatically in the tool's action set — the harness / agent

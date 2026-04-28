@@ -107,6 +107,13 @@ class TaskConfig:
 `BenchmarkConfig.install()` writes via `cls.task_config_class.task_execution_cache_dir()`
 — exactly one definition of the path, no drift possible.
 
+**Path key change:** the cache directory is now keyed by the Python **package** name
+(`cls.__module__.split(".")[0]`, underscores), not by `benchmark_metadata.name` (which
+may use hyphens). A benchmark named `"osworld-cube"` in its metadata but living in the
+`osworld_cube` package caches at `~/.cube/osworld_cube/` under the new formula.
+Override `task_execution_cache_dir()` on the subclass if the two differ and a specific
+path is required.
+
 `BenchmarkConfig.task_execution_cache_dir()` and
 `BenchmarkConfig.load_task_execution_info()` are deleted.
 
