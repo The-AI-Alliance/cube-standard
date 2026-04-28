@@ -57,6 +57,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from cube import __version__
+from cube.benchmark import CompositeBenchmarkConfig
 from cube.core import Observation
 from cube.testing import RESET_REPRO_OBS_MISMATCH_MSG, format_observation_diff
 
@@ -391,6 +392,26 @@ def cmd_install(name: str) -> None:
     idempotent — calling ``cube install`` repeatedly is safe.
     """
     cls = _resolve_benchmark_config_class(name)
+
+    if isinstance(cls, type) and issubclass(cls, CompositeBenchmarkConfig):
+        err_console.print(
+            Panel(
+                f"[error]{name!r}[/error] is a [cmd]CompositeBenchmarkConfig[/cmd] — "
+                "composite benchmarks are constructed dynamically from sub-benchmark instances "
+                "and cannot be installed as a unit.\n\n"
+                "Install each sub-benchmark individually instead:\n"
+                + "\n".join(
+                    f"  [cmd]cube install {ep.name}[/cmd]"
+                    for ep in importlib.metadata.entry_points(group="cube.benchmarks")
+                    if ep.name != name
+                ),
+                title="[error]Cannot install composite benchmark[/error]",
+                border_style="red",
+                padding=(0, 1),
+            )
+        )
+        sys.exit(1)
+
     bench_label = getattr(getattr(cls, "benchmark_metadata", None), "name", None) or cls.__name__
     console.print(
         Panel(

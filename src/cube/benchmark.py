@@ -890,9 +890,11 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
         composite.setup()  # no-op for CompositeBenchmark; kept for consistency
         return composite
 
-    # Class-level data lifecycle on composites: delegate to every sub-config.
-    # These are instance methods here (unlike BenchmarkConfig's classmethods)
-    # because a composite's sub-configs are instance state.
+    # Data lifecycle on composites: instance methods that delegate to every
+    # sub-config.  Unlike BenchmarkConfig's classmethods, these require an
+    # instance because sub_bench_configs is instance state.
+    # Note: `cube install <name>` does not support composite benchmarks —
+    # install each sub-benchmark individually instead.
 
     def install(self) -> None:  # type: ignore[override]
         """Install every sub-config. Idempotent; safe to call multiple times."""

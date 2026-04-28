@@ -290,7 +290,9 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
   `sub_benchmarks: dict[str, Benchmark]`.
 - `install()` and `uninstall()` are **instance methods** (not classmethods like
   the base) that delegate to every `sub.install()` / `sub.uninstall()` —
-  because the list of sub-configs is instance state.
+  because the list of sub-configs is instance state. `cube install <name>` is
+  not supported for composite benchmarks; install each sub-benchmark
+  individually instead.
 
 ### `CompositeBenchmark`
 Runtime pair. Holds `sub_benchmarks: dict[str, Benchmark]`. `spawn(task_config)`

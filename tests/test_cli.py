@@ -192,6 +192,22 @@ def test_cmd_install_propagates_exit_1_on_failure():
     assert exc.value.code == 1
 
 
+def test_cmd_install_rejects_composite_benchmark():
+    from cube.benchmark import CompositeBenchmarkConfig
+
+    # A bare subclass — the minimal real entry-point a composite suite would register.
+    class MySuiteConfig(CompositeBenchmarkConfig):
+        pass
+
+    ep = MagicMock()
+    ep.name = "my-suite"
+    ep.load.return_value = MySuiteConfig
+    with patch("cube.cli.importlib.metadata.entry_points", return_value=[ep]):
+        with pytest.raises(SystemExit) as exc:
+            cmd_install("my-suite")
+    assert exc.value.code == 1
+
+
 # ── _resolve_debug_module ──────────────────────────────────────────────────────
 
 
