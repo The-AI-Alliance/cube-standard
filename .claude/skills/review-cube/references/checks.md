@@ -31,20 +31,19 @@ Applies when the input is a YAML path, a cube-registry PR, or when a `cube-regis
 ## 2. Cube code — static
 
 **Terminology:**
-- **Option A (inline ClassVars)** — `benchmark_metadata` and `task_metadata` are declared directly as `ClassVar`s on the `Benchmark` subclass.
+- **Option A (inline ClassVars)** — `benchmark_metadata` and `task_metadata` are declared directly as `ClassVar`s on the `BenchmarkConfig` subclass.
 - **Option B (file-loaded)** — ClassVars are omitted; the framework auto-loads `benchmark_metadata.json` and/or `task_metadata.json` from the same directory as the benchmark module.
 
 Detect which the cube uses by grepping the benchmark module for the ClassVar assignments; if absent, the cube is Option B and the JSON files must exist.
 
 **Blocking:**
-- No class inheriting from `Benchmark` found in the package source.
-- No `[project.entry-points."cube.benchmarks"]` table in `pyproject.toml`, or the target import path doesn't resolve to the `Benchmark` subclass.
-- Any `TaskConfig` subclass declares a `TaskMetadata`-typed field. (The metadata must live on `Benchmark.task_metadata`.)
+- No class inheriting from `BenchmarkConfig` found in the package source.
+- No `[project.entry-points."cube.benchmarks"]` table in `pyproject.toml`, or the target import path doesn't resolve to the `BenchmarkConfig` subclass.
 - No `@tool_action` decorators found in the tool module(s). (Exception: the benchmark is a thin subclass of a shared tool like `cube-browser-tool` and inherits actions — verify the imported tool class has `@tool_action` methods.)
 - Option B chosen but `task_metadata.json` missing (or `benchmark_metadata.json` missing when also needed).
-- Option A chosen but required ClassVars (`benchmark_metadata`, `task_metadata`, `task_config_class`) missing.
-- `task_metadata.json` average size per task exceeds **1024 bytes**: `size_bytes / num_tasks > 1024`. Recommend the `extra_info` + `install()` pattern (see `cube-harness/cubes/swebench-live-cube`).
-- `task_metadata.extra_info` is non-empty in the shipped `task_metadata.json`. `extra_info` is reserved for heavy runtime data populated lazily in `TaskConfig.make()` via `Benchmark.install()`'s cache. For structured per-task fields (repo, base_commit, instruction, splits, log_parser, container image, …), introduce a custom `TaskMetadata` subclass. Reference: `cube-harness/cubes/swebench-live-cube/src/swebench_live_cube/task.py`.
+- Option A chosen but required ClassVars (`benchmark_metadata`, `task_metadata`, `task_config_class`, `benchmark_class`) missing.
+- `task_metadata.json` average size per task exceeds **1000 bytes**: `size_bytes / num_tasks > 1000` (target is ~1 byte/task, so ~1 MB for 1000 tasks). Recommend the `extra_info` + `BenchmarkConfig.install()` pattern (see `cube-harness/cubes/swebench-live-cube`).
+- `task_metadata.extra_info` is non-empty in the shipped `task_metadata.json`. `extra_info` is reserved for heavy runtime data merged at `get_task_configs()` emit time via `load_task_execution_info()` (populated by `BenchmarkConfig.install()`). For structured per-task fields (repo, base_commit, instruction, splits, log_parser, container image, …), introduce a custom `TaskMetadata` subclass. Reference: `cube-harness/cubes/swebench-live-cube/src/swebench_live_cube/task.py`.
 
 **Suggestions:**
 - S-75: `Task.reset()` has no visible call to `self.tool.reset()`.

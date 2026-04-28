@@ -8,9 +8,9 @@ from typing import Any
 
 
 def find_benchmark_class(package: str) -> tuple[Any | None, str]:
-    """Resolve the Benchmark class for *package* via the ``cube.benchmarks`` entry point.
+    """Resolve the BenchmarkConfig class for *package* via the ``cube.benchmarks`` entry point.
 
-    Returns ``(BenchmarkClass, "")`` on success or ``(None, error_message)`` on failure.
+    Returns ``(BenchmarkConfigClass, "")`` on success or ``(None, error_message)`` on failure.
     """
     try:
         eps = importlib.metadata.entry_points(group="cube.benchmarks")
@@ -23,7 +23,7 @@ def find_benchmark_class(package: str) -> tuple[Any | None, str]:
             f"Package '{package}' has no registered 'cube.benchmarks' entry point. "
             f"Add one to pyproject.toml:\n"
             f"  [project.entry-points.'cube.benchmarks']\n"
-            f'  {package} = "your_module:YourBenchmark"'
+            f'  {package} = "your_module:YourBenchmarkConfig"'
         )
 
     try:

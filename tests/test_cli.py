@@ -158,7 +158,7 @@ def test_resolve_debug_module_passthrough_dotted():
 
 
 def test_resolve_debug_module_derives_from_entry_point():
-    ep = _make_entry_point("counter-cube", "counter_cube.benchmark:CounterBenchmark", metadata=_make_metadata())
+    ep = _make_entry_point("counter-cube", "counter_cube.benchmark:CounterBenchmarkConfig", metadata=_make_metadata())
 
     with patch("cube.cli.importlib.metadata.entry_points", return_value=[ep]):
         result = _resolve_debug_module("counter-cube")

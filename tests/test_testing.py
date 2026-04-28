@@ -1,5 +1,7 @@
 """Tests for cube.testing — run_debug_episode, run_debug_suite, assert_debug_tasks_reward_one."""
 
+from __future__ import annotations
+
 from types import ModuleType
 from typing import ClassVar
 from unittest.mock import patch
@@ -7,7 +9,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import PrivateAttr
 
-from cube.benchmark import Benchmark, BenchmarkMetadata
+from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata
 from cube.container import Container
 from cube.core import Action, Observation
 from cube.task import STOP_ACTION, Task, TaskConfig, TaskMetadata
@@ -70,33 +72,52 @@ class FailOnResetTask(Task):
 
 class DoneTaskConfig(TaskConfig):
     def make(self, runtime_context=None, container_backend=None) -> DoneTask:
-        return DoneTask(metadata=TaskMetadata(id=self.task_id), tool_config=NoopToolConfig())
+        return DoneTask(metadata=self.metadata, tool_config=NoopToolConfig())
 
 
 class FailTaskConfig(TaskConfig):
     def make(self, runtime_context=None, container_backend=None) -> FailOnResetTask:
-        return FailOnResetTask(metadata=TaskMetadata(id=self.task_id), tool_config=NoopToolConfig())
+        return FailOnResetTask(metadata=self.metadata, tool_config=NoopToolConfig())
 
 
 class DoneBenchmark(Benchmark):
-    benchmark_metadata = BenchmarkMetadata(name="test-bench", version="0.1", description="test")
-    task_metadata: ClassVar[dict[str, TaskMetadata]] = {"t1": TaskMetadata(id="t1")}
-    task_config_class = DoneTaskConfig
+    """Runtime pair used by the test fixtures; counts setup/close calls."""
 
-    _install_calls: ClassVar[int] = 0  # class-level: install() is a classmethod
-    _setup_calls: int = PrivateAttr(default=0)
-    _close_calls: int = PrivateAttr(default=0)
+    def __init__(self, config):
+        super().__init__(config)
+        self.setup_calls = 0
+        self.close_calls = 0
+
+    def _setup(self) -> None:
+        self.setup_calls += 1
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class DoneBenchmarkConfig(BenchmarkConfig):
+    benchmark_metadata: ClassVar = BenchmarkMetadata(name="test-bench", version="0.1", description="test")
+    task_metadata: ClassVar[dict[str, TaskMetadata]] = {
+        "t1": TaskMetadata(id="t1"),
+        "t2": TaskMetadata(id="t2"),
+        "t3": TaskMetadata(id="t3"),
+        "alpha": TaskMetadata(id="alpha"),
+        "beta": TaskMetadata(id="beta"),
+    }
+    task_config_class: ClassVar = DoneTaskConfig
+    benchmark_class: ClassVar = DoneBenchmark
+
+    _install_count: ClassVar[int] = 0
 
     @classmethod
     def install(cls) -> None:
-        cls._install_calls += 1
+        cls._install_count += 1
 
-    def _setup(self) -> None:
-        self._setup_calls += 1
 
-    def close(self) -> None:
-        self._close_calls += 1
-        super().close()
+class FailingDoneBenchmarkConfig(DoneBenchmarkConfig):
+    """Mirror of DoneBenchmarkConfig whose tasks fail on reset()."""
+
+    task_config_class: ClassVar = FailTaskConfig
 
 
 def stop_agent(obs, action_set):
@@ -107,19 +128,18 @@ def noop_agent(obs, action_set):
     return Action(name="noop", arguments={})
 
 
-def _make_module(task_ids=("t1",), *, fail=False):
-    """Return (module, benchmark). Tasks complete immediately unless fail=True."""
+def _make_module(task_ids=("t1",), *, fail=False) -> tuple[ModuleType, DoneBenchmarkConfig]:
+    """Return (module, config). Tasks complete immediately unless fail=True."""
     mod = ModuleType("fake_debug")
+    config_cls = FailingDoneBenchmarkConfig if fail else DoneBenchmarkConfig
+    config = config_cls().subset_from_list(list(task_ids))
 
-    benchmark = DoneBenchmark()
-    config_cls = FailTaskConfig if fail else DoneTaskConfig
-    task_meta = {tid: TaskMetadata(id=tid) for tid in task_ids}
-    object.__setattr__(benchmark, "task_metadata", task_meta)
-    object.__setattr__(benchmark, "task_config_class", config_cls)
-    mod.get_debug_benchmark = lambda: benchmark  # type: ignore[attr-defined]
+    def get_debug_benchmark():
+        return config
+
+    mod.get_debug_benchmark = get_debug_benchmark  # type: ignore[attr-defined]
     mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
-
-    return mod, benchmark
+    return mod, config
 
 
 # ── run_debug_episode — report structure ──────────────────────────────────────
@@ -135,7 +155,6 @@ def test_episode_stop_action_completes_with_reward_one():
     assert report["error"] is None
     assert "episode_time_s" in report
     assert len(report["step_times_s"]) == 1
-    # Stress-test report extras (tools_list, close_idempotent)
     assert report.get("tools_list_ok") is True
     assert report.get("close_idempotent_ok") is True
 
@@ -153,7 +172,6 @@ def test_episode_close_called_on_success():
 def test_episode_close_called_when_reset_raises():
     task = FailOnResetTask(metadata=TaskMetadata(id="t1"), tool_config=NoopToolConfig())
     run_debug_episode(task, stop_agent)
-    # close() is called once in finally and once for close_idempotent check
     assert task._close_calls == 2
 
 
@@ -190,13 +208,13 @@ def test_episode_respects_max_steps():
 
 def test_suite_returns_one_report_per_task():
     mod, _ = _make_module(task_ids=("t1", "t2", "t3"))
-    results = run_debug_suite("bench", mod)
+    results = run_debug_suite("bench", mod, print_json=False)
     assert len(results) == 3
 
 
 def test_suite_reports_contain_task_ids():
     mod, _ = _make_module(task_ids=("alpha", "beta"))
-    results = run_debug_suite("bench", mod)
+    results = run_debug_suite("bench", mod, print_json=False)
     assert {r["task_id"] for r in results} == {"alpha", "beta"}
 
 
@@ -221,17 +239,14 @@ def test_suite_parallel_workers_collects_all_episode_results_when_first_task_rai
         def make(self, runtime_context=None, container_backend=None):
             if self.task_id == "t1":
                 raise RuntimeError("t1 make failed")
-            return DoneTask(metadata=TaskMetadata(id=self.task_id), tool_config=NoopToolConfig())
+            return DoneTask(metadata=self.metadata, tool_config=NoopToolConfig())
+
+    class FirstFailsBenchmarkConfig(DoneBenchmarkConfig):
+        task_config_class: ClassVar = FirstFailsTaskConfig
 
     mod = ModuleType("fake_debug")
-    benchmark = DoneBenchmark()
-    object.__setattr__(
-        benchmark,
-        "task_metadata",
-        {"t1": TaskMetadata(id="t1"), "t2": TaskMetadata(id="t2")},
-    )
-    object.__setattr__(benchmark, "task_config_class", FirstFailsTaskConfig)
-    mod.get_debug_benchmark = lambda: benchmark  # type: ignore[attr-defined]
+    config = FirstFailsBenchmarkConfig().subset_from_list(["t1", "t2"])
+    mod.get_debug_benchmark = lambda: config  # type: ignore[attr-defined]
     mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
 
     results = run_debug_suite("bench", mod, print_json=False, workers=2)
@@ -239,80 +254,74 @@ def test_suite_parallel_workers_collects_all_episode_results_when_first_task_rai
     assert results[0]["task_id"] == "t1"
     assert results[0]["error"] is not None and "t1 make failed" in results[0]["error"]
     assert results[1]["task_id"] == "t2"
-    assert results[1].get("error") in (None, "")  # second episode still ran
+    assert results[1].get("error") in (None, "")
 
 
 # ── run_debug_suite — benchmark lifecycle ────────────────────────────────────
 
 
-def test_double_setup_metadata_preserved():
-    """Multiple setup() calls must not overwrite task_metadata; subset_from_list still works."""
-    task_ids = ("t1", "t2")
+def test_suite_calls_install_then_make_then_close():
+    """install() runs once; make() returns a live Benchmark; close() is called in finally."""
+    captured: list[DoneBenchmark] = []
 
-    class DoubleSetupBenchmark(Benchmark):
-        benchmark_metadata = BenchmarkMetadata(name="double-setup-bench", version="0.1", description="test")
-        task_metadata = {tid: TaskMetadata(id=tid) for tid in task_ids}
-        task_config_class = DoneTaskConfig
-        _setup_calls: int = PrivateAttr(default=0)
-
+    class CapturingBenchmark(DoneBenchmark):
         def _setup(self) -> None:
-            self._setup_calls += 1
+            super()._setup()
+            captured.append(self)
 
-        def close(self) -> None:
-            pass
+    class CapturingConfig(DoneBenchmarkConfig):
+        benchmark_class: ClassVar = CapturingBenchmark
+        _install_count: ClassVar[int] = 0  # shadow parent so test is isolated
 
-    benchmark = DoubleSetupBenchmark()
-    benchmark.setup()
-    configs_first = list(benchmark.get_task_configs())
-    assert len(configs_first) == 2
-    assert {c.task_id for c in configs_first} == set(task_ids)
+        @classmethod
+        def install(cls) -> None:
+            cls._install_count += 1
 
-    benchmark.setup()  # second call must not overwrite
-    configs_second = list(benchmark.get_task_configs())
-    assert len(configs_second) == 2
-    assert {c.task_id for c in configs_second} == set(task_ids)
-    assert benchmark._setup_calls == 2
+    mod = ModuleType("fake_debug")
+    mod.get_debug_benchmark = lambda: CapturingConfig().subset_from_list(["t1"])  # type: ignore[attr-defined]
+    mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
 
-    # subset_from_list must still work after double setup
-    subset = benchmark.subset_from_list(["t1"])
-    subset_configs = list(subset.get_task_configs())
-    assert len(subset_configs) == 1
-    assert subset_configs[0].task_id == "t1"
+    run_debug_suite("bench", mod, print_json=False)
 
-
-def test_suite_benchmark_setup_and_close_called():
-    DoneBenchmark._install_calls = 0  # reset class-level counter before this test
-    mod, benchmark = _make_module()
-    run_debug_suite("bench", mod)
-    assert DoneBenchmark._install_calls == 1
-    assert benchmark._setup_calls == 1
-    assert benchmark._close_calls == 1
+    assert CapturingConfig._install_count == 1
+    assert len(captured) == 1
+    bench = captured[0]
+    assert isinstance(bench, DoneBenchmark)
+    assert bench.setup_calls == 1
+    assert bench.close_calls == 1
 
 
 def test_suite_benchmark_closed_even_when_get_task_configs_raises():
+    captured: list["FailingTaskConfigsBenchmark"] = []
+
     class FailingTaskConfigsBenchmark(Benchmark):
-        benchmark_metadata = BenchmarkMetadata(name="test-bench", version="0.1", description="test")
-        task_metadata = {"t1": TaskMetadata(id="t1")}
-        task_config_class = DoneTaskConfig
-        _close_calls: int = PrivateAttr(default=0)
+        def __init__(self, config):
+            super().__init__(config)
+            self.close_calls = 0
 
         def _setup(self) -> None:
-            pass
+            captured.append(self)
 
         def close(self) -> None:
-            self._close_calls += 1
+            self.close_calls += 1
+
+    class FailingTaskConfigsConfig(BenchmarkConfig):
+        benchmark_metadata: ClassVar = BenchmarkMetadata(name="fail-bench", version="0.1", description="test")
+        task_metadata: ClassVar[dict[str, TaskMetadata]] = {"t1": TaskMetadata(id="t1")}
+        task_config_class: ClassVar = DoneTaskConfig
+        benchmark_class: ClassVar = FailingTaskConfigsBenchmark
 
         def get_task_configs(self):
             raise RuntimeError("config error")
 
     mod = ModuleType("fake_debug")
-    benchmark = FailingTaskConfigsBenchmark()
-    mod.get_debug_benchmark = lambda: benchmark  # type: ignore[attr-defined]
+    mod.get_debug_benchmark = lambda: FailingTaskConfigsConfig()  # type: ignore[attr-defined]
     mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
 
     with pytest.raises(RuntimeError, match="config error"):
-        run_debug_suite("bench", mod)
-    assert benchmark._close_calls == 1
+        run_debug_suite("bench", mod, print_json=False)
+    assert len(captured) == 1
+    assert captured[0].close_calls == 1
 
 
 # ── assert_debug_tasks_reward_one ────────────────────────────────────────────
@@ -365,13 +374,11 @@ def test_assert_raises_when_not_done():
 
 
 def test_aggregate_profiling_float_values():
-    # evaluate and obs_postprocess are floats → keyed as "step/<op>"
     reports = [{"profiling": [{"evaluate": 0.04, "obs_postprocess": 0.01}]}]
     assert aggregate_profiling(reports) == {"step/evaluate": 0.04, "step/obs_postprocess": 0.01}
 
 
 def test_aggregate_profiling_dict_values():
-    # tool_execute is a dict → sub-fields keyed as "step/tool_execute/<sub_key>"
     reports = [{"profiling": [{"tool_execute": {"total": 0.12, "avg_per_action": 0.06, "n_actions": 2}}]}]
     assert aggregate_profiling(reports) == {
         "step/tool_execute/total": 0.12,
@@ -404,7 +411,6 @@ def test_aggregate_profiling_empty_returns_empty():
 
 
 def test_aggregate_profiling_populated_in_episode_report():
-    # Task.step() always injects profiling; run_debug_episode must collect it.
     task = DoneTask(metadata=TaskMetadata(id="t1"), tool_config=NoopToolConfig())
     report = run_debug_episode(task, noop_agent, max_steps=2)
     assert len(report["profiling"]) == 2
@@ -446,18 +452,24 @@ class _FakeTaskConfig:
         return _FakeTaskForReset(payload)
 
 
-class _FakeBenchForReset:
+class _FakeBenchmark:
+    def __init__(self):
+        self._runtime_context: dict = {}
+
+    def close(self):
+        pass
+
+
+class _FakeBenchmarkConfig:
     def __init__(self):
         self._tc = _FakeTaskConfig()
+        self.container_backend = None
 
     def install(self):
         pass
 
-    def setup(self):
-        pass
-
-    def close(self):
-        pass
+    def make(self, infra=None):
+        return _FakeBenchmark()
 
     def get_task_configs(self):
         return [self._tc]
@@ -465,7 +477,7 @@ class _FakeBenchForReset:
 
 def test_check_reset_reproducibility_returns_unified_diff_when_obs_differ():
     mod = ModuleType("fake_reset")
-    mod.get_debug_benchmark = lambda: _FakeBenchForReset()
+    mod.get_debug_benchmark = lambda: _FakeBenchmarkConfig()
 
     ok, msg, diff = check_reset_reproducibility(mod)
     assert ok is False
@@ -480,21 +492,28 @@ def test_check_reset_reproducibility_ok_and_empty_diff_when_matching():
         def make(self, **kwargs):
             return _FakeTaskForReset({"x": 1})
 
-    class _SameBench:
-        def install(self):
-            pass
-
-        def setup(self):
-            pass
+    class _SameBenchmark:
+        def __init__(self):
+            self._runtime_context: dict = {}
 
         def close(self):
             pass
+
+    class _SameBenchmarkConfig:
+        def __init__(self):
+            self.container_backend = None
+
+        def install(self):
+            pass
+
+        def make(self, infra=None):
+            return _SameBenchmark()
 
         def get_task_configs(self):
             return [_SameTC()]
 
     mod = ModuleType("fake_reset_ok")
-    mod.get_debug_benchmark = lambda: _SameBench()
+    mod.get_debug_benchmark = lambda: _SameBenchmarkConfig()
 
     ok, msg, diff = check_reset_reproducibility(mod)
     assert ok is True

@@ -21,7 +21,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Literal, Tuple
 
-from pydantic import ConfigDict, Field, PrivateAttr
+from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
 
 from cube.container import Container, ContainerBackend, ContainerConfig
 from cube.core import (
@@ -359,17 +359,55 @@ class Task(TypedBaseModel, ABC):
 
 
 class TaskConfig(ABC, TypedBaseModel):
-    """
-    Serializable task configuration (Pydantic BaseModel).
+    """Serializable task configuration — self-contained unit handed to workers.
 
-    Must be JSON-serializable to pass to workers.
-    Holds the minimal data needed to instantiate a Task: task_id, seed, and tool_config.
-    TaskMetadata is retrieved via task_id.
+    Carries everything needed to instantiate a Task, including its
+    ``TaskMetadata``. Workers never import the owning ``BenchmarkConfig`` to
+    look up metadata; the config arrives complete and ``make()`` just uses
+    ``self.metadata`` directly.
+
+    ``task_id`` is derived from ``metadata.id`` (prefixed with
+    ``sub_bench_name`` for composite-routed configs) so there is a single
+    source of truth.
+
+    ``sub_bench_name`` is an optional routing hint used by
+    ``CompositeBenchmark.spawn`` to dispatch a task to its origin
+    sub-benchmark. Standalone benchmarks leave it None.
     """
 
-    task_id: str
+    # ``SerializeAsAny`` preserves subclass-specific fields through JSON
+    # round-trip. Every cube subclasses TaskMetadata with extra
+    # per-task data — without this annotation those fields get silently
+    # stripped when the config crosses a process / network / storage boundary.
+    metadata: SerializeAsAny[TaskMetadata] = Field(
+        ...,
+        description=(
+            "Full task metadata. Stamped onto the config by "
+            "``BenchmarkConfig.get_task_configs()`` on the driver so ``make()`` "
+            "has everything it needs without importing the owning BenchmarkConfig."
+        ),
+    )
     seed: int | None = None
-    tool_config: ToolConfig | None = None
+    # Same rationale for ToolConfig — cubes declare ToolConfig subclasses with
+    # their own fields.
+    tool_config: SerializeAsAny[ToolConfig] | None = None
+    sub_bench_name: str | None = Field(
+        default=None,
+        description=(
+            "Optional routing hint set by ``CompositeBenchmarkConfig.get_task_configs()``. "
+            "Names the sub-benchmark this task originated from; "
+            "``CompositeBenchmark.spawn()`` uses it to route to the right sub-benchmark's "
+            "runtime_context. None for standalone (non-composite) benchmarks."
+        ),
+    )
+
+    @property
+    def task_id(self) -> str:
+        """Derived task identifier. Prefixed with ``sub_bench_name`` when set
+        (composite routing), otherwise just ``metadata.id``."""
+        if self.sub_bench_name is not None:
+            return f"{self.sub_bench_name}/{self.metadata.id}"
+        return self.metadata.id
 
     @abstractmethod
     def make(
@@ -377,23 +415,19 @@ class TaskConfig(ABC, TypedBaseModel):
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> Task:
-        """
-        Instantiate a Task from this config.
-
-        Called on a worker after deserialization.
+        """Instantiate a Task from this config. Called on a worker after deserialization.
 
         Args:
-            runtime_context: Shared infrastructure references created by Benchmark._setup()
-                             (e.g. server URLs, database connections). Passed from Benchmark.spawn().
-            container_backend: HOW to run containers (local, Modal, ...) created by user and passed to benchmark constructor, then passed from Benchmark.spawn().
+            runtime_context: Shared infrastructure references created by
+                Benchmark._setup() (e.g. server URLs, database connections).
+                Passed from Benchmark.spawn().
+            container_backend: HOW to run containers (local, Modal, ...) —
+                read from the owning BenchmarkConfig by Benchmark.spawn().
 
         Example:
-        >>> task_metadata = MyBenchmark.task_metadata[self.task_id]
-        >>> task_execution_info = MyBenchmark.load_task_execution_info(self.task_id)
-        >>> task_metadata = task_metadata.model_copy(update={"extra_info": task_execution_info})
         >>> return MyTask(
-        ...     metadata=task_metadata,
-        ...     tool_config=self.tool_config,
+        ...     metadata=self.metadata,
+        ...     tool_config=self.tool_config or MyDefaultToolConfig(),
         ...     runtime_context=runtime_context,
         ...     container_backend=container_backend,
         ... )

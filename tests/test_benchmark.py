@@ -1,15 +1,18 @@
-"""Tests for cube.benchmark - Benchmark, BenchmarkMetadata, subsetting."""
+"""Tests for cube.benchmark — BenchmarkConfig, Benchmark, subsetting, make()."""
+
+from __future__ import annotations
 
 import json
 
 import pytest
 
-from cube.benchmark import Benchmark, BenchmarkMetadata
+from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata
 from cube.core import Observation
+from cube.seed import AbstractSeedGenerator
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
 
-# --- Minimal fixtures ---
+# ── Minimal fixtures ──────────────────────────────────────────────────────────
 
 
 class _Tool(Tool):
@@ -35,12 +38,20 @@ class _Task(Task):
 class _TaskConfig(TaskConfig):
     def make(self, runtime_context=None, container_backend=None):
         return _Task(
-            metadata=TaskMetadata(id=self.task_id),
+            metadata=self.metadata,
             tool_config=self.tool_config or _ToolConfig(),
         )
 
 
 class MyBenchmark(Benchmark):
+    def _setup(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class MyBenchmarkConfig(BenchmarkConfig):
     benchmark_metadata = BenchmarkMetadata(
         name="MyBenchmark",
         version="2.0.0",
@@ -54,54 +65,116 @@ class MyBenchmark(Benchmark):
         "t4": TaskMetadata(id="t4", split="test", extra_info={"difficulty": "hard"}),
     }
     task_config_class = _TaskConfig
-
-    def _setup(self):
-        pass
-
-    def close(self):
-        pass
+    benchmark_class = MyBenchmark
 
 
-# --- BenchmarkMetadata ---
+# ── BenchmarkMetadata ─────────────────────────────────────────────────────────
 
 
 def test_benchmark_metadata_defaults():
     bm = BenchmarkMetadata(name="foo", version="1.0", description="bar")
-    assert bm.authors == []
-    assert bm.tags == []
-    assert bm.num_tasks == 0
-    assert bm.license == ""
-    assert bm.requirements == {}
-    assert bm.extra_info == {}
+    assert bm == BenchmarkMetadata(
+        name="foo",
+        version="1.0",
+        description="bar",
+        authors=[],
+        tags=[],
+        num_tasks=0,
+        license="",
+        requirements={},
+        extra_info={},
+        named_subsets={},
+        reset_isolation=None,
+    )
 
 
-# --- get_task_configs ---
+# ── __init_subclass__ validation ──────────────────────────────────────────────
+
+
+def test_missing_benchmark_class_raises():
+    """Concrete BenchmarkConfig subclass without benchmark_class fails at class-def time."""
+    with pytest.raises(TypeError, match="benchmark_class"):
+
+        class _Bad(BenchmarkConfig):  # noqa: F841
+            benchmark_metadata = BenchmarkMetadata(name="bad", version="1", description="x")
+            task_metadata = {"x": TaskMetadata(id="x")}
+            task_config_class = _TaskConfig
+            # missing: benchmark_class
+
+
+def test_missing_task_config_class_raises():
+    with pytest.raises(TypeError, match="task_config_class"):
+
+        class _Bad(BenchmarkConfig):  # noqa: F841
+            benchmark_metadata = BenchmarkMetadata(name="bad", version="1", description="x")
+            task_metadata = {"x": TaskMetadata(id="x")}
+            benchmark_class = MyBenchmark
+            # missing: task_config_class
+
+
+# ── tasks() view (ClassVar filtered by task_ids) ──────────────────────────────
+
+
+def test_tasks_returns_all_when_task_ids_is_none():
+    cfg = MyBenchmarkConfig()
+    assert cfg.tasks() == MyBenchmarkConfig.task_metadata
+    assert cfg.num_tasks == 4
+
+
+def test_tasks_filters_by_task_ids():
+    cfg = MyBenchmarkConfig(task_ids=["t2", "t4"])
+    tasks = cfg.tasks()
+    assert list(tasks.keys()) == ["t2", "t4"]
+    assert cfg.num_tasks == 2
+
+
+# ── get_task_configs() ────────────────────────────────────────────────────────
 
 
 def test_get_task_configs_yields_one_per_task():
-    configs = list(MyBenchmark().get_task_configs())
-    assert len(configs) == 4
+    configs = list(MyBenchmarkConfig().get_task_configs())
     assert {c.task_id for c in configs} == {"t1", "t2", "t3", "t4"}
 
 
-# --- subset_from_list ---
+def test_get_task_configs_stamps_metadata_on_each_config():
+    """Each emitted TaskConfig carries the full TaskMetadata for its task."""
+    configs = {c.task_id: c for c in MyBenchmarkConfig().get_task_configs()}
+    assert configs["t1"].metadata == MyBenchmarkConfig.task_metadata["t1"]
+    assert configs["t4"].metadata == MyBenchmarkConfig.task_metadata["t4"]
+
+
+def test_get_task_configs_honours_subset():
+    cfg = MyBenchmarkConfig().subset_from_list(["t1", "t3"])
+    configs = list(cfg.get_task_configs())
+    assert {c.task_id for c in configs} == {"t1", "t3"}
+
+
+# ── subset_from_list ──────────────────────────────────────────────────────────
+
+
+def test_subset_from_list_by_ids():
+    cfg = MyBenchmarkConfig()
+    sub = cfg.subset_from_list(["t2", "t4"])
+    assert sub.task_ids == ["t2", "t4"]
+    assert list(sub.tasks().keys()) == ["t2", "t4"]
+    # original untouched
+    assert cfg.task_ids is None
 
 
 def test_subset_from_list_by_metadata_objects():
-    bench = MyBenchmark()
-    sub = bench.subset_from_list([bench.task_metadata["t2"], bench.task_metadata["t4"]])
-    assert set(sub.task_metadata.keys()) == {"t2", "t4"}
+    cfg = MyBenchmarkConfig()
+    sub = cfg.subset_from_list([cfg.task_metadata["t2"], cfg.task_metadata["t4"]])
+    assert sub.task_ids == ["t2", "t4"]
 
 
-def test_subset_from_list_invalid_ids_raise():
-    with pytest.raises(ValueError, match="do not exist"):
-        MyBenchmark().subset_from_list(["t1", "nonexistent"])
+def test_subset_from_list_is_idempotent():
+    cfg = MyBenchmarkConfig().subset_from_list(["t1", "t2", "t1"])
+    # duplicates removed, order preserved
+    assert cfg.task_ids == ["t1", "t2"]
 
 
-def test_subset_preserves_subclass_type_and_instance_fields():
-    """subset_from_list returns the same subclass with instance fields and metadata intact."""
-
-    class BenchmarkWithField(Benchmark):
+def test_subset_from_list_preserves_subclass_and_instance_fields():
+    class ConfigWithField(BenchmarkConfig):
         benchmark_metadata = BenchmarkMetadata(
             name="FieldBench",
             version="1.0",
@@ -116,65 +189,101 @@ def test_subset_preserves_subclass_type_and_instance_fields():
             "f3": TaskMetadata(id="f3"),
         }
         task_config_class = _TaskConfig
+        benchmark_class = MyBenchmark
         a: str = "hello"
 
-        def _setup(self):
-            pass
+    cfg = ConfigWithField()
+    sub = cfg.subset_from_list(["f1", "f2"])
 
-        def close(self):
-            pass
-
-    bench = BenchmarkWithField()
-    sub = bench.subset_from_list(["f1", "f2"], benchmark_name_suffix="small")
-
-    # Subclass type and instance field are preserved
-    assert isinstance(sub, BenchmarkWithField)
+    # Subclass type and instance field survived model_copy
+    assert isinstance(sub, ConfigWithField)
     assert sub.a == "hello"
 
-    # task_metadata reflects the subset
-    assert set(sub.task_metadata.keys()) == {"f1", "f2"}
+    # task_ids narrowed the view
+    assert list(sub.tasks().keys()) == ["f1", "f2"]
+    assert sub.num_tasks == 2
 
-    # benchmark_metadata: name and count updated, all other fields preserved
-    assert sub.benchmark_metadata.name == "FieldBench_small"
-    assert sub.benchmark_metadata.num_tasks == 2
-    assert sub.benchmark_metadata.version == "1.0"
+    # Class-level metadata is unchanged (ClassVar is authoritative, subsets do NOT mutate it)
+    assert sub.benchmark_metadata.name == "FieldBench"
+    assert sub.benchmark_metadata.num_tasks == 3
     assert sub.benchmark_metadata.authors == ["Alice"]
-    assert sub.benchmark_metadata.tags == ["test"]
 
-    # Original benchmark is not mutated by the subset operation
-    assert bench.benchmark_metadata.name == "FieldBench"
-    assert bench.benchmark_metadata.num_tasks == 3
-    assert set(bench.task_metadata.keys()) == {"f1", "f2", "f3"}
+    # Original config untouched
+    assert cfg.task_ids is None
+    assert list(cfg.tasks().keys()) == ["f1", "f2", "f3"]
 
 
-# --- subset_from_glob ---
+def test_subset_from_list_invalid_ids_raise():
+    with pytest.raises(ValueError, match="do not exist"):
+        MyBenchmarkConfig().subset_from_list(["t1", "nonexistent"])
+
+
+def test_subset_from_list_empty_raises():
+    with pytest.raises(ValueError, match="non-empty"):
+        MyBenchmarkConfig().subset_from_list([])
+
+
+# ── subset_from_glob ──────────────────────────────────────────────────────────
 
 
 def test_subset_from_glob_by_split():
-    sub = MyBenchmark().subset_from_glob("split", "train")
-    assert set(sub.task_metadata.keys()) == {"t1", "t2"}
+    sub = MyBenchmarkConfig().subset_from_glob("split", "train")
+    assert set(sub.task_ids or ()) == {"t1", "t2"}
 
 
 def test_subset_from_glob_by_extra_info():
-    sub = MyBenchmark().subset_from_glob("extra_info.difficulty", "easy")
-    assert set(sub.task_metadata.keys()) == {"t1", "t3"}
+    sub = MyBenchmarkConfig().subset_from_glob("extra_info.difficulty", "easy")
+    assert set(sub.task_ids or ()) == {"t1", "t3"}
 
 
 def test_subset_from_glob_no_match_raises():
     with pytest.raises(ValueError, match="No tasks found"):
-        MyBenchmark().subset_from_glob("split", "nonexistent_split")
+        MyBenchmarkConfig().subset_from_glob("split", "nonexistent_split")
 
 
-# --- File loading ---
+def test_subset_from_glob_composes_with_subset_from_list():
+    """A glob applied to an already-subset view only matches within that view."""
+    narrowed = MyBenchmarkConfig().subset_from_list(["t1", "t3", "t4"])
+    sub = narrowed.subset_from_glob("split", "train")
+    # t2 is split=train but was excluded by the first subset
+    assert set(sub.task_ids or ()) == {"t1"}
+
+
+# ── named_subsets ─────────────────────────────────────────────────────────────
+
+
+def test_named_subsets_and_named_subset():
+    class ConfigWithNamed(BenchmarkConfig):
+        benchmark_metadata = BenchmarkMetadata(
+            name="Named",
+            version="1",
+            description="x",
+            num_tasks=4,
+            named_subsets={"train": ("split", "train"), "easy": ("extra_info.difficulty", "easy")},
+        )
+        task_metadata = MyBenchmarkConfig.task_metadata
+        task_config_class = _TaskConfig
+        benchmark_class = MyBenchmark
+
+    assert set(ConfigWithNamed.named_subsets()) == {"train", "easy"}
+
+    sub = ConfigWithNamed().named_subset("easy")
+    assert set(sub.task_ids or ()) == {"t1", "t3"}
+
+
+def test_named_subset_unknown_raises():
+    with pytest.raises(KeyError, match="Unknown subset"):
+        MyBenchmarkConfig().named_subset("nonexistent")
+
+
+# ── File loading helpers ──────────────────────────────────────────────────────
 
 
 def test_benchmark_metadata_from_json(tmp_path):
     p = tmp_path / "bm.json"
     p.write_text(json.dumps({"name": "json-bench", "version": "3.0", "description": "from JSON"}))
-    bm = Benchmark.benchmark_metadata_from_json(p)
-    assert bm.name == "json-bench"
-    assert bm.version == "3.0"
-    assert bm.description == "from JSON"
+    bm = BenchmarkConfig.benchmark_metadata_from_json(p)
+    assert bm == BenchmarkMetadata(name="json-bench", version="3.0", description="from JSON")
 
 
 def test_benchmark_metadata_from_csv(tmp_path):
@@ -182,12 +291,15 @@ def test_benchmark_metadata_from_csv(tmp_path):
     p.write_text(
         'name,version,description,num_tasks,authors,tags\ncsv-bench,4.0,from CSV,5,"[""Alice""]","[""toy""]"\n'
     )
-    bm = Benchmark.benchmark_metadata_from_csv(p)
-    assert bm.name == "csv-bench"
-    assert bm.version == "4.0"
-    assert bm.num_tasks == 5
-    assert bm.authors == ["Alice"]
-    assert bm.tags == ["toy"]
+    bm = BenchmarkConfig.benchmark_metadata_from_csv(p)
+    assert bm == BenchmarkMetadata(
+        name="csv-bench",
+        version="4.0",
+        description="from CSV",
+        num_tasks=5,
+        authors=["Alice"],
+        tags=["toy"],
+    )
 
 
 def test_task_metadata_from_json(tmp_path):
@@ -200,35 +312,149 @@ def test_task_metadata_from_json(tmp_path):
             ]
         )
     )
-    tasks = Benchmark.task_metadata_from_json(p)
-    assert set(tasks.keys()) == {"task-a", "task-b"}
-    assert tasks["task-a"].split == "train"
-    assert tasks["task-b"].extra_info == {"difficulty": "hard"}
+    tasks = BenchmarkConfig.task_metadata_from_json(p)
+    assert tasks == {
+        "task-a": TaskMetadata(id="task-a", split="train"),
+        "task-b": TaskMetadata(id="task-b", split="test", extra_info={"difficulty": "hard"}),
+    }
 
 
 def test_task_metadata_from_csv(tmp_path):
     p = tmp_path / "tasks.csv"
     p.write_text("id,split,abstract_description\ntask-a,train,do something\ntask-b,test,do other\n")
-    tasks = Benchmark.task_metadata_from_csv(p)
-    assert set(tasks.keys()) == {"task-a", "task-b"}
-    assert tasks["task-a"].split == "train"
-    assert tasks["task-b"].split == "test"
+    tasks = BenchmarkConfig.task_metadata_from_csv(p)
+    assert tasks == {
+        "task-a": TaskMetadata(id="task-a", split="train", abstract_description="do something"),
+        "task-b": TaskMetadata(id="task-b", split="test", abstract_description="do other"),
+    }
 
 
-# --- spawn ---
+# ── make() + runtime Benchmark ────────────────────────────────────────────────
+
+
+def test_make_returns_live_benchmark():
+    """make() returns a Benchmark whose setup() has already been called."""
+    bench = MyBenchmarkConfig().make()
+    assert isinstance(bench, MyBenchmark)
+    assert bench.config is not None
+    # _runtime_context exists (empty for this minimal benchmark)
+    assert bench._runtime_context == {}
+
+
+def test_make_without_infra_skips_provisioning_for_resourceless_benchmark():
+    """A benchmark with no resources can be made without an infra."""
+    bench = MyBenchmarkConfig().make(infra=None)
+    assert isinstance(bench, MyBenchmark)
+
+
+def test_benchmark_is_context_manager():
+    with MyBenchmarkConfig().make() as bench:
+        assert isinstance(bench, MyBenchmark)
+    # close() was called on exit
 
 
 def test_spawn_returns_ready_task():
-    bench = MyBenchmark()
-    bench.setup()
-    task = bench.spawn(_TaskConfig(task_id="t1"))
+    bench = MyBenchmarkConfig().make()
+    task = bench.spawn(_TaskConfig(metadata=TaskMetadata(id="t1")))
     assert isinstance(task, Task)
     obs, _ = task.reset()
-    assert obs.contents[0].data == "ready"
+    assert obs == Observation.from_text("ready")
 
 
 def test_spawn_unknown_task_raises():
-    bench = MyBenchmark()
-    bench.setup()
+    bench = MyBenchmarkConfig().make()
     with pytest.raises(ValueError, match="not found"):
-        bench.spawn(_TaskConfig(task_id="nonexistent"))
+        bench.spawn(_TaskConfig(metadata=TaskMetadata(id="nonexistent")))
+
+
+def test_spawn_respects_subset():
+    """A benchmark made from a subset config refuses to spawn tasks outside the subset."""
+    bench = MyBenchmarkConfig().subset_from_list(["t1", "t2"]).make()
+    # t3 is not in the subset — spawn must refuse
+    with pytest.raises(ValueError, match="not found"):
+        bench.spawn(_TaskConfig(metadata=TaskMetadata(id="t3")))
+
+
+# ── Round-trip serialization ──────────────────────────────────────────────────
+
+
+def test_config_round_trip_json():
+    """BenchmarkConfig serializes and reloads through JSON preserving state."""
+    cfg = MyBenchmarkConfig().subset_from_list(["t2", "t4"])
+    payload = cfg.model_dump_json()
+    reloaded = MyBenchmarkConfig.model_validate_json(payload)
+    assert reloaded == cfg
+    # Sanity: reloaded view is still correct
+    assert list(reloaded.tasks().keys()) == ["t2", "t4"]
+
+
+def test_subsetted_config_make_and_spawn():
+    """End-to-end: subset → serialize → reload → make() → spawn."""
+    cfg = MyBenchmarkConfig().subset_from_list(["t1"])
+    reloaded = MyBenchmarkConfig.model_validate_json(cfg.model_dump_json())
+    with reloaded.make() as bench:
+        # Use a TaskConfig emitted by the reloaded benchmark — metadata is stamped for us.
+        tc = next(iter(reloaded.get_task_configs()))
+        task = bench.spawn(tc)
+        obs, _ = task.reset()
+        assert obs == Observation.from_text("ready")
+
+
+def test_polymorphic_fields_preserve_subclass_state_through_json():
+    """Regression: JSON round-trip must preserve subclass-specific fields on every
+    polymorphic field of BenchmarkConfig / TaskConfig. Without ``SerializeAsAny``,
+    Pydantic silently drops subclass state — the reloaded config looks fine but
+    has lost the subclass's extra data.
+
+    Subclasses must be importable by ``TypedBaseModel`` via their ``_type``
+    path, so they're defined at module scope just below.
+    """
+    # BenchmarkConfig polymorphic fields
+    original = _BenchWithRichDefaults(
+        tool_config=_RichToolConfig(marker="tool-actual"),
+        seed_generator=_RichSeedGenerator(marker="seed-actual"),
+    )
+    reloaded = _BenchWithRichDefaults.model_validate_json(original.model_dump_json())
+
+    assert isinstance(reloaded.tool_config, _RichToolConfig)
+    assert reloaded.tool_config.marker == "tool-actual"
+    assert isinstance(reloaded.seed_generator, _RichSeedGenerator)
+    assert reloaded.seed_generator.marker == "seed-actual"
+
+    # TaskConfig polymorphic fields — every cube subclasses TaskMetadata with
+    # per-task data (domain, problem_statement, level, etc.), so this is the
+    # most important round-trip path.
+    rich_meta = _RichTaskMetadata(id="t1", marker="meta-actual")
+    tc = _TaskConfig(metadata=rich_meta, tool_config=_RichToolConfig(marker="tc-tool"))
+    reloaded_tc = _TaskConfig.model_validate_json(tc.model_dump_json())
+    assert isinstance(reloaded_tc.metadata, _RichTaskMetadata)
+    assert reloaded_tc.metadata.marker == "meta-actual"
+    assert isinstance(reloaded_tc.tool_config, _RichToolConfig)
+    assert reloaded_tc.tool_config.marker == "tc-tool"
+
+
+# Module-level subclasses for the polymorphic round-trip regression test above.
+# Must live at module scope so ``TypedBaseModel._type`` can resolve them.
+class _RichToolConfig(_ToolConfig):
+    marker: str = "tool-default"
+
+    def make(self, container=None):
+        return _Tool()
+
+
+class _RichSeedGenerator(AbstractSeedGenerator):
+    marker: str = "seed-default"
+
+    def __call__(self, task_metadata):
+        return []
+
+
+class _RichTaskMetadata(TaskMetadata):
+    marker: str = "meta-default"
+
+
+class _BenchWithRichDefaults(BenchmarkConfig):
+    benchmark_metadata = BenchmarkMetadata(name="rich-defaults-bench", version="1", description="x")
+    task_metadata = {"t1": TaskMetadata(id="t1")}
+    task_config_class = _TaskConfig
+    benchmark_class = MyBenchmark

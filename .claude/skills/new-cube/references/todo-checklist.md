@@ -46,22 +46,9 @@ Whatever you pick, keep task-specific logic OUT of the tool; put it in `Task.eva
 **`Task.finished`** — `# TODO: return True when the goal is achieved.`
 > Optional. Default False. Enables early termination so an episode doesn't run out `max_steps` after success.
 
-### `TaskConfig.make()` — correct import pattern
+### `TaskConfig.make()` note
 
 The template's `CubeTaskConfig.make(runtime_context, container_backend)` currently carries `container_backend` because the current spec requires it. Do not strip this. Once harness #300 ships, the template will be updated.
-
-**Import the Benchmark class INSIDE `make()`, not at module top.** Importing at top causes a circular import (benchmark.py already imports this `TaskConfig` via `task_config_class`):
-
-```python
-class CubeTaskConfig(TaskConfig):
-    def make(self, runtime_context=None, container_backend=None):
-        from my_cube.benchmark import CubeBenchmark  # inside make() — avoids circular import
-
-        metadata = CubeBenchmark.task_metadata[self.task_id]  # read from Benchmark ClassVar
-        # ... build and return CubeTask
-```
-
-Do NOT inline task metadata into `CubeTaskConfig`. Metadata stays lean on the benchmark.
 
 ### Custom `TaskMetadata` subclass
 
@@ -77,32 +64,31 @@ class MyTaskMetadata(TaskMetadata):
     log_parser: str
 ```
 
-**Keep it lightweight.** Target `task_metadata.json` < a few KB. `extra_info` stays empty here; use it only for the heavy-data pattern below.
+**Keep it lightweight.** Target ~1 byte per task average (~1 MB for 1000 tasks, ~2 MB for 2000 tasks). `extra_info` stays empty here; use it only for the heavy-data pattern below.
 
 ### Heavy per-task data: use `extra_info`, not the shipped JSON
 
 If a task needs heavy data (problem statements, binaries, evaluation code, patches), do NOT put it in the shipped `task_metadata`. Pattern:
 
-1. `Benchmark.install()` populates a per-task execution cache on disk (HF download, repo clone, archive extraction, …). **Cache is NOT committed.**
-2. `TaskConfig.make()` loads the heavy bits lazily and attaches them to `metadata.extra_info`:
+1. `BenchmarkConfig.install()` populates a per-task execution cache on disk (HF download, repo clone, archive extraction, …). **Cache is NOT committed.**
+2. Override `BenchmarkConfig.get_task_configs()` to merge in the heavy bits at emit time on the driver:
    ```python
-   def make(self, runtime_context=None, container_backend=None):
-       from my_cube.benchmark import MyBenchmark
-       metadata = MyBenchmark.task_metadata[self.task_id]
-       exec_info = self._load_execution_cache(self.task_id)  # from install()'s cache
-       metadata = metadata.model_copy(update={"extra_info": exec_info})
-       # ... build task
+   def get_task_configs(self):
+       for tc in super().get_task_configs():
+           exec_info = self.load_task_execution_info(tc.task_id)
+           stamped = tc.model_copy(update={"metadata": tc.metadata.model_copy(update={"extra_info": exec_info})})
+           yield stamped
    ```
-3. The harness is expected to call `Benchmark.install()` before running tasks.
+3. Workers receive fully-stamped `TaskConfig`s — they read `self.metadata.extra_info` directly, no disk access needed.
+4. The harness is expected to call `BenchmarkConfig.install()` before dispatching tasks.
 
-Reference: `cube-harness/cubes/swebench-live-cube/src/swebench_live_cube/{task,benchmark}.py`.
+Reference: `cube-harness/cubes/swebench-live-cube/src/swebench_live_cube/benchmark.py`.
 
 ### Layer 2 checklist
 - [ ] `reset()` calls `self.tool.reset()`.
 - [ ] `evaluate()` is pure — grep for writes to `self.tool` / `self.tool._env`.
 - [ ] Opening observation contains the goal text.
 - [ ] `close()` releases task-scoped resources (and calls `super().close()`).
-- [ ] Benchmark import in `make()` is **inside** the method.
 - [ ] If using a custom `TaskMetadata` subclass, only public lightweight fields — no heavy blobs.
 
 ## Layer 3 — `benchmark.py`
@@ -178,12 +164,12 @@ Users get `benchmark.subset_from_name("test")`. Do NOT ship separate metadata fi
 
 ### TODOs
 
-**`_TASK_ACTIONS`** — `# TODO: add one entry per task defined in CubeBenchmark.task_metadata.`
+**`_TASK_ACTIONS`** — `# TODO: add one entry per task defined in CubeBenchmarkConfig.task_metadata.`
 > Hard-code the action sequence that solves each task. The debug agent replays these. Every sequence must reach `reward == 1.0`.
 
 ### Layer 4 checklist
 - [ ] One `_TASK_ACTIONS` entry per task in the debug subset.
-- [ ] `get_debug_benchmark()` returns a benchmark instance (full set, or `subset_from_list([...])` for a tiny debug-only set).
+- [ ] `get_debug_benchmark()` takes **no arguments** and returns a `BenchmarkConfig` (full set, or `config.subset_from_list([...])` for a tiny debug-only set).
 - [ ] `make_debug_agent(task_id)` returns a callable; raises on unknown task_id.
 
 ## Layer 5 — `pyproject.toml`

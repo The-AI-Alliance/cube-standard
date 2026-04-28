@@ -1,28 +1,53 @@
 """
-Benchmark management for CUBE.
+Benchmark layer for CUBE.
 
-This module defines the Benchmark base class and BenchmarkMetadata for managing
-collections of tasks, including task spawning, subsetting, and metadata loading
-from JSON or CSV files.
+`BenchmarkConfig` is the serializable description of a benchmark: what tasks
+exist, what resources they need, and what task-level defaults to apply. It is
+pure Pydantic data — safe to serialize, copy, and ship across process
+boundaries.
 
-Abstract classes:
-    Benchmark — subclasses must implement:
-        _setup() -> None    create shared infrastructure, populate _runtime_context
-        close() -> None     tear down resources created in _setup()
-    and define the following class variable:
-        task_config_class: type[TaskConfig]     used by get_task_configs()
-    The following class variables are also required but can be omitted if the
-    corresponding metadata files (benchmark_metadata.json/.csv, task_metadata.json/.csv)
-    are placed next to the benchmark module file — they will be loaded automatically:
-        benchmark_metadata: BenchmarkMetadata
-        task_metadata: dict[str, TaskMetadata]
-    For benchmarks whose task list is determined at install time (e.g. downloaded datasets),
-    define ``task_metadata: ClassVar[dict[str, TaskMetadata]] = {}`` as a placeholder and
-    implement ``install()`` to populate and save ``task_metadata.json``. The empty dict
-    signals to ``__init_subclass__`` that install-time population is expected.
+`Benchmark` is the runtime pair: a plain Python class holding live OS state
+(container handles, server URLs, open connections). It is produced by
+``BenchmarkConfig.make(infra)`` and is never serialized.
+
+The split mirrors ``TaskConfig`` / ``Task``. Subclasses of ``BenchmarkConfig``
+declare class-level registries (``benchmark_metadata``, ``task_metadata``,
+``task_config_class``, ``benchmark_class``); subclasses of ``Benchmark``
+implement ``_setup`` / ``close``.
+
+Typical shape::
+
+    class MyBenchmarkConfig(BenchmarkConfig):
+        benchmark_metadata: ClassVar = BenchmarkMetadata(...)
+        task_metadata: ClassVar = {...}               # or auto-loaded from file
+        task_config_class: ClassVar = MyTaskConfig
+        benchmark_class: ClassVar = "MyBenchmark"    # forward ref resolved below
+
+    class MyBenchmark(Benchmark):
+        def _setup(self) -> None: ...
+        def close(self) -> None: ...
+
+    MyBenchmarkConfig.benchmark_class = MyBenchmark
+
+Subsetting
+----------
+``subset_from_list`` / ``subset_from_glob`` / ``named_subset`` return a new
+``BenchmarkConfig`` with its ``task_ids`` field narrowed. The class-level
+``task_metadata`` dict remains the driver-side registry; ``get_task_configs``
+stamps each emitted ``TaskConfig`` with its full ``TaskMetadata`` so workers
+have everything they need without importing the owning ``BenchmarkConfig``.
+
+Composition
+-----------
+``CompositeBenchmarkConfig`` holds a list of ``BenchmarkConfig``s and emits
+each sub-config's TaskConfigs unchanged in type, with ``task_id`` prefixed by
+the sub-benchmark's name and a ``sub_bench_name`` routing tag set.
+``CompositeBenchmark.spawn()`` reads ``sub_bench_name`` to route the task to
+its origin sub-benchmark's ``_runtime_context``.
 """
 
-import copy
+from __future__ import annotations
+
 import csv
 import enum
 import fnmatch
@@ -30,15 +55,16 @@ import json
 import logging
 import sys
 from abc import ABC, abstractmethod
+from collections import Counter
 from pathlib import Path
 from typing import Any, ClassVar, Generator
 
-from pydantic import ConfigDict, Field, PrivateAttr
+from pydantic import Field, SerializeAsAny
 
 from cube import get_cache_dir
 from cube.container import ContainerBackend
 from cube.core import TypedBaseModel
-from cube.resource import ResourceConfig
+from cube.resource import InfraConfig, ResourceConfig
 from cube.seed import AbstractSeedGenerator
 from cube.task import RuntimeContext, Task, TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
@@ -47,10 +73,10 @@ logger = logging.getLogger(__name__)
 
 
 class ResetIsolation(str, enum.Enum):
-    """Describes the isolation guarantee provided by a benchmark's reset mechanism.
+    """Isolation guarantee provided by a benchmark's reset mechanism.
 
-    Declared on BenchmarkMetadata so harness users can reason about safe parallelism
-    and reproducibility before running tasks.
+    Declared on ``BenchmarkMetadata`` so harness users can reason about safe
+    parallelism and reproducibility before running tasks.
 
     Values:
         SNAPSHOT:     VM reverted to a saved savestate (~5s). Strongest isolation.
@@ -67,23 +93,11 @@ class ResetIsolation(str, enum.Enum):
 
 
 class BenchmarkMetadata(TypedBaseModel):
-    """
-    Metadata describing a benchmark.
+    """Static description of a benchmark — declared once per subclass.
 
     Used by:
-    - Benchmark: benchmark_metadata attribute
-    - API endpoint: cube/info
-
-    Attributes:
-        name (str): Benchmark name
-        version (str): Benchmark version
-        description (str): Benchmark description
-        authors (list[str]): List of benchmark author names (default: empty list)
-        license (str): Benchmark license (default: empty string)
-        requirements (dict[str, Any]): Environment requirements (hardware, OS, VMs, containers, etc.) to install and run the benchmark (default: empty dict)
-        num_tasks (int): Total number of tasks (default: 0)
-        tags (list[str]): Benchmark tags (default: empty list)
-        extra_info (dict[str, Any]): Additional metadata (default: empty dict)
+    - ``BenchmarkConfig.benchmark_metadata`` (ClassVar)
+    - API endpoint: ``cube/info``
     """
 
     name: str = Field(..., description="Benchmark name")
@@ -95,7 +109,7 @@ class BenchmarkMetadata(TypedBaseModel):
         default_factory=dict,
         description="Environment requirements (hardware, OS, VMs, containers, etc.) to install and run the benchmark",
     )
-    num_tasks: int = Field(default=0, description="Total number of tasks")
+    num_tasks: int = Field(default=0, description="Total number of tasks in the *full* benchmark (pre-subset)")
     tags: list[str] = Field(default_factory=list, description="Benchmark tags")
     reset_isolation: ResetIsolation | None = Field(
         default=None,
@@ -103,108 +117,103 @@ class BenchmarkMetadata(TypedBaseModel):
             "Isolation guarantee provided by this benchmark's reset mechanism. "
             "None means unspecified. Set by benchmark authors to let harness users "
             "reason about safe parallelism (e.g. APP_LEVEL + multiple workers on the "
-            "same VM is unsafe). See ResetIsolation for possible values."
+            "same VM is unsafe)."
         ),
     )
     named_subsets: dict[str, tuple[str, str]] = Field(
         default_factory=dict,
         description=(
             "Named subsets of this benchmark, as a mapping from subset name to "
-            "(glob_key, glob_pattern) passed to Benchmark.subset_from_glob(). "
-            "Lets users obtain a pre-defined filtered view without writing glob expressions manually. "
-            "Example: {'lite': ('extra_info', '*\"lite\"*'), 'verified': ('extra_info', '*\"verified\"*')}"
+            "(glob_key, glob_pattern) passed to BenchmarkConfig.subset_from_glob(). "
+            "Example: {'lite': ('extra_info', '*\"lite\"*')}"
         ),
     )
     extra_info: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
-    # TODO: discuss adding / removing fields such as homepage, repository, citation, etc.
 
 
-class Benchmark(TypedBaseModel, ABC):
-    """Represents a benchmark consisting of multiple tasks."""
+class BenchmarkConfig(TypedBaseModel, ABC):
+    """Serializable description of a benchmark. Safe to copy, serialize, and ship.
 
-    # Class-level attributes that must be defined by subclasses (not constructor params)
+    Subclasses declare four class-level attributes:
+
+    * ``benchmark_metadata: ClassVar[BenchmarkMetadata]`` — static description.
+    * ``task_metadata: ClassVar[dict[str, TaskMetadata]]`` — task registry
+      (loaded at class definition time from ``task_metadata.json`` / ``.csv``
+      next to the module, or declared directly).
+    * ``task_config_class: ClassVar[type[TaskConfig]]`` — config emitted by
+      ``get_task_configs``.
+    * ``benchmark_class: ClassVar[type[Benchmark]]`` — the runtime pair
+      instantiated by ``make(infra)``.
+
+    Instance fields carry per-configuration state: the current subset
+    (``task_ids``), declared resources, default tool config, seed generator,
+    and optional container backend.
+
+    ``make(infra)`` is the single factory that turns a config into a live
+    ``Benchmark``: it provisions any declared resources idempotently, then
+    constructs and sets up the runtime pair. Users never call ``setup()``
+    directly — a ``Benchmark`` returned from ``make`` is born ready.
+    """
+
+    # ── Class-level registries (populated by subclasses or __init_subclass__) ──
     benchmark_metadata: ClassVar[BenchmarkMetadata]
     task_metadata: ClassVar[dict[str, TaskMetadata]]
     task_config_class: ClassVar[type[TaskConfig]]
+    benchmark_class: ClassVar[type["Benchmark"]]
 
-    # this optional fields should be set during _setup() by the Benchmark **creator** (not constructor params).
-    _runtime_context: RuntimeContext = PrivateAttr(
-        default_factory=dict
-    )  # track shared runtime resources created in setup()
+    # ── Instance fields (user-configurable; safely serializable) ──────────────
+    task_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "Subset selector: if None, ``tasks()`` returns every entry in the class-level "
+            "task_metadata. Populated by ``subset_from_list`` / ``subset_from_glob`` / "
+            "``named_subset`` to narrow the set without touching the ClassVar."
+        ),
+    )
+    # ``SerializeAsAny`` on every polymorphic field so subclass-specific state
+    # survives JSON round-trip. Without it Pydantic dumps only the declared
+    # base type's fields — subclass extras are silently stripped and the
+    # reloaded value is semantically different from the original. Required for
+    # reliable cross-process transport via ``make_benchmark_rpc_server`` and
+    # any future Ray / storage round-trip.
+    resources: list[SerializeAsAny[ResourceConfig]] = Field(
+        default_factory=list,
+        description=(
+            "Declared resource dependencies. ``make(infra)`` calls ``infra.provision(r)`` "
+            "for each entry whose ``provision_status`` is not ``ready`` before setup runs."
+        ),
+    )
+    container_backend: SerializeAsAny[ContainerBackend] | None = Field(
+        default=None,
+        description="Optional container backend passed through to every spawned task.",
+        deprecated=True,
+    )
+    tool_config: SerializeAsAny[ToolConfig] | None = Field(
+        default=None,
+        description="Tool config applied uniformly to every task by the default get_task_configs(); override get_task_configs() for per-task variation.",
+    )
+    seed_generator: SerializeAsAny[AbstractSeedGenerator] | None = Field(
+        default=None,
+        description="Optional seed generator yielding per-task seeds during get_task_configs().",
+    )
 
-    # these optional fields should be set by benchmark *users* (constructor params).
-    resources: list[ResourceConfig] = Field(default_factory=list)
-    """Resource dependencies declared by this benchmark.
-
-    Set this on your benchmark class (or pass at construction time) to declare
-    the ResourceConfig objects the benchmark needs.  The harness uses this list
-    to check provision status and capability compatibility before running tasks.
-
-    Example::
-
-        class MyBenchmark(Benchmark):
-            resources: list[ResourceConfig] = [
-                VMResourceConfig(
-                    name="my-vm",
-                    scope="task",
-                    source_url="https://...",
-                )
-            ]
-    """
-    container_backend: ContainerBackend | None = Field(
-        default=None
-    )  # optional container backend to be used for all tasks in this benchmark
-    tool_config: ToolConfig | None = Field(
-        default=None
-    )  # tool config applied uniformly to every task by the default get_task_configs(); override get_task_configs() for per-task variation
-    seed_generator: AbstractSeedGenerator | None = Field(
-        default=None
-    )  # optional seed generator for tasks that require random seeds
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)  # allow non-serializable fields like AbstractSeedGenerator
-
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────────
     # File-loading helpers
-    #
-    # Automatically called in __init_subclass__ if the relevant class variables aren't already defined,
-    # looking for files next to the benchmark module file.
-    # You can also call these directly at class definition time in your subclass.
-    #
-    #   class MyBenchmark(Benchmark):
-    #       benchmark_metadata = Benchmark.benchmark_metadata_from_json("benchmark.json")
-    #       task_metadata = Benchmark.task_metadata_from_csv("tasks.csv")
-    #       task_config_class  = MyTaskConfig
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def benchmark_metadata_from_json(path: str | Path) -> "BenchmarkMetadata":
-        """Load :class:`BenchmarkMetadata` from a JSON file.
-
-        The JSON object keys must match the ``BenchmarkMetadata`` field names.
-        """
+        """Load ``BenchmarkMetadata`` from a JSON file."""
         with open(path) as f:
             data = json.load(f)
         return BenchmarkMetadata.model_validate(data)
 
     @staticmethod
     def benchmark_metadata_from_csv(path: str | Path) -> "BenchmarkMetadata":
-        """Load :class:`BenchmarkMetadata` from a CSV file.
+        """Load ``BenchmarkMetadata`` from a single-row CSV.
 
-        The file must have a header row followed by exactly one data row.
-        Complex fields must be stored as JSON strings:
-
-        * ``authors``      — JSON array,  e.g. ``["Alice","Bob"]``
-        * ``tags``         — JSON array,  e.g. ``["toy","counter"]``
-        * ``requirements`` — JSON object, e.g. ``{"gpu": false}``
-        * ``extra_info``   — JSON object, e.g. ``{}``
-
-        ``num_tasks`` is parsed as an integer (omit the column to use the
-        default of ``0``).
-
-        Example CSV::
-
-            name,version,description,num_tasks,tags
-            toy-counter,1.0.0,My benchmark,3,"[""toy""]"
+        Complex fields (``authors``, ``tags``, ``requirements``, ``extra_info``)
+        must be stored as JSON-encoded strings.
         """
         _JSON_FIELDS = ("authors", "tags", "requirements", "extra_info")
         with open(path, newline="") as f:
@@ -224,17 +233,12 @@ class Benchmark(TypedBaseModel, ABC):
         return BenchmarkMetadata.model_validate(data)
 
     @staticmethod
-    def task_metadata_from_json(path: str | Path) -> "dict[str, TaskMetadata]":
+    def task_metadata_from_json(path: str | Path) -> dict[str, TaskMetadata]:
         """Load ``task_metadata`` from a JSON file.
 
-        The file may contain either:
-
-        * a **list** of task-metadata objects, or
-        * a **dict** mapping task IDs to task-metadata objects.
-
-        In both cases the returned dict is keyed by ``TaskMetadata.id``.
-        Complex fields (``extra_info``, ``tags``, ``container_config``) are
-        parsed natively from JSON.
+        The file may contain either a list of task-metadata objects or a dict
+        keyed by task id. In both cases the returned dict is keyed by
+        ``TaskMetadata.id``.
         """
         with open(path) as f:
             data = json.load(f)
@@ -248,21 +252,11 @@ class Benchmark(TypedBaseModel, ABC):
         return {t.id: t for t in tasks}
 
     @staticmethod
-    def task_metadata_from_csv(path: str | Path) -> "dict[str, TaskMetadata]":
+    def task_metadata_from_csv(path: str | Path) -> dict[str, TaskMetadata]:
         """Load ``task_metadata`` from a CSV file.
 
-        Each row represents one task. The ``id`` column is required; all other
-        columns are optional and fall back to their :class:`TaskMetadata`
-        defaults when absent or empty.
-
-        Complex fields must be stored as JSON strings in the CSV:
-
-        * ``extra_info``       — JSON object, e.g. ``{"target": 3}``
-        * ``tags``             — JSON array,  e.g. ``["easy","counter"]``
-        * ``container_config`` — JSON object or ``null``
-
-        ``recommended_max_steps`` is parsed as an integer (or ``None`` if
-        the cell is empty).
+        Each row is one task. ``id`` is required. Complex fields (``extra_info``,
+        ``tags``, ``container_config``) must be JSON-encoded strings.
         """
         _JSON_FIELDS = ("extra_info", "tags", "container_config")
         tasks = []
@@ -277,101 +271,74 @@ class Benchmark(TypedBaseModel, ABC):
                 tasks.append(TaskMetadata.model_validate(data))
         return {t.id: t for t in tasks}
 
-    @property
-    def name(self) -> str:
-        return self.benchmark_metadata.name
+    # ──────────────────────────────────────────────────────────────────────────
+    # Subclass validation / file auto-load
+    # ──────────────────────────────────────────────────────────────────────────
 
     def __init_subclass__(cls, **kwargs):
-        """Hook called automatically by Python whenever a new subclass of Benchmark is defined.
+        """Validate that every concrete subclass wires the class-level registries.
 
-        It validates that every **concrete** subclass (i.e. one that has no remaining abstract
-        methods) provides the three required class-level attributes:
+        Auto-loads ``benchmark_metadata`` / ``task_metadata`` from files next
+        to the module if neither a ClassVar value nor a descriptor (e.g.
+        ``@property``) is declared on the subclass. Subclasses that compute
+        these dynamically (e.g. ``CompositeBenchmarkConfig``) just declare
+        them as ``@property`` and the validation steps out of the way.
 
-        * ``benchmark_metadata`` — a :class:`BenchmarkMetadata` instance describing the benchmark.
-        * ``task_metadata`` — a ``dict[str, TaskMetadata]`` mapping task IDs to their metadata.
-        * ``task_config_class`` — a subclass of :class:`TaskConfig` used to instantiate tasks.
-
-        For ``benchmark_metadata`` and ``task_metadata``, if the attribute is **not** defined
-        directly on the subclass, this hook automatically tries to load it from a file placed
-        next to the benchmark module (``benchmark_metadata.json/.csv`` or
-        ``task_metadata.json/.csv``).  A ``TypeError`` is raised if neither the attribute nor
-        a matching file can be found.
-
-        Abstract intermediate classes (those that still declare ``@abstractmethod`` members) are
-        skipped — validation only fires once all abstract methods have been implemented.
-
-        Example::
-
-            # Option 1 — auto-load from files next to the benchmark module
-            # (benchmark_metadata.json and task_metadata.csv are found automatically)
-            class MyBenchmark(Benchmark):
-                task_config_class = MyTaskConfig
-
-                def _setup(self): ...
-                def close(self): ...
-
-            # Option 2 — supply metadata explicitly as instances
-            class MyBenchmark(Benchmark):
-                benchmark_metadata = BenchmarkMetadata(name="my-bench", version="1.0", description="...")
-                task_metadata      = {"task-1": TaskMetadata(id="task-1"), ...}
-                task_config_class  = MyTaskConfig
-
-                def _setup(self): ...
-                def close(self): ...
-
-            # Option 3 — load from custom paths using the provided loader helpers
-            class MyBenchmark(Benchmark):
-                benchmark_metadata = Benchmark.benchmark_metadata_from_json("/data/bench/meta.json")
-                task_metadata      = Benchmark.task_metadata_from_csv("/data/bench/tasks.csv")
-                task_config_class  = MyTaskConfig
-
-                def _setup(self): ...
-                def close(self): ...
+        ``task_config_class`` and ``benchmark_class`` are always required.
         """
         super().__init_subclass__(**kwargs)
-        # Only enforce for concrete classes (not abstract intermediate classes)
-        if not getattr(cls, "__abstractmethods__", None):
-            # `cls.__module__` is the dotted name of the module where the subclass is defined
-            # (e.g. "my_cube.my_benchmark"). We look it up in sys.modules to get the actual
-            # module object, then read its __file__ so we know which directory to search for
-            # metadata files when the designer hasn't provided them explicitly.
-            module_file = getattr(sys.modules.get(cls.__module__), "__file__", None)
-            module_dir = Path(module_file).resolve().parent if module_file else None
 
-            # Auto-load benchmark_metadata from a file next to your benchmark file.
-            # Triggers when benchmark_metadata is missing or an empty {} placeholder.
-            if not cls.__dict__.get("benchmark_metadata"):
+        # Abstract intermediates still have unimplemented abstract methods — skip.
+        if getattr(cls, "__abstractmethods__", None):
+            return
+
+        module_file = getattr(sys.modules.get(cls.__module__), "__file__", None)
+        module_dir = Path(module_file).resolve().parent if module_file else None
+
+        def _is_dynamic(name: str) -> bool:
+            """True iff *name* is declared as a ``@property`` somewhere in the MRO
+            below ``BenchmarkConfig`` — meaning the attribute is computed at access
+            time and should not be overwritten with a file-loaded ClassVar value.
+            """
+            return any(isinstance(klass.__dict__.get(name), property) for klass in cls.__mro__)
+
+        # ── benchmark_metadata ───────────────────────────────────────────────
+        if not _is_dynamic("benchmark_metadata"):
+            if "benchmark_metadata" not in cls.__dict__:
                 loaded = None
                 if module_dir:
                     for fname, loader in [
-                        ("benchmark_metadata.json", Benchmark.benchmark_metadata_from_json),
-                        ("benchmark_metadata.csv", Benchmark.benchmark_metadata_from_csv),
+                        ("benchmark_metadata.json", BenchmarkConfig.benchmark_metadata_from_json),
+                        ("benchmark_metadata.csv", BenchmarkConfig.benchmark_metadata_from_csv),
                     ]:
                         candidate = module_dir / fname
                         if candidate.exists():
                             loaded = loader(candidate)
                             break
-                if loaded is None:
+                if loaded is not None:
+                    cls.benchmark_metadata = loaded
+                elif not hasattr(cls, "benchmark_metadata"):
                     raise TypeError(
-                        f"Concrete benchmark class {cls.__name__} must define 'benchmark_metadata' as a class attribute, "
-                        f"or provide a 'benchmark_metadata.json' / 'benchmark_metadata.csv' file next to your benchmark file"
+                        f"Concrete benchmark config class {cls.__name__} must define "
+                        f"'benchmark_metadata' as a ClassVar, declare it as a @property, "
+                        f"or ship 'benchmark_metadata.json' / '.csv' next to the module."
                     )
-                cls.benchmark_metadata = loaded
 
-            bench_meta = cls.__dict__["benchmark_metadata"]
+            bench_meta = getattr(cls, "benchmark_metadata", None)
             if not isinstance(bench_meta, BenchmarkMetadata):
                 raise TypeError(
-                    f"'benchmark_metadata' in {cls.__name__} must be a BenchmarkMetadata instance, not {type(bench_meta).__name__}"
+                    f"'benchmark_metadata' in {cls.__name__} must be a BenchmarkMetadata instance, "
+                    f"not {type(bench_meta).__name__}"
                 )
 
-            # Auto-load task_metadata from a file next to your benchmark file.
-            # Triggers when task_metadata is missing or an empty {} placeholder
-            if not cls.__dict__.get("task_metadata"):
+        # ── task_metadata ────────────────────────────────────────────────────
+        if not _is_dynamic("task_metadata"):
+            if "task_metadata" not in cls.__dict__:
                 loaded = None
                 if module_dir:
                     for fname, loader in [
-                        ("task_metadata.json", Benchmark.task_metadata_from_json),
-                        ("task_metadata.csv", Benchmark.task_metadata_from_csv),
+                        ("task_metadata.json", BenchmarkConfig.task_metadata_from_json),
+                        ("task_metadata.csv", BenchmarkConfig.task_metadata_from_csv),
                     ]:
                         candidate = module_dir / fname
                         if candidate.exists():
@@ -379,277 +346,228 @@ class Benchmark(TypedBaseModel, ABC):
                             break
                 if loaded is not None:
                     cls.task_metadata = loaded
-                else:
+                elif not hasattr(cls, "task_metadata"):
                     raise TypeError(
-                        f"{cls.__name__} must declare 'task_metadata' as a class variable or ship a "
-                        f"task_metadata.json / task_metadata.csv file next to the benchmark module."
+                        f"{cls.__name__} must declare 'task_metadata' as a ClassVar, declare it as a "
+                        f"@property, or ship 'task_metadata.json' / '.csv' next to the module."
                     )
 
-            task_meta = cls.__dict__["task_metadata"]
+            task_meta = getattr(cls, "task_metadata", None)
             if not isinstance(task_meta, dict):
                 raise TypeError(f"'task_metadata' in {cls.__name__} must be a dict, not {type(task_meta).__name__}")
 
-            # Check task_config_class is defined as a static class variable (not a property or descriptor)
-            if "task_config_class" not in cls.__dict__:
-                raise TypeError(
-                    f"Concrete benchmark class {cls.__name__} must define 'task_config_class' as a class attribute"
-                )
-            task_cfg = cls.__dict__["task_config_class"]
-            if not isinstance(task_cfg, type) or not issubclass(task_cfg, TaskConfig):
-                raise TypeError(
-                    f"'task_config_class' in {cls.__name__} must be a subclass of TaskConfig, not {task_cfg}"
-                )
-
-    @abstractmethod
-    def _setup(self) -> None:
-        """
-        Setup the benchmark and prepare it for spawning tasks.
-        This is supposed to be implemented by Benchmark *creators*.
-        It should (optionaly) create any shared infrastructure needed for the tasks and store references in self._runtime_context (default to {})
-        """
-        pass
-
-    def setup(self) -> None:
-        """
-        Public method to setup the benchmark. Calls the internal _setup() implemented by the concrete subclass.
-        """
-        self._setup()
-        # One debug line instead of four warnings — optional fields are unset for many minimal benchmarks.
-        missing_optional: list[str] = []
-        if not self._runtime_context:
-            missing_optional.append("_runtime_context")
-        if self.container_backend is None:
-            missing_optional.append("container_backend")
-        if self.tool_config is None:
-            missing_optional.append("tool_config")
-        if self.seed_generator is None:
-            missing_optional.append("seed_generator")
-        if missing_optional:
-            logger.debug(
-                "%s: optional benchmark fields not set (%s). Normal for simple examples; "
-                "define them when tasks need shared infra, containers, or seeds.",
-                type(self).__name__,
-                ", ".join(missing_optional),
+        # ── task_config_class ───────────────────────────────────────────────
+        # Always required. Subclasses that override ``get_task_configs`` (and
+        # therefore don't use the factory) can set ``task_config_class = TaskConfig``
+        # as a placeholder — see ``CompositeBenchmarkConfig``.
+        task_cfg = getattr(cls, "task_config_class", None)
+        if not (isinstance(task_cfg, type) and issubclass(task_cfg, TaskConfig)):
+            raise TypeError(
+                f"Concrete benchmark config class {cls.__name__} must define "
+                f"'task_config_class' as a ClassVar subclass of TaskConfig, not {task_cfg!r}."
             )
 
+        # ── benchmark_class ─────────────────────────────────────────────────
+        bench_cls = getattr(cls, "benchmark_class", None)
+        if not (isinstance(bench_cls, type) and issubclass(bench_cls, Benchmark)):
+            raise TypeError(
+                f"Concrete benchmark config class {cls.__name__} must define "
+                f"'benchmark_class' as a ClassVar subclass of Benchmark, not {bench_cls!r}."
+            )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Views
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @property
+    def name(self) -> str:
+        """Benchmark name from ``benchmark_metadata``. Resolves via the
+        descriptor chain, so composites' @property overrides work here too.
+        """
+        return self.benchmark_metadata.name
+
+    @property
+    def num_tasks(self) -> int:
+        """Number of tasks in the current (possibly subset) view."""
+        return len(self.tasks())
+
+    def tasks(self) -> dict[str, TaskMetadata]:
+        """Return the current task view — ``task_metadata`` filtered by ``task_ids``.
+
+        When ``task_ids`` is None, returns the full ``task_metadata`` dict.
+        Otherwise returns a freshly-built dict containing only the declared
+        ids, in the order given by ``task_ids``. Access via ``self.`` so the
+        composite's @property override resolves correctly.
+        """
+        full = self.task_metadata
+        if self.task_ids is None:
+            return full
+        return {tid: full[tid] for tid in self.task_ids}
+
     def get_task_configs(self) -> Generator[TaskConfig, None, None]:
-        """Returns the list of TaskConfig objects for this benchmark."""
-        for tm in self.task_metadata.values():
+        """Yield one ``TaskConfig`` per task (expanded by seed_generator if set).
+
+        Stamps full ``TaskMetadata`` onto each emitted config so workers never
+        need to import the owning ``BenchmarkConfig`` class to resolve metadata.
+        Subclasses that carry install-time heavy data (e.g. SWE-bench problem
+        statements, OSWorld evaluator configs) should override this method to
+        merge ``load_task_execution_info(task_id)`` into ``metadata.extra_info``
+        at emit time.
+        """
+        for tm in self.tasks().values():
             if self.seed_generator is not None:
                 for seed in self.seed_generator(tm):
-                    yield self.task_config_class(task_id=tm.id, tool_config=self.tool_config, seed=seed)
+                    yield self.task_config_class(
+                        metadata=tm,
+                        tool_config=self.tool_config,
+                        seed=seed,
+                    )
             else:
-                yield self.task_config_class(task_id=tm.id, tool_config=self.tool_config, seed=None)
+                yield self.task_config_class(
+                    metadata=tm,
+                    tool_config=self.tool_config,
+                    seed=None,
+                )
 
-    def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "Benchmark":
+    # ──────────────────────────────────────────────────────────────────────────
+    # Subsetting (pure data — no deep-copy or private-attr hacks)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def subset_from_list(
+        self,
+        tasks: list[str] | list[TaskMetadata],
+        benchmark_name_suffix: str = "custom",  # noqa: ARG002 — accepted for call-site compat
+    ) -> "BenchmarkConfig":
+        """Return a new ``BenchmarkConfig`` restricted to the given tasks.
+
+        Accepts either a list of task ids (strings) or a list of
+        ``TaskMetadata`` objects. The returned config is the same subclass,
+        with ``task_ids`` set and every other field inherited via
+        ``model_copy``. No private-attr reset or ClassVar shadowing is
+        required — ``TaskConfig.make()`` still resolves metadata via the
+        class-level ``task_metadata`` ClassVar.
+
+        ``benchmark_name_suffix`` is retained for call-site compatibility but
+        has no effect in the new design; subsets inherit their name from the
+        parent class's ``benchmark_metadata``. Use a display-layer convention
+        if you need a distinct label.
         """
-        Create a new Benchmark instance containing only the tasks whose ``glob_key`` matches ``glob_pattern``.
+        current = self.tasks()
+        existing_ids = set(current.keys())
 
-        This is useful for creating smaller benchmarks from a larger one, for example for testing
-        or ablations.
+        if isinstance(tasks, list) and tasks and isinstance(tasks[0], str):
+            task_ids: list[str] = list(tasks)  # preserve caller order; duplicates pruned below
+            invalid = set(task_ids) - existing_ids
+        elif isinstance(tasks, list) and tasks and isinstance(tasks[0], TaskMetadata):
+            task_ids = [tm.id for tm in tasks]  # type: ignore[union-attr]
+            invalid = set(task_ids) - existing_ids
+        else:
+            raise ValueError("tasks must be a non-empty list of task ids (str) or TaskMetadata objects.")
 
-        ``glob_key`` can be any of the top-level :class:`~cube.task.TaskMetadata` fields:
+        if invalid:
+            raise ValueError(f"The following specified tasks do not exist in the benchmark: {invalid}")
 
-        * ``id``                    — task identifier
-        * ``split``                 — ``"train"``, ``"val"``, or ``"test"``
-        * ``abstract_description``  — broad description of the task
-        * ``recommended_max_steps`` — integer step budget (matched as a string)
+        # Deduplicate while preserving first-occurrence order.
+        ordered = list(dict.fromkeys(task_ids))
+        if not ordered:
+            raise ValueError("The resulting task list cannot be empty.")
+        return self.model_copy(update={"task_ids": ordered})
 
-        It can also address a key inside the ``extra_info`` dict using dot-notation:
+    def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "BenchmarkConfig":
+        """Return a new ``BenchmarkConfig`` containing only tasks whose ``glob_key`` matches ``glob_pattern``.
 
-        * ``extra_info.<key>``  e.g. ``extra_info.difficulty`` or ``extra_info.domain``
-
-        ``glob_pattern`` follows standard Unix shell-style wildcards (``*``, ``?``, ``[seq]``).
-        Non-string field values are converted to strings before matching.
+        ``glob_key`` accepts any top-level ``TaskMetadata`` field (``id``,
+        ``split``, ``abstract_description``, ``recommended_max_steps``) or
+        ``extra_info.<key>`` via dot-notation. ``glob_pattern`` is a standard
+        Unix shell wildcard.
         """
+        current = self.tasks()
         if glob_key.startswith("extra_info."):
             extra_key = glob_key[len("extra_info.") :]
-            task_subset = [
+            matches = [
                 tm
-                for tm in self.task_metadata.values()
+                for tm in current.values()
                 if extra_key in tm.extra_info and fnmatch.fnmatch(str(tm.extra_info[extra_key]), glob_pattern)
             ]
         else:
-            task_subset = [
+            matches = [
                 tm
-                for tm in self.task_metadata.values()
+                for tm in current.values()
                 if hasattr(tm, glob_key) and fnmatch.fnmatch(str(getattr(tm, glob_key)), glob_pattern)
             ]
-        if not task_subset:
+        if not matches:
             raise ValueError(f"No tasks found matching glob pattern '{glob_pattern}' on key '{glob_key}'")
-        return self.subset_from_list(tasks=task_subset, benchmark_name_suffix=f"[{glob_key}={glob_pattern}]")
-
-    def subset_from_list(
-        self, tasks: list[str] | list[TaskMetadata], benchmark_name_suffix: str = "custom"
-    ) -> "Benchmark":
-        """Create a new Benchmark instance containing only the tasks whose IDs are in the provided list.
-
-        Args:
-            tasks: List of task IDs or TaskMetadata objects to include in the sub-benchmark.
-            benchmark_name_suffix: Optional suffix to append to the benchmark name. Defaults to "custom".
-
-        Returns:
-            Benchmark: A new benchmark instance containing only the specified tasks.
-
-        Raises:
-            ValueError: If the resulting task list is empty or if any specified task doesn't exist.
-        """
-        existing_task_ids = {tm.id for tm in self.task_metadata.values()}
-        if isinstance(tasks, list) and len(tasks) > 0 and isinstance(tasks[0], str):
-            task_ids = set(tasks)
-            task_subset = [tm for tm in self.task_metadata.values() if tm.id in task_ids]
-            invalid_tasks = task_ids - existing_task_ids
-        elif isinstance(tasks, list) and len(tasks) > 0 and isinstance(tasks[0], TaskMetadata):
-            task_subset: list[TaskMetadata] = tasks  # type: ignore
-            invalid_tasks = {tm.id for tm in tasks} - existing_task_ids  # type: ignore
-        else:
-            raise ValueError("Tasks must be a non-empty list of either task IDs (str) or TaskMetadata objects.")
-        if invalid_tasks:
-            raise ValueError(f"The following specified tasks do not exist in the benchmark: {invalid_tasks}")
-        if not task_subset:
-            raise ValueError("The resulting task list cannot be empty.")
-
-        # model_copy(deep=True) copies both public Pydantic fields (resources, container_backend,
-        # etc.) and private attributes (__pydantic_private__).  We want the subset to inherit the
-        # caller's configuration (public fields) but NOT its runtime state: PrivateAttrs hold
-        # objects created by _setup() (file handles, subprocess objects, etc.) that cannot safely
-        # be shared or pickled.  We therefore reset __pydantic_private__ to fresh defaults for all
-        # PrivateAttrs — the caller must call .setup() on the returned subset before use.
-        # ClassVars are not touched by model_copy (they live on the class), so we deep-copy
-        # them explicitly and use object.__setattr__ to set instance-level shadows without
-        # triggering Pydantic's ClassVar protection.
-        new_instance = self.model_copy(deep=True)
-        if new_instance.__pydantic_private__ is not None:
-            # Pydantic 2.13+ added a validated-data variant to default_factory's type
-            # signature; we only ever use 0-arg factories, so the call-arg ignore is safe.
-            new_instance.__pydantic_private__ = {
-                k: (fi.default_factory() if fi.default_factory is not None else fi.default)  # type: ignore[call-arg]
-                for k, fi in type(new_instance).__private_attributes__.items()
-            }
-        new_bm = copy.deepcopy(type(new_instance).benchmark_metadata)
-        new_bm.name = f"{self.benchmark_metadata.name}_{benchmark_name_suffix}"
-        new_bm.num_tasks = len(task_subset)
-        object.__setattr__(new_instance, "benchmark_metadata", new_bm)
-        object.__setattr__(new_instance, "task_metadata", {tm.id: tm for tm in task_subset})
-        logger.info(
-            f"Created subset '{new_bm.name}' with {len(task_subset)} tasks. Call .setup() before spawning tasks."
-        )
-        return new_instance
+        return self.subset_from_list(tasks=matches, benchmark_name_suffix=f"[{glob_key}={glob_pattern}]")
 
     @classmethod
     def named_subsets(cls) -> list[str]:
-        """Return the names of all pre-defined subsets for this benchmark.
-
-        Callable without instantiation: ``MyBenchmark.named_subsets()``.
-        Subsets are defined in ``benchmark_metadata.named_subsets``.
-        """
+        """Return the names of all pre-defined subsets for this benchmark."""
         return list(cls.benchmark_metadata.named_subsets.keys())
 
-    def named_subset(self, name: str) -> "Benchmark":
-        """Return a filtered benchmark containing only the tasks in the named subset.
+    def named_subset(self, name: str) -> "BenchmarkConfig":
+        """Return a filtered config for a pre-defined named subset.
 
         Equivalent to ``subset_from_glob(*benchmark_metadata.named_subsets[name])``.
-
-        Args:
-            name: A key from ``benchmark_metadata.named_subsets``.
-
-        Raises:
-            KeyError: If ``name`` is not a known subset.
         """
-        if name not in self.benchmark_metadata.named_subsets:
-            available = list(self.benchmark_metadata.named_subsets.keys())
-            raise KeyError(f"Unknown subset {name!r}. Available: {available}")
-        glob_key, glob_pattern = self.benchmark_metadata.named_subsets[name]
+        named = type(self).benchmark_metadata.named_subsets
+        if name not in named:
+            raise KeyError(f"Unknown subset {name!r}. Available: {list(named.keys())}")
+        glob_key, glob_pattern = named[name]
         return self.subset_from_glob(glob_key, glob_pattern)
 
-    def spawn(self, task_config: TaskConfig) -> Task:
-        """
-        Create and return a Task for the given config.
-
-        This is a pure creation call — no subprocess, no server, no network.
-        Callers that need a JSON-RPC server can do so in one extra line::
-
-            task = benchmark.spawn(task_config)
-            app  = make_task_jsonrpc_app(task)   # only if you need a server
-
-        The ``cube/spawn`` network endpoint (on a running benchmark server) is a
-        separate concept: it creates a task, wraps it in a JSON-RPC app, and spawns
-        a subprocess, then returns a URL.  That mixing of concerns is appropriate for
-        a remote API; it is not appropriate for the in-process Python API.
-
-        Args:
-            task_config: A TaskConfig produced by get_task_configs().
-
-        Returns:
-            The instantiated Task, ready to call reset() / step() / evaluate() on.
-        """
-        if task_config.task_id not in self.task_metadata:
-            raise ValueError(f"Task '{task_config.task_id}' not found in benchmark")
-
-        return task_config.make(
-            runtime_context=self._runtime_context,
-            container_backend=self.container_backend,
-        )
-
-    @abstractmethod
-    def close(self) -> None:
-        """
-        Clean up runtime resources that were created during setup().
-        """
-        pass
+    # ──────────────────────────────────────────────────────────────────────────
+    # Data lifecycle (class-level; shared across all instances of a subclass)
+    # ──────────────────────────────────────────────────────────────────────────
 
     @classmethod
     def install(cls) -> None:
-        """
-        Optional classmethod to install dependencies and cache task metadata for this benchmark.
+        """Populate the per-task execution cache with heavy data needed at task-run time.
 
-        Override this in your benchmark to:
-          1. Download any required datasets or assets.
-          2. Build the full task_metadata dict (all tasks, all splits — no filtering).
-          3. Save it as ``task_metadata.json`` next to the benchmark module file.
-          4. Update ``cls.task_metadata`` in memory so it takes effect immediately.
+        Override in subclasses that ship minimal ``task_metadata.json`` and
+        need to download or compute heavier per-task execution data (e.g.
+        SWE-bench problem statements, OSWorld evaluator configs). The default
+        is a no-op.
 
-        By default does nothing. Can be called without instantiating the benchmark:
-        ``MyBenchmark.install()``
+        ``install()`` MUST NOT mutate ``task_metadata`` — that registry is
+        populated at class-definition time from a shipped file (or declared
+        directly) and is the stable source of truth. Heavy execution data
+        belongs in per-task JSON files under ``task_execution_cache_dir()``,
+        read back later via ``load_task_execution_info(task_id)``.
+
+        Must be idempotent.
         """
-        pass
 
     @classmethod
     def uninstall(cls) -> None:
-        """
-        Optional classmethod to remove any assets downloaded by install().
-        By default does nothing. Can be called without instantiating the benchmark:
-        ``MyBenchmark.uninstall()``
-        """
-        pass
+        """Remove assets installed by ``install()``. Default: no-op."""
 
     @classmethod
     def cache_dir(cls) -> Path:
-        """Return the directory where this benchmark can store files.
+        """Directory where this benchmark config may store files.
 
-        By default, this is ``~/.cube/<benchmark_name>/``.  You can override
-        this method if your benchmark needs a different caching strategy.
+        Defaults to ``~/.cube/<benchmark_name>/``. Override if a different
+        caching strategy is required.
         """
         return get_cache_dir(cls.benchmark_metadata.name)
 
     @classmethod
     def task_execution_cache_dir(cls) -> Path:
-        """Return the directory where per-task execution data is cached.
-
-        Per-task execution files are written here by ``install()`` and read
-        lazily by ``TaskConfig.make()`` at execution time.  The directory is
-        benchmark-specific: ``~/.cube/<benchmark_name>/tasks_execution_info/``.
-        """
+        """Directory where per-task execution data is cached by ``install()``."""
         return cls.cache_dir() / "tasks_execution_info"
 
     @classmethod
     def load_task_execution_info(cls, task_id: str) -> dict[str, Any]:
-        """Load per-task execution data for *task_id* from the local cache.
+        """Read heavy per-task execution data from the cache.
 
-        Raises ``RuntimeError`` if the cache file is missing (i.e. ``install()``
-        has not been run yet).  Cube ``TaskConfig.make()`` implementations call
-        this to obtain heavy fields (e.g. ``problem_statement``, ``patch``) that
-        are excluded from the shipped ``task_metadata.json``.
+        Called from ``BenchmarkConfig.get_task_configs()`` on the driver to
+        stamp ``TaskConfig.metadata.extra_info`` before configs are shipped
+        to workers, so workers never touch disk. Subclasses with heavy
+        install-time data override ``get_task_configs()`` to merge the
+        result into ``metadata.extra_info`` at emit time.
+
+        Raises ``RuntimeError`` if the cache file is missing — signals that
+        ``install()`` has not been run. Callers should not silently swallow
+        this.
         """
         cache_file = cls.task_execution_cache_dir() / f"{task_id}.json"
         if not cache_file.exists():
@@ -657,3 +575,357 @@ class Benchmark(TypedBaseModel, ABC):
                 f"No execution data for {task_id!r}. Run `{cls.__name__}.install()` to populate the execution cache."
             )
         return json.loads(cache_file.read_text())
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # The factory
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def make(self, infra: InfraConfig | None = None) -> "Benchmark":
+        """Instantiate the paired ``Benchmark`` and return it ready to spawn tasks.
+
+        Steps:
+
+        1. For every declared resource whose ``provision_status(infra) != 'ready'``,
+           call ``infra.provision(resource)``. Idempotent.
+        2. Instantiate ``type(self).benchmark_class(config=self)``.
+        3. Call ``benchmark.setup()`` so the returned instance is live.
+
+        If ``resources`` is non-empty but ``infra`` is None, provisioning is
+        skipped with a debug log. Benchmarks that rely entirely on task-scoped
+        (L3) resources may not need infra at ``make`` time — their resources
+        are launched per-task by the task itself.
+        """
+        if self.resources:
+            if infra is None:
+                logger.debug(
+                    "%s.make() called without infra but %d resource(s) are declared; "
+                    "skipping provisioning (task-scoped resources will be launched per-task).",
+                    type(self).__name__,
+                    len(self.resources),
+                )
+            else:
+                for resource in self.resources:
+                    status = infra.provision_status(resource)
+                    if status == "ready":
+                        logger.info("Resource %s already provisioned on %s", resource.name, infra.fingerprint())
+                        continue
+                    logger.info("Provisioning resource %s on %s...", resource.name, infra.fingerprint())
+                    infra.provision(resource)
+
+        benchmark = type(self).benchmark_class(config=self)
+        benchmark.setup()
+        return benchmark
+
+
+class Benchmark(ABC):
+    """Runtime pair of ``BenchmarkConfig``. Holds live OS state.
+
+    Not serializable. Instantiated only by ``BenchmarkConfig.make(infra)``,
+    which calls ``setup()`` before returning — users never construct
+    ``Benchmark`` objects directly and never call ``setup()`` manually.
+
+    Subclasses implement ``_setup`` (populate ``self._runtime_context`` with
+    shared infrastructure references) and ``close`` (tear down what ``_setup``
+    created). Use as a context manager to guarantee cleanup::
+
+        with config.make(infra) as benchmark:
+            for tc in benchmark.config.get_task_configs():
+                task = benchmark.spawn(tc)
+                ...
+    """
+
+    def __init__(self, config: BenchmarkConfig) -> None:
+        self.config: BenchmarkConfig = config
+        self._runtime_context: RuntimeContext = {}
+
+    @abstractmethod
+    def _setup(self) -> None:
+        """Create shared infrastructure and populate ``self._runtime_context``.
+
+        Implementer hook. Called exactly once by ``setup()`` inside
+        ``BenchmarkConfig.make``. Storing live handles directly on ``self``
+        (outside ``_runtime_context``) is also allowed — they simply won't be
+        visible to tasks via ``runtime_context``.
+        """
+
+    @abstractmethod
+    def close(self) -> None:
+        """Tear down runtime resources created in ``_setup()``."""
+
+    def setup(self) -> None:
+        """Public wrapper around ``_setup``. Called automatically by ``BenchmarkConfig.make``.
+
+        Emits a debug line listing optional config fields left unset — useful
+        sanity signal for minimal benchmarks.
+        """
+        self._setup()
+        missing: list[str] = []
+        if not self._runtime_context:
+            missing.append("_runtime_context")
+        if self.config.container_backend is None:
+            missing.append("container_backend")
+        if self.config.tool_config is None:
+            missing.append("tool_config")
+        if self.config.seed_generator is None:
+            missing.append("seed_generator")
+        if missing:
+            logger.debug(
+                "%s: optional fields not set (%s). Normal for simple benchmarks; "
+                "populate in _setup() or on the config when needed.",
+                type(self).__name__,
+                ", ".join(missing),
+            )
+
+    def spawn(self, task_config: TaskConfig) -> Task:
+        """Create and return a ``Task`` for the given config.
+
+        Pure creation call — no subprocess, no server, no network. For a
+        JSON-RPC server wrapper, use ``cube.server.make_task_jsonrpc_app``
+        on the returned task.
+        """
+        if task_config.task_id not in self.config.tasks():
+            raise ValueError(
+                f"Task '{task_config.task_id}' not found in benchmark "
+                f"{self.config.name!r} (current view has {self.config.num_tasks} tasks)"
+            )
+        return task_config.make(
+            runtime_context=self._runtime_context,
+            container_backend=self.config.container_backend,
+        )
+
+    # ── Context-manager sugar ─────────────────────────────────────────────────
+
+    def __enter__(self) -> "Benchmark":
+        return self
+
+    def __exit__(self, *_exc_info) -> None:
+        self.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Composite benchmarks
+#
+# Combine multiple BenchmarkConfigs into a single serializable suite.
+# Tasks are prefixed with their sub-benchmark's name so the composite exposes a
+# unique id per task. Routing back to the source sub-benchmark happens through
+# a ``CompositeTaskConfig`` wrapper that carries the sub-benchmark's name and
+# the original (un-prefixed) TaskConfig. The wrapper is itself a ``TaskConfig``
+# so every generic code path that consumes a TaskConfig continues to work.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class CompositeBenchmark(Benchmark):
+    """Runtime pair of ``CompositeBenchmarkConfig``.
+
+    Holds a dict of live sub-benchmarks keyed by sub-benchmark name. Routes
+    ``spawn(task_config)`` to the matching sub-benchmark by reading
+    ``task_config.sub_bench_name``. Does not own any shared infrastructure of its
+    own — each sub-benchmark has its own ``_runtime_context`` and its own
+    provisioned resources.
+    """
+
+    def __init__(self, config: "CompositeBenchmarkConfig") -> None:
+        super().__init__(config)
+        self.config: CompositeBenchmarkConfig = config  # type: ignore[assignment]
+        self.sub_benchmarks: dict[str, Benchmark] = {}
+
+    def _setup(self) -> None:
+        """No-op. Sub-benchmarks are instantiated by CompositeBenchmarkConfig.make
+        *before* this class is constructed, and are already live when we get here.
+        """
+
+    def close(self) -> None:
+        """Close every sub-benchmark; exceptions are logged but not re-raised so
+        one failing sub-benchmark does not block teardown of the others.
+        """
+        for sub_name, sub_bench in self.sub_benchmarks.items():
+            try:
+                sub_bench.close()
+            except Exception:
+                logger.exception("Error closing sub-benchmark %r", sub_name)
+
+    def spawn(self, task_config: TaskConfig) -> Task:
+        """Route the task to its origin sub-benchmark via ``sub_bench_name``.
+
+        Bypasses the sub-benchmark's own ``spawn`` validation (which would
+        reject the prefixed ``task_id`` because it's not in the sub's
+        ``config.tasks()``) by calling ``task_config.make()`` directly with
+        the sub's ``_runtime_context``. The TaskConfig is self-contained —
+        its ``metadata`` and ``tool_config`` are already populated.
+        """
+        if task_config.sub_bench_name is None:
+            raise ValueError(
+                f"CompositeBenchmark.spawn() expects a TaskConfig with sub_bench_name set "
+                f"(emitted by CompositeBenchmarkConfig.get_task_configs()); "
+                f"got {type(task_config).__name__} with sub_bench_name=None"
+            )
+        if task_config.sub_bench_name not in self.sub_benchmarks:
+            raise ValueError(
+                f"Unknown sub-benchmark {task_config.sub_bench_name!r}; known: {list(self.sub_benchmarks.keys())}"
+            )
+        sub_bench = self.sub_benchmarks[task_config.sub_bench_name]
+        # Call ``task_config.make()`` directly instead of ``sub_bench.spawn()``:
+        # the latter would re-validate ``task_id`` against the sub's
+        # ``config.tasks()`` and reject the composite-prefixed id.
+        return task_config.make(
+            runtime_context=sub_bench._runtime_context,
+            container_backend=sub_bench.config.container_backend,
+        )
+
+
+class CompositeBenchmarkConfig(BenchmarkConfig):
+    """Composition of multiple BenchmarkConfigs into one serializable suite.
+
+    ``sub_bench_configs`` is a list of any ``BenchmarkConfig`` subclasses (including
+    other ``CompositeBenchmarkConfig`` instances — composites nest freely).
+    The composite exposes merged, prefixed views of ``benchmark_metadata`` and
+    ``task_metadata`` derived from its sub_bench_configs; no per-composite metadata
+    is stored statically.
+
+    Sub-benchmark names (``sub.benchmark_metadata.name``) must be unique across
+    the composite — duplicate names raise ``ValueError`` at construction.
+
+    Typical usage::
+
+        suite = CompositeBenchmarkConfig(
+            sub_bench_configs=[
+                WorkArenaConfig().named_subset("l1"),
+                OSWorldConfig().subset_from_list(["chrome-1", "chrome-2"]),
+                ArithmeticConfig(),
+            ],
+            composite_name="my-multi-suite",
+        )
+        with suite.make(infra) as bench:
+            for tc in suite.get_task_configs():
+                task = bench.spawn(tc)
+                ...
+    """
+
+    # benchmark_metadata: ClassVar[BenchmarkMetadata]
+    # task_metadata: ClassVar[dict[str, TaskMetadata]]
+    # benchmark_metadata / task_metadata are declared below as @property so
+    # they reflect the current sub_bench_configs at access time; BenchmarkConfig's
+    # __init_subclass__ detects the descriptors and skips file auto-load.
+
+    task_config_class: ClassVar[type[TaskConfig]] = TaskConfig
+    # Composite doesn't emit a single TaskConfig class — each sub_config's
+    # TaskConfig subclass is preserved through the clone in get_task_configs().
+    # task_config_class is set to the abstract base as a placeholder to satisfy
+    # __init_subclass__ validation; it is never instantiated (get_task_configs
+    # is overridden to yield sub-configs directly).
+
+    benchmark_class: ClassVar[type[Benchmark]] = CompositeBenchmark
+
+    # SerializeAsAny forces each element to serialize using its runtime type's
+    # full field set, so subclass-specific fields (composite_name, sub_bench_configs on
+    # nested composites, infra knobs on sub-configs, etc.) survive a JSON round
+    # trip. Without it Pydantic dumps only the base BenchmarkConfig fields.
+    sub_bench_configs: list[SerializeAsAny[BenchmarkConfig]] = Field(
+        ...,
+        description=(
+            "Ordered list of BenchmarkConfigs to compose. Order is preserved in "
+            "``get_task_configs``. Each sub-config's benchmark_metadata.name must "
+            "be unique across the list."
+        ),
+    )
+    composite_name: str = Field(
+        default="composite",
+        description="Display name for this composite; surfaces in benchmark_metadata.name.",
+    )
+    composite_version: str = Field(
+        default="0.0.0", description="Version label for this composite; surfaces in benchmark_metadata.version."
+    )
+    composite_description: str = Field(
+        default="", description="Description for this composite; surfaces in benchmark_metadata.description."
+    )
+
+    def __init__(self, **data: Any) -> None:
+        super().__init__(**data)
+        duplicates = [name for name, count in Counter(s.name for s in self.sub_bench_configs).items() if count > 1]
+        if duplicates:
+            raise ValueError(
+                f"CompositeBenchmarkConfig requires unique sub-benchmark names; found duplicates: {duplicates}"
+            )
+
+    @property
+    def benchmark_metadata(self) -> BenchmarkMetadata:  # type: ignore[override]
+        """Computed metadata reflecting the composite's current sub_bench_configs."""
+        return BenchmarkMetadata(
+            name=self.composite_name,
+            version=self.composite_version,
+            description=self.composite_description,
+            num_tasks=sum(sub.num_tasks for sub in self.sub_bench_configs),
+            tags=sorted({t for sub in self.sub_bench_configs for t in sub.benchmark_metadata.tags}),
+        )
+
+    @property
+    def task_metadata(self) -> dict[str, TaskMetadata]:  # type: ignore[override]
+        """Merged view with keys prefixed by sub-benchmark name (``"{sub_bench_name}/{task_id}"``)."""
+        merged: dict[str, TaskMetadata] = {}
+        for sub in self.sub_bench_configs:
+            sub_bench_name = sub.name
+            for tid, tm in sub.tasks().items():
+                merged[f"{sub_bench_name}/{tid}"] = tm
+        return merged
+
+    # tasks() is inherited from BenchmarkConfig and reads ``task_metadata`` (our
+    # property) — so subsetting via ``task_ids`` on the composite continues to
+    # work. Callers should use prefixed ids.
+
+    def get_task_configs(self) -> Generator[TaskConfig, None, None]:  # type: ignore[override]
+        """Yield each sub-config's TaskConfigs, cloned with composite-level routing info.
+
+        Each emitted TaskConfig is the sub-config's own subclass (preserving
+        its native type, metadata, and any subclass-specific fields) with
+        ``sub_bench_name`` set to the sub-benchmark's name. ``task_id`` is
+        derived from ``metadata.id`` and ``sub_bench_name`` by ``TaskConfig``
+        itself, so the prefix appears automatically. No wrapper type — the
+        clone stays a fully-functional TaskConfig whose ``make()`` works
+        standalone.
+
+        ``task_ids`` (instance-level subset) filters at the composite level:
+        if set, only prefixed ids in the list are emitted.
+        """
+        allowed_task_ids: set[str] | None = set(self.task_ids) if self.task_ids is not None else None
+        for sub_bench_config in self.sub_bench_configs:
+            sub_bench_name = sub_bench_config.name
+            for task_config in sub_bench_config.get_task_configs():
+                prefixed_id = f"{sub_bench_name}/{task_config.task_id}"
+                # skip if this task is not in the allowed set
+                if allowed_task_ids is not None and prefixed_id not in allowed_task_ids:
+                    continue
+                yield task_config.model_copy(update={"sub_bench_name": sub_bench_name})
+
+    def make(self, infra: InfraConfig | None = None) -> CompositeBenchmark:
+        """Instantiate every sub-benchmark and wire them into a CompositeBenchmark.
+
+        Each sub-config's ``make(infra)`` is called in order; on any failure,
+        already-built sub-benchmarks are closed before the error propagates.
+        """
+        composite = CompositeBenchmark(config=self)
+        try:
+            for sub_bench_config in self.sub_bench_configs:
+                composite.sub_benchmarks[sub_bench_config.name] = sub_bench_config.make(infra)
+        except Exception:
+            for sub_bench in composite.sub_benchmarks.values():
+                try:
+                    sub_bench.close()
+                except Exception:
+                    logger.exception("Error closing partially-initialised sub-benchmark")
+            raise
+        composite.setup()  # no-op for CompositeBenchmark; kept for consistency
+        return composite
+
+    # Class-level data lifecycle on composites: delegate to every sub-config.
+    # These are instance methods here (unlike BenchmarkConfig's classmethods)
+    # because a composite's sub-configs are instance state.
+
+    def install(self) -> None:  # type: ignore[override]
+        """Install every sub-config. Idempotent; safe to call multiple times."""
+        for sub_bench_config in self.sub_bench_configs:
+            sub_bench_config.install()
+
+    def uninstall(self) -> None:  # type: ignore[override]
+        """Uninstall every sub-config."""
+        for sub_bench_config in self.sub_bench_configs:
+            sub_bench_config.uninstall()

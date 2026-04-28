@@ -13,7 +13,7 @@ from typing import Any
 from cube.benchmark import RuntimeContext
 from cube.container import ContainerBackend
 from cube.core import Observation
-from cube.task import Task, TaskConfig, TaskMetadata
+from cube.task import Task, TaskConfig
 from counter_cube.tool import CounterToolConfig
 
 
@@ -48,7 +48,12 @@ class ReachTargetTask(Task):
 
 
 class CounterTaskConfig(TaskConfig):
-    """Serializable configuration that produces a ReachTargetTask."""
+    """Serializable configuration that produces a ReachTargetTask.
+
+    Self-contained: ``self.metadata`` carries the TaskMetadata, stamped onto
+    the config by ``CounterBenchmarkConfig.get_task_configs()`` on the driver.
+    No import of the owning BenchmarkConfig needed on workers.
+    """
 
     def make(
         self,
@@ -62,13 +67,9 @@ class CounterTaskConfig(TaskConfig):
           2. per-task tool_config in metadata.extra_info["tool_config"]
           3. CounterToolConfig defaults
         """
-        # Deferred import to avoid circular dependency (benchmark imports task).
-        from counter_cube.benchmark import CounterBenchmark  # noqa: PLC0415
-
-        task_metadata: TaskMetadata = CounterBenchmark.task_metadata[self.task_id]
-        tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
+        tool_cfg = self.tool_config or CounterToolConfig(**self.metadata.extra_info.get("tool_config", {}))
         return ReachTargetTask(
-            metadata=task_metadata,
+            metadata=self.metadata,
             tool_config=tool_cfg,
             runtime_context=runtime_context,
             container_backend=container_backend,

@@ -14,7 +14,7 @@ so we call uvicorn.run directly (blocking) and let Ctrl+C shut it down cleanly.
 import argparse
 
 import uvicorn
-from counter_cube import CounterBenchmark
+from counter_cube import CounterBenchmarkConfig
 
 from cube.server import make_benchmark_jsonrpc_app
 
@@ -25,8 +25,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765, help="Bind port (default: 8765)")
     args = parser.parse_args()
 
-    benchmark = CounterBenchmark()
-    benchmark.setup()
+    benchmark = CounterBenchmarkConfig().make()
     app = make_benchmark_jsonrpc_app(benchmark)
 
     url = f"http://{args.host}:{args.port}"

@@ -14,8 +14,8 @@ dependencies = [
 [project.entry-points."cube.benchmarks"]
 # The key is the benchmark name shown by `cube list`.
 # Update "new-cube-package" to match your benchmark_metadata.name,
-# and "CubeBenchmark" to your Benchmark subclass name.
-new-cube-package = "cube_package.benchmark:CubeBenchmark"
+# and "CubeBenchmarkConfig" to your BenchmarkConfig subclass name.
+new-cube-package = "cube_package.benchmark:CubeBenchmarkConfig"
 
 [build-system]
 requires = ["uv_build>=0.8,<0.9"]

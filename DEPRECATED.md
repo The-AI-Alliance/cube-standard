@@ -75,20 +75,6 @@ in a single breaking change. Downstream callers in cube-harness
 and [experiment.py:87](https://github.com/The-AI-Alliance/cube-harness/blob/main/src/cube_harness/experiment.py#L87))
 must be updated in the same PR.
 
-### `make_benchmark_rpc_server` uses a thread instead of a subprocess
-[src/cube/server.py:381-416](src/cube/server.py#L381-L416)
-
-```python
-# Uses a **thread** (not a subprocess) because Benchmark instances are not
-# guaranteed to be picklable ...
-# TODO: once BenchmarkConfig lands ...
-```
-
-**Action:** once `BenchmarkConfig` lands (track in
-[openspec/changes/core-extensions](openspec/changes/core-extensions/)), switch to
-`multiprocessing.Process` mirroring `make_task_rpc_server` for true process
-isolation.
-
 ### `Task.step` never sets `truncated=True`
 [src/cube/task.py:256-257](src/cube/task.py#L256-L257)
 

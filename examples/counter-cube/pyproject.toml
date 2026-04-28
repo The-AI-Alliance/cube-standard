@@ -11,7 +11,7 @@ dependencies = [
 cube-standard = { path = "../../", editable = true }
 
 [project.entry-points."cube.benchmarks"]
-counter-cube = "counter_cube.benchmark:CounterBenchmark"
+counter-cube = "counter_cube.benchmark:CounterBenchmarkConfig"
 
 [build-system]
 requires = ["uv_build>=0.8,<0.9"]

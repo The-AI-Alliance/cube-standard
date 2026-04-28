@@ -13,9 +13,10 @@ benchmark-specific imports required.
 Benchmark packages expose `<package>.debug` with two callables:
 
 ```python
-def get_debug_benchmark() -> Benchmark:
-    """Return a Benchmark instance, optionally pre-filtered to debug tasks
-    via subset_from_list. Base class calls install(), setup(), and close() on it."""
+def get_debug_benchmark() -> BenchmarkConfig:
+    """Return a BenchmarkConfig, optionally pre-filtered to debug tasks via
+    subset_from_list. The harness calls config.install() then config.make(infra)
+    to obtain a live Benchmark, and benchmark.close() on exit."""
 
 def make_debug_agent(task_id: str) -> Callable[[Observation, list[ActionSchema]], Action]:
     """Return a deterministic agent that solves the named task."""
@@ -46,14 +47,17 @@ Report schema:
 }
 ```
 
-### `run_debug_suite(benchmark_name, module, *, max_steps=20, workers=0, on_episode_start=None, on_episode_done=None) -> list[dict]`
-Discovers tasks via `module.get_debug_benchmark().get_task_configs()`, runs each
-with `module.make_debug_agent(task_id)`, and returns a list of episode reports.
+### `run_debug_suite(benchmark_name, module, *, max_steps=20, workers=0, infra=None, on_episode_start=None, on_episode_done=None) -> list[dict]`
+Discovers benchmark `config` via `module.get_debug_benchmark()`,
+calls `config.install()` then `config.make()` to obtain a live Benchmark.
+Discovers tasks via `config.get_task_configs()`,
+runs each task with `module.make_debug_agent(task_id)`, and returns a list of
+episode reports. Always calls `benchmark.close()` in a `finally` block.
 
 `workers=0` (default) runs one thread per task automatically. `workers=1` is sequential.
 
 **Parallel runs (`workers=0` or `workers > 1`):** tasks share the benchmark's
-`_runtime_context` by reference. After `setup()` returns, concurrent episodes must
+`_runtime_context` by reference. After `congig.make()` returns, concurrent episodes must
 treat that object as read-only. Writes from multiple workers are not safe.
 
 ### `assert_debug_tasks_reward_one(module, *, max_steps=20) -> None`
@@ -69,8 +73,8 @@ def test_debug_tasks():
 ```
 
 ### Compliance checks (used by `cube test`)
-- `check_benchmark_metadata(module)` → `(ok, err)` — verifies `BenchmarkMetadata` required fields
-- `check_reset_reproducibility(module)` → `(ok, err)` — same config × 2 `make()` + `reset()` → identical first obs
+- `check_benchmark_metadata(module)` → `(ok, err)` — verifies `BenchmarkMetadata` required fields on the config returned by `get_debug_benchmark`
+- `check_reset_reproducibility(module)` → `(ok, err)` — same TaskConfig × 2 `make()` + `reset()` → identical first obs. Also calls `config.install()` and `config.make()` to bring up the benchmark.
 - `aggregate_profiling(reports)` — roll-up of per-step profiling dicts
 - `build_stress_test_report(...)` — assembles the full compliance report
 
