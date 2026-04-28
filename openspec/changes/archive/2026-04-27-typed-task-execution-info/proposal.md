@@ -1,6 +1,6 @@
 # Typed `TaskExecutionInfo` slot + remove `extra_info` bags
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-04-25
 **Scope:** `cube.task`, `cube.benchmark`, `cube.cli`, `_template/`, `.claude/skills/{new-cube,review-cube}`
 **Targets:** stacks on top of `feat/benchmark-config` (PR #118)
