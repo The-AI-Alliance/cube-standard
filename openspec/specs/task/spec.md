@@ -65,10 +65,12 @@ instantiable but carries no fields.
 ### `Task` (abstract, Pydantic)
 ```python
 class Task(TypedBaseModel, ABC):
-    # Serializable fields
-    metadata: TaskMetadata
-    execution_info: TaskExecutionInfo | None = None    # heavy lazy data; populated on the worker
-    tool_config: ToolConfig
+    # Serializable fields — SerializeAsAny preserves subclass-specific fields
+    # through JSON round-trip (Pydantic would otherwise strip them to the
+    # declared base type). Required for every polymorphic field.
+    metadata: SerializeAsAny[TaskMetadata]
+    execution_info: SerializeAsAny[TaskExecutionInfo] | None = None  # heavy lazy data; populated on the worker
+    tool_config: SerializeAsAny[ToolConfig]
     container_backend: ContainerBackend | None = None
     runtime_context: RuntimeContext | None = None      # from Benchmark._setup()
     validate_per_step: bool = False                    # eval on every step, not just done
@@ -151,9 +153,9 @@ concurrent tasks. Writes are not safe across workers.
 ```python
 class TaskConfig(TypedBaseModel, ABC):
     task_id: str
-    metadata: TaskMetadata                      # travels with the config
+    metadata: SerializeAsAny[TaskMetadata]       # travels with the config
     seed: int | None = None
-    tool_config: ToolConfig | None = None
+    tool_config: SerializeAsAny[ToolConfig] | None = None
     sub_bench_name: str | None = None            # composite routing hint
 
     @abstractmethod
@@ -249,6 +251,11 @@ unique, while `metadata.id` keeps the native un-prefixed id.
 
 ## Gotchas
 
+- Polymorphic fields (`metadata`, `execution_info`, `tool_config`) use
+  `SerializeAsAny[Base]` rather than the bare base type. Without it Pydantic
+  serializes only the base-class fields and silently drops subclass-specific
+  state on every JSON round-trip. This is already in the base classes — cube
+  authors don't need to repeat it on their subclasses.
 - `task_execution_cache_dir()` uses the Python **package** name (underscores), not the
   benchmark display name (which may use hyphens). For example, a benchmark named
   `"osworld-cube"` (in `BenchmarkMetadata`) whose `TaskConfig` lives in the
