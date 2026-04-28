@@ -13,11 +13,7 @@
     "abstract_description": "Increment counter to reach value 3, with decrement available",
     "recommended_max_steps": 7,
     "target": 3,
-    "difficulty": "easy",
-    "tool_overrides": {
-      "_type": "__main__.CounterToolConfig",
-      "enable_decrement": true
-    }
+    "difficulty": "easy"
   },
   {
     "_type": "__main__.CounterTaskMetadata",
@@ -25,10 +21,6 @@
     "abstract_description": "Counter with custom increment amount",
     "recommended_max_steps": 4,
     "target": 4,
-    "difficulty": "easy",
-    "tool_overrides": {
-      "_type": "__main__.CounterToolConfig",
-      "increment_by": 2
-    }
+    "difficulty": "easy"
   }
 ]

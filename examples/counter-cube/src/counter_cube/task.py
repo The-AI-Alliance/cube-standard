@@ -4,10 +4,11 @@ Task owns a Tool and implements the episode loop (reset / step / evaluate / clos
 Must implement: reset() → (Observation, info), evaluate(obs) → (reward, info).
 Optional: finished() for early termination, filter_actions() to restrict actions.
 
-For per-task state, prefer typed Pydantic fields over stringly-typed dicts:
-``CounterTaskMetadata`` carries the per-task ``target`` and an optional
-``tool_overrides`` slot for tasks that need a non-default tool config.
-TaskConfig is serialisable; implement make() to produce a Task.
+For per-task state, prefer typed Pydantic fields over stringly-typed dicts.
+``CounterTaskMetadata`` carries semantic task descriptors (target, difficulty).
+Per-task tool variation is handled in ``BenchmarkConfig.get_task_configs()``,
+not stored on ``TaskMetadata`` — metadata describes *what* a task is, not *how*
+to run it.
 """
 
 from typing import Any, Literal
@@ -27,11 +28,6 @@ class CounterTaskMetadata(TaskMetadata):
 
     difficulty: Literal["easy", "medium", "hard"] = "easy"
     """Task difficulty label, surfaced via ``subset_from_glob`` / registry filters."""
-
-    tool_overrides: CounterToolConfig | None = None
-    """Optional default ``CounterToolConfig`` for this task — used by
-    ``CounterTaskConfig.make`` when the TaskConfig does not carry an
-    explicit ``tool_config``."""
 
 
 class ReachTargetTask(Task):
@@ -80,12 +76,10 @@ class CounterTaskConfig(TaskConfig):
     ) -> ReachTargetTask:
         """Build the task.
 
-        tool_config precedence (highest to lowest):
-          1. explicit ``tool_config`` set on this TaskConfig instance
-          2. ``self.metadata.tool_overrides`` (per-task default declared on metadata)
-          3. ``CounterToolConfig`` defaults
+        Per-task tool variation is set by ``CounterBenchmarkConfig.get_task_configs()``
+        on ``self.tool_config``; fall back to the default config if none was set.
         """
-        tool_cfg = self.tool_config or self.metadata.tool_overrides or CounterToolConfig()
+        tool_cfg = self.tool_config or CounterToolConfig()
         return ReachTargetTask(
             metadata=self.metadata,
             tool_config=tool_cfg,

@@ -190,8 +190,8 @@ def test_increment_by_task(task_configs):
     task.close()
 
 
-def test_toolconfig_override():
-    """Explicit tool_config on TaskConfig takes precedence over metadata defaults."""
+def test_toolconfig_on_task_config():
+    """tool_config set on TaskConfig is used by make()."""
     cfg = CounterTaskConfig(
         metadata=CounterTaskMetadata(id="count-to-3", target=3),
         tool_config=CounterToolConfig(enable_increment_by=True),

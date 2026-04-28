@@ -11,10 +11,10 @@ Note on TaskMetadata subclasses + JSON auto-loading
 ``TaskMetadata`` class — which dispatches to the right subclass when the JSON
 entry includes a ``"_type"`` field (TypedBaseModel's polymorphic discriminator).
 ``task_metadata.json`` here uses ``"_type": "__main__.CounterTaskMetadata"``
-so each entry is loaded as a typed ``CounterTaskMetadata`` with ``target`` and
-the optional ``tool_overrides`` populated.
+so each entry is loaded as a typed ``CounterTaskMetadata`` with ``target`` populated.
 """
 
+from collections.abc import Generator
 from typing import Any, ClassVar, Dict, Literal, Tuple
 
 from cube.benchmark import Benchmark, BenchmarkConfig, RuntimeContext
@@ -68,11 +68,10 @@ class CounterToolConfig(ToolConfig):
 
 
 class CounterTaskMetadata(TaskMetadata):
-    """Per-task metadata with a typed ``target`` and an optional tool override."""
+    """Per-task metadata with a typed ``target``."""
 
     target: int
     difficulty: Literal["easy", "medium", "hard"] = "easy"
-    tool_overrides: CounterToolConfig | None = None
 
 
 class ReachTargetTask(Task):
@@ -103,7 +102,7 @@ class CounterTaskConfig(TaskConfig):
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> ReachTargetTask:
-        tool_cfg = self.tool_config or self.metadata.tool_overrides or CounterToolConfig()
+        tool_cfg = self.tool_config or CounterToolConfig()
         return ReachTargetTask(
             metadata=self.metadata,
             tool_config=tool_cfg,
@@ -126,6 +125,18 @@ class CounterBenchmark(Benchmark):
 class CounterBenchmarkConfig(BenchmarkConfig):
     task_config_class: ClassVar[type[TaskConfig]] = CounterTaskConfig
     benchmark_class: ClassVar[type[Benchmark]] = CounterBenchmark
+
+    _TASK_TOOL_CONFIGS: ClassVar[dict[str, CounterToolConfig]] = {
+        "count-to-3-with-decrement": CounterToolConfig(enable_decrement=True),
+        "count-by-2": CounterToolConfig(increment_by=2),
+    }
+
+    def get_task_configs(self) -> Generator[CounterTaskConfig, None, None]:
+        for task_id, tm in self.tasks().items():
+            yield CounterTaskConfig(
+                metadata=tm,
+                tool_config=self._TASK_TOOL_CONFIGS.get(task_id),
+            )
 
 
 if __name__ == "__main__":

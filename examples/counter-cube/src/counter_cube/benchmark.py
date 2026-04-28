@@ -7,6 +7,7 @@ _setup() / close() on the paired Benchmark are no-ops here — real benchmarks
 use them for containers / shared servers.
 """
 
+from collections.abc import Generator
 from typing import ClassVar
 
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata
@@ -50,16 +51,28 @@ class CounterBenchmarkConfig(BenchmarkConfig):
             abstract_description="Increment counter to reach value 3, with decrement available",
             recommended_max_steps=7,
             target=3,
-            tool_overrides=CounterToolConfig(enable_decrement=True),
         ),
         "count-by-2": CounterTaskMetadata(
             id="count-by-2",
             abstract_description="Reach 4 using an increment-by-2 tool",
             recommended_max_steps=4,
             target=4,
-            tool_overrides=CounterToolConfig(enable_increment_by=True),
         ),
     }
 
     task_config_class: ClassVar[type[TaskConfig]] = CounterTaskConfig
     benchmark_class: ClassVar[type[Benchmark]] = CounterBenchmark
+
+    # Per-task tool configs: TaskMetadata carries semantic descriptors (target,
+    # difficulty); tool variation is a runner concern resolved here.
+    _TASK_TOOL_CONFIGS: ClassVar[dict[str, CounterToolConfig]] = {
+        "count-to-3-with-decrement": CounterToolConfig(enable_decrement=True),
+        "count-by-2": CounterToolConfig(enable_increment_by=True),
+    }
+
+    def get_task_configs(self) -> Generator[CounterTaskConfig, None, None]:
+        for task_id, tm in self.tasks().items():
+            yield CounterTaskConfig(
+                metadata=tm,
+                tool_config=self._TASK_TOOL_CONFIGS.get(task_id),
+            )
