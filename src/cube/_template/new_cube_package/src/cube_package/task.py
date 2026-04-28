@@ -91,7 +91,8 @@ class CubeTaskConfig(TaskConfig):
         heavy data via ``BenchmarkConfig.install()`` so misconfigured workers
         error early with an actionable message instead of timing out::
 
-            if not list(cls.task_execution_cache_dir().iterdir()):
+            cache_dir = cls.task_execution_cache_dir()
+            if not cache_dir.exists() or not any(cache_dir.iterdir()):
                 raise RuntimeError(
                     f"Run `cube install new-cube-package` first."
                 )

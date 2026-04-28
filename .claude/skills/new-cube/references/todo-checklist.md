@@ -91,7 +91,8 @@ If a task needs heavy data (problem statements, binaries, evaluation code, patch
    class MyTaskConfig(TaskConfig):
        @classmethod
        def verify_installed(cls) -> None:
-           if not list(cls.task_execution_cache_dir().iterdir()):
+           cache_dir = cls.task_execution_cache_dir()
+           if not cache_dir.exists() or not any(cache_dir.iterdir()):
                raise RuntimeError("Run `cube install <bench>` first.")
 
        def make(self, runtime_context=None, container_backend=None):
