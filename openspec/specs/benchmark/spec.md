@@ -55,7 +55,7 @@ If no `task_metadata` file and no declaration → `TypeError` at class definitio
 ```python
 resources: list[ResourceConfig] = []        # resource dependencies (L2/L3)
 container_backend: ContainerBackend | None  # passed to each Task
-default_tool_config: ToolConfig | None      # default for tasks without their own
+tool_config: ToolConfig | None              # applied to every task by the default get_task_configs(); override get_task_configs() for per-task variation
 seed_generator: AbstractSeedGenerator | None # yields seeds per TaskMetadata
 ```
 

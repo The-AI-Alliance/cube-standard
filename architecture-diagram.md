@@ -166,7 +166,7 @@ classDiagram
         +ClassVar~type~ task_config_class
         -RuntimeContext _runtime_context
         +ContainerBackend container_backend
-        +ToolConfig default_tool_config
+        +ToolConfig tool_config
         +AbstractSeedGenerator seed_generator
         +setup() void
         +get_task_configs() Generator~TaskConfig~
@@ -272,7 +272,7 @@ classDiagram
 ## Lifecycle Flow
 
 1. **Benchmark Setup**:
-   - User creates Benchmark instance (passing `container_backend`, `default_tool_config`, `seed_generator` as constructor params)
+   - User creates Benchmark instance (passing `container_backend`, `tool_config`, `seed_generator` as constructor params)
    - User calls `benchmark.setup()`
    - Benchmark implementation (`_setup()`) sets:
      - `_runtime_context`: Shared infrastructure references (containers, VMs, etc.)
@@ -282,7 +282,7 @@ classDiagram
    - User calls `benchmark.get_task_configs()` to iterate over `TaskConfig` objects
    - Benchmark yields one `task_config_class` instance per task (and per seed if `seed_generator` is set):
      - `task_id`: unique identifier
-     - `tool_config`: from `default_tool_config`
+     - `tool_config`: from `benchmark.tool_config`
      - `seed`: from `seed_generator(task_metadata)` or `None`
 
 3. **Task Spawning**:

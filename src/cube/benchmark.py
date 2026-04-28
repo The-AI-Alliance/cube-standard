@@ -154,9 +154,9 @@ class Benchmark(TypedBaseModel, ABC):
     container_backend: ContainerBackend | None = Field(
         default=None
     )  # optional container backend to be used for all tasks in this benchmark
-    default_tool_config: ToolConfig | None = Field(
+    tool_config: ToolConfig | None = Field(
         default=None
-    )  # default tool config to be used for tasks that don't specify their own
+    )  # tool config applied uniformly to every task by the default get_task_configs(); override get_task_configs() for per-task variation
     seed_generator: AbstractSeedGenerator | None = Field(
         default=None
     )  # optional seed generator for tasks that require random seeds
@@ -420,8 +420,8 @@ class Benchmark(TypedBaseModel, ABC):
             missing_optional.append("_runtime_context")
         if self.container_backend is None:
             missing_optional.append("container_backend")
-        if self.default_tool_config is None:
-            missing_optional.append("default_tool_config")
+        if self.tool_config is None:
+            missing_optional.append("tool_config")
         if self.seed_generator is None:
             missing_optional.append("seed_generator")
         if missing_optional:
@@ -437,9 +437,9 @@ class Benchmark(TypedBaseModel, ABC):
         for tm in self.task_metadata.values():
             if self.seed_generator is not None:
                 for seed in self.seed_generator(tm):
-                    yield self.task_config_class(task_id=tm.id, tool_config=self.default_tool_config, seed=seed)
+                    yield self.task_config_class(task_id=tm.id, tool_config=self.tool_config, seed=seed)
             else:
-                yield self.task_config_class(task_id=tm.id, tool_config=self.default_tool_config, seed=None)
+                yield self.task_config_class(task_id=tm.id, tool_config=self.tool_config, seed=None)
 
     def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "Benchmark":
         """
