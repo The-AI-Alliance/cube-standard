@@ -60,7 +60,7 @@ tests/                          Unit + integration + backends
 ## Key conventions
 
 - **Serializable configs** subclass `TypedBaseModel` — polymorphic via injected `_type` field.
-- **ClassVar registries** on `Benchmark`: `benchmark_metadata`, `task_metadata`, `task_config_class` are class-level, not constructor params. Auto-loaded from files next to the module.
+- **ClassVar registries** on `BenchmarkConfig`: `benchmark_metadata`, `task_metadata`, `task_config_class`, `benchmark_class` are class-level, not constructor params. Auto-loaded from files next to the module (metadata only).
 - **Config → Factory** pattern: `XyzConfig.make()` returns a live `Xyz`. Config is serialized across process boundaries; live object never is.
 - **`TaskConfig` is the serialization boundary** — workers get a `TaskConfig` and call `.make()` locally. Task objects never cross processes.
 - **Credentials** are resolved from env vars at runtime. Never fields on `InfraConfig` or `ContainerBackend` (would be serialized).

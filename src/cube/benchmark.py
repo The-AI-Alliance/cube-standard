@@ -125,10 +125,9 @@ class BenchmarkMetadata(TypedBaseModel):
         description=(
             "Named subsets of this benchmark, as a mapping from subset name to "
             "(glob_key, glob_pattern) passed to BenchmarkConfig.subset_from_glob(). "
-            "Example: {'lite': ('extra_info', '*\"lite\"*')}"
+            "Example: {'train_only': ('split', 'train')}"
         ),
     )
-    extra_info: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
 
 class BenchmarkConfig(TypedBaseModel, ABC):
@@ -212,10 +211,12 @@ class BenchmarkConfig(TypedBaseModel, ABC):
     def benchmark_metadata_from_csv(path: str | Path) -> "BenchmarkMetadata":
         """Load ``BenchmarkMetadata`` from a single-row CSV.
 
-        Complex fields (``authors``, ``tags``, ``requirements``, ``extra_info``)
-        must be stored as JSON-encoded strings.
+        Complex fields (``authors``, ``tags``, ``requirements``) must be
+        stored as JSON-encoded strings. Subclass-specific fields are
+        encoded as their own columns; complex types in subclass fields go
+        through JSON-encoded strings just like the built-in complex fields.
         """
-        _JSON_FIELDS = ("authors", "tags", "requirements", "extra_info")
+        _JSON_FIELDS = ("authors", "tags", "requirements")
         with open(path, newline="") as f:
             reader = csv.DictReader(f)
             row = next(reader, None)
@@ -255,10 +256,12 @@ class BenchmarkConfig(TypedBaseModel, ABC):
     def task_metadata_from_csv(path: str | Path) -> dict[str, TaskMetadata]:
         """Load ``task_metadata`` from a CSV file.
 
-        Each row is one task. ``id`` is required. Complex fields (``extra_info``,
-        ``tags``, ``container_config``) must be JSON-encoded strings.
+        Each row is one task. ``id`` is required. Complex built-in fields
+        (``container_config``) must be JSON-encoded strings. Subclass-specific
+        fields are encoded as their own columns; complex types in subclass
+        fields go through JSON-encoded strings as well.
         """
-        _JSON_FIELDS = ("extra_info", "tags", "container_config")
+        _JSON_FIELDS = ("container_config",)
         tasks = []
         with open(path, newline="") as f:
             for row in csv.DictReader(f):
@@ -409,10 +412,11 @@ class BenchmarkConfig(TypedBaseModel, ABC):
 
         Stamps full ``TaskMetadata`` onto each emitted config so workers never
         need to import the owning ``BenchmarkConfig`` class to resolve metadata.
-        Subclasses that carry install-time heavy data (e.g. SWE-bench problem
-        statements, OSWorld evaluator configs) should override this method to
-        merge ``load_task_execution_info(task_id)`` into ``metadata.extra_info``
-        at emit time.
+
+        Cubes with heavy execution data (problem statements, patches, …)
+        populate ``Task.execution_info`` inside ``TaskConfig.make()`` by
+        validating ``cls.load_task_execution_info(task_id)`` against a typed
+        ``TaskExecutionInfo`` subclass — no override of this method needed.
         """
         for tm in self.tasks().values():
             if self.seed_generator is not None:
@@ -476,25 +480,17 @@ class BenchmarkConfig(TypedBaseModel, ABC):
     def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "BenchmarkConfig":
         """Return a new ``BenchmarkConfig`` containing only tasks whose ``glob_key`` matches ``glob_pattern``.
 
-        ``glob_key`` accepts any top-level ``TaskMetadata`` field (``id``,
-        ``split``, ``abstract_description``, ``recommended_max_steps``) or
-        ``extra_info.<key>`` via dot-notation. ``glob_pattern`` is a standard
-        Unix shell wildcard.
+        ``glob_key`` is any top-level field on the (subclassed) ``TaskMetadata``
+        — built-ins like ``id`` / ``split`` / ``abstract_description``, or any
+        named field declared by a ``TaskMetadata`` subclass.
+        ``glob_pattern`` is a standard Unix shell wildcard.
         """
         current = self.tasks()
-        if glob_key.startswith("extra_info."):
-            extra_key = glob_key[len("extra_info.") :]
-            matches = [
-                tm
-                for tm in current.values()
-                if extra_key in tm.extra_info and fnmatch.fnmatch(str(tm.extra_info[extra_key]), glob_pattern)
-            ]
-        else:
-            matches = [
-                tm
-                for tm in current.values()
-                if hasattr(tm, glob_key) and fnmatch.fnmatch(str(getattr(tm, glob_key)), glob_pattern)
-            ]
+        matches = [
+            tm
+            for tm in current.values()
+            if hasattr(tm, glob_key) and fnmatch.fnmatch(str(getattr(tm, glob_key)), glob_pattern)
+        ]
         if not matches:
             raise ValueError(f"No tasks found matching glob pattern '{glob_pattern}' on key '{glob_key}'")
         return self.subset_from_list(tasks=matches, benchmark_name_suffix=f"[{glob_key}={glob_pattern}]")
@@ -528,11 +524,15 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         SWE-bench problem statements, OSWorld evaluator configs). The default
         is a no-op.
 
+        Convention: write each task's processed data as a JSON file at
+        ``cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"``
+        — that path is the single source of truth, owned by ``TaskConfig``,
+        and read back by workers via
+        ``TaskConfig.load_task_execution_info(task_id)``.
+
         ``install()`` MUST NOT mutate ``task_metadata`` — that registry is
         populated at class-definition time from a shipped file (or declared
-        directly) and is the stable source of truth. Heavy execution data
-        belongs in per-task JSON files under ``task_execution_cache_dir()``,
-        read back later via ``load_task_execution_info(task_id)``.
+        directly) and is the stable source of truth.
 
         Must be idempotent.
         """
@@ -549,32 +549,6 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         caching strategy is required.
         """
         return get_cache_dir(cls.benchmark_metadata.name)
-
-    @classmethod
-    def task_execution_cache_dir(cls) -> Path:
-        """Directory where per-task execution data is cached by ``install()``."""
-        return cls.cache_dir() / "tasks_execution_info"
-
-    @classmethod
-    def load_task_execution_info(cls, task_id: str) -> dict[str, Any]:
-        """Read heavy per-task execution data from the cache.
-
-        Called from ``BenchmarkConfig.get_task_configs()`` on the driver to
-        stamp ``TaskConfig.metadata.extra_info`` before configs are shipped
-        to workers, so workers never touch disk. Subclasses with heavy
-        install-time data override ``get_task_configs()`` to merge the
-        result into ``metadata.extra_info`` at emit time.
-
-        Raises ``RuntimeError`` if the cache file is missing — signals that
-        ``install()`` has not been run. Callers should not silently swallow
-        this.
-        """
-        cache_file = cls.task_execution_cache_dir() / f"{task_id}.json"
-        if not cache_file.exists():
-            raise RuntimeError(
-                f"No execution data for {task_id!r}. Run `{cls.__name__}.install()` to populate the execution cache."
-            )
-        return json.loads(cache_file.read_text())
 
     # ──────────────────────────────────────────────────────────────────────────
     # The factory
@@ -747,11 +721,16 @@ class CompositeBenchmark(Benchmark):
     def spawn(self, task_config: TaskConfig) -> Task:
         """Route the task to its origin sub-benchmark via ``sub_bench_name``.
 
-        Bypasses the sub-benchmark's own ``spawn`` validation (which would
-        reject the prefixed ``task_id`` because it's not in the sub's
-        ``config.tasks()``) by calling ``task_config.make()`` directly with
-        the sub's ``_runtime_context``. The TaskConfig is self-contained —
-        its ``metadata`` and ``tool_config`` are already populated.
+        For flat composites ``sub_bench_name`` is just the sub-benchmark's
+        name (e.g. ``"bench-a"``).  For nested composites it is a
+        ``"/"``-joined path of names from outermost to leaf
+        (e.g. ``"inner-suite/bench-a"``); the path is peeled one hop at a
+        time so each ``CompositeBenchmark`` in the chain delegates correctly.
+
+        The final hop calls ``task_config.make()`` directly instead of
+        ``sub_bench.spawn()`` — the latter would re-validate ``task_id``
+        against the sub's ``config.tasks()`` and reject the
+        composite-prefixed id.
         """
         if task_config.sub_bench_name is None:
             raise ValueError(
@@ -759,14 +738,22 @@ class CompositeBenchmark(Benchmark):
                 f"(emitted by CompositeBenchmarkConfig.get_task_configs()); "
                 f"got {type(task_config).__name__} with sub_bench_name=None"
             )
-        if task_config.sub_bench_name not in self.sub_benchmarks:
+        # Peel the first component of the (possibly multi-hop) routing path.
+        parts = task_config.sub_bench_name.split("/", 1)
+        next_hop = parts[0]
+        remaining_path = parts[1] if len(parts) > 1 else None
+        if next_hop not in self.sub_benchmarks:
             raise ValueError(
-                f"Unknown sub-benchmark {task_config.sub_bench_name!r}; known: {list(self.sub_benchmarks.keys())}"
+                f"Unknown sub-benchmark {next_hop!r} "
+                f"(from sub_bench_name={task_config.sub_bench_name!r}); "
+                f"known: {list(self.sub_benchmarks.keys())}"
             )
-        sub_bench = self.sub_benchmarks[task_config.sub_bench_name]
-        # Call ``task_config.make()`` directly instead of ``sub_bench.spawn()``:
-        # the latter would re-validate ``task_id`` against the sub's
-        # ``config.tasks()`` and reject the composite-prefixed id.
+        sub_bench = self.sub_benchmarks[next_hop]
+        if remaining_path is not None:
+            # Nested composite: delegate with the remaining path so the inner
+            # CompositeBenchmark can continue routing.
+            return sub_bench.spawn(task_config.model_copy(update={"sub_bench_name": remaining_path}))
+        # Leaf: call make() directly to bypass sub_bench.spawn() validation.
         return task_config.make(
             runtime_context=sub_bench._runtime_context,
             container_backend=sub_bench.config.container_backend,
@@ -894,7 +881,16 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
                 # skip if this task is not in the allowed set
                 if allowed_task_ids is not None and prefixed_id not in allowed_task_ids:
                     continue
-                yield task_config.model_copy(update={"sub_bench_name": sub_bench_name})
+                # For nested composites the inner composite already set
+                # sub_bench_name; prepend the outer name to build the full
+                # routing path (e.g. "inner-suite/bench-a").  For flat tasks
+                # (sub_bench_name is None) just set the name directly.
+                new_sub_bench_name = (
+                    f"{sub_bench_name}/{task_config.sub_bench_name}"
+                    if task_config.sub_bench_name is not None
+                    else sub_bench_name
+                )
+                yield task_config.model_copy(update={"sub_bench_name": new_sub_bench_name})
 
     def make(self, infra: InfraConfig | None = None) -> CompositeBenchmark:
         """Instantiate every sub-benchmark and wire them into a CompositeBenchmark.
@@ -916,9 +912,11 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
         composite.setup()  # no-op for CompositeBenchmark; kept for consistency
         return composite
 
-    # Class-level data lifecycle on composites: delegate to every sub-config.
-    # These are instance methods here (unlike BenchmarkConfig's classmethods)
-    # because a composite's sub-configs are instance state.
+    # Data lifecycle on composites: instance methods that delegate to every
+    # sub-config.  Unlike BenchmarkConfig's classmethods, these require an
+    # instance because sub_bench_configs is instance state.
+    # Note: `cube install <name>` does not support composite benchmarks —
+    # install each sub-benchmark individually instead.
 
     def install(self) -> None:  # type: ignore[override]
         """Install every sub-config. Idempotent; safe to call multiple times."""

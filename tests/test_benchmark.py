@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Literal
 
 import pytest
 
@@ -51,6 +52,13 @@ class MyBenchmark(Benchmark):
         pass
 
 
+class _MyTaskMetadata(TaskMetadata):
+    """Subclass that ships a typed ``difficulty`` field — replaces the old
+    ``extra_info["difficulty"]`` smuggling channel for filter / glob tests."""
+
+    difficulty: Literal["easy", "hard"] = "easy"
+
+
 class MyBenchmarkConfig(BenchmarkConfig):
     benchmark_metadata = BenchmarkMetadata(
         name="MyBenchmark",
@@ -59,10 +67,10 @@ class MyBenchmarkConfig(BenchmarkConfig):
         num_tasks=4,
     )
     task_metadata = {
-        "t1": TaskMetadata(id="t1", split="train", extra_info={"difficulty": "easy"}),
-        "t2": TaskMetadata(id="t2", split="train", extra_info={"difficulty": "hard"}),
-        "t3": TaskMetadata(id="t3", split="val", extra_info={"difficulty": "easy"}),
-        "t4": TaskMetadata(id="t4", split="test", extra_info={"difficulty": "hard"}),
+        "t1": _MyTaskMetadata(id="t1", split="train", difficulty="easy"),
+        "t2": _MyTaskMetadata(id="t2", split="train", difficulty="hard"),
+        "t3": _MyTaskMetadata(id="t3", split="val", difficulty="easy"),
+        "t4": _MyTaskMetadata(id="t4", split="test", difficulty="hard"),
     }
     task_config_class = _TaskConfig
     benchmark_class = MyBenchmark
@@ -82,7 +90,6 @@ def test_benchmark_metadata_defaults():
         num_tasks=0,
         license="",
         requirements={},
-        extra_info={},
         named_subsets={},
         reset_isolation=None,
     )
@@ -231,8 +238,9 @@ def test_subset_from_glob_by_split():
     assert set(sub.task_ids or ()) == {"t1", "t2"}
 
 
-def test_subset_from_glob_by_extra_info():
-    sub = MyBenchmarkConfig().subset_from_glob("extra_info.difficulty", "easy")
+def test_subset_from_glob_by_subclass_field():
+    """``subset_from_glob`` accepts any top-level field on the (subclassed) TaskMetadata."""
+    sub = MyBenchmarkConfig().subset_from_glob("difficulty", "easy")
     assert set(sub.task_ids or ()) == {"t1", "t3"}
 
 
@@ -259,7 +267,7 @@ def test_named_subsets_and_named_subset():
             version="1",
             description="x",
             num_tasks=4,
-            named_subsets={"train": ("split", "train"), "easy": ("extra_info.difficulty", "easy")},
+            named_subsets={"train": ("split", "train"), "easy": ("difficulty", "easy")},
         )
         task_metadata = MyBenchmarkConfig.task_metadata
         task_config_class = _TaskConfig
@@ -308,14 +316,14 @@ def test_task_metadata_from_json(tmp_path):
         json.dumps(
             [
                 {"id": "task-a", "split": "train"},
-                {"id": "task-b", "split": "test", "extra_info": {"difficulty": "hard"}},
+                {"id": "task-b", "split": "test", "abstract_description": "do other"},
             ]
         )
     )
     tasks = BenchmarkConfig.task_metadata_from_json(p)
     assert tasks == {
         "task-a": TaskMetadata(id="task-a", split="train"),
-        "task-b": TaskMetadata(id="task-b", split="test", extra_info={"difficulty": "hard"}),
+        "task-b": TaskMetadata(id="task-b", split="test", abstract_description="do other"),
     }
 
 

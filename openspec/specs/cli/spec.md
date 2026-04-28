@@ -22,6 +22,27 @@ Scaffolds a new benchmark package from the template at
 - Refuses template placeholder names (`cube_package`, `new_cube_package`, `new-cube-package`)
 - `NAME` is converted to module-compatible form (hyphens → underscores) for the Python package
 
+### `cube install NAME`
+
+Discovers the `BenchmarkConfig` class for `NAME` via the
+`cube.benchmarks` entry-point group and invokes its `install()`
+classmethod. Operators run this once per worker environment to populate
+the per-task execution cache (and any other one-time downloads) so
+workers can construct tasks without surprise downloads.
+
+- `NAME` must be a benchmark entry-point name (e.g. `swebench-live-cube`).
+- `BenchmarkConfig.install()` is expected to be idempotent — repeated
+  invocations are safe.
+- Failures bubble up with the exception type and message; exit code 1.
+
+Standard deployment patterns:
+- bake `RUN cube install <bench>` into the worker image (default for
+  production fleets);
+- mount NFS / EFS / S3FS on workers and run `cube install <bench>` once
+  on any node mounting the shared volume;
+- run `cube install <bench>` as a worker-bootstrap step at startup
+  (acceptable for dozens of workers).
+
 ### `cube test NAME`
 Runs the debug compliance suite. `NAME` is either:
 - A benchmark entry-point name (e.g. `counter-cube`) — debug module auto-resolved
@@ -35,7 +56,7 @@ Exits non-zero if any debug task fails to reach `reward == 1.0`.
 
 Options:
 - `--max-steps N` — per-episode step budget (default 20)
-- `--stress N` — run each task N times to surface flakiness (default 1)
+- `--stress` — measure throughput at 1, 2, and 4 concurrent workers after the normal suite run
 - `--no-reset-check` — skip reset reproducibility check (useful in CI where the check is slow)
 - `--output PATH` — save report JSON
 - `--ci` — suppress Rich dashboard, plain-text output (also enabled by `CUBE_CI=1`)

@@ -42,8 +42,9 @@ Detect which the cube uses by grepping the benchmark module for the ClassVar ass
 - No `@tool_action` decorators found in the tool module(s). (Exception: the benchmark is a thin subclass of a shared tool like `cube-browser-tool` and inherits actions — verify the imported tool class has `@tool_action` methods.)
 - Option B chosen but `task_metadata.json` missing (or `benchmark_metadata.json` missing when also needed).
 - Option A chosen but required ClassVars (`benchmark_metadata`, `task_metadata`, `task_config_class`, `benchmark_class`) missing.
-- `task_metadata.json` average size per task exceeds **1000 bytes**: `size_bytes / num_tasks > 1000` (target is ~1 byte/task, so ~1 MB for 1000 tasks). Recommend the `extra_info` + `BenchmarkConfig.install()` pattern (see `cube-harness/cubes/swebench-live-cube`).
-- `task_metadata.extra_info` is non-empty in the shipped `task_metadata.json`. `extra_info` is reserved for heavy runtime data merged at `get_task_configs()` emit time via `load_task_execution_info()` (populated by `BenchmarkConfig.install()`). For structured per-task fields (repo, base_commit, instruction, splits, log_parser, container image, …), introduce a custom `TaskMetadata` subclass. Reference: `cube-harness/cubes/swebench-live-cube/src/swebench_live_cube/task.py`.
+- `task_metadata.json` average size per task exceeds **1000 bytes**: `size_bytes / num_tasks > 1000` (target is ~1 KB/task, so ~1 MB for 1000 tasks). Recommend declaring a typed `TaskExecutionInfo` subclass for the heavy fields, populating the on-disk cache via `BenchmarkConfig.install()`, and hydrating `Task.execution_info` lazily inside `TaskConfig.make()` (see `cube-harness/cubes/swebench-live-cube`).
+- Any `TaskMetadata` subclass declares a field literally named `extra_info` (or any `dict[str, Any]` bag-of-anything field). For per-task fields, declare named typed fields on the subclass.
+- Heavy per-task data (problem statements, patches, archives, evaluator scripts, …) appears as fields on a `TaskMetadata` subclass instead of on a typed `TaskExecutionInfo` subclass surfaced via `Task.execution_info`. Heavy data must live on `TaskExecutionInfo`, not `TaskMetadata`.
 
 **Suggestions:**
 - S-75: `Task.reset()` has no visible call to `self.tool.reset()`.

@@ -15,6 +15,7 @@ from cube.cli import (
     _parse_pyproject_license,
     _resolve_debug_module,
     cmd_init,
+    cmd_install,
     cmd_list,
     cmd_test,
     main,
@@ -147,6 +148,64 @@ def test_cmd_list_sorts_by_name():
 
     assert ep_a.load.called
     assert ep_b.load.called
+
+
+# ── cmd_install ───────────────────────────────────────────────────────────────
+
+
+def _make_install_entry_point(name: str, *, install_side_effect=None, bench_name="my-bench"):
+    """Return a mock entry-point whose .load() yields a class with .install()."""
+    cls = MagicMock()
+    cls.__module__ = "fake_pkg.benchmark"
+    cls.__name__ = "FakeBenchmarkConfig"
+    cls.benchmark_metadata = MagicMock()
+    cls.benchmark_metadata.name = bench_name
+    if install_side_effect is not None:
+        cls.install = MagicMock(side_effect=install_side_effect)
+    else:
+        cls.install = MagicMock()
+    ep = MagicMock()
+    ep.name = name
+    ep.load.return_value = cls
+    return ep, cls
+
+
+def test_cmd_install_calls_install_classmethod():
+    ep, cls = _make_install_entry_point("my-cube")
+    with patch("cube.cli.importlib.metadata.entry_points", return_value=[ep]):
+        cmd_install("my-cube")
+    cls.install.assert_called_once_with()
+
+
+def test_cmd_install_unknown_benchmark_exits_1():
+    with patch("cube.cli.importlib.metadata.entry_points", return_value=[]):
+        with pytest.raises(SystemExit) as exc:
+            cmd_install("nonexistent-cube")
+    assert exc.value.code == 1
+
+
+def test_cmd_install_propagates_exit_1_on_failure():
+    ep, _ = _make_install_entry_point("bad-cube", install_side_effect=RuntimeError("download failed"))
+    with patch("cube.cli.importlib.metadata.entry_points", return_value=[ep]):
+        with pytest.raises(SystemExit) as exc:
+            cmd_install("bad-cube")
+    assert exc.value.code == 1
+
+
+def test_cmd_install_rejects_composite_benchmark():
+    from cube.benchmark import CompositeBenchmarkConfig
+
+    # A bare subclass — the minimal real entry-point a composite suite would register.
+    class MySuiteConfig(CompositeBenchmarkConfig):
+        pass
+
+    ep = MagicMock()
+    ep.name = "my-suite"
+    ep.load.return_value = MySuiteConfig
+    with patch("cube.cli.importlib.metadata.entry_points", return_value=[ep]):
+        with pytest.raises(SystemExit) as exc:
+            cmd_install("my-suite")
+    assert exc.value.code == 1
 
 
 # ── _resolve_debug_module ──────────────────────────────────────────────────────
@@ -462,6 +521,17 @@ def test_main_init_uses_default_name_when_omitted(tmp_path):
         with patch.object(sys, "argv", ["cube", "init"]):
             main()
     mock_init.assert_called_once_with(name=_DEFAULT_NAME, cwd=Path.cwd())
+
+
+def test_main_install_missing_name_exits_1():
+    assert _run_main("install") == 1
+
+
+def test_main_install_dispatches_to_cmd_install():
+    with patch("cube.cli.cmd_install") as mock_install:
+        with patch.object(sys, "argv", ["cube", "install", "swebench-live-cube"]):
+            main()
+    mock_install.assert_called_once_with("swebench-live-cube")
 
 
 def test_main_test_missing_name_exits_1():

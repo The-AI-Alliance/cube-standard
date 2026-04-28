@@ -8,7 +8,8 @@ This example demonstrates:
 
 import argparse
 import os
-from typing import Any, ClassVar, Dict, Tuple
+from collections.abc import Generator
+from typing import Any, ClassVar, Dict, Literal, Tuple
 
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
 from cube.container import Container, ContainerBackend, ContainerConfig
@@ -108,13 +109,25 @@ class CounterToolConfig(ToolConfig):
         )
 
 
+# TaskMetadata subclass — typed per-task fields
+class CounterTaskMetadata(TaskMetadata):
+    """Per-task metadata with a typed ``target``."""
+
+    target: int
+    """Counter value the agent must reach to solve the task."""
+
+    difficulty: Literal["easy", "medium", "hard"] = "easy"
+
+
 # Task Implementation
 class ReachTargetTask(Task):
     """Task: Increment counter to reach target value."""
 
+    metadata: CounterTaskMetadata  # type: ignore[assignment]
+
     @property
     def target(self) -> int:
-        return self.metadata.extra_info["target"]
+        return self.metadata.target
 
     def reset(self) -> Tuple[Observation, Dict[str, Any]]:
         """Reset the task to its initial state."""
@@ -170,14 +183,7 @@ class CounterTaskConfig(TaskConfig):
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> ReachTargetTask:
-        """Create task instance from config.
-
-        Self-contained: ``self.metadata`` is populated on emit by
-        ``CounterBenchmarkConfig.get_task_configs()``.
-        Builds CounterToolConfig from extra_info["tool_config"] if present, otherwise uses defaults.
-        An explicit tool_config on this TaskConfig always takes precedence.
-        """
-        tool_cfg = self.tool_config or CounterToolConfig(**self.metadata.extra_info.get("tool_config", {}))
+        tool_cfg = self.tool_config or CounterToolConfig()
         return ReachTargetTask(
             metadata=self.metadata,
             tool_config=tool_cfg,
@@ -209,30 +215,42 @@ class CounterBenchmarkConfig(BenchmarkConfig):
         tags=["toy", "counter", "minimal"],
     )
     task_metadata: ClassVar[dict[str, TaskMetadata]] = {
-        "count-to-3": TaskMetadata(
+        "count-to-3": CounterTaskMetadata(
             id="count-to-3",
             abstract_description="Increment counter to reach value 3",
             recommended_max_steps=5,
             container_config=ContainerConfig(image="python:3.12-slim", ram_gb=1.0, cpu_cores=1.0),
-            extra_info={"target": 3, "difficulty": "easy"},
+            target=3,
         ),
-        "count-to-3-with-decrement": TaskMetadata(
+        "count-to-3-with-decrement": CounterTaskMetadata(
             id="count-to-3-with-decrement",
             abstract_description="Increment counter to reach value 3, with decrement available",
             recommended_max_steps=7,
             container_config=ContainerConfig(image="python:3.12-slim", ram_gb=1.0, cpu_cores=1.0),
-            extra_info={"target": 3, "difficulty": "easy", "tool_config": {"enable_decrement": True}},
+            target=3,
         ),
-        "count-by-2": TaskMetadata(
+        "count-by-2": CounterTaskMetadata(
             id="count-by-2",
             abstract_description="Counter with custom increment amount",
             recommended_max_steps=4,
             container_config=ContainerConfig(image="python:3.12-slim", ram_gb=1.0, cpu_cores=1.0),
-            extra_info={"target": 4, "difficulty": "easy", "tool_config": {"increment_by": 2}},
+            target=4,
         ),
     }
     task_config_class: ClassVar[type[TaskConfig]] = CounterTaskConfig
     benchmark_class: ClassVar[type[Benchmark]] = CounterBenchmark
+
+    _TASK_TOOL_CONFIGS: ClassVar[dict[str, CounterToolConfig]] = {
+        "count-to-3-with-decrement": CounterToolConfig(enable_decrement=True),
+        "count-by-2": CounterToolConfig(increment_by=2),
+    }
+
+    def get_task_configs(self) -> Generator[CounterTaskConfig, None, None]:
+        for task_id, tm in self.tasks().items():
+            yield CounterTaskConfig(
+                metadata=tm,
+                tool_config=self._TASK_TOOL_CONFIGS.get(task_id),
+            )
 
 
 # Test Function

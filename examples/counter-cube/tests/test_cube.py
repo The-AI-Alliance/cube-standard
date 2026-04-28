@@ -1,9 +1,8 @@
 from cube.core import Action, ActionSchema, Observation
-from cube.task import TaskMetadata
 from cube.testing import assert_debug_tasks_reward_one, run_debug_episode
 
 import counter_cube.debug as debug_mod
-from counter_cube.task import CounterTaskConfig
+from counter_cube.task import CounterTaskConfig, CounterTaskMetadata
 
 
 def test_all_debug_tasks_reward_one():
@@ -47,7 +46,9 @@ def test_run_debug_episode_report_schema():
 def test_run_debug_episode_max_steps_cap():
     """max_steps caps the episode before completion."""
     # Build a task with a high target so the agent can't finish in 2 steps
-    cfg = CounterTaskConfig(metadata=TaskMetadata(id="count-to-3", extra_info={"target": 3}))
+    cfg = CounterTaskConfig(
+        metadata=CounterTaskMetadata(id="count-to-3", target=10),
+    )
     task = cfg.make()
 
     def slow_agent(obs: Observation, action_set: list[ActionSchema]) -> Action:

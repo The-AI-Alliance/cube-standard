@@ -14,6 +14,11 @@ Usage:
                         cube-standard package, so it is always in sync with the
                         rest of the codebase and can be edited directly as normal
                         Python files.
+    cube install NAME   Run the benchmark's BenchmarkConfig.install() classmethod
+                        once on this machine — populates the per-task execution
+                        cache (and any other one-time downloads) so workers can
+                        construct tasks without surprise downloads.  NAME is a
+                        benchmark entry-point name (e.g. swebench-live-cube).
     cube test NAME      Run the debug suite and check compliance (every debug task
                         must reach reward == 1.0).  NAME is either a benchmark
                         entry-point name (e.g. counter-cube) or a dotted module
@@ -45,6 +50,7 @@ from typing import Any, TextIO
 
 from rich import box
 from rich.console import Console, Group
+from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
@@ -52,6 +58,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from cube import __version__
+from cube.benchmark import CompositeBenchmarkConfig
 from cube.core import Observation
 from cube.testing import RESET_REPRO_OBS_MISMATCH_MSG, format_observation_diff
 
@@ -360,6 +367,82 @@ def cmd_list() -> None:
     )
 
 
+def _resolve_benchmark_config_class(name: str) -> type:
+    """Resolve a ``cube.benchmarks`` entry-point name to its ``BenchmarkConfig`` class."""
+    eps = importlib.metadata.entry_points(group="cube.benchmarks")
+    matched = {ep.name: ep for ep in eps}
+    if name not in matched:
+        available = ", ".join(sorted(matched)) or "(none installed)"
+        err_console.print(
+            Panel(
+                f"[error]No cube benchmark registered as[/error] [file]{name}[/file].\nAvailable: {available}",
+                title="[error]Unknown benchmark[/error]",
+                border_style="red",
+                padding=(0, 1),
+            )
+        )
+        sys.exit(1)
+    return matched[name].load()
+
+
+def cmd_install(name: str) -> None:
+    """Run ``BenchmarkConfig.install()`` for the benchmark registered as *name*.
+
+    Wires into Dockerfiles (``RUN cube install <bench>``), init containers, or
+    one-off shared-volume bootstrap. The classmethod is expected to be
+    idempotent — calling ``cube install`` repeatedly is safe.
+    """
+    cls = _resolve_benchmark_config_class(name)
+
+    if isinstance(cls, type) and issubclass(cls, CompositeBenchmarkConfig):
+        err_console.print(
+            Panel(
+                f"[error]{name!r}[/error] is a [cmd]CompositeBenchmarkConfig[/cmd] — "
+                "composite benchmarks are constructed dynamically from sub-benchmark instances "
+                "and cannot be installed as a unit.\n\n"
+                "Install each sub-benchmark individually instead:\n"
+                + "\n".join(
+                    f"  [cmd]cube install {ep.name}[/cmd]"
+                    for ep in importlib.metadata.entry_points(group="cube.benchmarks")
+                    if ep.name != name
+                ),
+                title="[error]Cannot install composite benchmark[/error]",
+                border_style="red",
+                padding=(0, 1),
+            )
+        )
+        sys.exit(1)
+
+    bench_label = getattr(getattr(cls, "benchmark_metadata", None), "name", None) or cls.__name__
+    console.print(
+        Panel(
+            f"[info]Installing[/info] [file]{bench_label}[/file]\n"
+            f"[dim]Calling[/dim] [cmd]{cls.__module__}.{cls.__name__}.install()[/cmd]",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+    try:
+        cls.install()
+    except Exception as exc:
+        err_console.print(
+            Panel(
+                f"[error]install() raised:[/error] {escape(f'{type(exc).__name__}: {exc}')}",
+                title="[error]Install failed[/error]",
+                border_style="red",
+                padding=(0, 1),
+            )
+        )
+        sys.exit(1)
+    console.print(
+        Panel(
+            f"[success]✓ install() completed for[/success] [file]{bench_label}[/file]",
+            border_style="green",
+            padding=(0, 1),
+        )
+    )
+
+
 def _resolve_debug_module(name: str) -> str:
     """Resolve *name* to a fully-qualified debug module path.
 
@@ -460,7 +543,7 @@ def cmd_test(
     except ModuleNotFoundError as exc:
         err_console.print(
             Panel(
-                f"[error]Cannot import[/error] [file]{resolved}[/file]: {exc}\n"
+                f"[error]Cannot import[/error] [file]{resolved}[/file]: {escape(str(exc))}\n"
                 "Make sure the package is installed (e.g. [cmd]uv sync[/cmd]) and "
                 "that the module exposes [cmd]get_debug_benchmark()[/cmd] and "
                 "[cmd]make_debug_agent()[/cmd].",
@@ -1290,6 +1373,12 @@ def _print_help() -> None:
         "cube init my-env",
     )
     table.add_row(
+        "cube install NAME",
+        "Run the benchmark's [cmd]BenchmarkConfig.install()[/cmd] (one-time per worker environment) "
+        "to populate the per-task execution cache.",
+        "cube install swebench-live-cube",
+    )
+    table.add_row(
         "cube test NAME",
         "Run the debug compliance suite — NAME is a benchmark entry-point name or a dotted module path. "
         "Options: [cmd]--stress[/cmd] (add throughput measurement at 1/2/4 workers), "
@@ -1337,6 +1426,19 @@ def main() -> None:
     elif command == "init":
         name = args[1] if len(args) > 1 else _DEFAULT_NAME
         cmd_init(name=name, cwd=Path.cwd())
+    elif command == "install":
+        if len(args) < 2:
+            err_console.print(
+                Panel(
+                    "[error]Missing argument:[/error] [cmd]cube install NAME[/cmd]\n"
+                    "Example: [cmd]cube install swebench-live-cube[/cmd]",
+                    title="[error]Error[/error]",
+                    border_style="red",
+                    padding=(0, 1),
+                )
+            )
+            sys.exit(1)
+        cmd_install(args[1])
     elif command == "test":
         if len(args) < 2:
             err_console.print(
