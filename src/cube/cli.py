@@ -50,6 +50,7 @@ from typing import Any, TextIO
 
 from rich import box
 from rich.console import Console, Group
+from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
@@ -426,7 +427,7 @@ def cmd_install(name: str) -> None:
     except Exception as exc:
         err_console.print(
             Panel(
-                f"[error]install() raised:[/error] {type(exc).__name__}: {exc}",
+                f"[error]install() raised:[/error] {escape(f'{type(exc).__name__}: {exc}')}",
                 title="[error]Install failed[/error]",
                 border_style="red",
                 padding=(0, 1),
@@ -542,7 +543,7 @@ def cmd_test(
     except ModuleNotFoundError as exc:
         err_console.print(
             Panel(
-                f"[error]Cannot import[/error] [file]{resolved}[/file]: {exc}\n"
+                f"[error]Cannot import[/error] [file]{resolved}[/file]: {escape(str(exc))}\n"
                 "Make sure the package is installed (e.g. [cmd]uv sync[/cmd]) and "
                 "that the module exposes [cmd]get_debug_benchmark()[/cmd] and "
                 "[cmd]make_debug_agent()[/cmd].",
