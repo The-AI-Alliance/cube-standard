@@ -137,10 +137,10 @@ class Task(TypedBaseModel, ABC):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    # Serializable fields
-    metadata: TaskMetadata
-    # ``SerializeAsAny`` preserves subclass-specific fields on the
-    # ``TaskExecutionInfo`` polymorphic value through JSON round-trip.
+    # Serializable fields — SerializeAsAny preserves subclass-specific fields
+    # through JSON round-trip (Pydantic otherwise strips to the declared base type).
+    metadata: SerializeAsAny[TaskMetadata]
+    # Same rationale for TaskExecutionInfo and ToolConfig below.
     execution_info: SerializeAsAny[TaskExecutionInfo] | None = Field(
         default=None,
         description=(
@@ -149,7 +149,7 @@ class Task(TypedBaseModel, ABC):
             "``Task.reset()``. Cubes with no heavy data leave this None."
         ),
     )
-    tool_config: ToolConfig = Field(description="Tool configuration used to instantiate the tool.")
+    tool_config: SerializeAsAny[ToolConfig] = Field(description="Tool configuration used to instantiate the tool.")
     container_backend: ContainerBackend | None = Field(
         default=None, description="Optional backend used to launch a container during model_post_init."
     )

@@ -264,7 +264,10 @@ freely.
 
 ```python
 class CompositeBenchmarkConfig(BenchmarkConfig):
-    _skip_init_subclass_checks: ClassVar[bool] = True
+    # benchmark_metadata and task_metadata are @property (computed from
+    # sub_bench_configs at access time).  BenchmarkConfig.__init_subclass__
+    # detects property descriptors in the MRO via _is_dynamic() and skips
+    # file auto-load for those names — no ClassVar guard flag needed.
     benchmark_class: ClassVar = CompositeBenchmark
 
     sub_bench_configs: list[SerializeAsAny[BenchmarkConfig]]
@@ -281,8 +284,11 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
   `benchmark_metadata.name`.
 - `get_task_configs()` emits each sub-config's TaskConfigs **unchanged in
   type** — the clone preserves the sub's native `TaskConfig` subclass,
-  including its embedded `metadata`. Only `task_id` (prefixed) and
-  `sub_bench_name` (set to the sub's name) are updated. No wrapper class.
+  including its embedded `metadata`. Only `sub_bench_name` is updated: set
+  to the sub's name for flat composites, or prepended as
+  `"{outer_name}/{inner_sub_bench_name}"` for nested composites so the full
+  routing path is preserved. `task_id` reflects the updated `sub_bench_name`
+  automatically (it is a derived `@property`). No wrapper class.
 - `task_ids` (instance-level subset) filters at the prefixed level.
 - `make(infra)` calls `sub.make(infra)` for every sub_config in order. On any
   failure, already-built sub-benchmarks are closed before the error
@@ -296,11 +302,14 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
 
 ### `CompositeBenchmark`
 Runtime pair. Holds `sub_benchmarks: dict[str, Benchmark]`. `spawn(task_config)`
-reads `task_config.sub_bench_name` and routes by calling
+routes via `task_config.sub_bench_name`, which is a `"/"`-joined path for
+nested composites (e.g. `"inner-suite/bench-a"`). Each level peels the first
+component, looks it up in `sub_benchmarks`, and either delegates to the
+inner `CompositeBenchmark.spawn()` (nested case) or calls
 `task_config.make(runtime_context=sub_bench._runtime_context, container_backend=sub_bench.config.container_backend)`
-directly — bypassing the sub-benchmark's own `spawn()` validation, which
-would reject the prefixed `task_id`. A TaskConfig with
-`sub_bench_name=None` or an unknown `sub_bench_name` raises `ValueError`.
+directly at the leaf — bypassing the leaf's own `spawn()` validation, which
+would reject the composite-prefixed `task_id`. A TaskConfig with
+`sub_bench_name=None` or an unknown first component raises `ValueError`.
 `close()` closes every sub-benchmark; exceptions are logged but not
 re-raised so one failing sub-benchmark does not block teardown.
 

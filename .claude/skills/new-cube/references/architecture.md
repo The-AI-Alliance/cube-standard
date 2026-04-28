@@ -75,7 +75,7 @@ BenchmarkConfig   →  make(infra=None)  →  Benchmark
 
 **BenchmarkConfig** — safe to call on a fresh instance:
 - `install()` — populate any heavy per-task caches, build `task_metadata.json`
-- `subset_from_list([...])`, `subset_from_glob(...)`, `subset_from_name(...)`
+- `subset_from_list([...])`, `subset_from_glob(glob_key, pattern)`, `named_subset(name)`
 - `get_task_configs()` — yields serializable `TaskConfig`s, each stamped with `metadata=`
 
 **`make(infra=None)`** — provisions resources, calls `_setup()`, returns a ready `Benchmark`. Context-manager form (`with config.make() as bench`) calls `close()` automatically.
@@ -86,6 +86,6 @@ BenchmarkConfig   →  make(infra=None)  →  Benchmark
 
 ## Forward-looking notes
 
-- **harness #300** is deprecating `container_backend` in favor of `InfraConfig` + `ResourceConfig` + lazy `ResourceHandle`. Template still carries `container_backend`; this is tracked for future cleanup.
+- **`container_backend` is now `Field(deprecated=True)`** on `BenchmarkConfig` — slated for removal once all in-tree benchmarks migrate to declaring container needs via `resources: list[ResourceConfig]` (`InfraConfig` + `ResourceConfig` + lazy `ResourceHandle`). The template still carries `container_backend` for compatibility; do not strip it from `TaskConfig.make()` signatures yet.
 - **Streaming actions** and **streaming observations** are not in the current protocol. Flag any audio/video benchmark as requiring extension work.
 - **Multi-agent** and fully async tools are on the `core-extensions/` RFC roadmap. Scope down if a user asks for them.

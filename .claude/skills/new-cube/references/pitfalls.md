@@ -13,7 +13,7 @@ Method runs, tests pass, but the agent never sees the action. Symptom: "my agent
 ### 3. `Task.reset()` not calling `self.tool.reset()`
 Episodes carry state across runs. Reproducibility check in `cube test` will fail.
 
-### 5. Debug agent not reaching `reward == 1.0`
+### 4. Debug agent not reaching `reward == 1.0`
 The compliance suite is strict: every debug task must reach full reward. Off-by-one in the action sequence ⇒ failure.
 
 ## Subtler traps

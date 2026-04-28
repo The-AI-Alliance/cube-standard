@@ -56,7 +56,7 @@ Exits non-zero if any debug task fails to reach `reward == 1.0`.
 
 Options:
 - `--max-steps N` — per-episode step budget (default 20)
-- `--stress N` — run each task N times to surface flakiness (default 1)
+- `--stress` — measure throughput at 1, 2, and 4 concurrent workers after the normal suite run
 - `--no-reset-check` — skip reset reproducibility check (useful in CI where the check is slow)
 - `--output PATH` — save report JSON
 - `--ci` — suppress Rich dashboard, plain-text output (also enabled by `CUBE_CI=1`)

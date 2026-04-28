@@ -334,6 +334,46 @@ def test_composite_of_composite():
     assert set(reloaded.task_metadata.keys()) == set(outer.task_metadata.keys())
 
 
+def test_composite_of_composite_get_task_configs():
+    """get_task_configs() on nested composites produces correct prefixed task_ids."""
+    inner = CompositeBenchmarkConfig(
+        sub_bench_configs=[ConfigA(), ConfigB()],
+        composite_name="inner-suite",
+    )
+    outer = CompositeBenchmarkConfig(
+        sub_bench_configs=[inner, ConfigA().subset_from_list(["task-1"])],
+        composite_name="outer-suite",
+    )
+    configs = list(outer.get_task_configs())
+    task_ids = [tc.task_id for tc in configs]
+    assert set(task_ids) == {
+        "inner-suite/bench-a/task-1",
+        "inner-suite/bench-a/task-2",
+        "inner-suite/bench-b/task-1",
+        "bench-a/task-1",
+    }
+    # sub_bench_name carries the full routing path for nested entries
+    inner_configs = [tc for tc in configs if tc.task_id.startswith("inner-suite/")]
+    assert all(tc.sub_bench_name is not None and tc.sub_bench_name.startswith("inner-suite/") for tc in inner_configs)
+
+
+def test_composite_of_composite_spawn_routing():
+    """CompositeBenchmark.spawn() correctly routes through nested composite layers."""
+    inner = CompositeBenchmarkConfig(
+        sub_bench_configs=[ConfigA(), ConfigB()],
+        composite_name="inner-suite",
+    )
+    outer = CompositeBenchmarkConfig(
+        sub_bench_configs=[inner],
+        composite_name="outer-suite",
+    )
+    with outer.make() as bench:
+        for tc in outer.get_task_configs():
+            task = bench.spawn(tc)
+            obs, _ = task.reset()
+            assert obs.contents[0].data == f"reset:{tc.metadata.id}"
+
+
 # ── install() / uninstall() delegation ────────────────────────────────────────
 
 

@@ -48,7 +48,7 @@ Whatever you pick, keep task-specific logic OUT of the tool; put it in `Task.eva
 
 ### `TaskConfig.make()` note
 
-The template's `CubeTaskConfig.make(runtime_context, container_backend)` currently carries `container_backend` because the current spec requires it. Do not strip this. Once harness #300 ships, the template will be updated.
+The template's `CubeTaskConfig.make(runtime_context, container_backend)` carries `container_backend` for backward compatibility. The field is `Field(deprecated=True)` on `BenchmarkConfig` and slated for removal once all in-tree benchmarks migrate to `resources: list[ResourceConfig]`. Do not strip it yet — leaving it preserves compatibility with the current `Benchmark.spawn()` contract.
 
 ### Custom `TaskMetadata` subclass
 
@@ -158,19 +158,20 @@ Flow:
 
 ### Multiple splits → `named_subsets`
 
-If your benchmark has splits (train/val/test, or L1/L2/L3), keep **one** `task_metadata` set with all tasks and declare the splits on `BenchmarkMetadata.named_subsets`:
+If your benchmark has splits (train/val/test, or L1/L2/L3), keep **one** `task_metadata` set with all tasks and declare the splits on `BenchmarkMetadata.named_subsets` as `(glob_key, glob_pattern)` tuples:
 
 ```python
 benchmark_metadata = BenchmarkMetadata(
     ...,
     named_subsets={
-        "train": lambda t: "train" in t.splits,
-        "test":  lambda t: "test"  in t.splits,
+        "train": ("split", "train"),
+        "test":  ("split", "test"),
+        "l1":    ("difficulty", "easy"),
     },
 )
 ```
 
-Users get `benchmark.subset_from_name("test")`. Do NOT ship separate metadata files per split.
+Each entry is `(glob_key, glob_pattern)` — `glob_key` is a top-level field on your `TaskMetadata` subclass (e.g. `split`, `difficulty`); `glob_pattern` is matched against that field with `fnmatch`. Users get `config.named_subset("test")` (which is sugar for `subset_from_glob("split", "test")`). Do NOT ship separate metadata files per split.
 
 ### Idempotency is mandatory
 

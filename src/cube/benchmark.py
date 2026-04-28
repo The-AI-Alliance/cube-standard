@@ -721,11 +721,16 @@ class CompositeBenchmark(Benchmark):
     def spawn(self, task_config: TaskConfig) -> Task:
         """Route the task to its origin sub-benchmark via ``sub_bench_name``.
 
-        Bypasses the sub-benchmark's own ``spawn`` validation (which would
-        reject the prefixed ``task_id`` because it's not in the sub's
-        ``config.tasks()``) by calling ``task_config.make()`` directly with
-        the sub's ``_runtime_context``. The TaskConfig is self-contained —
-        its ``metadata`` and ``tool_config`` are already populated.
+        For flat composites ``sub_bench_name`` is just the sub-benchmark's
+        name (e.g. ``"bench-a"``).  For nested composites it is a
+        ``"/"``-joined path of names from outermost to leaf
+        (e.g. ``"inner-suite/bench-a"``); the path is peeled one hop at a
+        time so each ``CompositeBenchmark`` in the chain delegates correctly.
+
+        The final hop calls ``task_config.make()`` directly instead of
+        ``sub_bench.spawn()`` — the latter would re-validate ``task_id``
+        against the sub's ``config.tasks()`` and reject the
+        composite-prefixed id.
         """
         if task_config.sub_bench_name is None:
             raise ValueError(
@@ -733,14 +738,22 @@ class CompositeBenchmark(Benchmark):
                 f"(emitted by CompositeBenchmarkConfig.get_task_configs()); "
                 f"got {type(task_config).__name__} with sub_bench_name=None"
             )
-        if task_config.sub_bench_name not in self.sub_benchmarks:
+        # Peel the first component of the (possibly multi-hop) routing path.
+        parts = task_config.sub_bench_name.split("/", 1)
+        next_hop = parts[0]
+        remaining_path = parts[1] if len(parts) > 1 else None
+        if next_hop not in self.sub_benchmarks:
             raise ValueError(
-                f"Unknown sub-benchmark {task_config.sub_bench_name!r}; known: {list(self.sub_benchmarks.keys())}"
+                f"Unknown sub-benchmark {next_hop!r} "
+                f"(from sub_bench_name={task_config.sub_bench_name!r}); "
+                f"known: {list(self.sub_benchmarks.keys())}"
             )
-        sub_bench = self.sub_benchmarks[task_config.sub_bench_name]
-        # Call ``task_config.make()`` directly instead of ``sub_bench.spawn()``:
-        # the latter would re-validate ``task_id`` against the sub's
-        # ``config.tasks()`` and reject the composite-prefixed id.
+        sub_bench = self.sub_benchmarks[next_hop]
+        if remaining_path is not None:
+            # Nested composite: delegate with the remaining path so the inner
+            # CompositeBenchmark can continue routing.
+            return sub_bench.spawn(task_config.model_copy(update={"sub_bench_name": remaining_path}))
+        # Leaf: call make() directly to bypass sub_bench.spawn() validation.
         return task_config.make(
             runtime_context=sub_bench._runtime_context,
             container_backend=sub_bench.config.container_backend,
@@ -868,7 +881,16 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
                 # skip if this task is not in the allowed set
                 if allowed_task_ids is not None and prefixed_id not in allowed_task_ids:
                     continue
-                yield task_config.model_copy(update={"sub_bench_name": sub_bench_name})
+                # For nested composites the inner composite already set
+                # sub_bench_name; prepend the outer name to build the full
+                # routing path (e.g. "inner-suite/bench-a").  For flat tasks
+                # (sub_bench_name is None) just set the name directly.
+                new_sub_bench_name = (
+                    f"{sub_bench_name}/{task_config.sub_bench_name}"
+                    if task_config.sub_bench_name is not None
+                    else sub_bench_name
+                )
+                yield task_config.model_copy(update={"sub_bench_name": new_sub_bench_name})
 
     def make(self, infra: InfraConfig | None = None) -> CompositeBenchmark:
         """Instantiate every sub-benchmark and wire them into a CompositeBenchmark.

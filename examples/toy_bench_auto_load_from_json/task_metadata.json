@@ -1,6 +1,6 @@
 [
   {
-    "_type": "__main__.CounterTaskMetadata",
+    "_type": "counter.CounterTaskMetadata",
     "id": "count-to-3",
     "abstract_description": "Increment counter to reach value 3",
     "recommended_max_steps": 5,
@@ -8,7 +8,7 @@
     "difficulty": "easy"
   },
   {
-    "_type": "__main__.CounterTaskMetadata",
+    "_type": "counter.CounterTaskMetadata",
     "id": "count-to-3-with-decrement",
     "abstract_description": "Increment counter to reach value 3, with decrement available",
     "recommended_max_steps": 7,
@@ -16,7 +16,7 @@
     "difficulty": "easy"
   },
   {
-    "_type": "__main__.CounterTaskMetadata",
+    "_type": "counter.CounterTaskMetadata",
     "id": "count-by-2",
     "abstract_description": "Counter with custom increment amount",
     "recommended_max_steps": 4,

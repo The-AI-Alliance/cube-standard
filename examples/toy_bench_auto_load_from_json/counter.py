@@ -10,8 +10,10 @@ Note on TaskMetadata subclasses + JSON auto-loading
 ``BenchmarkConfig.task_metadata_from_json`` validates each entry as the base
 ``TaskMetadata`` class — which dispatches to the right subclass when the JSON
 entry includes a ``"_type"`` field (TypedBaseModel's polymorphic discriminator).
-``task_metadata.json`` here uses ``"_type": "__main__.CounterTaskMetadata"``
+``task_metadata.json`` here uses ``"_type": "counter.CounterTaskMetadata"``
 so each entry is loaded as a typed ``CounterTaskMetadata`` with ``target`` populated.
+Using the real module name (``counter``) rather than ``__main__`` ensures the JSON
+loads correctly whether the file is run directly or imported as a module.
 """
 
 from collections.abc import Generator

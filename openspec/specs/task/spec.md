@@ -152,11 +152,14 @@ concurrent tasks. Writes are not safe across workers.
 ### `TaskConfig` (abstract, serializable)
 ```python
 class TaskConfig(TypedBaseModel, ABC):
-    task_id: str
     metadata: SerializeAsAny[TaskMetadata]       # travels with the config
     seed: int | None = None
     tool_config: SerializeAsAny[ToolConfig] | None = None
-    sub_bench_name: str | None = None            # composite routing hint
+    sub_bench_name: str | None = None            # composite routing hint (see below)
+
+    @property
+    def task_id(self) -> str:
+        """Derived: ``"{sub_bench_name}/{metadata.id}"`` for composites, else ``metadata.id``."""
 
     @abstractmethod
     def make(
@@ -219,15 +222,19 @@ to import the owning `BenchmarkConfig` to verify their environment or
 resolve the cache path.
 
 **`sub_bench_name`** is an optional routing tag. Standalone benchmarks leave
-it None. `CompositeBenchmarkConfig.get_task_configs()` sets it to the
-origin sub-benchmark's name so `CompositeBenchmark.spawn()` can route the
-task back to the correct sub-benchmark's `_runtime_context`. No separate
-wrapper type is needed — the emitted TaskConfig stays the sub-config's
-native subclass.
+it `None`. `CompositeBenchmarkConfig.get_task_configs()` sets it to the
+origin sub-benchmark's name. For **nested composites** (composites of
+composites) each outer layer prepends its sub-benchmark name, producing a
+`"/"`-joined path (e.g. `"inner-suite/bench-a"`). `CompositeBenchmark.spawn()`
+peels the path one hop at a time, delegating to inner composites until the
+leaf sub-benchmark is reached. No separate wrapper type is needed — the
+emitted `TaskConfig` stays the sub-config's native subclass.
 
-**`task_id` in composites** is prefixed with the sub-benchmark's name
-(`"{sub_bench_name}/{task_id}"`) so every id across the composite is
-unique, while `metadata.id` keeps the native un-prefixed id.
+**`task_id`** is a derived `@property` (not a serialized field). For
+standalone tasks it returns `metadata.id`; for composite tasks it returns
+`"{sub_bench_name}/{metadata.id}"`, which for nested composites produces a
+fully-qualified path (e.g. `"inner-suite/bench-a/task-1"`). `metadata.id`
+always retains the native un-prefixed id.
 
 ## Invariants
 
