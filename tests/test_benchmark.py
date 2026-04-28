@@ -419,13 +419,13 @@ def test_polymorphic_fields_preserve_subclass_state_through_json():
     """
     # BenchmarkConfig polymorphic fields
     original = _BenchWithRichDefaults(
-        default_tool_config=_RichToolConfig(marker="tool-actual"),
+        tool_config=_RichToolConfig(marker="tool-actual"),
         seed_generator=_RichSeedGenerator(marker="seed-actual"),
     )
     reloaded = _BenchWithRichDefaults.model_validate_json(original.model_dump_json())
 
-    assert isinstance(reloaded.default_tool_config, _RichToolConfig)
-    assert reloaded.default_tool_config.marker == "tool-actual"
+    assert isinstance(reloaded.tool_config, _RichToolConfig)
+    assert reloaded.tool_config.marker == "tool-actual"
     assert isinstance(reloaded.seed_generator, _RichSeedGenerator)
     assert reloaded.seed_generator.marker == "seed-actual"
 

@@ -187,9 +187,9 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         description="Optional container backend passed through to every spawned task.",
         deprecated=True,
     )
-    default_tool_config: SerializeAsAny[ToolConfig] | None = Field(
+    tool_config: SerializeAsAny[ToolConfig] | None = Field(
         default=None,
-        description="Default tool configuration for tasks that do not supply their own.",
+        description="Tool config applied uniformly to every task by the default get_task_configs(); override get_task_configs() for per-task variation.",
     )
     seed_generator: SerializeAsAny[AbstractSeedGenerator] | None = Field(
         default=None,
@@ -423,13 +423,13 @@ class BenchmarkConfig(TypedBaseModel, ABC):
                 for seed in self.seed_generator(tm):
                     yield self.task_config_class(
                         metadata=tm,
-                        tool_config=self.default_tool_config,
+                        tool_config=self.tool_config,
                         seed=seed,
                     )
             else:
                 yield self.task_config_class(
                     metadata=tm,
-                    tool_config=self.default_tool_config,
+                    tool_config=self.tool_config,
                     seed=None,
                 )
 
@@ -638,8 +638,8 @@ class Benchmark(ABC):
             missing.append("_runtime_context")
         if self.config.container_backend is None:
             missing.append("container_backend")
-        if self.config.default_tool_config is None:
-            missing.append("default_tool_config")
+        if self.config.tool_config is None:
+            missing.append("tool_config")
         if self.config.seed_generator is None:
             missing.append("seed_generator")
         if missing:

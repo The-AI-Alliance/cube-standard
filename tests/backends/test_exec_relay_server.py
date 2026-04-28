@@ -187,9 +187,16 @@ def test_body_size_cap():
                 if not chunk:
                     break
                 resp += chunk
-                if b"\r\n\r\n" in resp and len(resp) > 50:
-                    break
-        except (socket.timeout, ConnectionResetError):
+                # Stop once we have headers + full body (per Content-Length).
+                if b"\r\n\r\n" in resp:
+                    header_part, _, body_so_far = resp.partition(b"\r\n\r\n")
+                    for line in header_part.split(b"\r\n"):
+                        if line.lower().startswith(b"content-length:"):
+                            expected = int(line.split(b":", 1)[1].strip())
+                            if len(body_so_far) >= expected:
+                                raise StopIteration
+                            break
+        except (StopIteration, socket.timeout, ConnectionResetError):
             pass
         s.close()
     assert b"413" in resp.split(b"\r\n", 1)[0], resp[:200]
