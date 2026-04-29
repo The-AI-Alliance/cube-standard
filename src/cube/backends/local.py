@@ -10,6 +10,7 @@ import docker.errors
 from tenacity import (
     before_sleep_log,
     retry,
+    retry_if_exception,
     retry_if_not_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -34,6 +35,21 @@ _retry_launch = retry(
     wait=wait_exponential(multiplier=2, min=2, max=30),
     reraise=True,
     retry=retry_if_not_exception_type(HealthCheckError),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+)
+
+# Docker Hub rate-limits anonymous pulls to 100/6h per IP; authenticated to 200/6h.
+# Retry with long exponential backoff so workers that share an IP spread their pulls
+# over time instead of all failing immediately and dying.
+# 6 attempts × (30 s → 5 min) ≈ up to ~15 min total — enough to clear a burst.
+_retry_pull = retry(
+    stop=stop_after_attempt(6),
+    wait=wait_exponential(multiplier=30, min=30, max=300),
+    retry=retry_if_exception(
+        lambda exc: isinstance(exc, docker.errors.APIError)
+        and any(kw in str(exc).lower() for kw in ("toomanyrequests", "rate limit", "429"))
+    ),
+    reraise=True,
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
@@ -168,7 +184,24 @@ class LocalContainerBackend(ContainerBackend):
     remove_on_close: bool = True
 
     def launch(self, config: ContainerConfig) -> LocalContainer:
+        # Pull is handled separately from container creation so the two retry
+        # policies don't nest: _retry_pull handles Docker Hub rate limits
+        # (long waits, rate-limit errors only); _retry_launch handles transient
+        # Docker daemon errors during container creation (short waits, all errors).
+        client = docker.from_env()
+        if self.pull_policy == "always" or (self.pull_policy == "missing" and not _image_exists(client, config.image)):
+            logger.info("Pulling image %s …", config.image)
+            try:
+                self._pull_image(client, config.image)
+            except docker.errors.APIError as exc:
+                # Convert only after _retry_pull has exhausted all attempts.
+                raise ContainerLaunchError(f"Failed to pull image '{config.image}': {exc}") from exc
         return self._launch_with_retry(config)
+
+    @_retry_pull
+    def _pull_image(self, client: docker.DockerClient, image: str) -> None:
+        # Raises docker.errors.APIError directly so _retry_pull can inspect it.
+        client.images.pull(image)
 
     @_retry_launch
     def _launch_with_retry(self, config: ContainerConfig) -> LocalContainer:
@@ -179,13 +212,6 @@ class LocalContainerBackend(ContainerBackend):
                 "disk_gb=%.1f ignored — Docker does not enforce disk limits at container level",
                 config.disk_gb,
             )
-
-        if self.pull_policy == "always" or (self.pull_policy == "missing" and not _image_exists(client, config.image)):
-            logger.info("Pulling image %s …", config.image)
-            try:
-                client.images.pull(config.image)
-            except docker.errors.APIError as exc:
-                raise ContainerLaunchError(f"Failed to pull image '{config.image}': {exc}") from exc
 
         kwargs: dict[str, Any] = {}
         kwargs["mem_limit"] = f"{int(config.ram_gb * 1024)}m"
