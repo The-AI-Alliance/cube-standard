@@ -16,13 +16,16 @@ Abstract classes:
         make(...) -> Task     instantiate the Task from serialized config data
 """
 
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Tuple
 
-from pydantic import ConfigDict, Field, PrivateAttr
+from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
 
+from cube import get_cache_dir
 from cube.container import Container, ContainerBackend, ContainerConfig
 from cube.core import (
     Action,
@@ -34,6 +37,7 @@ from cube.core import (
     StructuredContent,
     TypedBaseModel,
 )
+from cube.resource import ResourceHandle
 from cube.tool import AbstractTool, ToolConfig
 
 RuntimeContext = dict[str, Any]
@@ -52,7 +56,17 @@ STOP_ACTION = ActionSchema(name="final_step", description="Stop the task executi
 
 class TaskMetadata(TypedBaseModel):
     """
-    Metadata describing a task.
+    Lightweight, eager-loaded metadata describing a task.
+
+    Lives in the wheel — ships next to the cube package and powers
+    ``cube list``, registry listings, glob-based subsetting, and human
+    inspection. Heavy per-task data (problem statements, patches, archives,
+    evaluator scripts, …) does NOT belong here; put it on a
+    ``TaskExecutionInfo`` subclass and surface it via ``Task.execution_info``.
+
+    Cube authors needing per-task fields beyond the defaults subclass
+    ``TaskMetadata`` with named, typed fields. Polymorphism is preserved
+    through the ``TypedBaseModel`` ``_type`` discriminator.
 
     Used by:
     - Task: metadata attribute
@@ -64,7 +78,6 @@ class TaskMetadata(TypedBaseModel):
         abstract_description (str): Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.reset(). (default: "")
         recommended_max_steps (int | None): Recommended maximum number of steps to help harness prevent infinite running agents. Not a hard limit, the task can still run longer if needed. (default: None)
         container_config (ContainerConfig | None): Optional container configuration for this task (default: None, meaning no container needed).
-        extra_info (dict[str, Any]): Additional task metadata, eg: difficulty level, domain, etc. (default: empty dict)
     """
 
     id: str = Field(..., description="Unique task identifier")
@@ -81,9 +94,23 @@ class TaskMetadata(TypedBaseModel):
         default=None,
         description="Optional container configuration for this task (defaults to None, meaning no container needed).",
     )
-    extra_info: dict[str, Any] = Field(
-        default_factory=dict, description="Additional task metadata, eg: difficulty level, domain, etc."
-    )
+
+
+class TaskExecutionInfo(TypedBaseModel):
+    """Heavy, lazy per-task execution data surfaced via ``Task.execution_info``.
+
+    Cube authors subclass with typed named fields (problem statements,
+    patches, archives, evaluator scripts, …). Polymorphic via the
+    ``TypedBaseModel`` ``_type`` discriminator.
+
+    Populated on the worker — typically inside ``TaskConfig.make()`` by
+    validating ``cls.load_task_execution_info(task_id)`` against the
+    subclass, but ``Task.model_post_init`` and ``Task.reset()`` are also
+    valid hydration points.
+
+    Cubes with no heavy data leave the slot ``None``; the base class is
+    instantiable but carries no fields.
+    """
 
 
 class Task(TypedBaseModel, ABC):
@@ -110,9 +137,19 @@ class Task(TypedBaseModel, ABC):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    # Serializable fields
-    metadata: TaskMetadata
-    tool_config: ToolConfig = Field(description="Tool configuration used to instantiate the tool.")
+    # Serializable fields — SerializeAsAny preserves subclass-specific fields
+    # through JSON round-trip (Pydantic otherwise strips to the declared base type).
+    metadata: SerializeAsAny[TaskMetadata]
+    # Same rationale for TaskExecutionInfo and ToolConfig below.
+    execution_info: SerializeAsAny[TaskExecutionInfo] | None = Field(
+        default=None,
+        description=(
+            "Heavy, lazy per-task execution data (problem statements, patches, archives, …). "
+            "Populated inside ``TaskConfig.make()`` / ``Task.model_post_init`` / "
+            "``Task.reset()``. Cubes with no heavy data leave this None."
+        ),
+    )
+    tool_config: SerializeAsAny[ToolConfig] = Field(description="Tool configuration used to instantiate the tool.")
     container_backend: ContainerBackend | None = Field(
         default=None, description="Optional backend used to launch a container during model_post_init."
     )
@@ -130,14 +167,34 @@ class Task(TypedBaseModel, ABC):
     # Non-serializable runtime state, set during model_post_init
     _tool: AbstractTool | None = PrivateAttr(default=None)
     _container: Container | None = PrivateAttr(default=None)
+    _resource_handle: ResourceHandle | None = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
         """Called after Pydantic __init__. Launches container if configured, then creates tool."""
-        # Launch container first so it can be passed to the tool factory
-        if self.container_backend is not None and self.metadata.container_config is not None:
-            self._container = self.container_backend.launch(self.metadata.container_config)
+        cc = self.metadata.container_config
+        if self.runtime_context is not None and "infra" in self.runtime_context:
+            if cc is not None:
+                from cube.task_infra import launch_task_container  # local import avoids circular dep
 
-        # Create tool, passing the container so it can connect to it
+                self._resource_handle, self._container = launch_task_container(
+                    self.runtime_context,
+                    name=self.metadata.id,
+                    image=cc.image,
+                    ram_gb=cc.ram_gb,
+                    cpu_cores=cc.cpu_cores,
+                )
+        elif self.container_backend is not None and cc is not None:
+            self._container = self.container_backend.launch(cc)
+
+        self._build_tool()
+
+    def _build_tool(self) -> None:
+        """Create ``self._tool`` from ``self.tool_config``.
+
+        Override in subclasses to run cube-specific setup (e.g. relocating a
+        read-only working directory) before calling ``tool_config.make()``.
+        ``self._container`` is already set when this is called.
+        """
         self._tool = self.tool_config.make(container=self._container)
 
     @property
@@ -328,20 +385,65 @@ class Task(TypedBaseModel, ABC):
         - Close network connections
         """
         self.tool.close()
+        if self._resource_handle is not None:
+            self._resource_handle.close()
+            self._resource_handle = None
+            self._container = None
+        elif self._container is not None:
+            self._container.stop()
+            self._container = None
 
 
 class TaskConfig(ABC, TypedBaseModel):
-    """
-    Serializable task configuration (Pydantic BaseModel).
+    """Serializable task configuration — self-contained unit handed to workers.
 
-    Must be JSON-serializable to pass to workers.
-    Holds the minimal data needed to instantiate a Task: task_id, seed, and tool_config.
-    TaskMetadata is retrieved via task_id.
+    Carries everything needed to instantiate a Task, including its
+    ``TaskMetadata``. Workers never import the owning ``BenchmarkConfig`` to
+    look up metadata; the config arrives complete and ``make()`` just uses
+    ``self.metadata`` directly.
+
+    ``task_id`` is derived from ``metadata.id`` (prefixed with
+    ``sub_bench_name`` for composite-routed configs) so there is a single
+    source of truth.
+
+    ``sub_bench_name`` is an optional routing hint used by
+    ``CompositeBenchmark.spawn`` to dispatch a task to its origin
+    sub-benchmark. Standalone benchmarks leave it None.
     """
 
-    task_id: str
+    # ``SerializeAsAny`` preserves subclass-specific fields through JSON
+    # round-trip. Every cube subclasses TaskMetadata with extra
+    # per-task data — without this annotation those fields get silently
+    # stripped when the config crosses a process / network / storage boundary.
+    metadata: SerializeAsAny[TaskMetadata] = Field(
+        ...,
+        description=(
+            "Full task metadata. Stamped onto the config by "
+            "``BenchmarkConfig.get_task_configs()`` on the driver so ``make()`` "
+            "has everything it needs without importing the owning BenchmarkConfig."
+        ),
+    )
     seed: int | None = None
-    tool_config: ToolConfig | None = None
+    # Same rationale for ToolConfig — cubes declare ToolConfig subclasses with
+    # their own fields.
+    tool_config: SerializeAsAny[ToolConfig] | None = None
+    sub_bench_name: str | None = Field(
+        default=None,
+        description=(
+            "Optional routing hint set by ``CompositeBenchmarkConfig.get_task_configs()``. "
+            "Names the sub-benchmark this task originated from; "
+            "``CompositeBenchmark.spawn()`` uses it to route to the right sub-benchmark's "
+            "runtime_context. None for standalone (non-composite) benchmarks."
+        ),
+    )
+
+    @property
+    def task_id(self) -> str:
+        """Derived task identifier. Prefixed with ``sub_bench_name`` when set
+        (composite routing), otherwise just ``metadata.id``."""
+        if self.sub_bench_name is not None:
+            return f"{self.sub_bench_name}/{self.metadata.id}"
+        return self.metadata.id
 
     @abstractmethod
     def make(
@@ -349,25 +451,82 @@ class TaskConfig(ABC, TypedBaseModel):
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> Task:
-        """
-        Instantiate a Task from this config.
-
-        Called on a worker after deserialization.
+        """Instantiate a Task from this config. Called on a worker after deserialization.
 
         Args:
-            runtime_context: Shared infrastructure references created by Benchmark._setup()
-                             (e.g. server URLs, database connections). Passed from Benchmark.spawn().
-            container_backend: HOW to run containers (local, Modal, ...) created by user and passed to benchmark constructor, then passed from Benchmark.spawn().
+            runtime_context: Shared infrastructure references created by
+                Benchmark._setup() (e.g. server URLs, database connections).
+                Passed from Benchmark.spawn().
+            container_backend: HOW to run containers (local, Modal, ...) —
+                read from the owning BenchmarkConfig by Benchmark.spawn().
 
         Example:
-        >>> task_metadata = MyBenchmark.task_metadata[self.task_id]
-        >>> task_execution_info = MyBenchmark.load_task_execution_info(self.task_id)
-        >>> task_metadata = task_metadata.model_copy(update={"extra_info": task_execution_info})
         >>> return MyTask(
-        ...     metadata=task_metadata,
-        ...     tool_config=self.tool_config,
+        ...     metadata=self.metadata,
+        ...     tool_config=self.tool_config or MyDefaultToolConfig(),
         ...     runtime_context=runtime_context,
         ...     container_backend=container_backend,
         ... )
+
+        Cubes with heavy execution data (problem statements, patches, …)
+        subclass ``TaskExecutionInfo`` and populate ``Task.execution_info``
+        in this method, typically by calling
+        ``MyTaskExecutionInfo.model_validate(cls.load_task_execution_info(self.task_id))``.
+        By convention, implementations call ``type(self).verify_installed()``
+        at the top so misconfigured workers fail fast with an actionable
+        error.
         """
         pass
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Per-task execution cache (worker-side)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @classmethod
+    def task_execution_cache_dir(cls) -> Path:
+        """Directory where heavy per-task execution data is cached on this worker.
+
+        Default: ``~/.cube/<top-level-package-name>/tasks_execution_info/``
+        where ``<top-level-package-name>`` is ``cls.__module__.split(".")[0]``.
+        Override on subclasses whose owning benchmark uses a non-default
+        cache layout (e.g. when the benchmark display name differs from the
+        Python package name).
+
+        ``BenchmarkConfig.install()`` writes via
+        ``cls.task_config_class.task_execution_cache_dir()`` so the path is
+        defined exactly once.
+        """
+        return get_cache_dir(cls.__module__.split(".")[0]) / "tasks_execution_info"
+
+    @classmethod
+    def load_task_execution_info(cls, task_id: str) -> dict[str, Any]:
+        """Read the per-task execution-info dict written by ``BenchmarkConfig.install()``.
+
+        Returns the raw JSON-loaded dict. Cube authors typically wrap this in
+        ``MyTaskExecutionInfo.model_validate(...)`` inside ``make()`` to get
+        a typed ``TaskExecutionInfo`` instance.
+
+        Raises ``RuntimeError`` with an actionable message if the cache file
+        is missing — signals that ``install()`` has not run on this worker.
+        """
+        cache_file = cls.task_execution_cache_dir() / f"{task_id}.json"
+        if not cache_file.exists():
+            raise RuntimeError(
+                f"No execution data for task_id={task_id!r} at {cache_file}. "
+                f"Run `cube install <bench>` (or `<OwnerBenchmarkConfig>.install()`) "
+                f"to populate the per-task execution cache on this worker."
+            )
+        return json.loads(cache_file.read_text())
+
+    @classmethod
+    def verify_installed(cls) -> None:
+        """Optional fail-fast check that data this task relies on is locally available.
+
+        Default: no-op. Cube authors override with a check appropriate to
+        their cache (e.g. ``not list(cls.task_execution_cache_dir().iterdir())``
+        or ``HF_HOME / 'datasets' / '...'.exists()``).
+
+        Convention: ``TaskConfig.make()`` calls ``type(self).verify_installed()``
+        at the top so misconfigured workers fail fast with an actionable
+        error instead of timing out on a surprise download.
+        """

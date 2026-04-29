@@ -1,8 +1,12 @@
 """Tests for cube.task - Task, TaskMetadata, STOP_ACTION."""
 
+import json
+
+import pytest
+
 from cube.container import Container
 from cube.core import Action, EnvironmentOutput, Observation, StepError, TextContent
-from cube.task import STOP_ACTION, Task, TaskMetadata
+from cube.task import STOP_ACTION, Task, TaskConfig, TaskExecutionInfo, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
 
 
@@ -44,11 +48,13 @@ def make_task(**kwargs) -> SimpleTask:
 
 def test_task_metadata_defaults():
     tm = TaskMetadata(id="my-task")
-    assert tm.split == "test"
-    assert tm.abstract_description == ""
-    assert tm.recommended_max_steps is None
-    assert tm.container_config is None
-    assert tm.extra_info == {}
+    assert tm == TaskMetadata(
+        id="my-task",
+        split="test",
+        abstract_description="",
+        recommended_max_steps=None,
+        container_config=None,
+    )
 
 
 # --- Task.reset ---
@@ -94,3 +100,68 @@ def test_task_validate_per_step_triggers_evaluate():
 def test_task_action_set_comes_from_tool():
     names = {a.name for a in make_task().action_set}
     assert names == {"greet", "fail"}
+
+
+# --- TaskExecutionInfo ---
+
+
+class _MyExecutionInfo(TaskExecutionInfo):
+    instruction: str
+    patch: str = ""
+
+
+def test_task_execution_info_subclass_round_trip():
+    """Subclasses round-trip through JSON via the ``_type`` discriminator."""
+    info = _MyExecutionInfo(instruction="solve it", patch="diff --git ...")
+    payload = info.model_dump_json()
+    restored = TaskExecutionInfo.model_validate_json(payload)
+    assert isinstance(restored, _MyExecutionInfo)
+    assert restored == info
+
+
+def test_task_execution_info_default_on_task_is_none():
+    assert make_task().execution_info is None
+
+
+def test_task_execution_info_field_round_trips_via_task():
+    """The ``execution_info`` slot on Task preserves subclass fields through JSON."""
+    info = _MyExecutionInfo(instruction="solve it")
+    task = make_task(execution_info=info)
+    reloaded = SimpleTask.model_validate_json(task.model_dump_json())
+    assert isinstance(reloaded.execution_info, _MyExecutionInfo)
+    assert reloaded.execution_info.instruction == "solve it"
+
+
+# --- TaskConfig cache helpers ---
+
+
+class _CacheTaskConfig(TaskConfig):
+    def make(self, runtime_context=None, container_backend=None):
+        return SimpleTask(metadata=self.metadata, tool_config=GreetToolConfig())
+
+
+def test_task_execution_cache_dir_default(monkeypatch, tmp_path):
+    """Default cache dir is ``<cube cache>/<top-level-package>/tasks_execution_info/``."""
+    import cube as cube_pkg
+
+    monkeypatch.setattr(cube_pkg, "_CUBE_CACHE_ROOT", tmp_path)
+    # _CacheTaskConfig is defined in this test module: top-level package "tests".
+    expected = tmp_path / "tests" / "tasks_execution_info"
+    assert _CacheTaskConfig.task_execution_cache_dir() == expected
+
+
+def test_load_task_execution_info_raises_when_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(_CacheTaskConfig, "task_execution_cache_dir", classmethod(lambda cls: tmp_path))
+    with pytest.raises(RuntimeError, match="No execution data"):
+        _CacheTaskConfig.load_task_execution_info("missing-task")
+
+
+def test_load_task_execution_info_returns_dict_when_present(monkeypatch, tmp_path):
+    monkeypatch.setattr(_CacheTaskConfig, "task_execution_cache_dir", classmethod(lambda cls: tmp_path))
+    (tmp_path / "task-1.json").write_text(json.dumps({"instruction": "solve it"}))
+    assert _CacheTaskConfig.load_task_execution_info("task-1") == {"instruction": "solve it"}
+
+
+def test_verify_installed_default_is_noop():
+    """Base ``verify_installed`` is a no-op so cubes opt in only when they want fail-fast."""
+    assert _CacheTaskConfig.verify_installed() is None

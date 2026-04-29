@@ -69,20 +69,22 @@ These are two separate things:
 Note on serialization boundaries
 ---------------------------------
 **TaskConfig** (Pydantic model) is the unit of serialization across process
-boundaries.  Task objects hold live resources (tool connections, containers,
-…) and are never pickled.  All subprocess entry points receive a TaskConfig
-and call ``task_config.make()`` inside the worker.
+boundaries for tasks.  Task objects hold live resources (tool connections,
+containers, …) and are never pickled.  All subprocess entry points JSON-dump
+a ``TaskConfig`` on the caller side, rehydrate it inside the worker via
+``TypedBaseModel`` polymorphic dispatch, and call ``task_config.make()`` there.
 
-**Benchmark** instances are similarly not guaranteed to be picklable — they
-may hold SSH sessions, container handles, or other OS-level resources created
-in ``_setup()``.
+**BenchmarkConfig** (Pydantic model) is the same boundary for benchmarks.
+``make_benchmark_rpc_server`` JSON-dumps the ``BenchmarkConfig`` and optional
+``InfraConfig``, hands both to a subprocess which rehydrates them and calls
+``config.make(infra)`` locally.  Live ``Benchmark`` instances never cross the
+process boundary — real process isolation, no shared-memory thread fallback.
 
-TODO: once ``BenchmarkConfig`` lands (see
-  https://github.com/The-AI-Alliance/cube-harness/blob/rfc/benchmark-config-and-scaling/docs/rfc-benchmark-config-and-scaling.md),
-  ``make_benchmark_rpc_server`` should accept a ``BenchmarkConfig``, call
-  ``config.make()`` inside the subprocess, and provide real process isolation
-  without ever pickling a live Benchmark.  Until then, the benchmark server
-  launcher uses a thread (shared memory, no pickling).
+JSON (instead of pickle) is chosen deliberately: it's the same boundary the
+network endpoint and any future Ray / storage dispatch already rely on, and it
+enforces that every polymorphic field carries ``SerializeAsAny`` so subclass
+state survives.  Non-portable state fails loudly at development time instead
+of silently leaking through at scale.
 
 Note on deployment
 ------------------
@@ -95,18 +97,19 @@ ASGI-compatible host (Modal, fly.io, GCP Cloud Run, …).
 wrappers for local development and testing.
 """
 
+import json
 import logging
 import multiprocessing
 import socket
-import threading
 from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from cube.benchmark import Benchmark
-from cube.core import Action, Observation
+from cube.benchmark import Benchmark, BenchmarkConfig
+from cube.core import Action, Observation, TypedBaseModel
+from cube.resource import InfraConfig
 from cube.task import Task, TaskConfig
 
 logger = logging.getLogger(__name__)
@@ -130,25 +133,118 @@ logger = logging.getLogger(__name__)
 # themselves are never sent across process boundaries.
 
 
+def _dump_runtime_context(ctx: dict[str, Any] | None) -> str | None:
+    """Serialize a ``RuntimeContext`` dict to JSON, preserving TypedBaseModel polymorphism.
+
+    Cubes commonly place ``InfraConfig`` (or other ``TypedBaseModel``) instances
+    into ``_runtime_context`` (e.g. ``self._runtime_context["infra"] = self.infra``).
+    Plain ``json.dumps`` would raise on those — we delegate to each value's
+    ``model_dump(mode="json")`` so the ``_type`` discriminator is preserved for
+    round-trip.  Non-TypedBaseModel values must already be JSON-native (str,
+    int, float, bool, None, list, dict).  Anything else raises ``TypeError``
+    loud at development time rather than at a Ray worker in production.
+    """
+    if ctx is None or not ctx:
+        return None
+
+    def _default(o: Any) -> Any:
+        if isinstance(o, TypedBaseModel):
+            return o.model_dump(mode="json")
+        raise TypeError(
+            f"runtime_context[{o!r}] of type {type(o).__name__} is not JSON-serializable. "
+            f"Cube authors: only put JSON-native values or TypedBaseModel instances "
+            f"(e.g. InfraConfig) in _runtime_context."
+        )
+
+    return json.dumps(ctx, default=_default)
+
+
+def _load_runtime_context(payload: str | None) -> dict[str, Any] | None:
+    """Inverse of ``_dump_runtime_context``: rehydrate TypedBaseModel sub-values via ``_type``.
+
+    ``_rehydrate`` recurses into nested dicts/lists with no explicit depth
+    limit. Runtime contexts are expected to be shallow and acyclic — the
+    payload was produced by ``_dump_runtime_context`` via ``json.dumps``,
+    which already rejects cycles, so any structure that round-trips through
+    JSON is safe to walk recursively here.
+    """
+    if payload is None:
+        return None
+
+    def _rehydrate(v: Any) -> Any:
+        if isinstance(v, dict):
+            if "_type" in v:
+                # TypedBaseModel's _deserialize_with_type resolves the concrete
+                # class via the _type path; calling on the abstract base itself
+                # dispatches correctly without picking an arbitrary subclass.
+                return TypedBaseModel.model_validate(v)
+            return {k: _rehydrate(val) for k, val in v.items()}
+        if isinstance(v, list):
+            return [_rehydrate(x) for x in v]
+        return v
+
+    raw = json.loads(payload)
+    return {k: _rehydrate(v) for k, v in raw.items()}
+
+
 def _spawn_task_subprocess(
-    task_config: TaskConfig,
-    runtime_ctx: dict[str, Any] | None,
+    task_config_json: str,
+    runtime_ctx_json: str | None,
     host: str,
     port: int,
 ) -> None:
-    """Subprocess entry point: materialise a task from its config, then serve it.
+    """Subprocess entry point: rehydrate config + runtime_context, make the task, serve it.
 
     Called by both the ``cube/spawn`` network endpoint and
-    ``make_task_rpc_server``.  The task is created *inside* the subprocess so
-    that live resources (tool instances, containers, …) are owned by the worker
-    process and never need to cross a process boundary.
+    ``make_task_rpc_server``.  ``TaskConfig`` and ``runtime_context`` arrive as
+    JSON strings and are rehydrated inside the worker — this enforces the
+    invariant that they are JSON-serializable (the same boundary the network
+    endpoint and future Ray / storage dispatch already rely on) and catches
+    non-portable state at development time instead of silently corrupting it at
+    scale.  The task is created *inside* the subprocess so live resources
+    (tool instances, containers, …) are owned by the worker.
 
     ``container_backend`` is intentionally not forwarded — it is a legacy
     parameter being replaced by the ``infra`` / ``resource`` pattern.  Infra
-    state is passed via ``runtime_ctx`` instead (see TaskConfig.make()).
+    state is passed via ``runtime_context`` instead (see TaskConfig.make()).
     """
+    task_config = TaskConfig.model_validate_json(task_config_json)
+    runtime_ctx = _load_runtime_context(runtime_ctx_json)
     task = task_config.make(runtime_context=runtime_ctx)
     uvicorn.run(make_task_jsonrpc_app(task), host=host, port=port)
+
+
+def _spawn_benchmark_subprocess(
+    config_json: str,
+    infra_json: str | None,
+    host: str,
+    port: int,
+) -> None:
+    """Subprocess entry point: rehydrate config + infra, call ``config.make(infra)``, serve.
+
+    ``BenchmarkConfig`` and ``InfraConfig`` arrive as JSON strings and are
+    rehydrated inside the worker via ``TypedBaseModel``'s ``_type`` polymorphic
+    dispatch — same boundary as the network endpoint and any future Ray /
+    storage dispatch.  Keeping this path JSON-only (instead of relying on
+    multiprocessing's pickle) enforces that every polymorphic field carries
+    ``SerializeAsAny`` so subclass-specific state round-trips reliably, and
+    catches non-portable state at development time.
+
+    The benchmark is produced *inside* the subprocess so runtime handles
+    (container backend, runtime_context, etc.) are owned by the worker and
+    torn down when the process exits.  ``benchmark.close()`` runs in a
+    ``finally`` so resources are released even on uvicorn signal / error.
+    """
+    config = BenchmarkConfig.model_validate_json(config_json)
+    infra = InfraConfig.model_validate_json(infra_json) if infra_json is not None else None
+    benchmark = config.make(infra)
+    try:
+        uvicorn.run(make_benchmark_jsonrpc_app(benchmark), host=host, port=port)
+    finally:
+        try:
+            benchmark.close()
+        except Exception:
+            logger.exception("Error while closing benchmark in subprocess")
 
 
 # ── JSON-RPC 2.0 error codes ──────────────────────────────────────────────────
@@ -216,7 +312,7 @@ def make_benchmark_jsonrpc_app(benchmark: Benchmark) -> FastAPI:
     Any field whose type is not JSON-serializable and has no Pydantic serializer
     will be silently excluded from the response.
     """
-    app = FastAPI(title=f"CUBE Benchmark Server - {benchmark.name}")
+    app = FastAPI(title=f"CUBE Benchmark Server - {benchmark.config.name}")
 
     @app.post("/")
     async def _dispatch(request: Request) -> JSONResponse:
@@ -235,10 +331,10 @@ def make_benchmark_jsonrpc_app(benchmark: Benchmark) -> FastAPI:
 
         try:
             if method == "cube/info":
-                result = benchmark.benchmark_metadata.model_dump(mode="json")
+                result = benchmark.config.benchmark_metadata.model_dump(mode="json")
 
             elif method == "cube/tasks":
-                tasks_metadata = list(benchmark.task_metadata.values())
+                tasks_metadata = list(benchmark.config.tasks().values())
                 task_id = params.get("task_id")
                 offset = int(params.get("offset", 0))
                 limit = int(params.get("limit", -1))
@@ -251,7 +347,7 @@ def make_benchmark_jsonrpc_app(benchmark: Benchmark) -> FastAPI:
                 task_id_filter = params.get("task_id")
                 offset = int(params.get("offset", 0))
                 limit = int(params.get("limit", -1))
-                configs = list(benchmark.get_task_configs())
+                configs = list(benchmark.config.get_task_configs())
                 if task_id_filter:
                     configs = [c for c in configs if c.task_id == task_id_filter]
                 configs = configs[offset:] if limit == -1 else configs[offset : offset + limit]
@@ -260,17 +356,13 @@ def make_benchmark_jsonrpc_app(benchmark: Benchmark) -> FastAPI:
             elif method == "cube/spawn":
                 if "task_config" not in params:
                     return JSONResponse(_err(req_id, _INVALID_PARAMS, "Missing 'task_config' in params"))
-                task_config = benchmark.task_config_class.model_validate(params["task_config"])
                 host = params.get("host", "127.0.0.1")
                 port = int(params.get("port", _find_free_port(host)))
-
-                # Pass only picklable values to the subprocess.  TaskConfig is a
-                # Pydantic model and is always picklable.  runtime_context is a
-                # plain dict (or None).  container_backend is intentionally not
-                # forwarded — infra state lives in runtime_context instead.
+                task_config_json = json.dumps(params["task_config"])
+                runtime_ctx_json = _dump_runtime_context(benchmark._runtime_context)
                 p = multiprocessing.Process(
                     target=_spawn_task_subprocess,
-                    args=(task_config, benchmark._runtime_context, host, port),
+                    args=(task_config_json, runtime_ctx_json, host, port),
                 )
                 p.start()
                 # Returns the URL immediately; the subprocess starts uvicorn
@@ -379,41 +471,46 @@ def make_task_jsonrpc_app(task: Task) -> FastAPI:
 
 
 def make_benchmark_rpc_server(
-    benchmark: Benchmark,
+    config: BenchmarkConfig,
+    *,
+    infra: InfraConfig | None = None,
     host: str = "127.0.0.1",
     port: int = 8000,
-) -> tuple[threading.Thread, str]:
-    """Serve a benchmark JSON-RPC app in a background daemon thread.
+) -> tuple[multiprocessing.Process, str]:
+    """Spawn a benchmark JSON-RPC server in a subprocess.
 
-    Uses a **thread** (not a subprocess) because Benchmark instances are not
-    guaranteed to be picklable.  They may hold live OS-level resources created
-    in ``_setup()`` — SSH sessions, container handles, database connections —
-    that cannot survive serialisation.  A thread shares memory with the caller,
-    so the Benchmark is accessed directly without any pickling.
+    Accepts a ``BenchmarkConfig`` (the serialisation boundary for benchmarks)
+    and an optional ``InfraConfig``.  Both are JSON-dumped on the caller side
+    and rehydrated inside the subprocess via ``TypedBaseModel``'s ``_type``
+    polymorphic dispatch.  The worker then calls ``config.make(infra)`` to
+    produce the live ``Benchmark``.  Live benchmarks never cross the process
+    boundary — real process isolation, symmetric with ``make_task_rpc_server``.
 
-    The thread is a daemon, so it stops automatically when the main process
-    exits.  To stop the server explicitly, use uvicorn's shutdown API or
-    terminate the process.
+    JSON (instead of pickle) is chosen deliberately: it's the same boundary the
+    network endpoint and any future Ray / storage dispatch rely on, it enforces
+    that every polymorphic field on ``BenchmarkConfig`` / ``InfraConfig``
+    carries ``SerializeAsAny`` so subclass state survives, and it catches
+    non-portable state at development time instead of letting it silently leak
+    through at scale.
 
-    TODO: once BenchmarkConfig lands (see
-      https://github.com/The-AI-Alliance/cube-harness/blob/rfc/benchmark-config-and-scaling/docs/rfc-benchmark-config-and-scaling.md),
-      change this to accept a BenchmarkConfig, call ``config.make()`` inside a
-      ``multiprocessing.Process`` (mirroring ``make_task_rpc_server``), and
-      provide real process isolation.  Until then, process isolation requires
-      running ``server.py`` as a standalone script and launching the client
-      separately.
+    The subprocess owns its own resources: container handles, runtime_context,
+    shared servers launched inside ``_setup()``.  When the subprocess exits
+    (signal, uvicorn shutdown, or parent teardown), ``benchmark.close()`` runs
+    in a ``finally`` inside the worker.
 
     Returns:
-        ``(thread, url)`` — the background thread and the server base URL.
+        ``(process, url)`` — the subprocess handle and the server base URL.
+        The subprocess starts uvicorn asynchronously; poll the URL until it
+        responds before sending requests.
     """
-    app = make_benchmark_jsonrpc_app(benchmark)
-    thread = threading.Thread(
-        target=uvicorn.run,
-        kwargs={"app": app, "host": host, "port": port},
-        daemon=True,
+    config_json = config.model_dump_json()
+    infra_json = infra.model_dump_json() if infra is not None else None
+    process = multiprocessing.Process(
+        target=_spawn_benchmark_subprocess,
+        args=(config_json, infra_json, host, port),
     )
-    thread.start()
-    return thread, f"http://{host}:{port}"
+    process.start()
+    return process, f"http://{host}:{port}"
 
 
 def make_task_rpc_server(
@@ -425,10 +522,10 @@ def make_task_rpc_server(
     """Spawn a task JSON-RPC server in a subprocess.
 
     Accepts a **TaskConfig** (not a Task) because only configs cross process
-    boundaries safely.  The subprocess calls ``task_config.make()`` to create
-    the Task inside the worker.  This is identical to the ``cube/spawn``
-    network endpoint — both use ``_spawn_task_subprocess`` as their entry
-    point.
+    boundaries safely.  ``TaskConfig`` and ``runtime_context`` are JSON-dumped
+    on the caller side and rehydrated inside the subprocess — same boundary as
+    the ``cube/spawn`` network endpoint.  The subprocess calls
+    ``task_config.make()`` to create the Task inside the worker.
 
     Use this when you already have a TaskConfig in Python and want to expose
     the task over the network without going through a benchmark server.  The
@@ -440,9 +537,11 @@ def make_task_rpc_server(
         The subprocess starts uvicorn asynchronously; poll the URL until it
         responds before sending requests.
     """
+    task_config_json = task_config.model_dump_json()
+    runtime_ctx_json = _dump_runtime_context(runtime_context)
     process = multiprocessing.Process(
         target=_spawn_task_subprocess,
-        args=(task_config, runtime_context, host, port),
+        args=(task_config_json, runtime_ctx_json, host, port),
     )
     process.start()
     return process, f"http://{host}:{port}"

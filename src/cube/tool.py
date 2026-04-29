@@ -489,7 +489,13 @@ class ToolboxConfig(ToolConfig):
     tool_configs: list[ToolConfig] = []
 
     def make(self, container: Container | None = None) -> Toolbox:
-        tools = [tc.make(container) for tc in self.tool_configs]
+        tools: list[AbstractTool] = []
+        for tc in self.tool_configs:
+            result = tc.make(container)
+            if isinstance(result, Toolbox):
+                tools.extend(result.tools)
+            else:
+                tools.append(result)
         return Toolbox(tools=tools)
 
 

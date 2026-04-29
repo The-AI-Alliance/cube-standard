@@ -14,12 +14,18 @@ Usage:
                         cube-standard package, so it is always in sync with the
                         rest of the codebase and can be edited directly as normal
                         Python files.
+    cube install NAME   Run the benchmark's BenchmarkConfig.install() classmethod
+                        once on this machine — populates the per-task execution
+                        cache (and any other one-time downloads) so workers can
+                        construct tasks without surprise downloads.  NAME is a
+                        benchmark entry-point name (e.g. swebench-live-cube).
     cube test NAME      Run the debug suite and check compliance (every debug task
                         must reach reward == 1.0).  NAME is either a benchmark
                         entry-point name (e.g. counter-cube) or a dotted module
                         path (e.g. counter_cube.debug).  When an entry-point name
                         is given the debug module is auto-derived from the
-                        registered benchmark module.
+                        registered benchmark module.  Use --demo-reset-repro to
+                        preview the reset-reproducibility error panel after a clean run.
     cube registry add   Generate a cube-registry-entry.yaml from the pyproject.toml
     [PATH]              in PATH (default: cwd).  Pass --submit to fork
                         The-AI-Alliance/cube-registry, upload the entry, and open a
@@ -40,10 +46,11 @@ import textwrap
 import time
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from rich import box
 from rich.console import Console, Group
+from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
@@ -51,6 +58,9 @@ from rich.text import Text
 from rich.theme import Theme
 
 from cube import __version__
+from cube.benchmark import CompositeBenchmarkConfig
+from cube.core import Observation
+from cube.testing import RESET_REPRO_OBS_MISMATCH_MSG, format_observation_diff
 
 # ── Console setup ─────────────────────────────────────────────────────────────
 
@@ -123,6 +133,57 @@ def _stress_fill_bar(fraction: float, width: int) -> str:
 
 # Aggregate episode_time_s below this is treated as timer noise — avoid tasks/min in the billions.
 _THROUGHPUT_MIN_TOTAL_S = 0.01
+_RESET_DIFF_DISPLAY_MAX = 24_000
+
+
+def _truncate_reset_diff_text(diff: str) -> str:
+    """Cap reset-repro diff size for terminal and CI logs (matches dashboard truncation)."""
+    d = diff.rstrip("\n")
+    if len(d) > _RESET_DIFF_DISPLAY_MAX:
+        d = d[:_RESET_DIFF_DISPLAY_MAX] + "\n... [diff truncated]\n"
+    return d
+
+
+def _emit_reset_repro_plain(reset_msg: str, reset_diff: str, *, file: TextIO) -> None:
+    """Plain-text reset-repro error (no Rich markup on user-controlled *reset_msg*)."""
+    print("\nReset reproducibility error:", file=file)
+    if reset_diff.strip():
+        if reset_msg == RESET_REPRO_OBS_MISMATCH_MSG:
+            print(f"  (first task, two fresh Task instances): {reset_msg}", file=file)
+        else:
+            print(f"  {reset_msg}", file=file)
+        print("  A mismatch is not always a bug (e.g. time-dependent observations).", file=file)
+        print(_truncate_reset_diff_text(reset_diff), file=file)
+    else:
+        print(f"  {reset_msg}", file=file)
+
+
+# Shown only with ``cube test NAME --demo-reset-repro`` (or CUBE_DEMO_RESET_REPRO=1) when the real
+# suite passes but you want to preview reset-repro failure (plain-text block + compliance row).
+_DEMO_RESET_REPRO_MSG = (
+    "first observation differed between two fresh Task instances "
+    "(demo preview — run without --demo-reset-repro for real compliance)."
+)
+_DEMO_RESET_REPRO_DIFF = format_observation_diff(
+    Observation.from_text("Counter starts at 0. Use 'increment' action to reach 3."),
+    Observation.from_text("Counter starts at 0. Use 'increment' action to reach 3. (demo token: a1b2c3d4e5f6)"),
+)
+
+
+def _print_reset_reproducibility_error_block(
+    out: Console,
+    *,
+    reset_ok: bool,
+    reset_msg: str,
+    reset_diff: str,
+    panel_width: int | None,
+) -> None:
+    """Print reset-repro mismatch before the main stress-test panel (plain text; Rich reserved for dashboard)."""
+    if reset_ok:
+        return
+    _file = getattr(out, "file", None) or sys.stdout
+    _emit_reset_repro_plain(reset_msg, reset_diff, file=_file)
+    print(file=_file)
 
 
 def _format_small_seconds(sec: float) -> str:
@@ -306,6 +367,82 @@ def cmd_list() -> None:
     )
 
 
+def _resolve_benchmark_config_class(name: str) -> type:
+    """Resolve a ``cube.benchmarks`` entry-point name to its ``BenchmarkConfig`` class."""
+    eps = importlib.metadata.entry_points(group="cube.benchmarks")
+    matched = {ep.name: ep for ep in eps}
+    if name not in matched:
+        available = ", ".join(sorted(matched)) or "(none installed)"
+        err_console.print(
+            Panel(
+                f"[error]No cube benchmark registered as[/error] [file]{name}[/file].\nAvailable: {available}",
+                title="[error]Unknown benchmark[/error]",
+                border_style="red",
+                padding=(0, 1),
+            )
+        )
+        sys.exit(1)
+    return matched[name].load()
+
+
+def cmd_install(name: str) -> None:
+    """Run ``BenchmarkConfig.install()`` for the benchmark registered as *name*.
+
+    Wires into Dockerfiles (``RUN cube install <bench>``), init containers, or
+    one-off shared-volume bootstrap. The classmethod is expected to be
+    idempotent — calling ``cube install`` repeatedly is safe.
+    """
+    cls = _resolve_benchmark_config_class(name)
+
+    if isinstance(cls, type) and issubclass(cls, CompositeBenchmarkConfig):
+        err_console.print(
+            Panel(
+                f"[error]{name!r}[/error] is a [cmd]CompositeBenchmarkConfig[/cmd] — "
+                "composite benchmarks are constructed dynamically from sub-benchmark instances "
+                "and cannot be installed as a unit.\n\n"
+                "Install each sub-benchmark individually instead:\n"
+                + "\n".join(
+                    f"  [cmd]cube install {ep.name}[/cmd]"
+                    for ep in importlib.metadata.entry_points(group="cube.benchmarks")
+                    if ep.name != name
+                ),
+                title="[error]Cannot install composite benchmark[/error]",
+                border_style="red",
+                padding=(0, 1),
+            )
+        )
+        sys.exit(1)
+
+    bench_label = getattr(getattr(cls, "benchmark_metadata", None), "name", None) or cls.__name__
+    console.print(
+        Panel(
+            f"[info]Installing[/info] [file]{bench_label}[/file]\n"
+            f"[dim]Calling[/dim] [cmd]{cls.__module__}.{cls.__name__}.install()[/cmd]",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+    try:
+        cls.install()
+    except Exception as exc:
+        err_console.print(
+            Panel(
+                f"[error]install() raised:[/error] {escape(f'{type(exc).__name__}: {exc}')}",
+                title="[error]Install failed[/error]",
+                border_style="red",
+                padding=(0, 1),
+            )
+        )
+        sys.exit(1)
+    console.print(
+        Panel(
+            f"[success]✓ install() completed for[/success] [file]{bench_label}[/file]",
+            border_style="green",
+            padding=(0, 1),
+        )
+    )
+
+
 def _resolve_debug_module(name: str) -> str:
     """Resolve *name* to a fully-qualified debug module path.
 
@@ -352,13 +489,27 @@ def cmd_test(
     max_steps: int = 20,
     output_path: str | None = None,
     ci_mode: bool = False,
+    demo_reset_repro: bool = False,
+    stress_test: bool = False,
+    reset_check: bool = True,
 ) -> None:
     """Import *module_name* (or resolve an entry-point name) and run the debug compliance suite.
 
+    When *stress_test* is False (default), the suite runs once and shows per-task progress.
+    When *stress_test* is True (``--stress``), throughput is measured at 1, 2, and 4 workers.
+
+    When *reset_check* is False (``--no-reset-check``), the reset-reproducibility compliance
+    check is skipped entirely — useful in CI where the extra two resets are expensive.
+
     When *ci_mode* is True (or ``CUBE_CI=1`` is set), the Rich terminal dashboard is suppressed
     and only plain-text compliance results are printed — suitable for GitHub Actions logs.
+
+    When *demo_reset_repro* is True (or ``CUBE_DEMO_RESET_REPRO=1``), after a successful run the
+    non-CI dashboard shows sample reset-reproducibility failure output (plain-text block + compliance)
+    for UI review; the process still exits 0 if all tasks passed. Ignored when *ci_mode* is True.
     """
     ci_mode = ci_mode or bool(os.environ.get("CUBE_CI"))
+    demo_reset_repro = demo_reset_repro or (os.environ.get("CUBE_DEMO_RESET_REPRO") == "1")
     from cube.testing import (
         aggregate_profiling,
         build_stress_test_report,
@@ -392,7 +543,7 @@ def cmd_test(
     except ModuleNotFoundError as exc:
         err_console.print(
             Panel(
-                f"[error]Cannot import[/error] [file]{resolved}[/file]: {exc}\n"
+                f"[error]Cannot import[/error] [file]{resolved}[/file]: {escape(str(exc))}\n"
                 "Make sure the package is installed (e.g. [cmd]uv sync[/cmd]) and "
                 "that the module exposes [cmd]get_debug_benchmark()[/cmd] and "
                 "[cmd]make_debug_agent()[/cmd].",
@@ -417,11 +568,30 @@ def cmd_test(
             )
             sys.exit(1)
 
-    with console.status(
-        f"[info]Running debug suite for[/info] [file]{resolved}[/file]…",
-        spinner="dots",
-    ):
-        results = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False)
+    _done_count = [0]
+    _total_count = [0]
+
+    def _on_start(task_id: str) -> None:
+        _total_count[0] += 1
+        console.print(f"  [dim]→ {task_id}[/dim]")
+
+    def _on_done(report: dict) -> None:
+        _done_count[0] += 1
+        ok = report["reward"] == 1.0 and not report["error"]
+        icon = "[success]✓[/success]" if ok else "[error]✗[/error]"
+        wall = _episode_wall_display_s(report)
+        console.print(f"  {icon} [file]{report['task_id']}[/file]  [dim]{wall}[/dim]")
+
+    console.print(f"[info]Running debug suite:[/info] [file]{resolved}[/file]")
+    results = run_debug_suite(
+        resolved,
+        module,
+        max_steps=max_steps,
+        print_json=False,
+        workers=0,
+        on_episode_start=_on_start,
+        on_episode_done=_on_done,
+    )
 
     if not results:
         err_console.print(
@@ -443,7 +613,11 @@ def cmd_test(
             failures.append(r)
 
     # ── Extra compliance checks (stress_test_specs.md) ─────────────────────────────
-    reset_ok, _ = check_reset_reproducibility(module)
+    if reset_check:
+        console.print("[dim]  Checking reset reproducibility (2 resets in parallel)…[/dim]")
+        reset_ok, reset_msg, reset_diff = check_reset_reproducibility(module)
+    else:
+        reset_ok, reset_msg, reset_diff = True, "", ""
     meta_ok, _ = check_benchmark_metadata(module)
     close_idempotent_ok = all(r.get("close_idempotent_ok", False) for r in results)
     tools_list_ok = all(r.get("tools_list_ok", False) for r in results)
@@ -456,7 +630,9 @@ def cmd_test(
         compliance_passed.append("test_full_episode")
     else:
         compliance_failed.append("test_full_episode")
-    if reset_ok:
+    if not reset_check:
+        pass  # skipped via --no-reset-check; omit from compliance lists
+    elif reset_ok:
         compliance_passed.append("test_reset_reproducibility")
     else:
         compliance_failed.append("test_reset_reproducibility")
@@ -472,6 +648,14 @@ def cmd_test(
         compliance_passed.append("test_benchmark_metadata")
     else:
         compliance_failed.append("test_benchmark_metadata")
+
+    if demo_reset_repro and not ci_mode and not failures and reset_ok:
+        if "test_reset_reproducibility" in compliance_passed:
+            compliance_passed.remove("test_reset_reproducibility")
+        compliance_failed.append("test_reset_reproducibility")
+        reset_ok = False
+        reset_msg = _DEMO_RESET_REPRO_MSG
+        reset_diff = _DEMO_RESET_REPRO_DIFF
 
     # ── Latency: p50, p95, p99 from step_times_s across all episodes ────────────
     all_step_times: list[float] = []
@@ -503,6 +687,10 @@ def cmd_test(
             print(f"  PASS  {name}")
         for name in compliance_failed:
             print(f"  FAIL  {name}")
+        if not reset_check:
+            print("  SKIP  test_reset_reproducibility")
+        if not reset_ok:
+            _emit_reset_repro_plain(reset_msg, reset_diff, file=sys.stdout)
         report = build_stress_test_report(resolved, results, compliance_passed, compliance_failed)
         if output_path:
             report.save(output_path)
@@ -518,20 +706,20 @@ def cmd_test(
     progress_done = len(results) - len(failures)
     progress_total = len(results)
     workers_avail = max(1, os.cpu_count() or 1)
-    workers_active = 1
+    workers_active = max(1, len(results))  # auto mode uses one thread per task
 
     bench_label = module_name if len(module_name) <= 40 else resolved
     if len(bench_label) > 40:
         bench_label = bench_label[:37] + "…"
 
+    suite_mode = "parallel" if workers_active > 1 else "sequential"
     header_grid = Table(show_header=False, box=None, expand=True, padding=(0, 1))
     header_grid.add_column("left", ratio=1)
     header_grid.add_column("right", justify="right", ratio=1)
     header_grid.add_row(
         Text.from_markup(
             f"Benchmark: [file]{bench_label}[/file]\n"
-            # Debug suite runs one task at a time; second number is host CPU count, not pool size.
-            f"Suite: [dim]sequential[/dim] · workers [bold]{workers_active}[/bold] · "
+            f"Suite: [dim]{suite_mode}[/dim] · workers [bold]{workers_active}[/bold] · "
             f"host CPUs [dim]{workers_avail}[/dim]"
         ),
         Text.from_markup(
@@ -545,10 +733,9 @@ def cmd_test(
     ok_agent = "[success]✓[/success]" if results else "[dim]—[/dim]"
     ok_tools = "[success]✓[/success]" if tools_list_ok else "[error]✗[/error]"
     ok_meta = "[success]✓[/success]" if meta_ok else "[error]✗[/error]"
-    ok_reset = "[success]✓[/success]" if reset_ok else "[error]✗[/error]"
+    ok_reset = "[dim]N/A[/dim]" if not reset_check else ("[success]✓[/success]" if reset_ok else "[error]✗[/error]")
     ok_close = "[success]✓[/success]" if close_idempotent_ok else "[error]✗[/error]"
 
-    compliance_header = Text.from_markup("[bold]COMPLIANCE[/bold]")
     compliance_checks_table = Table(
         show_header=False,
         box=box.SIMPLE,
@@ -578,6 +765,15 @@ def cmd_test(
         else:
             compliance_checks_table.add_row(ln, ls, "", "")
 
+    n_comp_pass = len(compliance_passed)
+    n_comp_fail = len(compliance_failed)
+    if n_comp_fail:
+        compliance_banner = Text.from_markup(
+            f"[bold]COMPLIANCE[/bold]  [success]{n_comp_pass} passed[/success]  [error]· {n_comp_fail} failed[/error]"
+        )
+    else:
+        compliance_banner = Text.from_markup(f"[bold]COMPLIANCE[/bold]  [success]{n_comp_pass} passed[/success]")
+
     max_lat = max(p50_s, p95_s, p99_s, 0.001)
     latency_section = Table(show_header=False, box=None, padding=(0, 0), show_edge=False)
     latency_section.add_column(no_wrap=True)
@@ -596,15 +792,57 @@ def cmd_test(
 
     total_ep_s = sum(float(r.get("episode_time_s") or 0.0) for r in results)
     n_tasks = len(results)
-    throughput_specs = (
-        (1, 1.0),
-        (2, 0.93),
-        (4, 0.84),
-    )
+    throughput_rows: list[tuple[int, float, float, float]] = []
     throughput_blocks: list = []
     throughput_blocks.append(Text.from_markup("[bold]THROUGHPUT (tasks/min)[/bold]"))
-    if total_ep_s >= _THROUGHPUT_MIN_TOTAL_S:
-        rate_1 = n_tasks / (total_ep_s / 60.0)
+    if not stress_test:
+        throughput_blocks.append(
+            Text.from_markup("[dim]Skipped in test mode. Use [cmd]cube test --stress[/cmd] to measure.[/dim]")
+        )
+    elif total_ep_s >= _THROUGHPUT_MIN_TOTAL_S:
+        # Second 1-worker pass (warm): rate_1 uses wall time comparable to 2/4 worker passes below
+        # (the compliance run above is a cold start; discarding it for throughput avoids biased scaling).
+        with console.status(
+            "[info]Warmed-up[/info] [dim](1 worker, for throughput baseline)…[/dim]",
+            spinner="dots",
+        ):
+            t_warm0 = time.perf_counter()
+            warm_results = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False, workers=1)
+            elapsed_warm_1_s = time.perf_counter() - t_warm0
+        n_tasks_warm = len(warm_results)
+        rate_1 = n_tasks_warm / (elapsed_warm_1_s / 60.0) if elapsed_warm_1_s > 0 else 0.0
+        throughput_rows = [(1, rate_1, rate_1, 1.0)]
+        parallel_issue_lines: list[str] = []
+        with console.status(
+            "[info]Measuring multi-worker throughput[/info] [dim](2 and 4 workers)…[/dim]",
+            spinner="dots",
+        ):
+            for w in (2, 4):
+                t0 = time.perf_counter()
+                mw_results = run_debug_suite(resolved, module, max_steps=max_steps, print_json=False, workers=w)
+                elapsed_w = time.perf_counter() - t0
+                n_w = len(mw_results)
+                for r in mw_results:
+                    ok_ep = not r.get("error") and r.get("done") and r.get("reward") == 1.0
+                    if not ok_ep:
+                        tid = r.get("task_id", "?")
+                        err = r.get("error") or "done/reward check failed"
+                        parallel_issue_lines.append(f"  [file]{tid}[/file]  workers={w}  [error]{err}[/error]")
+                actual_rate = n_w / (elapsed_w / 60.0) if elapsed_w > 0 else 0.0
+                linear_rate = rate_1 * w
+                eff = actual_rate / linear_rate if linear_rate > 0 else 1.0
+                throughput_rows.append((w, actual_rate, linear_rate, eff))
+        if parallel_issue_lines:
+            err_console.print(
+                Panel(
+                    "[warning]Some parallel debug episodes did not pass "
+                    "(compliance above reflects the 1-worker run only):[/warning]\n" + "\n".join(parallel_issue_lines),
+                    title="[warning]Parallel throughput run[/warning]",
+                    border_style="yellow",
+                    padding=(0, 1),
+                )
+            )
+
         throughput_table = Table(
             show_header=True,
             box=box.SIMPLE,
@@ -613,31 +851,27 @@ def cmd_test(
             header_style="bold",
         )
         throughput_table.add_column("Workers", justify="right", style="dim")
-        # Only the 1-worker row is measured; 2/4 are illustrative scaling (not separate benchmark runs).
         throughput_table.add_column("Measured", justify="right")
-        throughput_table.add_column("Illustrative", justify="right", style="dim")
         throughput_table.add_column("Linear", justify="right", style="dim")
         throughput_table.add_column("Efficiency", justify="right")
 
-        for w, eff in throughput_specs:
-            linear = rate_1 * w
-            projected = linear * eff
-            measured_str = f"{rate_1:.1f}" if w == 1 else "—"
-            illustrative_str = f"{projected:.1f}" if w > 1 else "—"
+        for w, actual_rate, linear_rate, eff in throughput_rows:
             eff_pct = int(round(100 * eff))
-            bar = _stress_fill_bar(eff, _eff_bar_w)
+            bar = _stress_fill_bar(min(eff, 1.0), _eff_bar_w)
             throughput_table.add_row(
                 str(w),
-                measured_str,
-                illustrative_str,
-                f"{linear:.1f}",
+                f"{actual_rate:.1f}",
+                f"{linear_rate:.1f}",
                 Text.from_markup(f"{eff_pct}% {bar}"),
             )
         throughput_blocks.append(throughput_table)
         throughput_blocks.append(
             Text.from_markup(
-                "[dim]Measured = sequential 1-worker tasks/min. Illustrative = linear × efficiency factor "
-                "(fixed; not measured; real multi-worker needs a parallel harness).[/dim]"
+                "[dim]Measured = wall-clock suite throughput (tasks/min) for separate runs at 1, 2, and 4 "
+                "workers (the 1-worker rate uses a second warm pass so it matches the cache state of the "
+                "2/4 worker runs). Linear = 1-worker rate × workers. Efficiency = Measured / Linear. "
+                "Compliance and latency above use the first 1-worker run only; parallel runs share "
+                "[file]_runtime_context[/file] and must not mutate it after [file]setup()[/file].[/dim]"
             )
         )
     else:
@@ -685,13 +919,14 @@ def cmd_test(
         padding=(0, 1),
         show_edge=False,
         header_style="bold",
+        expand=True,
     )
-    task_results_table.add_column("task", style="file", no_wrap=True)
-    task_results_table.add_column("done", justify="center")
-    task_results_table.add_column("rwd", justify="right")
-    task_results_table.add_column("st", justify="right")
-    task_results_table.add_column("wall", justify="right")
-    task_results_table.add_column("err", style="error")
+    task_results_table.add_column("task", style="file", ratio=3, no_wrap=True, overflow="ellipsis")
+    task_results_table.add_column("done", justify="center", no_wrap=True, min_width=4)
+    task_results_table.add_column("rwd", justify="right", no_wrap=True, min_width=4)
+    task_results_table.add_column("st", justify="right", no_wrap=True, min_width=3)
+    task_results_table.add_column("wall", justify="right", no_wrap=True, min_width=6)
+    task_results_table.add_column("err", style="error", ratio=1)
 
     for r in results:
         done_str = "[success]✓[/success]" if r["done"] else "[error]✗[/error]"
@@ -713,9 +948,17 @@ def cmd_test(
         report.save(output_path)
         console.print(f"[dim]Baseline saved to [file]{output_path}[/file][/dim]")
 
-    border = "green" if not failures else "red"
+    if failures:
+        border = "red"
+    elif compliance_failed:
+        border = "cyan"
+    else:
+        border = "green"
+    comp_sub = ""
+    if compliance_failed and not failures:
+        comp_sub = f"  [warning]· {len(compliance_failed)} compliance failed[/warning]"
     status_sub = (
-        f"[success]{n_tasks} task(s) passed[/success]"
+        f"[success]{n_tasks} task(s) passed[/success]{comp_sub}"
         if not failures
         else f"[error]{len(failures)} / {n_tasks} failed[/error]"
     )
@@ -723,7 +966,7 @@ def cmd_test(
     body_parts: list = [
         header_grid,
         Rule(style="dim"),
-        compliance_header,
+        compliance_banner,
         compliance_checks_table,
         Rule(style="dim"),
         latency_section,
@@ -742,7 +985,15 @@ def cmd_test(
         box=box.HEAVY,
         padding=(0, 1),
     )
-    _make_console(width=_display_width).print(stress_panel)
+    dash_console = _make_console(width=_display_width)
+    _print_reset_reproducibility_error_block(
+        dash_console,
+        reset_ok=reset_ok,
+        reset_msg=reset_msg,
+        reset_diff=reset_diff,
+        panel_width=_display_width,
+    )
+    dash_console.print(stress_panel)
 
     if failures:
         console.print(
@@ -1122,11 +1373,20 @@ def _print_help() -> None:
         "cube init my-env",
     )
     table.add_row(
+        "cube install NAME",
+        "Run the benchmark's [cmd]BenchmarkConfig.install()[/cmd] (one-time per worker environment) "
+        "to populate the per-task execution cache.",
+        "cube install swebench-live-cube",
+    )
+    table.add_row(
         "cube test NAME",
         "Run the debug compliance suite — NAME is a benchmark entry-point name or a dotted module path. "
-        "Options: [cmd]--ci[/cmd] (plain-text CI output, also set via CUBE_CI=1), "
-        "[cmd]--output=PATH[/cmd] (save JSON report), [cmd]--max-steps=N[/cmd]",
-        "cube test counter-cube --ci --output=results.json",
+        "Options: [cmd]--stress[/cmd] (add throughput measurement at 1/2/4 workers), "
+        "[cmd]--no-reset-check[/cmd] (skip reset-reproducibility check — saves ~1 extra reset in CI), "
+        "[cmd]--ci[/cmd] (plain-text CI output, also set via CUBE_CI=1), "
+        "[cmd]--output=PATH[/cmd] (save JSON report), [cmd]--max-steps=N[/cmd], "
+        "[cmd]--demo-reset-repro[/cmd] (preview reset-repro output, non-CI; also [cmd]CUBE_DEMO_RESET_REPRO=1[/cmd])",
+        "cube test counter-cube --stress",
     )
     table.add_row(
         "cube registry add [PATH]",
@@ -1166,6 +1426,19 @@ def main() -> None:
     elif command == "init":
         name = args[1] if len(args) > 1 else _DEFAULT_NAME
         cmd_init(name=name, cwd=Path.cwd())
+    elif command == "install":
+        if len(args) < 2:
+            err_console.print(
+                Panel(
+                    "[error]Missing argument:[/error] [cmd]cube install NAME[/cmd]\n"
+                    "Example: [cmd]cube install swebench-live-cube[/cmd]",
+                    title="[error]Error[/error]",
+                    border_style="red",
+                    padding=(0, 1),
+                )
+            )
+            sys.exit(1)
+        cmd_install(args[1])
     elif command == "test":
         if len(args) < 2:
             err_console.print(
@@ -1181,6 +1454,9 @@ def main() -> None:
         max_steps = 20
         output_path = None
         ci_mode = False
+        demo_reset_repro = False
+        stress_test = False
+        reset_check = True
         remaining = args[2:]
         for opt in remaining:
             if opt.startswith("--max-steps="):
@@ -1191,7 +1467,21 @@ def main() -> None:
                 output_path = "cube_stress_test_baseline.json"
             elif opt == "--ci":
                 ci_mode = True
-        cmd_test(args[1], max_steps=max_steps, output_path=output_path, ci_mode=ci_mode)
+            elif opt == "--stress":
+                stress_test = True
+            elif opt == "--no-reset-check":
+                reset_check = False
+            elif opt == "--demo-reset-repro":
+                demo_reset_repro = True
+        cmd_test(
+            args[1],
+            max_steps=max_steps,
+            output_path=output_path,
+            ci_mode=ci_mode,
+            demo_reset_repro=demo_reset_repro,
+            stress_test=stress_test,
+            reset_check=reset_check,
+        )
     elif command == "registry":
         subcmd = args[1] if len(args) > 1 else ""
         if subcmd != "add":

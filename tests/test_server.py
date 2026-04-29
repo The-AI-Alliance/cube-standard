@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
+from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
 from cube.container import Container, ContainerBackend
 from cube.core import Observation
 from cube.server import make_benchmark_jsonrpc_app, make_task_jsonrpc_app
@@ -69,7 +69,7 @@ class _CounterTaskConfig(TaskConfig):
         container_backend: ContainerBackend | None = None,
     ) -> _CounterTask:
         return _CounterTask(
-            metadata=TaskMetadata(id=self.task_id),
+            metadata=self.metadata,
             tool_config=self.tool_config or _CounterToolConfig(),
             runtime_context=runtime_context,
             container_backend=container_backend,
@@ -77,18 +77,21 @@ class _CounterTaskConfig(TaskConfig):
 
 
 class _MiniBenchmark(Benchmark):
+    def _setup(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class _MiniBenchmarkConfig(BenchmarkConfig):
     benchmark_metadata = BenchmarkMetadata(name="mini", version="0.1.0", description="test", num_tasks=2)
     task_metadata = {
         "task-1": TaskMetadata(id="task-1"),
         "task-2": TaskMetadata(id="task-2"),
     }
     task_config_class = _CounterTaskConfig
-
-    def _setup(self) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
+    benchmark_class = _MiniBenchmark
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -100,13 +103,12 @@ _TASK_META_1 = {
     "abstract_description": "",
     "recommended_max_steps": None,
     "container_config": None,
-    "extra_info": {},
 }
 
 _TASK_META_2 = {**_TASK_META_1, "id": "task-2"}
 
-_TASK_CONFIG_1 = _CounterTaskConfig(task_id="task-1").model_dump(mode="json")
-_TASK_CONFIG_2 = _CounterTaskConfig(task_id="task-2").model_dump(mode="json")
+_TASK_CONFIG_1 = _CounterTaskConfig(metadata=TaskMetadata(id="task-1")).model_dump(mode="json")
+_TASK_CONFIG_2 = _CounterTaskConfig(metadata=TaskMetadata(id="task-2")).model_dump(mode="json")
 
 
 def _text_content(data: str, tool_call_id: str | None = None) -> dict:
@@ -134,9 +136,7 @@ def _rpc(client, method, params=None, req_id=1):
 
 @pytest.fixture
 def benchmark():
-    b = _MiniBenchmark()
-    b.setup()
-    return b
+    return _MiniBenchmarkConfig().make()
 
 
 @pytest.fixture
@@ -148,7 +148,7 @@ def bench_client(benchmark):
 
 @pytest.fixture
 def task(benchmark):
-    t = benchmark.spawn(_CounterTaskConfig(task_id="task-1"))
+    t = benchmark.spawn(_CounterTaskConfig(metadata=TaskMetadata(id="task-1")))
     t.reset()
     return t
 
@@ -178,7 +178,6 @@ def test_benchmark_info(bench_client):
         "tags": [],
         "reset_isolation": None,
         "named_subsets": {},
-        "extra_info": {},
     }
 
 
@@ -323,3 +322,79 @@ def test_error_invalid_json(task_client):
 def test_error_invalid_request(task_client):
     resp = task_client.post("/", json={"method": "tools/list"})  # missing "jsonrpc"
     assert resp.json()["error"]["code"] == -32600
+
+
+# ── runtime_context JSON helpers ──────────────────────────────────────────────
+
+
+def test_runtime_context_round_trip_preserves_infra_instance():
+    """Regression: every cube that uses infra does ``_runtime_context["infra"] = self.infra``.
+    Plain ``json.dumps`` would raise on the Pydantic model. The server's helpers
+    must serialize TypedBaseModel values via their own ``model_dump(mode="json")``
+    and rehydrate via ``_type`` dispatch.
+    """
+    from cube.infra_local import LocalInfraConfig
+    from cube.server import _dump_runtime_context, _load_runtime_context
+
+    original = {
+        "infra": LocalInfraConfig(),
+        "server_url": "http://internal:8080",
+        "replicas": 3,
+    }
+    payload = _dump_runtime_context(original)
+    assert payload is not None  # non-empty dict
+
+    restored = _load_runtime_context(payload)
+    assert restored is not None
+    # JSON-native values unchanged
+    assert restored["server_url"] == "http://internal:8080"
+    assert restored["replicas"] == 3
+    # Pydantic model rehydrated to the correct concrete class
+    assert isinstance(restored["infra"], LocalInfraConfig)
+    assert restored["infra"] == original["infra"]
+
+
+def test_runtime_context_none_and_empty_return_none():
+    from cube.server import _dump_runtime_context, _load_runtime_context
+
+    assert _dump_runtime_context(None) is None
+    assert _dump_runtime_context({}) is None
+    assert _load_runtime_context(None) is None
+
+
+def test_runtime_context_rejects_non_json_non_pydantic_values():
+    """Non-JSON-native, non-TypedBaseModel values must fail loud rather than silently lose data."""
+    from cube.server import _dump_runtime_context
+
+    class _NotSerializable:
+        pass
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"bad": _NotSerializable()})
+
+
+def test_runtime_context_rejects_non_json_native_builtin_types():
+    """Builtin types that aren't JSON-native (set, datetime, function) must also fail loud."""
+    import datetime
+
+    from cube.server import _dump_runtime_context
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"bad": {1, 2, 3}})
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"bad": datetime.datetime(2026, 1, 1)})
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"bad": lambda x: x})
+
+
+def test_runtime_context_rejects_nested_non_json_native_value():
+    """A bad value buried in a nested dict/list must still surface as TypeError."""
+    from cube.server import _dump_runtime_context
+
+    class _Bad:
+        pass
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        _dump_runtime_context({"outer": {"inner": [1, _Bad()]}})

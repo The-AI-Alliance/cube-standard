@@ -67,6 +67,8 @@ When an evaluation platform supports CUBE:
 - Automatic discoverability through the registry
 - Control over your distribution and licensing
 
+**Start here:** [Authoring a CUBE]({{site.baseurl}}/authoring-a-cube) — walkthrough with three starting paths, implementation order, validation, and submission.
+
 ### Platform Developers
 
 **You want to**: Build the best evaluation/training platform without being bottlenecked by benchmark integration

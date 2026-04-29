@@ -4,11 +4,14 @@ Task owns a Tool and implements the episode loop (reset / step / evaluate / clos
 Must implement: reset() → (Observation, info), evaluate(obs) → (reward, info).
 Optional: finished() for early termination, filter_actions() to restrict actions.
 
-Store per-task parameters in metadata.extra_info — don't add new Pydantic fields.
-TaskConfig is serializable; implement make() to produce a Task.
+For per-task state, prefer typed Pydantic fields over stringly-typed dicts.
+``CounterTaskMetadata`` carries semantic task descriptors (target, difficulty).
+Per-task tool variation is handled in ``BenchmarkConfig.get_task_configs()``,
+not stored on ``TaskMetadata`` — metadata describes *what* a task is, not *how*
+to run it.
 """
 
-from typing import Any
+from typing import Any, Literal
 
 from cube.benchmark import RuntimeContext
 from cube.container import ContainerBackend
@@ -17,16 +20,27 @@ from cube.task import Task, TaskConfig, TaskMetadata
 from counter_cube.tool import CounterToolConfig
 
 
-class ReachTargetTask(Task):
-    """Task: increment the counter until it equals `target`.
+class CounterTaskMetadata(TaskMetadata):
+    """Per-task metadata for counter tasks — typed replacement for ``extra_info``."""
 
-    Target value is read from metadata.extra_info["target"], which is set
-    in CounterBenchmark.task_metadata (see benchmark.py).
+    target: int
+    """Counter value the agent must reach to solve the task."""
+
+    difficulty: Literal["easy", "medium", "hard"] = "easy"
+    """Task difficulty label, surfaced via ``subset_from_glob`` / registry filters."""
+
+
+class ReachTargetTask(Task):
+    """Task: increment the counter until it equals ``target``.
+
+    Read the typed ``target`` field directly from the (subclassed) metadata.
     """
+
+    metadata: CounterTaskMetadata  # type: ignore[assignment]
 
     @property
     def target(self) -> int:
-        return self.metadata.extra_info["target"]
+        return self.metadata.target
 
     def reset(self) -> tuple[Observation, dict[str, Any]]:
         """Reset tool state and return the opening observation."""
@@ -48,7 +62,12 @@ class ReachTargetTask(Task):
 
 
 class CounterTaskConfig(TaskConfig):
-    """Serializable configuration that produces a ReachTargetTask."""
+    """Serializable configuration that produces a ReachTargetTask.
+
+    Self-contained: ``self.metadata`` carries a ``CounterTaskMetadata`` instance,
+    stamped onto the config by ``CounterBenchmarkConfig.get_task_configs()`` on
+    the driver.
+    """
 
     def make(
         self,
@@ -57,18 +76,12 @@ class CounterTaskConfig(TaskConfig):
     ) -> ReachTargetTask:
         """Build the task.
 
-        tool_config precedence (highest to lowest):
-          1. explicit tool_config set on this TaskConfig instance
-          2. per-task tool_config in metadata.extra_info["tool_config"]
-          3. CounterToolConfig defaults
+        Per-task tool variation is set by ``CounterBenchmarkConfig.get_task_configs()``
+        on ``self.tool_config``; fall back to the default config if none was set.
         """
-        # Deferred import to avoid circular dependency (benchmark imports task).
-        from counter_cube.benchmark import CounterBenchmark  # noqa: PLC0415
-
-        task_metadata: TaskMetadata = CounterBenchmark.task_metadata[self.task_id]
-        tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
+        tool_cfg = self.tool_config or CounterToolConfig()
         return ReachTargetTask(
-            metadata=task_metadata,
+            metadata=self.metadata,
             tool_config=tool_cfg,
             runtime_context=runtime_context,
             container_backend=container_backend,

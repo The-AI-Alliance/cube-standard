@@ -357,10 +357,13 @@ class ResourceHandle(ABC):
     itself is not serializable and must not be passed to workers.
     """
 
-    run_id: str
-    resource: ResourceConfig
-    infra: InfraConfig
-    endpoint: str | None
+    # All fields default so subclasses (notably ``cube.container.Container``
+    # living in deprecated-ContainerBackend paths) can construct without
+    # bookkeeping — the new ``InfraConfig.launch()`` path still populates them.
+    run_id: str = ""
+    resource: ResourceConfig | None = None
+    infra: InfraConfig | None = None
+    endpoint: str | None = None
     endpoints: dict[str, str] = field(default_factory=dict)
     created_at: datetime = field(default_factory=datetime.utcnow)
     expires_at: datetime | None = None

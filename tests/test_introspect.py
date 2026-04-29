@@ -53,7 +53,7 @@ def test_no_matching_entry_point_returns_error():
         "Package 'my-pkg' has no registered 'cube.benchmarks' entry point. "
         "Add one to pyproject.toml:\n"
         "  [project.entry-points.'cube.benchmarks']\n"
-        '  my-pkg = "your_module:YourBenchmark"'
+        '  my-pkg = "your_module:YourBenchmarkConfig"'
     )
 
 
@@ -65,5 +65,5 @@ def test_no_entry_points_at_all_returns_error():
         "Package 'my-pkg' has no registered 'cube.benchmarks' entry point. "
         "Add one to pyproject.toml:\n"
         "  [project.entry-points.'cube.benchmarks']\n"
-        '  my-pkg = "your_module:YourBenchmark"'
+        '  my-pkg = "your_module:YourBenchmarkConfig"'
     )

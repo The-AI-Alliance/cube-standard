@@ -7,8 +7,9 @@ Read them alongside tool.py, task.py, and benchmark.py.
 import pytest
 
 from cube.core import Action, Observation
-from counter_cube import CounterBenchmark, CounterTaskConfig, CounterTool, CounterToolConfig
+from counter_cube import CounterBenchmarkConfig, CounterTaskConfig, CounterTool, CounterToolConfig
 from counter_cube.pluggable_tool import CounterToolPluggable
+from counter_cube.task import CounterTaskMetadata
 
 INCREMENT = Action(name="increment", arguments={})
 DECREMENT = Action(name="decrement", arguments={})
@@ -16,15 +17,13 @@ DECREMENT = Action(name="decrement", arguments={})
 
 @pytest.fixture
 def benchmark():
-    bench = CounterBenchmark()
-    bench.setup()
-    yield bench
-    bench.close()
+    with CounterBenchmarkConfig().make() as bench:
+        yield bench
 
 
 @pytest.fixture
 def task_configs(benchmark):
-    return {c.task_id: c for c in benchmark.get_task_configs()}
+    return {c.task_id: c for c in benchmark.config.get_task_configs()}
 
 
 # ---------------------------------------------------------------------------
@@ -191,10 +190,10 @@ def test_increment_by_task(task_configs):
     task.close()
 
 
-def test_toolconfig_override():
-    """Explicit tool_config on TaskConfig takes precedence over metadata defaults."""
+def test_toolconfig_on_task_config():
+    """tool_config set on TaskConfig is used by make()."""
     cfg = CounterTaskConfig(
-        task_id="count-to-3",
+        metadata=CounterTaskMetadata(id="count-to-3", target=3),
         tool_config=CounterToolConfig(enable_increment_by=True),
     )
     task = cfg.make()

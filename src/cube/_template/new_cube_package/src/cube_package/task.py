@@ -5,10 +5,18 @@ Task owns a Tool instance and implements the episode loop:
   evaluate() → (reward: float, info dict) called after every step
   finished() → bool                       optional early-termination check
 
-Store per-task parameters in metadata.extra_info — don't add new Pydantic
-fields to Task unless they are shared across all tasks in the benchmark.
+For per-task data, prefer typed Pydantic fields over stringly-typed dicts:
+  - Lightweight, eager-loaded values (always available, ship in
+    task_metadata.json) → declare them on a `TaskMetadata` subclass.
+  - Heavy, lazy values populated by `BenchmarkConfig.install()` (problem
+    statements, patches, archives, …) → declare them on a
+    `TaskExecutionInfo` subclass and surface them via `Task.execution_info`.
 
-TaskConfig is the serialisable handle that produces a Task via make().
+TaskConfig is the serialisable boundary that crosses process/network lines.
+It carries its own metadata (stamped by BenchmarkConfig.get_task_configs()
+on the driver) so workers never need to import the owning BenchmarkConfig.
+Implement make() using self.metadata directly; populate execution_info from
+self.load_task_execution_info(self.task_id) when your cube ships heavy data.
 """
 
 from typing import Any
@@ -16,29 +24,34 @@ from typing import Any
 from cube.benchmark import RuntimeContext
 from cube.container import ContainerBackend
 from cube.core import Observation
-from cube.task import Task, TaskConfig, TaskMetadata
+from cube.task import Task, TaskConfig, TaskExecutionInfo  # noqa: F401  (TaskExecutionInfo used in commented CubeExecutionInfo example below)
 from cube_package.tool import CubeToolConfig
+
+
+# Optional: declare a TaskExecutionInfo subclass when your cube ships heavy
+# per-task data via BenchmarkConfig.install(). Cubes with no heavy data
+# can leave this commented out and keep `Task.execution_info = None`.
+#
+# class CubeExecutionInfo(TaskExecutionInfo):
+#     """Heavy per-task data populated on the worker by CubeTaskConfig.make()."""
+#
+#     instruction: str
+#     # patch: str = ""
+#     # ...
 
 
 class CubeTask(Task):
     """One episode: interact with CubeTool to satisfy the goal.
 
-    The goal is defined by metadata.extra_info (set in benchmark.py).
-    Read it via self.metadata.extra_info["key"].
+    Read static per-task config from `self.metadata.<field>` (typed) and
+    heavy lazy data — when used — from `self.execution_info.<field>` (typed).
     """
 
     def reset(self) -> tuple[Observation, dict[str, Any]]:
-        """Initialise the tool and return the opening observation.
-
-        Returns
-        -------
-        obs : Observation
-            What the agent sees at the start of the episode.
-        info : dict
-            Arbitrary metadata (not shown to the agent).
-        """
+        """Initialise the tool and return the opening observation."""
         self.tool.reset()
-        # TODO: build a meaningful opening observation.
+        # TODO: build a meaningful opening observation. If your cube uses
+        # a CubeExecutionInfo subclass, read it via self.execution_info.<field>.
         obs = Observation.from_text("Episode started. Use available actions to complete the task.")
         return obs, {}
 
@@ -52,15 +65,12 @@ class CubeTask(Task):
         info : dict
             Evaluation details (e.g. {"solved": True, "value": 42}).
         """
-        # TODO: inspect obs and self.tool to determine the reward of the current state.
+        # TODO: inspect obs and/or self.tool to determine the reward.
         solved = False  # replace with real check
         return (1.0 if solved else 0.0), {"solved": solved}
 
     def finished(self, obs: Observation | None = None) -> bool:
-        """Return True to end the episode early (before max steps).
-
-        Called automatically by Task.step() after each action.
-        """
+        """Return True to end the episode early (before max steps)."""
         # TODO: return True when the goal is achieved.
         return False
 
@@ -68,25 +78,41 @@ class CubeTask(Task):
 class CubeTaskConfig(TaskConfig):
     """Serialisable factory that produces a CubeTask.
 
-    tool_config precedence (highest → lowest):
-      1. Explicit tool_config set on this TaskConfig instance.
-      2. Per-task tool_config in metadata.extra_info["tool_config"].
-      3. CubeToolConfig defaults.
+    Self-contained: ``self.metadata`` carries the (possibly subclassed)
+    TaskMetadata, stamped onto the config by
+    ``CubeBenchmarkConfig.get_task_configs()`` on the driver.
     """
+
+    @classmethod
+    def verify_installed(cls) -> None:
+        """Optional fail-fast check before workers attempt to load heavy data.
+
+        Default base implementation is a no-op. Override when your cube ships
+        heavy data via ``BenchmarkConfig.install()`` so misconfigured workers
+        error early with an actionable message instead of timing out::
+
+            cache_dir = cls.task_execution_cache_dir()
+            if not cache_dir.exists() or not any(cache_dir.iterdir()):
+                raise RuntimeError(
+                    f"Run `cube install new-cube-package` first."
+                )
+        """
 
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> CubeTask:
-        # Deferred import to avoid circular dependency (benchmark imports task).
-        from cube_package.benchmark import CubeBenchmark  # noqa: PLC0415
-
-        task_metadata: TaskMetadata = CubeBenchmark.task_metadata[self.task_id]
-        tool_cfg = self.tool_config or CubeToolConfig(**task_metadata.extra_info.get("tool_config", {}))
+        # By convention, fail fast if this worker is misconfigured.
+        type(self).verify_installed()
+        # If your cube uses heavy per-task data, hydrate it here:
+        # exec_info = CubeExecutionInfo.model_validate(
+        #     self.load_task_execution_info(self.task_id)
+        # )
         return CubeTask(
-            metadata=task_metadata,
-            tool_config=tool_cfg,
+            metadata=self.metadata,
+            execution_info=None,  # set to ``exec_info`` if you populate it above
+            tool_config=self.tool_config or CubeToolConfig(),
             runtime_context=runtime_context,
             container_backend=container_backend,
         )

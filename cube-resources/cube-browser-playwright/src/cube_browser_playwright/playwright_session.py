@@ -169,12 +169,13 @@ class PlaywrightSession(BrowserSession):
         try:
             self._context.close()
         except Exception as e:
-            logger.error("Error closing browser context; resources may be leaked: %s", e)
+            # "Event loop is closed" is expected when stop() is called during interpreter
+            # shutdown or after the sync-API event loop has already been torn down — not a leak.
+            if "Event loop is closed" not in str(e):
+                logger.error("Error closing browser context; resources may be leaked: %s", e)
         try:
             self._playwright.stop()
         except Exception as e:
-            logger.error("Error stopping playwright; process may be leaked: %s", e)
-        try:
-            shutil.rmtree(self._user_data_dir)
-        except OSError as e:
-            logger.warning("Failed to remove temp profile dir %r: %s", self._user_data_dir, e)
+            if "Event loop is closed" not in str(e):
+                logger.error("Error stopping playwright; process may be leaked: %s", e)
+        shutil.rmtree(self._user_data_dir, ignore_errors=True)

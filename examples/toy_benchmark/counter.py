@@ -8,9 +8,10 @@ This example demonstrates:
 
 import argparse
 import os
-from typing import Any, ClassVar, Dict, Tuple
+from collections.abc import Generator
+from typing import Any, ClassVar, Dict, Literal, Tuple
 
-from cube.benchmark import Benchmark, BenchmarkMetadata, RuntimeContext
+from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
 from cube.container import Container, ContainerBackend, ContainerConfig
 from cube.core import Action, ActionSchema, Observation
 from cube.task import Task, TaskConfig, TaskMetadata
@@ -108,13 +109,25 @@ class CounterToolConfig(ToolConfig):
         )
 
 
+# TaskMetadata subclass — typed per-task fields
+class CounterTaskMetadata(TaskMetadata):
+    """Per-task metadata with a typed ``target``."""
+
+    target: int
+    """Counter value the agent must reach to solve the task."""
+
+    difficulty: Literal["easy", "medium", "hard"] = "easy"
+
+
 # Task Implementation
 class ReachTargetTask(Task):
     """Task: Increment counter to reach target value."""
 
+    metadata: CounterTaskMetadata  # type: ignore[assignment]
+
     @property
     def target(self) -> int:
-        return self.metadata.extra_info["target"]
+        return self.metadata.target
 
     def reset(self) -> Tuple[Observation, Dict[str, Any]]:
         """Reset the task to its initial state."""
@@ -170,25 +183,29 @@ class CounterTaskConfig(TaskConfig):
         runtime_context: RuntimeContext | None = None,
         container_backend: ContainerBackend | None = None,
     ) -> ReachTargetTask:
-        """Create task instance from config.
-
-        Looks up task metadata from CounterBenchmark.task_metadata by task_id.
-        Builds CounterToolConfig from extra_info["tool_config"] if present, otherwise uses defaults.
-        An explicit tool_config on this TaskConfig always takes precedence.
-        """
-        task_metadata = CounterBenchmark.task_metadata[self.task_id]
-        tool_cfg = self.tool_config or CounterToolConfig(**task_metadata.extra_info.get("tool_config", {}))
+        tool_cfg = self.tool_config or CounterToolConfig()
         return ReachTargetTask(
-            metadata=task_metadata,
+            metadata=self.metadata,
             tool_config=tool_cfg,
             runtime_context=runtime_context,
             container_backend=container_backend,
         )
 
 
-# Benchmark Implementation
+# Benchmark runtime pair — no shared infrastructure needed for this simple benchmark.
 class CounterBenchmark(Benchmark):
-    """Minimal benchmark with counter tasks."""
+    """Minimal runtime Benchmark — _setup/close are no-ops."""
+
+    def _setup(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+# Benchmark Implementation
+class CounterBenchmarkConfig(BenchmarkConfig):
+    """Minimal benchmark config with counter tasks."""
 
     benchmark_metadata: ClassVar[BenchmarkMetadata] = BenchmarkMetadata(
         name="toy-counter",
@@ -198,37 +215,42 @@ class CounterBenchmark(Benchmark):
         tags=["toy", "counter", "minimal"],
     )
     task_metadata: ClassVar[dict[str, TaskMetadata]] = {
-        "count-to-3": TaskMetadata(
+        "count-to-3": CounterTaskMetadata(
             id="count-to-3",
             abstract_description="Increment counter to reach value 3",
             recommended_max_steps=5,
             container_config=ContainerConfig(image="python:3.12-slim", ram_gb=1.0, cpu_cores=1.0),
-            extra_info={"target": 3, "difficulty": "easy"},
+            target=3,
         ),
-        "count-to-3-with-decrement": TaskMetadata(
+        "count-to-3-with-decrement": CounterTaskMetadata(
             id="count-to-3-with-decrement",
             abstract_description="Increment counter to reach value 3, with decrement available",
             recommended_max_steps=7,
             container_config=ContainerConfig(image="python:3.12-slim", ram_gb=1.0, cpu_cores=1.0),
-            extra_info={"target": 3, "difficulty": "easy", "tool_config": {"enable_decrement": True}},
+            target=3,
         ),
-        "count-by-2": TaskMetadata(
+        "count-by-2": CounterTaskMetadata(
             id="count-by-2",
             abstract_description="Counter with custom increment amount",
             recommended_max_steps=4,
             container_config=ContainerConfig(image="python:3.12-slim", ram_gb=1.0, cpu_cores=1.0),
-            extra_info={"target": 4, "difficulty": "easy", "tool_config": {"increment_by": 2}},
+            target=4,
         ),
     }
     task_config_class: ClassVar[type[TaskConfig]] = CounterTaskConfig
+    benchmark_class: ClassVar[type[Benchmark]] = CounterBenchmark
 
-    def _setup(self) -> None:
-        """No shared infrastructure needed for this simple benchmark."""
-        pass
+    _TASK_TOOL_CONFIGS: ClassVar[dict[str, CounterToolConfig]] = {
+        "count-to-3-with-decrement": CounterToolConfig(enable_decrement=True),
+        "count-by-2": CounterToolConfig(increment_by=2),
+    }
 
-    def close(self) -> None:
-        """No resources to clean up for this simple benchmark."""
-        pass
+    def get_task_configs(self) -> Generator[CounterTaskConfig, None, None]:
+        for task_id, tm in self.tasks().items():
+            yield CounterTaskConfig(
+                metadata=tm,
+                tool_config=self._TASK_TOOL_CONFIGS.get(task_id),
+            )
 
 
 # Test Function
@@ -274,15 +296,14 @@ def _make_task(
     task_id: str,
 ) -> ReachTargetTask:
     cfg = task_configs[task_id]
-    return cfg.make(runtime_context=benchmark._runtime_context, container_backend=benchmark.container_backend)
+    return cfg.make(runtime_context=benchmark._runtime_context, container_backend=benchmark.config.container_backend)
 
 
 def run_backend_smoke(backend_name: str, container_backend: ContainerBackend | None) -> None:
     print(f"Running toy benchmark smoke test with backend={backend_name}")
-    benchmark = CounterBenchmark(container_backend=container_backend)
-    benchmark.setup()
-    try:
-        task_configs = {c.task_id: c for c in benchmark.get_task_configs()}
+    config = CounterBenchmarkConfig(container_backend=container_backend)
+    with config.make() as benchmark:
+        task_configs = {c.task_id: c for c in config.get_task_configs()}
         task = _make_task(benchmark, task_configs, "count-to-3")
         try:
             task.reset()
@@ -293,8 +314,6 @@ def run_backend_smoke(backend_name: str, container_backend: ContainerBackend | N
             print("✓ Smoke test passed")
         finally:
             task.close()
-    finally:
-        benchmark.close()
 
 
 def test_counter_benchmark(container_backend: ContainerBackend | None = None, backend_name: str = "none"):
@@ -302,145 +321,149 @@ def test_counter_benchmark(container_backend: ContainerBackend | None = None, ba
     print(f"Starting counter benchmark tests (backend={backend_name})...")
     print("=" * 60)
 
-    benchmark = CounterBenchmark(container_backend=container_backend)
-    benchmark.setup()
+    config = CounterBenchmarkConfig(container_backend=container_backend)
+    tasks: list[Task] = []
 
-    task_configs = {c.task_id: c for c in benchmark.get_task_configs()}
+    def _track(task: Task) -> Task:
+        tasks.append(task)
+        return task
 
-    # === Test 1: Single action execution via .step (with default config) ===
-    print("\n" + "=" * 60)
-    print("Test 1: Single action execution via .step")
-    print("=" * 60)
+    with config.make() as benchmark:
+        try:
+            task_configs = {c.task_id: c for c in config.get_task_configs()}
 
-    task1 = _make_task(benchmark, task_configs, "count-to-3")
-    obs, _ = task1.reset()
+            # === Test 1: Single action execution via .step (with default config) ===
+            print("\n" + "=" * 60)
+            print("Test 1: Single action execution via .step")
+            print("=" * 60)
 
-    print(f"Initial observation: {obs.contents[0].data}")
-    print(f"Available actions: {[a.name for a in task1.action_set]}")
+            task1 = _track(_make_task(benchmark, task_configs, "count-to-3"))
+            obs, _ = task1.reset()
 
-    # Verify default config doesn't have decrement/reset
-    action_names = [a.name for a in task1.action_set]
-    assert "decrement" not in action_names, "Default config should not have 'decrement'"
-    assert "reset_counter" not in action_names, "Default config should not have 'reset_counter'"
+            print(f"Initial observation: {obs.contents[0].data}")
+            print(f"Available actions: {[a.name for a in task1.action_set]}")
 
-    # Agent loop: obs -> action -> step -> obs
-    env_output = None
-    for step_num in range(1, 4):
-        action = Action(name="increment", arguments={})
-        env_output = task1.step(action)
-        print(f"Step {step_num}: {env_output.obs.contents[0].data} (reward={env_output.reward})")
+            # Verify default config doesn't have decrement/reset
+            action_names = [a.name for a in task1.action_set]
+            assert "decrement" not in action_names, "Default config should not have 'decrement'"
+            assert "reset_counter" not in action_names, "Default config should not have 'reset_counter'"
 
-    assert isinstance(task1.tool, ConfigurableCounterTool)
-    assert task1.tool.counter == 3, f"Expected counter to be 3, got {task1.tool.counter}"
-    assert env_output is not None and env_output.done, "Task should be done"
-    print("✓ Single action execution works!")
+            # Agent loop: obs -> action -> step -> obs
+            env_output = None
+            for step_num in range(1, 4):
+                action = Action(name="increment", arguments={})
+                env_output = task1.step(action)
+                print(f"Step {step_num}: {env_output.obs.contents[0].data} (reward={env_output.reward})")
 
-    # === Test 2: Multiple actions in one step ===
-    print("\n" + "=" * 60)
-    print("Test 2: Multiple action execution via .step")
-    print("=" * 60)
+            assert isinstance(task1.tool, ConfigurableCounterTool)
+            assert task1.tool.counter == 3, f"Expected counter to be 3, got {task1.tool.counter}"
+            assert env_output is not None and env_output.done, "Task should be done"
+            print("✓ Single action execution works!")
 
-    task2 = _make_task(benchmark, task_configs, "count-to-3")
-    task2.reset()
+            # === Test 2: Multiple actions in one step ===
+            print("\n" + "=" * 60)
+            print("Test 2: Multiple action execution via .step")
+            print("=" * 60)
 
-    # Execute multiple actions at once
-    actions = [
-        Action(name="increment", arguments={}),
-        Action(name="get_value", arguments={}),
-        Action(name="increment", arguments={}),
-    ]
-    print(f"Executing {len(actions)} actions: {[a.name for a in actions]}")
+            task2 = _track(_make_task(benchmark, task_configs, "count-to-3"))
+            task2.reset()
 
-    env_output = task2.step(actions)
-    print("Observations:")
-    for i, content in enumerate(env_output.obs.contents):
-        print(f"  {i + 1}. {content.data}")
+            # Execute multiple actions at once
+            actions = [
+                Action(name="increment", arguments={}),
+                Action(name="get_value", arguments={}),
+                Action(name="increment", arguments={}),
+            ]
+            print(f"Executing {len(actions)} actions: {[a.name for a in actions]}")
 
-    assert isinstance(task2.tool, ConfigurableCounterTool)
-    assert task2.tool.counter == 2, f"Expected counter to be 2, got {task2.tool.counter}"
-    print("✓ Multiple action execution works!")
+            env_output = task2.step(actions)
+            print("Observations:")
+            for i, content in enumerate(env_output.obs.contents):
+                print(f"  {i + 1}. {content.data}")
 
-    # === Test 3: Lower level API (.tool.execute_action) ===
-    print("\n" + "=" * 60)
-    print("Test 3: Lower level API (.tool.execute_action)")
-    print("=" * 60)
+            assert isinstance(task2.tool, ConfigurableCounterTool)
+            assert task2.tool.counter == 2, f"Expected counter to be 2, got {task2.tool.counter}"
+            print("✓ Multiple action execution works!")
 
-    task3 = _make_task(benchmark, task_configs, "count-to-3")
-    task3.reset()
+            # === Test 3: Lower level API (.tool.execute_action) ===
+            print("\n" + "=" * 60)
+            print("Test 3: Lower level API (.tool.execute_action)")
+            print("=" * 60)
 
-    # Lower level: directly call tool.execute_action()
-    action = Action(name="increment", arguments={})
-    result = task3.tool.execute_action(action)
-    assert isinstance(result, Observation), "Expected Observation from tool action"
-    assert isinstance(task3.tool, ConfigurableCounterTool)
-    assert task3.tool.counter == 1, f"Expected counter to be 1, got {task3.tool.counter}"
-    print(f"Direct tool execution: {result.contents[0].data}")
-    print("Note: Bypasses task.step() and doesn't trigger evaluation")
-    print("✓ Lower level API works!")
+            task3 = _track(_make_task(benchmark, task_configs, "count-to-3"))
+            task3.reset()
 
-    # === Test 4: ToolConfig flexibility - enable decrement ===
-    print("\n" + "=" * 60)
-    print("Test 4: ToolConfig flexibility - enable decrement")
-    print("=" * 60)
+            # Lower level: directly call tool.execute_action()
+            action = Action(name="increment", arguments={})
+            result = task3.tool.execute_action(action)
+            assert isinstance(result, Observation), "Expected Observation from tool action"
+            assert isinstance(task3.tool, ConfigurableCounterTool)
+            assert task3.tool.counter == 1, f"Expected counter to be 1, got {task3.tool.counter}"
+            print(f"Direct tool execution: {result.contents[0].data}")
+            print("Note: Bypasses task.step() and doesn't trigger evaluation")
+            print("✓ Lower level API works!")
 
-    task4 = _make_task(benchmark, task_configs, "count-to-3-with-decrement")
-    task4.reset()
+            # === Test 4: ToolConfig flexibility - enable decrement ===
+            print("\n" + "=" * 60)
+            print("Test 4: ToolConfig flexibility - enable decrement")
+            print("=" * 60)
 
-    # Verify decrement is now available
-    action_names = [a.name for a in task4.action_set]
-    print(f"Available actions: {action_names}")
-    assert "decrement" in action_names, "Expected 'decrement' action with enable_decrement=True"
+            task4 = _track(_make_task(benchmark, task_configs, "count-to-3-with-decrement"))
+            task4.reset()
 
-    # Test increment and decrement
-    env_output = task4.step(Action(name="increment", arguments={}))
-    print(f"Increment: {env_output.obs.contents[0].data}")
-    assert isinstance(task4.tool, ConfigurableCounterTool)
-    assert task4.tool.counter == 1
+            # Verify decrement is now available
+            action_names = [a.name for a in task4.action_set]
+            print(f"Available actions: {action_names}")
+            assert "decrement" in action_names, "Expected 'decrement' action with enable_decrement=True"
 
-    env_output = task4.step(Action(name="decrement", arguments={}))
-    print(f"Decrement: {env_output.obs.contents[0].data}")
-    assert task4.tool.counter == 0, "Decrement should reduce counter"
-    print("✓ ToolConfig can add/remove actions!")
+            # Test increment and decrement
+            env_output = task4.step(Action(name="increment", arguments={}))
+            print(f"Increment: {env_output.obs.contents[0].data}")
+            assert isinstance(task4.tool, ConfigurableCounterTool)
+            assert task4.tool.counter == 1
 
-    # === Test 5: ToolConfig flexibility - custom increment amount ===
-    print("\n" + "=" * 60)
-    print("Test 5: ToolConfig flexibility - custom increment amount")
-    print("=" * 60)
+            env_output = task4.step(Action(name="decrement", arguments={}))
+            print(f"Decrement: {env_output.obs.contents[0].data}")
+            assert task4.tool.counter == 0, "Decrement should reduce counter"
+            print("✓ ToolConfig can add/remove actions!")
 
-    task5 = _make_task(benchmark, task_configs, "count-by-2")
-    task5.reset()
+            # === Test 5: ToolConfig flexibility - custom increment amount ===
+            print("\n" + "=" * 60)
+            print("Test 5: ToolConfig flexibility - custom increment amount")
+            print("=" * 60)
 
-    # Test increment by 2
-    env_output = task5.step(Action(name="increment", arguments={}))
-    print(f"Increment: {env_output.obs.contents[0].data}")
-    assert isinstance(task5.tool, ConfigurableCounterTool)
-    assert task5.tool.counter == 2, f"Expected counter to be 2, got {task5.tool.counter}"
+            task5 = _track(_make_task(benchmark, task_configs, "count-by-2"))
+            task5.reset()
 
-    env_output = task5.step(Action(name="increment", arguments={}))
-    print(f"Increment: {env_output.obs.contents[0].data}")
-    assert task5.tool.counter == 4, f"Expected counter to be 4, got {task5.tool.counter}"
-    assert env_output.done, "Task should be done"
-    print("✓ ToolConfig can change action behavior!")
+            # Test increment by 2
+            env_output = task5.step(Action(name="increment", arguments={}))
+            print(f"Increment: {env_output.obs.contents[0].data}")
+            assert isinstance(task5.tool, ConfigurableCounterTool)
+            assert task5.tool.counter == 2, f"Expected counter to be 2, got {task5.tool.counter}"
 
-    # === Test 6: Task isolation ===
-    print("\n" + "=" * 60)
-    print("Test 6: Task isolation")
-    print("=" * 60)
+            env_output = task5.step(Action(name="increment", arguments={}))
+            print(f"Increment: {env_output.obs.contents[0].data}")
+            assert task5.tool.counter == 4, f"Expected counter to be 4, got {task5.tool.counter}"
+            assert env_output.done, "Task should be done"
+            print("✓ ToolConfig can change action behavior!")
 
-    assert task1.tool.counter == 3, "Task1 should still have counter=3"
-    assert task2.tool.counter == 2, "Task2 should have counter=2"
-    assert task3.tool.counter == 1, "Task3 should have counter=1"
-    assert task4.tool.counter == 0, "Task4 should have counter=0"
-    assert task5.tool.counter == 4, "Task5 should have counter=4"
-    print("✓ Task isolation verified - each task maintains independent state")
+            # === Test 6: Task isolation ===
+            print("\n" + "=" * 60)
+            print("Test 6: Task isolation")
+            print("=" * 60)
 
-    # Cleanup
-    task1.close()
-    task2.close()
-    task3.close()
-    task4.close()
-    task5.close()
-    benchmark.close()
+            assert task1.tool.counter == 3, "Task1 should still have counter=3"
+            assert task2.tool.counter == 2, "Task2 should have counter=2"
+            assert task3.tool.counter == 1, "Task3 should have counter=1"
+            assert task4.tool.counter == 0, "Task4 should have counter=0"
+            assert task5.tool.counter == 4, "Task5 should have counter=4"
+            print("✓ Task isolation verified - each task maintains independent state")
+        finally:
+            for task in tasks:
+                try:
+                    task.close()
+                except Exception:
+                    pass
 
     print("\n" + "=" * 60)
     print("✓✓ All tests passed!")

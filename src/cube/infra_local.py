@@ -310,10 +310,41 @@ class LocalDockerServiceHandle(ResourceHandle):
     ``endpoints`` maps service names (from DockerServiceConfig.services) to
     ``http://127.0.0.1:{port}`` URLs — the same ports declared in the resource,
     since the launch_script binds them directly on the host.
+
+    ``container`` returns a ``cube.container.Container`` wrapping the first started
+    container — convenient for task-scoped (L3) single-container resources where
+    the cube's tool layer needs ``.exec()`` semantics. Only available when exactly
+    one container was started; raises otherwise.
     """
 
     _entry_id: str = field(default="", repr=False)
     _container_ids: list[str] = field(default_factory=list, repr=False)
+    _container_cache: object | None = field(default=None, repr=False)
+
+    @property
+    def container(self):
+        """Return a ``Container`` wrapper for single-container L3 resources.
+
+        Built lazily on first access.  Caller must not call ``stop()`` on the wrapper
+        directly — this handle owns the lifecycle; use ``self.close()`` instead.
+        """
+        if self._container_cache is not None:
+            return self._container_cache
+        if len(self._container_ids) != 1:
+            raise RuntimeError(
+                f"LocalDockerServiceHandle.container is only defined for single-container "
+                f"resources (got {len(self._container_ids)} containers)."
+            )
+        # Import lazily to avoid circular import (backends.local imports resource).
+        import docker  # type: ignore
+
+        from cube.backends.local import LocalContainer
+
+        client = docker.from_env()
+        docker_container = client.containers.get(self._container_ids[0])
+        # remove_on_close=False — this handle, not the wrapper, owns the lifecycle.
+        self._container_cache = LocalContainer(docker_container, client, remove_on_close=False)
+        return self._container_cache
 
     def close(self) -> None:
         """Stop and remove all containers started by the launch_script."""
@@ -582,8 +613,13 @@ class LocalInfraConfig(InfraConfig):
         declared in ``resource.services``.  These are the host ports the launch_script
         binds directly (no SSH tunneling needed locally).
 
-        Container tracking: containers running before the script are snapshotted;
-        new containers that appear after are stored in the handle for cleanup.
+        Container tracking: the launch_script is run with ``CUBE_LAUNCH_ID=<run_id>``
+        in its environment.  Scripts built by ``cube.task_infra.build_docker_run_script``
+        propagate this into ``docker run --label cube.launch=$CUBE_LAUNCH_ID``, which
+        lets us identify only *our* containers via ``docker ps --filter label=…``.
+        This is race-safe under concurrent launches (pytest-xdist, Ray workers, etc.)
+        where the previous before/after ``docker ps -q`` diff would capture peers'
+        containers as our own.
         """
         from cube.provision_store import ProvisionStore
 
@@ -593,15 +629,31 @@ class LocalInfraConfig(InfraConfig):
         run_id = str(uuid.uuid4())
         entry_id = f"cube-{run_id[:8]}-dss-{uuid.uuid4().hex[:6]}"
 
-        # Snapshot containers before launch to identify which ones we started.
+        # Snapshot containers before launch so we can fall back to a diff for scripts
+        # that don't propagate CUBE_LAUNCH_ID (legacy / hand-rolled launch scripts).
         before = set(subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True, check=True).stdout.split())
 
         if resource.launch_script:
             logger.info("Running launch_script for %r (run=%s)…", resource.name, run_id[:8])
-            subprocess.run(["bash", "-c", resource.launch_script], check=True)
+            env = {**os.environ, "CUBE_LAUNCH_ID": run_id}
+            subprocess.run(["bash", "-c", resource.launch_script], check=True, env=env)
 
-        after = set(subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True, check=True).stdout.split())
-        container_ids = list(after - before)
+        # Prefer label-based identification — race-safe under concurrency.
+        label_result = subprocess.run(
+            ["docker", "ps", "-q", "--filter", f"label=cube.launch={run_id}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        container_ids = label_result.stdout.split()
+
+        if not container_ids:
+            # Launch script didn't tag containers — fall back to the before/after diff.
+            after = set(
+                subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True, check=True).stdout.split()
+            )
+            container_ids = list(after - before)
+
         logger.info("launch_script started %d container(s) for %r", len(container_ids), resource.name)
 
         endpoints = {name: f"http://127.0.0.1:{port}" for name, port in resource.services.items()}
