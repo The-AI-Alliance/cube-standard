@@ -19,19 +19,37 @@ from typing import Callable
 
 _TUNNEL_LOG_DIR = Path(os.environ.get("CUBE_SSH_TUNNEL_LOG_DIR", "/tmp/cube-tunnels"))
 
+# Tracks ports already handed out by free_port() in this process. Closing the
+# probe socket releases the OS-level reservation, so without this set, two
+# concurrent callers can both probe-bind, both close, and both return the
+# same number — and the slower SSH tunnel binds last and wins, sending the
+# first caller's traffic to the wrong VM.
+_RESERVED_PORTS: set[int] = set()
+_RESERVED_PORTS_LOCK = threading.Lock()
+
 # ── SSH utilities ─────────────────────────────────────────────────────────────
 
 
 def free_port(start: int = 15000, count: int = 200) -> int:
-    """Find a free local TCP port. Raises RuntimeError if none found."""
-    for port in range(start, start + count):
-        try:
-            with socket.socket() as s:
-                s.bind(("127.0.0.1", port))
-                return port
-        except OSError:
-            continue
-    raise RuntimeError(f"No free port in {start}–{start + count - 1}")
+    """Find a free local TCP port. Raises RuntimeError if none found.
+
+    Thread-safe: callers in the same process never receive duplicates, even if
+    the port hasn't been bound yet by the eventual consumer (e.g. ssh -L).
+    Released ports are not recycled — assumes the process lifetime is bounded
+    (an eval run, a probe), which keeps the set small in practice.
+    """
+    with _RESERVED_PORTS_LOCK:
+        for port in range(start, start + count):
+            if port in _RESERVED_PORTS:
+                continue
+            try:
+                with socket.socket() as s:
+                    s.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            _RESERVED_PORTS.add(port)
+            return port
+        raise RuntimeError(f"No free port in {start}–{start + count - 1}")
 
 
 def open_tunnel(
