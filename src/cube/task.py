@@ -21,7 +21,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Tuple
+from typing import Any, Dict, Generic, List, Literal, Tuple, TypeVar
 
 from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
 
@@ -94,6 +94,15 @@ class TaskMetadata(TypedBaseModel):
         default=None,
         description="Optional container configuration for this task (defaults to None, meaning no container needed).",
     )
+
+
+TTMetadata = TypeVar("TTMetadata", bound=TaskMetadata)
+"""Type variable bound to ``TaskMetadata``.
+
+Used as the parameter for ``TaskConfig[TTMetadata]`` so cubes can statically
+narrow ``TaskConfig.metadata`` to a ``TaskMetadata`` subclass without
+re-annotating the field on the subclass.
+"""
 
 
 class TaskExecutionInfo(TypedBaseModel):
@@ -394,7 +403,7 @@ class Task(TypedBaseModel, ABC):
             self._container = None
 
 
-class TaskConfig(ABC, TypedBaseModel):
+class TaskConfig(ABC, TypedBaseModel, Generic[TTMetadata]):
     """Serializable task configuration — self-contained unit handed to workers.
 
     Carries everything needed to instantiate a Task, including its
@@ -409,13 +418,24 @@ class TaskConfig(ABC, TypedBaseModel):
     ``sub_bench_name`` is an optional routing hint used by
     ``CompositeBenchmark.spawn`` to dispatch a task to its origin
     sub-benchmark. Standalone benchmarks leave it None.
+
+    Generic parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
+    statically narrow ``self.metadata`` to a ``TaskMetadata`` subclass without
+    re-annotating the field. Two equivalent forms at runtime:
+
+        # Unparametrised — ``self.metadata`` typed as ``TaskMetadata``.
+        class FooTaskConfig(TaskConfig): ...
+
+        # Parametrised — ``self.metadata`` typed as ``FooTaskMetadata``,
+        # autocomplete and static checking work for subclass-specific fields.
+        class FooTaskConfig(TaskConfig[FooTaskMetadata]): ...
     """
 
     # ``SerializeAsAny`` preserves subclass-specific fields through JSON
     # round-trip. Every cube subclasses TaskMetadata with extra
     # per-task data — without this annotation those fields get silently
     # stripped when the config crosses a process / network / storage boundary.
-    metadata: SerializeAsAny[TaskMetadata] = Field(
+    metadata: SerializeAsAny[TTMetadata] = Field(
         ...,
         description=(
             "Full task metadata. Stamped onto the config by "
