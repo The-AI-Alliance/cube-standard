@@ -57,7 +57,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections import Counter
 from pathlib import Path
-from typing import Any, ClassVar, Generator, Mapping, Self, Sequence
+from typing import Any, ClassVar, Generator, Mapping, Self, Sequence, cast
 
 from pydantic import Field, SerializeAsAny
 
@@ -130,7 +130,7 @@ class BenchmarkMetadata(TypedBaseModel):
     )
 
 
-class BenchmarkConfig(TypedBaseModel, ABC):
+class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     """Serializable description of a benchmark. Safe to copy, serialize, and ship.
 
     Subclasses declare four class-level attributes:
@@ -152,6 +152,22 @@ class BenchmarkConfig(TypedBaseModel, ABC):
     ``Benchmark``: it provisions any declared resources idempotently, then
     constructs and sets up the runtime pair. Users never call ``setup()``
     directly — a ``Benchmark`` returned from ``make`` is born ready.
+
+    Type parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
+    statically narrow the TaskMetadata type of BenchmarkConfig:
+
+        # Unparametrised — ``cfg.tasks()`` typed as Mapping[str, TaskMetadata].
+        class FooBenchmarkConfig(BenchmarkConfig): ...
+
+        # Parametrised — ``cfg.tasks()`` typed as Mapping[str, FooTaskMetadata]
+        # so iterating values gives autocomplete on FooTaskMetadata fields.
+        class FooBenchmarkConfig(BenchmarkConfig[FooTaskMetadata]): ...
+
+    The ``task_metadata`` ClassVar registry stays typed as
+    ``dict[str, TaskMetadata]`` regardless of parametrisation. ``ClassVar``
+    cannot reference a class's own type parameter (PEP 526 — ClassVars are
+    shared across all generic specialisations).
+    Reads go through ``cfg.tasks()`` to get the narrowed view.
     """
 
     # ── Class-level registries (populated by subclasses or __init_subclass__) ──
@@ -408,7 +424,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         """Number of tasks in the current (possibly subset) view."""
         return len(self.tasks())
 
-    def tasks(self) -> Mapping[str, TaskMetadata]:
+    def tasks(self) -> Mapping[str, TTMetadata]:
         """Return the current task view — ``task_metadata`` filtered by ``task_ids``.
 
         When ``task_ids`` is None, returns the full ``task_metadata`` registry.
@@ -416,15 +432,22 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         ids, in the order given by ``task_ids``. Access via ``self.`` so the
         composite's @property override resolves correctly.
 
-        The return type is ``Mapping`` (read-only) — the runtime value is a
-        ``dict`` but the static contract is the wider type so subclasses can
-        override with a narrower value type if they need ``TaskMetadata``
-        subclass fields visible at use sites.
+        The return type is ``Mapping`` (read-only, covariant in the value
+        type) so subclasses parametrised as ``BenchmarkConfig[FooTaskMetadata]``
+        get a narrowed view at every read site without needing to override
+        the registry. The runtime value is still a ``dict`` — ``Mapping`` is
+        only the static contract.
         """
+        # PEP 526 forbids ``ClassVar[dict[str, TTMetadata]]``, so ``full`` is
+        # statically ``dict[str, TaskMetadata]`` — ``cast`` is the only way to
+        # narrow. It's a ``type: ignore`` in disguise; sound here because the
+        # loaders (``task_metadata_from_json`` / ``task_metadata_from_csv``)
+        # dispatch via ``TypedBaseModel._type`` to inflate each row as the
+        # registered subclass.
         full = self.task_metadata
         if self.task_ids is None:
-            return full
-        return {tid: full[tid] for tid in self.task_ids}
+            return cast(Mapping[str, TTMetadata], full)
+        return cast(Mapping[str, TTMetadata], {tid: full[tid] for tid in self.task_ids})
 
     def get_task_configs(self) -> Generator[TaskConfig, None, None]:
         """Yield one ``TaskConfig`` per task (expanded by seed_generator if set).
