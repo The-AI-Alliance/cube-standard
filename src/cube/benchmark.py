@@ -57,7 +57,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections import Counter
 from pathlib import Path
-from typing import Any, ClassVar, Generator, Generic, Mapping, Self, Sequence, TypeVar, cast
+from typing import Any, ClassVar, Generator, Mapping, Self, Sequence, cast
 
 from pydantic import Field, SerializeAsAny
 
@@ -66,7 +66,7 @@ from cube.container import ContainerBackend
 from cube.core import TypedBaseModel
 from cube.resource import InfraConfig, ResourceConfig
 from cube.seed import AbstractSeedGenerator
-from cube.task import RuntimeContext, Task, TaskConfig, TaskMetadata, TTMetadata
+from cube.task import RuntimeContext, Task, TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
 
 logger = logging.getLogger(__name__)
@@ -130,7 +130,7 @@ class BenchmarkMetadata(TypedBaseModel):
     )
 
 
-class BenchmarkConfig(TypedBaseModel, ABC, Generic[TTMetadata]):
+class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     """Serializable description of a benchmark. Safe to copy, serialize, and ship.
 
     Subclasses declare four class-level attributes:
@@ -153,7 +153,7 @@ class BenchmarkConfig(TypedBaseModel, ABC, Generic[TTMetadata]):
     constructs and sets up the runtime pair. Users never call ``setup()``
     directly — a ``Benchmark`` returned from ``make`` is born ready.
 
-    Generic parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
+    Type parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
     statically narrow the TaskMetadata type of BenchmarkConfig:
 
         # Unparametrised — ``cfg.tasks()`` typed as Mapping[str, TaskMetadata].
@@ -165,8 +165,8 @@ class BenchmarkConfig(TypedBaseModel, ABC, Generic[TTMetadata]):
 
     The ``task_metadata`` ClassVar registry stays typed as
     ``dict[str, TaskMetadata]`` regardless of parametrisation. ``ClassVar``
-    cannot reference a class's own TypeVar (PEP 526 — ClassVars are shared
-    across all generic specialisations).
+    cannot reference a class's own type parameter (PEP 526 — ClassVars are
+    shared across all generic specialisations).
     Reads go through ``cfg.tasks()`` to get the narrowed view.
     """
 
@@ -627,16 +627,7 @@ class BenchmarkConfig(TypedBaseModel, ABC, Generic[TTMetadata]):
         return benchmark
 
 
-TBenchConfig = TypeVar("TBenchConfig", bound=BenchmarkConfig)
-"""Type variable bound to ``BenchmarkConfig``.
-
-Used as the parameter for ``Benchmark[TBenchConfig]`` so cubes can statically
-narrow ``self.config`` to a ``BenchmarkConfig`` subclass without re-annotating
-the attribute on the subclass.
-"""
-
-
-class Benchmark(ABC, Generic[TBenchConfig]):
+class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
     """Runtime pair of ``BenchmarkConfig``. Holds live OS state.
 
     Not serializable. Instantiated only by ``BenchmarkConfig.make(infra)``,
@@ -652,7 +643,7 @@ class Benchmark(ABC, Generic[TBenchConfig]):
                 task = benchmark.spawn(tc)
                 ...
 
-    Generic parameter ``TBenchConfig`` (bound to ``BenchmarkConfig``) lets
+    Type parameter ``TBenchConfig`` (bound to ``BenchmarkConfig``) lets
     cubes statically narrow ``self.config`` to a ``BenchmarkConfig`` subclass:
 
         # Unparametrised — ``self.config`` typed as ``BenchmarkConfig``.

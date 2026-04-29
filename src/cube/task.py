@@ -21,7 +21,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, Generic, List, Literal, Tuple, TypeVar
+from typing import Any, Dict, List, Literal, Tuple
 
 from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
 
@@ -94,15 +94,6 @@ class TaskMetadata(TypedBaseModel):
         default=None,
         description="Optional container configuration for this task (defaults to None, meaning no container needed).",
     )
-
-
-TTMetadata = TypeVar("TTMetadata", bound=TaskMetadata)
-"""Type variable bound to ``TaskMetadata``.
-
-Used as the parameter for ``TaskConfig[TTMetadata]`` so cubes can statically
-narrow ``TaskConfig.metadata`` to a ``TaskMetadata`` subclass without
-re-annotating the field on the subclass.
-"""
 
 
 class TaskExecutionInfo(TypedBaseModel):
@@ -403,7 +394,7 @@ class Task(TypedBaseModel, ABC):
             self._container = None
 
 
-class TaskConfig(ABC, TypedBaseModel, Generic[TTMetadata]):
+class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
     """Serializable task configuration — self-contained unit handed to workers.
 
     Carries everything needed to instantiate a Task, including its
@@ -419,7 +410,7 @@ class TaskConfig(ABC, TypedBaseModel, Generic[TTMetadata]):
     ``CompositeBenchmark.spawn`` to dispatch a task to its origin
     sub-benchmark. Standalone benchmarks leave it None.
 
-    Generic parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
+    Type parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
     statically narrow ``self.metadata`` to a ``TaskMetadata`` subclass without
     re-annotating the field. Two equivalent forms at runtime:
 

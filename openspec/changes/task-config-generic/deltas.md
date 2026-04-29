@@ -6,30 +6,15 @@ Applied when the change lands.
 
 ## Naming convention
 
-TypeVars use long-form prefixes to avoid collisions across layers:
+Type parameters use long-form prefixes to avoid collisions across layers:
 
-- `TTMetadata` — `TaskMetadata`-bound (declared in `cube.task`,
-  re-imported by `cube.benchmark`). The double-T avoids collision with
-  a future `TBenchMetadata`.
-- `TBenchConfig` — `BenchmarkConfig`-bound (declared in
-  `cube.benchmark`). The `Bench` qualifier avoids collision with a
-  future `TaskConfig` / `ToolConfig` TypeVar.
+- `TTMetadata` — `TaskMetadata`-bound. The double-T avoids collision
+  with a future `TBenchMetadata`.
+- `TBenchConfig` — `BenchmarkConfig`-bound. The `Bench` qualifier
+  avoids collision with a future `TaskConfig` / `ToolConfig` type
+  parameter.
 
-New TypeVars introduced by future changes should follow the same pattern.
-
-## ADDED — `TTMetadata` TypeVar
-
-**Spec:** task
-
-New module-level export in `cube.task`:
-
-```python
-TTMetadata = TypeVar("TTMetadata", bound=TaskMetadata)
-```
-
-Bound to `TaskMetadata` so any parametrisation must subclass it. Exported so
-cube authors and downstream layers can reuse a single symbol — `cube.benchmark`
-imports and reuses it for `BenchmarkConfig[TTMetadata]`.
+New type parameters introduced by future changes should follow the same pattern.
 
 ## MODIFIED — `TaskConfig` is generic
 
@@ -46,14 +31,14 @@ class TaskConfig(TypedBaseModel, ABC):
 to:
 
 ```python
-class TaskConfig(TypedBaseModel, ABC, Generic[TTMetadata]):
+class TaskConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     metadata: SerializeAsAny[TTMetadata]
     ...
 ```
 
 `metadata` is an instance field (not a `ClassVar`) and Pydantic generic models
-substitute the TypeVar at class-finalisation time, so this narrows soundly
-under parametrisation — no PEP 526 / variance issues.
+substitute the type parameter at class-finalisation time, so this narrows
+soundly under parametrisation — no PEP 526 / variance issues.
 
 **Subclassing forms:**
 
@@ -82,11 +67,10 @@ under parametrisation — no PEP 526 / variance issues.
 
 **Spec:** benchmark
 
-`cube.benchmark` imports `TTMetadata` from `cube.task` and uses it on
-`BenchmarkConfig`. The narrowing is method-level only, not field-level:
+The narrowing is method-level only, not field-level:
 
 ```python
-class BenchmarkConfig(TypedBaseModel, ABC, Generic[TTMetadata]):
+class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     benchmark_metadata: ClassVar[BenchmarkMetadata]
     task_metadata: ClassVar[dict[str, TaskMetadata]]   # NOT narrowed (see below)
     task_config_class: ClassVar[type[TaskConfig]]
@@ -105,9 +89,9 @@ still a `dict`; only the static contract changes.
 
 **Why `task_metadata: ClassVar` is *not* narrowed.** Two independent reasons:
 
-1. PEP 526 (and pyright/mypy in strict mode) forbid TypeVars inside
+1. PEP 526 (and pyright/mypy in strict mode) forbid type parameters inside
    `ClassVar` — a `ClassVar` is shared across all generic specialisations,
-   but TypeVars vary per specialisation, so combining them is incoherent.
+   but type parameters vary per specialisation, so combining them is incoherent.
 2. Even setting PEP 526 aside, `dict` is invariant in its value type, so
    `dict[str, FooTaskMetadata]` is not a subtype of `dict[str,
    TaskMetadata]` — narrowing the registry directly would be unsound for
@@ -194,19 +178,6 @@ the input — never mutates it — so the widening is sound.
 This is a non-breaking change: every `list[…]` accepted before is still
 accepted (lists are sequences).
 
-## ADDED — `TBenchConfig` TypeVar
-
-**Spec:** benchmark
-
-New module-level export in `cube.benchmark`:
-
-```python
-TBenchConfig = TypeVar("TBenchConfig", bound=BenchmarkConfig)
-```
-
-Bound to `BenchmarkConfig` so any parametrisation must subclass it. Used as
-the parameter for `Benchmark[TBenchConfig]`.
-
 ## MODIFIED — `Benchmark` is generic
 
 **Spec:** benchmark
@@ -223,15 +194,14 @@ class Benchmark(ABC):
 to:
 
 ```python
-class Benchmark(ABC, Generic[TBenchConfig]):
+class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
     def __init__(self, config: TBenchConfig) -> None:
         self.config: TBenchConfig = config
         self._runtime_context: RuntimeContext = {}
 ```
 
-`Benchmark` is a plain ABC, not a Pydantic model, so the parametrisation
-uses standard `typing.Generic` — no Pydantic generic-intermediate handling
-required.
+`Benchmark` is a plain ABC, not a Pydantic model — no Pydantic
+generic-intermediate handling required.
 
 **Subclassing forms:**
 
@@ -262,7 +232,7 @@ type: ignore[assignment]` re-annotation is dropped — parametrisation gives
 the right static type without it.
 
 **`benchmark_class: ClassVar[type[Benchmark]]` on `BenchmarkConfig` is *not*
-parametrised over a separate TypeVar.** `type[Sub]` is covariantly assignable
+parametrised over a separate type parameter.** `type[Sub]` is covariantly assignable
 to `type[Base]`, so existing declarations like
 `benchmark_class: ClassVar = WorkArenaBenchmark` against the parent's
 `ClassVar[type[Benchmark]]` are already sound without an override.

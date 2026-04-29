@@ -40,29 +40,23 @@ smell of the project.
 
 ## Solution
 
-Three generic-class promotions, each addressing the same shape at a
-different layer:
+Three generic-class promotions using PEP 695 class-scoped type parameters
+(Python ≥3.12), each addressing the same shape at a different layer:
 
 ```python
 # cube.task
-TTMetadata = TypeVar("TTMetadata", bound=TaskMetadata)
-
-class TaskConfig(ABC, TypedBaseModel, Generic[TTMetadata]):
+class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
     metadata: SerializeAsAny[TTMetadata] = Field(...)
     ...
 
 # cube.benchmark
-from cube.task import TTMetadata  # share the same TypeVar symbol
-
-class BenchmarkConfig(TypedBaseModel, ABC, Generic[TTMetadata]):
+class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     task_metadata: ClassVar[dict[str, TaskMetadata]]   # NOT narrowed (see below)
     ...
 
     def tasks(self) -> Mapping[str, TTMetadata]: ...   # narrowed (covariant)
 
-TBenchConfig = TypeVar("TBenchConfig", bound=BenchmarkConfig)
-
-class Benchmark(ABC, Generic[TBenchConfig]):
+class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
     def __init__(self, config: TBenchConfig) -> None:
         self.config: TBenchConfig = config
         ...
@@ -88,30 +82,23 @@ class WorkArenaBenchmark(Benchmark[WorkArenaBenchmarkConfig]):
     def close(self) -> None: ...
 ```
 
-**Naming convention.** TypeVars use a long-form prefix to avoid collisions
-across layers as more generic types are introduced:
+**Naming convention.** Type parameters use a long-form prefix to avoid
+collisions across layers as more generic types are introduced:
 
 - `TTMetadata` — TaskMetadata-bound (not just `TMetadata`, which could
   collide with a future `TBenchMetadata`).
 - `TBenchConfig` — BenchmarkConfig-bound (not just `TConfig`, which
-  could collide with future `TaskConfig` / `ToolConfig` TypeVars).
-
-`TTMetadata` is declared once in `cube.task` (next to its `TaskMetadata`
-bound) and re-imported by `cube.benchmark`. `TBenchConfig` is declared in
-`cube.benchmark`. TypeVars are nominal markers — sharing one symbol across
-two unrelated generic classes does not couple them; each parametrisation
-is independent.
+  could collide with future `TaskConfig` / `ToolConfig` type parameters).
 
 `task_config_class` and `benchmark_class` are *not* themselves
-parametrised over separate TypeVars. `type[Sub]` is covariantly assignable
+parametrised over separate type parameters. `type[Sub]` is covariantly assignable
 to `type[Base]`, so subclasses can already assign their own narrower types
 (e.g. `task_config_class: ClassVar = WorkArenaTaskConfig` against a parent
 declared as `ClassVar[type[TaskConfig]]`) without an override or
-`# type: ignore`. Adding TypeVars there would be cosmetic.
+`# type: ignore`. Adding type parameters there would be cosmetic.
 
 `Benchmark` is a plain ABC (not a Pydantic model), so the parametrisation
-is simpler — no Pydantic generic-intermediate handling needed; standard
-`typing.Generic` is enough.
+is simpler — no Pydantic generic-intermediate handling needed.
 
 ## Backwards compatibility
 
@@ -120,13 +107,13 @@ is simpler — no Pydantic generic-intermediate handling needed; standard
 `class FooBenchmarkConfig(BenchmarkConfig):` keep working unchanged:
 
 - Pydantic supports unparametrised generic-model subclasses; `metadata` and
-  `task_metadata` resolve to the TypeVar's `bound` (`TaskMetadata`),
+  `task_metadata` resolve to the type parameter's `bound` (`TaskMetadata`),
   identical to today.
 - `__init_subclass__` validation in `BenchmarkConfig` is `isinstance(...)` /
   `issubclass(...)`-based — generic-agnostic.
 - `SerializeAsAny[TTMetadata]` round-trips polymorphic subclass instances the
   same way `SerializeAsAny[TaskMetadata]` does, because Pydantic resolves
-  the TypeVar at class-finalisation time.
+  the type parameter at class-finalisation time.
 - `task_metadata_from_json` / `task_metadata_from_csv` continue to return
   `dict[str, TaskMetadata]` at the static type level; runtime dispatch via
   `TypedBaseModel`'s `_type` discriminator already produces the right
@@ -150,7 +137,7 @@ comments. Each cube migrates independently in its own PR.
 
 - Forcing existing cubes to adopt the parametrised form. The
   unparametrised form remains a first-class citizen.
-- Adding separate TypeVars for `TaskConfig` / `Benchmark` subclass narrowing
+- Adding separate type parameters for `TaskConfig` / `Benchmark` subclass narrowing
   on `task_config_class` / `benchmark_class`. These already work via
   covariant `type[…]` semantics.
 - Changing the registry shape (`task_metadata`, `task_config_class`,
@@ -160,27 +147,22 @@ comments. Each cube migrates independently in its own PR.
 
 **This PR (cube-standard `nico_fix`):**
 
-- Declare `TTMetadata = TypeVar("TTMetadata", bound=TaskMetadata)` in
-  `cube.task`.
 - `cube.task`: change `class TaskConfig(ABC, TypedBaseModel)` →
-  `class TaskConfig(ABC, TypedBaseModel, Generic[TTMetadata])`; change
-  `metadata: SerializeAsAny[TaskMetadata]` →
+  `class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel)`;
+  change `metadata: SerializeAsAny[TaskMetadata]` →
   `metadata: SerializeAsAny[TTMetadata]`.
-- `cube.benchmark`: import `TTMetadata` from `cube.task`; change
-  `class BenchmarkConfig(TypedBaseModel, ABC)` →
-  `class BenchmarkConfig(TypedBaseModel, ABC, Generic[TTMetadata])`;
+- `cube.benchmark`: change `class BenchmarkConfig(TypedBaseModel, ABC)` →
+  `class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC)`;
   keep `task_metadata: ClassVar[dict[str, TaskMetadata]]` unchanged
-  (cannot reference TypeVars under PEP 526; would also be unsound under
-  invariant `dict`); narrow the return type of `tasks()` to
+  (cannot reference type parameters under PEP 526; would also be unsound
+  under invariant `dict`); narrow the return type of `tasks()` to
   `Mapping[str, TTMetadata]` (covariant). Widen `subset_from_list`'s
   `tasks` parameter from `list[…]` to `Sequence[…]` (covariant) so
   parametrised subclasses can pass narrowed lists. Add an
   `__init_subclass__` early-return guard to skip Pydantic-synthesised
   parametrised intermediates (identifiable by `[` in the class name).
-- Declare `TBenchConfig = TypeVar("TBenchConfig", bound=BenchmarkConfig)`
-  in `cube.benchmark`.
 - `cube.benchmark`: change `class Benchmark(ABC)` →
-  `class Benchmark(ABC, Generic[TBenchConfig])`; type
+  `class Benchmark[TBenchConfig: BenchmarkConfig](ABC)`; type
   `__init__(self, config: TBenchConfig)` and
   `self.config: TBenchConfig`.
 - `CompositeBenchmarkConfig` subclasses `BenchmarkConfig[TaskMetadata]`
