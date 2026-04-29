@@ -212,9 +212,7 @@ def _launch_swtpm(run_id: str) -> tuple[subprocess.Popen, Path, Path]:
 def _create_pflash_vars(run_id: str) -> Path:
     """Copy OVMF_VARS to a per-VM writable file."""
     if not _OVMF_CODE.exists() or not _OVMF_VARS.exists():
-        raise RuntimeError(
-            f"OVMF firmware not found at {_OVMF_CODE.parent} — install with `apt install ovmf`."
-        )
+        raise RuntimeError(f"OVMF firmware not found at {_OVMF_CODE.parent} — install with `apt install ovmf`.")
     dst = Path(f"/tmp/cube-ovmf-vars-{run_id[:8]}.fd")
     shutil.copy(_OVMF_VARS, dst)
     return dst
