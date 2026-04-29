@@ -16,6 +16,57 @@ Type parameters use long-form prefixes to avoid collisions across layers:
 
 New type parameters introduced by future changes should follow the same pattern.
 
+## MODIFIED — `Task` is generic
+
+**Spec:** task
+
+Signature changes from:
+
+```python
+class Task(TypedBaseModel, ABC):
+    metadata: SerializeAsAny[TaskMetadata]
+    ...
+```
+
+to:
+
+```python
+class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
+    metadata: SerializeAsAny[TTMetadata]
+    ...
+```
+
+Same rationale as `TaskConfig` — `metadata` is an instance field (not a
+`ClassVar`), Pydantic substitutes the type parameter at class-finalisation
+time, no PEP 526 / variance issues.
+
+**Subclassing forms:**
+
+- *Unparametrised* (existing cubes, no migration required):
+
+  ```python
+  class FooTask(Task): ...
+  ```
+
+  `metadata` is statically typed as `TaskMetadata` — same as before.
+
+- *Parametrised* (opt-in for narrower typing):
+
+  ```python
+  class FooTask(Task[FooTaskMetadata]): ...
+  ```
+
+  `metadata` is statically typed as `FooTaskMetadata`. No re-annotation
+  on the subclass is needed; doing so is forbidden because Pydantic's
+  invariant-field semantics make it unsound (a holder of the unparametrised
+  parent could legally assign a plain `TaskMetadata`).
+
+**Runtime behaviour is unchanged** for both forms.
+
+Pairs naturally with `class FooTaskConfig(TaskConfig[FooTaskMetadata]):` —
+`TaskConfig.make()` returns a `Task[FooTaskMetadata]` whose `self.metadata`
+field is statically narrowed to `FooTaskMetadata`.
+
 ## MODIFIED — `TaskConfig` is generic
 
 **Spec:** task

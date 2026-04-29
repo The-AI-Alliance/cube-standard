@@ -64,11 +64,11 @@ instantiable but carries no fields.
 
 ### `Task` (abstract, Pydantic)
 ```python
-class Task(TypedBaseModel, ABC):
+class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     # Serializable fields — SerializeAsAny preserves subclass-specific fields
     # through JSON round-trip (Pydantic would otherwise strip them to the
     # declared base type). Required for every polymorphic field.
-    metadata: SerializeAsAny[TaskMetadata]
+    metadata: SerializeAsAny[TTMetadata]
     execution_info: SerializeAsAny[TaskExecutionInfo] | None = None  # heavy lazy data; populated on the worker
     tool_config: SerializeAsAny[ToolConfig]
     container_backend: ContainerBackend | None = None
@@ -263,6 +263,12 @@ always retains the native un-prefixed id.
   serializes only the base-class fields and silently drops subclass-specific
   state on every JSON round-trip. This is already in the base classes — cube
   authors don't need to repeat it on their subclasses.
+- Cubes that need narrower static types on `Task.metadata` use the
+  parametrised form `class FooTask(Task[FooTaskMetadata]):` rather than
+  re-annotating `metadata: FooTaskMetadata` on the subclass. Re-annotation
+  is unsound under invariant-field semantics and type checkers reject it;
+  the parametrised form expresses the intent correctly without an override.
+  Pairs naturally with `class FooTaskConfig(TaskConfig[FooTaskMetadata]):`.
 - `task_execution_cache_dir()` uses the Python **package** name (underscores), not the
   benchmark display name (which may use hyphens). For example, a benchmark named
   `"osworld-cube"` (in `BenchmarkMetadata`) whose `TaskConfig` lives in the

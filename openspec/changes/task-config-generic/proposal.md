@@ -1,4 +1,4 @@
-# Make `TaskConfig`, `BenchmarkConfig`, and `Benchmark` generic over their narrowable types
+# Make `Task`, `TaskConfig`, `BenchmarkConfig`, and `Benchmark` generic over their narrowable types
 
 **Status:** Proposed
 **Date:** 2026-04-29
@@ -40,11 +40,15 @@ smell of the project.
 
 ## Solution
 
-Three generic-class promotions using PEP 695 class-scoped type parameters
+Four generic-class promotions using PEP 695 class-scoped type parameters
 (Python ≥3.12), each addressing the same shape at a different layer:
 
 ```python
 # cube.task
+class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
+    metadata: SerializeAsAny[TTMetadata]
+    ...
+
 class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
     metadata: SerializeAsAny[TTMetadata] = Field(...)
     ...
@@ -65,6 +69,11 @@ class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
 Cubes opt in to the narrowed form at each layer independently:
 
 ```python
+class WorkArenaTask(Task[WorkArenaTaskMetadata]):
+    # self.metadata is statically WorkArenaTaskMetadata — no cast, no override.
+    def reset(self) -> tuple[Observation, dict]: ...
+    def evaluate(self, obs=None) -> tuple[float, dict]: ...
+
 class WorkArenaTaskConfig(TaskConfig[WorkArenaTaskMetadata]):
     def make(self, runtime_context=None, container_backend=None) -> WorkArenaTask:
         # self.metadata is statically WorkArenaTaskMetadata — no cast, no override.
@@ -123,12 +132,13 @@ is simpler — no Pydantic generic-intermediate handling needed.
 **Optional migration** for cubes that want narrower types: parametrise
 each layer's subclass declaration:
 
+- `class FooTask(Task):` → `class FooTask(Task[FooTaskMetadata]):`
 - `class FooTaskConfig(TaskConfig):` → `class FooTaskConfig(TaskConfig[FooTaskMetadata]):`
 - `class FooBenchmarkConfig(BenchmarkConfig):` → `class FooBenchmarkConfig(BenchmarkConfig[FooTaskMetadata]):`
 - `class FooBenchmark(Benchmark):` → `class FooBenchmark(Benchmark[FooBenchmarkConfig]):`
 
 Remove any associated re-annotations
-(`metadata: SerializeAsAny[FooTaskMetadata]`,
+(`metadata: SerializeAsAny[FooTaskMetadata]` on `FooTask` or `FooTaskConfig`,
 `task_metadata: ClassVar[dict[str, FooTaskMetadata]]`,
 `config: FooBenchmarkConfig`) along with their `# type: ignore`
 comments. Each cube migrates independently in its own PR.
@@ -147,6 +157,10 @@ comments. Each cube migrates independently in its own PR.
 
 **This PR (cube-standard `nico_fix`):**
 
+- `cube.task`: change `class Task(TypedBaseModel, ABC)` →
+  `class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC)`;
+  change `metadata: SerializeAsAny[TaskMetadata]` →
+  `metadata: SerializeAsAny[TTMetadata]`.
 - `cube.task`: change `class TaskConfig(ABC, TypedBaseModel)` →
   `class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel)`;
   change `metadata: SerializeAsAny[TaskMetadata]` →
@@ -187,7 +201,6 @@ comments. Each cube migrates independently in its own PR.
 ## Out of scope
 
 - Touching the registry shape on `BenchmarkConfig`.
-- Any change to `Task`, `TaskMetadata`, `Benchmark`, or `BenchmarkMetadata`
-  themselves.
+- Any change to `TaskMetadata` or `BenchmarkMetadata` themselves.
 
 See [deltas.md](deltas.md) for the spec changes.
