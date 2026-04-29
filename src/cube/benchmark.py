@@ -57,7 +57,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections import Counter
 from pathlib import Path
-from typing import Any, ClassVar, Generator, Generic, Mapping, Self, Sequence, TypeVar, cast
+from typing import Any, ClassVar, Generator, Mapping, Self, Sequence
 
 from pydantic import Field, SerializeAsAny
 
