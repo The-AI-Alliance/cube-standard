@@ -163,7 +163,12 @@ class TestAzureProvision:
         ) as mock_bootstrap:
             infra.provision(resource)
             mock_bootstrap.assert_called_once_with(
-                url="http://example.com/img.qcow2.zip", image_name="vm", version="1.0.0"
+                url="http://example.com/img.qcow2.zip",
+                image_name="vm",
+                version="1.0.0",
+                uefi=False,
+                trusted_launch=False,
+                specialized=False,
             )
         assert infra.provision_status(resource) == "ready"
 
