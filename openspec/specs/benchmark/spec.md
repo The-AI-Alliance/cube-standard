@@ -98,16 +98,20 @@ happens.
 - `get_task_configs()` → `Generator[TaskConfig]` — yields one
   `task_config_class` per task in `tasks()`, expanding via `seed_generator` if
   set.
-- `subset_from_list(tasks, benchmark_name_suffix="custom")` → new
-  `BenchmarkConfig` with `task_ids` populated. Accepts ids or `TaskMetadata`
-  objects. Duplicates deduped (first-wins order).
-- `subset_from_glob(glob_key, pattern)` → new `BenchmarkConfig`. `glob_key` is
-  any top-level field on the (subclassed) `TaskMetadata` — built-ins like
+- `subset_from_list(tasks, benchmark_name_suffix="custom")` → `Self` (same
+  subclass, new instance) with `task_ids` populated. Accepts ids or `TaskMetadata` objects.
+  Duplicates deduped (first-wins order).
+- `subset_from_glob(glob_key, pattern)` → `Self` (same subclass, new instance). `glob_key`
+  is any top-level field on the (subclassed) `TaskMetadata` — built-ins like
   `id` / `split` / `abstract_description`, or any named field declared by a
   `TaskMetadata` subclass.
 - `named_subsets()` (classmethod) → list of names from
   `benchmark_metadata.named_subsets`.
-- `named_subset(name)` → new `BenchmarkConfig` via `subset_from_glob(*...)`.
+- `named_subset(name)` → `Self` (same subclass, new instance) via `subset_from_glob(*...)`.
+
+  All three subsetting methods return `Self`, so chained calls and
+  subclass-typed assignments preserve the concrete type without
+  `# type: ignore`.
 
 **Class-level data lifecycle (classmethods):**
 

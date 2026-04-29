@@ -57,7 +57,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections import Counter
 from pathlib import Path
-from typing import Any, ClassVar, Generator
+from typing import Any, ClassVar, Generator, Self
 
 from pydantic import Field, SerializeAsAny
 
@@ -441,7 +441,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         self,
         tasks: list[str] | list[TaskMetadata],
         benchmark_name_suffix: str = "custom",  # noqa: ARG002 — accepted for call-site compat
-    ) -> "BenchmarkConfig":
+    ) -> Self:
         """Return a new ``BenchmarkConfig`` restricted to the given tasks.
 
         Accepts either a list of task ids (strings) or a list of
@@ -477,7 +477,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
             raise ValueError("The resulting task list cannot be empty.")
         return self.model_copy(update={"task_ids": ordered})
 
-    def subset_from_glob(self, glob_key: str, glob_pattern: str) -> "BenchmarkConfig":
+    def subset_from_glob(self, glob_key: str, glob_pattern: str) -> Self:
         """Return a new ``BenchmarkConfig`` containing only tasks whose ``glob_key`` matches ``glob_pattern``.
 
         ``glob_key`` is any top-level field on the (subclassed) ``TaskMetadata``
@@ -500,7 +500,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         """Return the names of all pre-defined subsets for this benchmark."""
         return list(cls.benchmark_metadata.named_subsets.keys())
 
-    def named_subset(self, name: str) -> "BenchmarkConfig":
+    def named_subset(self, name: str) -> Self:
         """Return a filtered config for a pre-defined named subset.
 
         Equivalent to ``subset_from_glob(*benchmark_metadata.named_subsets[name])``.
@@ -669,7 +669,7 @@ class Benchmark(ABC):
 
     # ── Context-manager sugar ─────────────────────────────────────────────────
 
-    def __enter__(self) -> "Benchmark":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_exc_info) -> None:
