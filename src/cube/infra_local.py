@@ -21,6 +21,7 @@ System requirements (Docker):
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -56,26 +57,37 @@ _ACTIVE_JSON = Path(os.environ.get("CUBE_CACHE_DIR", str(Path.home() / ".cube"))
 def _load_active() -> dict:
     if not _ACTIVE_JSON.exists():
         return {}
-    with open(_ACTIVE_JSON) as f:
-        return json.load(f)
+    try:
+        with open(_ACTIVE_JSON) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, ValueError, OSError):
+        return {}
 
 
 def _save_active(data: dict) -> None:
-    _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
-    with open(_ACTIVE_JSON, "w") as f:
-        json.dump(data, f, indent=2)
+    tmp = _ACTIVE_JSON.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(_ACTIVE_JSON)
 
 
 def _register_active(entry_id: str, entry: dict) -> None:
-    data = _load_active()
-    data[entry_id] = entry
-    _save_active(data)
+    _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = _ACTIVE_JSON.with_suffix(".lock")
+    with open(lock_path, "w") as lock_fd:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        data = _load_active()
+        data[entry_id] = entry
+        _save_active(data)
 
 
 def _deregister_active(entry_id: str) -> None:
-    data = _load_active()
-    data.pop(entry_id, None)
-    _save_active(data)
+    _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = _ACTIVE_JSON.with_suffix(".lock")
+    with open(lock_path, "w") as lock_fd:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        data = _load_active()
+        data.pop(entry_id, None)
+        _save_active(data)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -270,6 +282,11 @@ class LocalDockerServiceHandle(ResourceHandle):
 
         from cube.backends.local import LocalContainer
 
+        # Podman advertises DOCKER_HOST with http+unix:// but the Docker SDK
+        # only accepts unix://. Normalize once before creating the client.
+        _host = os.environ.get("DOCKER_HOST", "")
+        if _host.startswith("http+unix://"):
+            os.environ["DOCKER_HOST"] = _host[len("http+") :]
         client = docker.from_env()
         docker_container = client.containers.get(self._container_ids[0])
         # remove_on_close=False — this handle, not the wrapper, owns the lifecycle.

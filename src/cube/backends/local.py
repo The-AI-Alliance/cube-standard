@@ -46,8 +46,10 @@ _retry_pull = retry(
     stop=stop_after_attempt(6),
     wait=wait_exponential(multiplier=30, min=30, max=300),
     retry=retry_if_exception(
-        lambda exc: isinstance(exc, docker.errors.APIError)
-        and any(kw in str(exc).lower() for kw in ("toomanyrequests", "rate limit", "429"))
+        lambda exc: (
+            isinstance(exc, docker.errors.APIError)
+            and any(kw in str(exc).lower() for kw in ("toomanyrequests", "rate limit", "429"))
+        )
     ),
     reraise=True,
     before_sleep=before_sleep_log(logger, logging.WARNING),
