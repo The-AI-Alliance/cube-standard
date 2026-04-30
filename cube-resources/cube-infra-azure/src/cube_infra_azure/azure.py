@@ -68,6 +68,7 @@ from __future__ import annotations
 import base64
 import logging
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -558,6 +559,83 @@ waagent -force -deprovision+user
 curl -s -X PUT -H "x-ms-blob-type: BlockBlob" -H "Content-Length: 0" "{sentinel_sas_url}"
 echo "[bootstrap] Done at $(date)"
 """
+
+
+# ── AzureCliCredential cache ──────────────────────────────────────────────────
+#
+# AzureCliCredential.get_token() shells out to `az account get-access-token`
+# on every call. With many Ray workers running real eval episodes, each
+# launch() makes a dozen+ SDK calls, and each new ManagementClient instance
+# constructs a fresh AzureCliCredential — so we end up with hundreds of
+# concurrent `az` subprocesses racing on the local credential cache file
+# (~/.azure/msal_token_cache.json). Some lose the race and surface
+# CredentialUnavailableError("Failed to invoke the Azure CLI").
+#
+# Fix: cache the AccessToken in-process per (scope, tenant_id, claims) key
+# and only re-fetch when within 5 minutes of expiry. After this each worker
+# shells out `az` ~once per token-scope per hour instead of dozens of times
+# per minute. The cache lives at module scope so it's shared across every
+# AzureInfraConfig instance and every SDK client within a single Ray worker
+# (each worker gets its own module-level state, which is what we want).
+
+
+class _CachedCliCredential:
+    """In-process token cache wrapping AzureCliCredential.
+
+    Implements the azure-core TokenCredential protocol (``get_token`` /
+    ``get_token_info``) by delegating to the inner AzureCliCredential on a
+    miss and serving cached tokens on a hit.
+    """
+
+    def __init__(self) -> None:
+        from azure.identity import AzureCliCredential
+
+        self._inner = AzureCliCredential()
+        self._lock = threading.Lock()
+        self._cache: dict[Any, Any] = {}
+
+    @staticmethod
+    def _key(scopes: tuple[str, ...], kwargs: dict[str, Any]) -> tuple[Any, ...]:
+        # Tokens are scoped by (resource scopes, tenant override, additional
+        # claims). Bucket by all three so we don't return a token for the wrong
+        # tenant or one that's missing required claims.
+        return tuple(scopes), kwargs.get("tenant_id"), kwargs.get("claims")
+
+    def get_token(self, *scopes: str, **kwargs: Any) -> Any:
+        key = self._key(scopes, kwargs)
+        with self._lock:
+            tok = self._cache.get(key)
+            if tok is not None and tok.expires_on - time.time() > 300:
+                return tok
+        # Fetch outside the lock so concurrent get_token calls for *different*
+        # scopes don't serialise on each other.
+        fresh = self._inner.get_token(*scopes, **kwargs)
+        with self._lock:
+            self._cache[key] = fresh
+        return fresh
+
+    def get_token_info(self, *scopes: str, **kwargs: Any) -> Any:
+        # azure-identity 1.16+ adds get_token_info; fall back to get_token on
+        # older versions. We don't try to cache the AccessTokenInfo wrapper —
+        # the inner SDK does its own caching for that path.
+        inner_get_token_info = getattr(self._inner, "get_token_info", None)
+        if inner_get_token_info is not None:
+            return inner_get_token_info(*scopes, **kwargs)
+        return self.get_token(*scopes, **kwargs)
+
+
+_CACHED_CLI_CREDENTIAL: _CachedCliCredential | None = None
+_CACHED_CLI_CREDENTIAL_LOCK = threading.Lock()
+
+
+def _get_cached_cred() -> _CachedCliCredential:
+    """Return the per-process cached AzureCliCredential, creating it lazily."""
+    global _CACHED_CLI_CREDENTIAL
+    if _CACHED_CLI_CREDENTIAL is None:
+        with _CACHED_CLI_CREDENTIAL_LOCK:
+            if _CACHED_CLI_CREDENTIAL is None:
+                _CACHED_CLI_CREDENTIAL = _CachedCliCredential()
+    return _CACHED_CLI_CREDENTIAL
 
 
 # ── AzureResourceHandle ───────────────────────────────────────────────────────
@@ -1545,9 +1623,10 @@ class AzureInfraConfig(InfraConfig):
     # ── Private Azure SDK methods ─────────────────────────────────────────────
 
     def _cred(self) -> Any:
-        from azure.identity import AzureCliCredential
-
-        return AzureCliCredential()
+        # Return a per-process cached credential — see _CachedCliCredential
+        # below for the rationale (avoid `az` subprocess storm at high Ray
+        # concurrency).
+        return _get_cached_cred()
 
     def _compute(self) -> Any:
         from azure.mgmt.compute import ComputeManagementClient
