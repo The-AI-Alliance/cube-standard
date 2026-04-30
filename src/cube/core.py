@@ -453,12 +453,17 @@ class FileArtifactBlob(TypedBaseModel):
     path: Path
 
 
+class RemoteFileArtifactBlob(TypedBaseModel):
+    type: Literal["remote_file"] = "remote_file"
+    url: str
+
+
 class TextArtifactBlob(TypedBaseModel):
     type: Literal["text"] = "text"
     text: str
 
 
-ArtifactBlob = Annotated[BinaryArtifactBlob | TextArtifactBlob | FileArtifactBlob, Field(discriminator="type")]
+ArtifactBlob = Annotated[BinaryArtifactBlob | TextArtifactBlob | FileArtifactBlob | RemoteFileArtifactBlob, Field(discriminator="type")]
 
 
 class Artifact(TypedBaseModel):
