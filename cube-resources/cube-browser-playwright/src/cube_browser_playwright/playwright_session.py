@@ -150,11 +150,11 @@ class PlaywrightSession(BrowserSession):
         self._trace_out_file = Path(tempfile.mktemp(prefix="playwright_trace_"))
         self._closed = False
         context.tracing.start(
-                title="CUBE playwright session",
-                screenshots=True,
-                snapshots=True,
-                sources=True,
-                )
+            title="CUBE playwright session",
+            screenshots=True,
+            snapshots=True,
+            sources=True,
+        )
 
     @property
     def cdp_url(self) -> str:

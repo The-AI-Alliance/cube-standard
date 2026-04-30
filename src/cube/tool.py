@@ -125,7 +125,15 @@ class AbstractTool(ABC):
 
     @abstractmethod
     def artifacts(self) -> list[Artifact]:
+        logging.info("============================")
+        logging.info("I AM BIGGUS DICUS ARTIFACTUS")
+        logging.info("I AM BIGGUS DICUS ARTIFACTUS")
+        logging.info("I AM BIGGUS DICUS ARTIFACTUS")
+        logging.info("I AM BIGGUS DICUS ARTIFACTUS")
+        logging.info("I AM BIGGUS DICUS ARTIFACTUS")
+        logging.info("============================")
         ...
+
 
 class AbstractAsyncTool(ABC):
     """

@@ -394,6 +394,12 @@ class Task(TypedBaseModel, ABC):
             self._container.stop()
             self._container = None
 
+    def task_artifacts(self) -> list[Artifact]:
+        return []
+
+    def artifacts(self) -> list[Artifact]:
+        return self.task_artifacts() + self.tool.artifacts()
+
 
 class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
     """Serializable task configuration — self-contained unit handed to workers.
@@ -542,9 +548,3 @@ class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
         at the top so misconfigured workers fail fast with an actionable
         error instead of timing out on a surprise download.
         """
-
-    def task_artifacts(self) -> list[Artifact]:
-        return []
-
-    def artifacts(self) -> list[Artifact]:
-        return self.task_artifacts() + self._tool.artifacts()

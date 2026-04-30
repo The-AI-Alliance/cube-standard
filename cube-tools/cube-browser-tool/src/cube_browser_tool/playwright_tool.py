@@ -9,10 +9,10 @@ import asyncio
 import logging
 import time
 from io import BytesIO
-from typing import Any, Literal
+from typing import Any, Literal, override
 
 from cube.container import Container
-from cube.core import Action, Content, Observation, StepError
+from cube.core import Action, Artifact, Content, FileArtifactBlob, Observation, StepError
 from cube.tool import AsyncToolConfig, ToolConfig
 from cube.tools.browser import AsyncBrowserTool, BrowserTool
 from cube_browser_playwright import (
@@ -376,11 +376,18 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
         """No-op: take no action and return the current page state."""
         pass
 
-
-    def artifacts(self) -> None:
+    @override
+    def artifacts(self) -> list[Artifact]:
         if not self._closed:
             raise ValueError("artifacts() invoked without closing the tool first.")
-        return self._session.trace_path()
+        return [
+            Artifact(
+                id="playwright_trace",
+                blob=FileArtifactBlob(path=self._session.trace_path()),
+                mime="application/zip",
+            )
+        ]
+
 
 class AsyncPlaywrightConfig(AsyncToolConfig):
     """Configuration for ``AsyncPlaywrightTool``.
