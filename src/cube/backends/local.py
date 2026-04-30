@@ -194,16 +194,18 @@ class LocalContainerBackend(ContainerBackend):
         if self.pull_policy == "always" or (self.pull_policy == "missing" and not _image_exists(client, config.image)):
             logger.info("Pulling image %s …", config.image)
             try:
-                self._pull_image(client, config.image)
+                self._pull_image(config.image)
             except docker.errors.APIError as exc:
                 # Convert only after _retry_pull has exhausted all attempts.
                 raise ContainerLaunchError(f"Failed to pull image '{config.image}': {exc}") from exc
         return self._launch_with_retry(config)
 
     @_retry_pull
-    def _pull_image(self, client: docker.DockerClient, image: str) -> None:
-        # Raises docker.errors.APIError directly so _retry_pull can inspect it.
-        client.images.pull(image)
+    def _pull_image(self, image: str) -> None:
+        # Creates a fresh client per attempt so a long backoff can't leave a
+        # timed-out session that would fail with a connection error instead of
+        # the 429 APIError that _retry_pull is designed to catch.
+        docker.from_env().images.pull(image)
 
     @_retry_launch
     def _launch_with_retry(self, config: ContainerConfig) -> LocalContainer:
