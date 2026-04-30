@@ -11,7 +11,13 @@ requires-python = ">=3.12"
 dependencies = [
     "cube-standard",
     "azure-identity>=1.15",
-    "azure-mgmt-compute>=31.0",
+    # Pin <38 — azure-mgmt-compute 38.0.0 changed the VM-create payload
+    # serialisation in a way that trips Azure Policy "Golden image exception"
+    # rules ("RequestDisallowedByPolicy: SURF catalogue") on tenants that
+    # whitelist gallery image references. 37.2.0 produces a payload that
+    # passes the policy. Drop the upper bound once the SDK regression is
+    # fixed upstream and the policy stops false-positiving.
+    "azure-mgmt-compute>=31.0,<38",
     "azure-mgmt-network>=25.0",
     "azure-mgmt-storage>=21.0",
     "azure-storage-blob>=12.28.0",
