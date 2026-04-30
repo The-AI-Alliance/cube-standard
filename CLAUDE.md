@@ -26,6 +26,18 @@ Cross-cutting:
 - **Server** — [server/spec.md](openspec/specs/server/spec.md) (JSON-RPC 2.0, MCP-compatible)
 - **CLI** — [cli/spec.md](openspec/specs/cli/spec.md) (`cube init`, `cube list`, `cube test`, `cube registry add`)
 
+## Engineering principles
+
+- **Read the spec first.** Before touching any layer, read its spec in `openspec/specs/`. Specs are the authoritative design intent — but they can be stale or wrong; flag discrepancies rather than silently working around them.
+- **Fix in the right place.** A quick local experiment to understand a problem is fine. But the committed fix must address the root cause in the correct layer — not a workaround scoped to a single call site or context.
+- **Understand before fixing.** Many bad fixes come from acting too fast. Make sure you understand the broader design before proposing a change. A fix that misses the bigger picture is worse than no fix.
+- **Lean diffs.** Make the minimal change that solves the problem. Avoid verbose additions, unnecessary abstractions, and duplicated logic that already exists elsewhere. If existing code can be reused or consolidated, do it. A hard-to-review diff is a liability.
+- **Think long-term.** Every change should age well. Ask whether today's shortcut becomes tomorrow's debt — and whether the design could evolve cleanly if requirements change.
+
+## Code review
+
+PRs are reviewed with `/code-review` ([plugin docs](https://github.com/anthropics/claude-code/blob/main/plugins/code-review/README.md)), which audits changes against these guidelines. Write PRs as if a reviewer will check each principle above against the diff.
+
 ## Workflow for code changes
 
 1. **Find the relevant spec** — which layer? Start there.
