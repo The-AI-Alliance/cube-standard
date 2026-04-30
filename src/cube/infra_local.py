@@ -21,6 +21,7 @@ System requirements (Docker):
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -56,26 +57,37 @@ _ACTIVE_JSON = Path(os.environ.get("CUBE_CACHE_DIR", str(Path.home() / ".cube"))
 def _load_active() -> dict:
     if not _ACTIVE_JSON.exists():
         return {}
-    with open(_ACTIVE_JSON) as f:
-        return json.load(f)
+    try:
+        with open(_ACTIVE_JSON) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, ValueError, OSError):
+        return {}
 
 
 def _save_active(data: dict) -> None:
-    _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
-    with open(_ACTIVE_JSON, "w") as f:
-        json.dump(data, f, indent=2)
+    tmp = _ACTIVE_JSON.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(_ACTIVE_JSON)
 
 
 def _register_active(entry_id: str, entry: dict) -> None:
-    data = _load_active()
-    data[entry_id] = entry
-    _save_active(data)
+    _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = _ACTIVE_JSON.with_suffix(".lock")
+    with open(lock_path, "w") as lock_fd:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        data = _load_active()
+        data[entry_id] = entry
+        _save_active(data)
 
 
 def _deregister_active(entry_id: str) -> None:
-    data = _load_active()
-    data.pop(entry_id, None)
-    _save_active(data)
+    _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = _ACTIVE_JSON.with_suffix(".lock")
+    with open(lock_path, "w") as lock_fd:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        data = _load_active()
+        data.pop(entry_id, None)
+        _save_active(data)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -270,7 +282,14 @@ class LocalDockerServiceHandle(ResourceHandle):
 
         from cube.backends.local import LocalContainer
 
-        client = docker.from_env()
+        # Podman advertises DOCKER_HOST with http+unix:// but the Docker SDK
+        # only accepts unix://. Normalize locally rather than mutating os.environ
+        # (which would be a process-global side effect visible to other workers).
+        _host = os.environ.get("DOCKER_HOST", "")
+        if _host.startswith("http+unix://"):
+            client = docker.DockerClient(base_url=_host[len("http+") :])
+        else:
+            client = docker.from_env()
         docker_container = client.containers.get(self._container_ids[0])
         # remove_on_close=False — this handle, not the wrapper, owns the lifecycle.
         self._container_cache = LocalContainer(docker_container, client, remove_on_close=False)
@@ -635,65 +654,77 @@ class LocalInfraConfig(InfraConfig):
 
         # Clean up dead VM entries.
         if stale_ids:
-            data = _load_active()
-            for sid in stale_ids:
-                data.pop(sid, None)
-            _save_active(data)
+            _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
+            lock_path = _ACTIVE_JSON.with_suffix(".lock")
+            with open(lock_path, "w") as lock_fd:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                data = _load_active()
+                for sid in stale_ids:
+                    data.pop(sid, None)
+                _save_active(data)
 
         return handles
 
     def cleanup(self, run_id: str) -> None:
         """Kill all QEMU processes and remove overlays for run_id."""
-        data = _load_active()
-        to_remove = []
-        for entry_id, entry in list(data.items()):
-            if entry.get("run_id") != run_id:
-                continue
-            if entry.get("infra_fingerprint") != self.fingerprint():
-                continue
-            _kill_entry(entry)
-            to_remove.append(entry_id)
+        _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = _ACTIVE_JSON.with_suffix(".lock")
+        with open(lock_path, "w") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            data = _load_active()
+            to_remove = []
+            for entry_id, entry in list(data.items()):
+                if entry.get("run_id") != run_id:
+                    continue
+                if entry.get("infra_fingerprint") != self.fingerprint():
+                    continue
+                _kill_entry(entry)
+                to_remove.append(entry_id)
 
-        for entry_id in to_remove:
-            data.pop(entry_id, None)
-        if to_remove:
-            _save_active(data)
-            logger.info("Cleaned up %d resource(s) for run %s", len(to_remove), run_id[:8])
+            for entry_id in to_remove:
+                data.pop(entry_id, None)
+            if to_remove:
+                _save_active(data)
+                logger.info("Cleaned up %d resource(s) for run %s", len(to_remove), run_id[:8])
 
     def cleanup_stale(self, max_age_seconds: int | None = None) -> list[str]:
         """Kill expired resources and resources older than max_age_seconds.
 
         Returns list of deleted entry_ids.
         """
-        data = _load_active()
-        now = datetime.utcnow()
-        to_remove = []
+        _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = _ACTIVE_JSON.with_suffix(".lock")
+        with open(lock_path, "w") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            data = _load_active()
+            now = datetime.utcnow()
+            to_remove = []
 
-        for entry_id, entry in list(data.items()):
-            if entry.get("infra_fingerprint") != self.fingerprint():
-                continue
+            for entry_id, entry in list(data.items()):
+                if entry.get("infra_fingerprint") != self.fingerprint():
+                    continue
 
-            expired = False
-            expires_at_str = entry.get("expires_at")
-            if expires_at_str:
-                expired = datetime.fromisoformat(expires_at_str) < now
+                expired = False
+                expires_at_str = entry.get("expires_at")
+                if expires_at_str:
+                    expired = datetime.fromisoformat(expires_at_str) < now
 
-            too_old = False
-            if not expired and max_age_seconds is not None:
-                created_at_str = entry.get("created_at")
-                if created_at_str:
-                    age = (now - datetime.fromisoformat(created_at_str)).total_seconds()
-                    too_old = age > max_age_seconds
+                too_old = False
+                if not expired and max_age_seconds is not None:
+                    created_at_str = entry.get("created_at")
+                    if created_at_str:
+                        age = (now - datetime.fromisoformat(created_at_str)).total_seconds()
+                        too_old = age > max_age_seconds
 
-            if expired or too_old:
-                _kill_entry(entry)
-                to_remove.append(entry_id)
+                if expired or too_old:
+                    _kill_entry(entry)
+                    to_remove.append(entry_id)
 
-        for entry_id in to_remove:
-            data.pop(entry_id, None)
-        if to_remove:
-            _save_active(data)
-            logger.info("cleanup_stale: removed %d stale resource(s)", len(to_remove))
+            for entry_id in to_remove:
+                data.pop(entry_id, None)
+            if to_remove:
+                _save_active(data)
+                logger.info("cleanup_stale: removed %d stale resource(s)", len(to_remove))
 
         return to_remove
 
