@@ -329,11 +329,15 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         module_dir = Path(module_file).resolve().parent if module_file else None
 
         def _is_dynamic(name: str) -> bool:
-            """True iff *name* is declared as a ``@property`` somewhere in the MRO
-            below ``BenchmarkConfig`` — meaning the attribute is computed at access
-            time and should not be overwritten with a file-loaded ClassVar value.
+            """True iff the nearest definition of *name* in the MRO is a ``@property``
+            — meaning the attribute is computed at access time and should not be
+            overwritten with a file-loaded ClassVar value. A subclass ClassVar that
+            shadows a parent ``@property`` is treated as static.
             """
-            return any(isinstance(klass.__dict__.get(name), property) for klass in cls.__mro__)
+            for klass in cls.__mro__:
+                if name in klass.__dict__:
+                    return isinstance(klass.__dict__[name], property)
+            return False
 
         # ── benchmark_metadata ───────────────────────────────────────────────
         if not _is_dynamic("benchmark_metadata"):
