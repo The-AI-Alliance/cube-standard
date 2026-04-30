@@ -61,10 +61,10 @@ harness users swap browser backends without touching benchmark logic.
 import inspect
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable, List
+from typing import Any, Callable, List, override
 
 from cube.container import Container
-from cube.core import Action, ActionSchema, Content, Observation, StepError, TypedBaseModel
+from cube.core import Action, ActionSchema, Artifact, Content, Observation, StepError, TypedBaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,9 @@ class AbstractTool(ABC):
         """
         pass
 
+    @abstractmethod
+    def artifacts(self) -> list[Artifact]:
+        ...
 
 class AbstractAsyncTool(ABC):
     """
@@ -345,6 +348,10 @@ class Tool(_ToolActionsMixin, AbstractTool):
             logger.exception(action_result)
             return StepError.from_exception(e)
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
+
+    @override
+    def artifacts(self) -> list[Artifact]:
+        return []
 
 
 class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):

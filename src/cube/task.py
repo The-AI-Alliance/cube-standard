@@ -30,6 +30,7 @@ from cube.container import Container, ContainerBackend, ContainerConfig
 from cube.core import (
     Action,
     ActionSchema,
+    Artifact,
     Content,
     EnvironmentOutput,
     Observation,
@@ -541,3 +542,9 @@ class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
         at the top so misconfigured workers fail fast with an actionable
         error instead of timing out on a surprise download.
         """
+
+    def task_artifacts(self) -> list[Artifact]:
+        return []
+
+    def artifacts(self) -> list[Artifact]:
+        return self.task_artifacts() + self._tool.artifacts()
