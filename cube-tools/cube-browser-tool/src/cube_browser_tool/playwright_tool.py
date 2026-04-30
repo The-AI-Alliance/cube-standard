@@ -90,6 +90,7 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
     def __init__(self, config: PlaywrightConfig, session: PlaywrightSession) -> None:
         self.config = config
         self._session = session
+        self._closed = False
 
     @property
     def session(self) -> PlaywrightSession:
@@ -117,6 +118,7 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
     def close(self) -> None:
         """Release all Playwright resources via the session."""
         self._session.stop()
+        self._closed = True
 
     # ------------------------------------------------------------------
     # Action dispatch override — appends page_obs() after every action
@@ -374,6 +376,11 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
         """No-op: take no action and return the current page state."""
         pass
 
+
+    def artifacts(self) -> None:
+        if not self._closed:
+            raise ValueError("artifacts() invoked without closing the tool first.")
+        return self._session.trace_path()
 
 class AsyncPlaywrightConfig(AsyncToolConfig):
     """Configuration for ``AsyncPlaywrightTool``.

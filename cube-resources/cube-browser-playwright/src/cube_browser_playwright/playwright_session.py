@@ -147,6 +147,14 @@ class PlaywrightSession(BrowserSession):
         self._context: BrowserContext = context
         self._cdp_url: str = cdp_url
         self._user_data_dir: str = user_data_dir
+        self._trace_out_file = Path(tempfile.mktemp(prefix="playwright_trace_"))
+        self._closed = False
+        context.tracing.start(
+                title="CUBE playwright session",
+                screenshots=True,
+                snapshots=True,
+                sources=True,
+                )
 
     @property
     def cdp_url(self) -> str:
@@ -164,6 +172,11 @@ class PlaywrightSession(BrowserSession):
     def playwright(self) -> Playwright:
         return self._playwright
 
+    def trace_path(self) -> Path:
+        if not self._closed:
+            raise ValueError("trace_path() requires PlaywrightSession to be closed")
+        return self._trace_out_file
+
     def stop(self) -> None:
         """Close the context, release all Playwright resources, and remove the temp profile dir."""
         try:
@@ -179,3 +192,4 @@ class PlaywrightSession(BrowserSession):
             if "Event loop is closed" not in str(e):
                 logger.error("Error stopping playwright; process may be leaked: %s", e)
         shutil.rmtree(self._user_data_dir, ignore_errors=True)
+        self._closed = True
