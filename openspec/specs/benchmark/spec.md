@@ -141,8 +141,10 @@ JSON-encoded strings as well.
 - `make(infra: InfraConfig | None = None) -> Benchmark` — for every
   resource whose `infra.provision_status(resource) != "ready"`, call
   `infra.provision(resource)` (idempotent), then instantiate
-  `type(self).benchmark_class(config=self)`, call `benchmark.setup()`, and
-  return the live `Benchmark`. When `infra` is None and `resources` is
+  `type(self).benchmark_class(config=self, infra=infra)`, call
+  `benchmark.setup()`, and return the live `Benchmark`. `infra` is
+  forwarded to the runtime constructor so subclasses can reach it via
+  `self._infra` from `_setup()`. When `infra` is None and `resources` is
   non-empty, provisioning is skipped with a debug log — benchmarks that use
   only task-scoped (L3) resources launched per-task can legitimately pass
   `infra=None` at `make` time.
@@ -155,13 +157,21 @@ round-trip.
 
 ```python
 class Benchmark(ABC):
-    def __init__(self, config: BenchmarkConfig) -> None:
+    def __init__(self, config: BenchmarkConfig, infra: InfraConfig | None = None) -> None:
         self.config: BenchmarkConfig = config
+        self._infra: InfraConfig | None = infra
         self._runtime_context: RuntimeContext = {}
 ```
 
+`infra` is forwarded by `BenchmarkConfig.make(infra)` and stashed as
+`self._infra` so cubes that publish it into `runtime_context["infra"]` for
+per-task container launches can do so from `_setup()` without overriding
+`__init__` or `make`.
+
 **Abstract methods:**
 - `_setup()` — create shared infrastructure, populate `self._runtime_context`.
+  Cubes that thread per-task infra publish it here (e.g.
+  `self._runtime_context["infra"] = self._infra`).
 - `close()` — tear down what `_setup()` created.
 
 **Concrete methods:**

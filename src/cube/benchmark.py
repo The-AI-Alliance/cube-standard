@@ -561,13 +561,18 @@ class BenchmarkConfig(TypedBaseModel, ABC):
 
         1. For every declared resource whose ``provision_status(infra) != 'ready'``,
            call ``infra.provision(resource)``. Idempotent.
-        2. Instantiate ``type(self).benchmark_class(config=self)``.
+        2. Instantiate ``type(self).benchmark_class(config=self, infra=infra)``.
         3. Call ``benchmark.setup()`` so the returned instance is live.
 
         If ``resources`` is non-empty but ``infra`` is None, provisioning is
         skipped with a debug log. Benchmarks that rely entirely on task-scoped
         (L3) resources may not need infra at ``make`` time — their resources
         are launched per-task by the task itself.
+
+        ``infra`` is forwarded to ``Benchmark.__init__`` (stashed as
+        ``self._infra``) so cubes that publish it into ``runtime_context``
+        for per-task container launches can do so from ``_setup()`` without
+        overriding ``make``.
         """
         if self.resources:
             if infra is None:
@@ -586,7 +591,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
                     logger.info("Provisioning resource %s on %s...", resource.name, infra.fingerprint())
                     infra.provision(resource)
 
-        benchmark = type(self).benchmark_class(config=self)
+        benchmark = type(self).benchmark_class(config=self, infra=infra)
         benchmark.setup()
         return benchmark
 
@@ -606,10 +611,17 @@ class Benchmark(ABC):
             for tc in benchmark.config.get_task_configs():
                 task = benchmark.spawn(tc)
                 ...
+
+    The ``infra`` argument received by ``BenchmarkConfig.make(infra)`` is
+    forwarded into ``__init__`` and stashed as ``self._infra`` so subclasses
+    can reach it from ``_setup()`` (e.g. to publish it into
+    ``runtime_context["infra"]`` for per-task container launches) without
+    overriding ``__init__`` or ``BenchmarkConfig.make``.
     """
 
-    def __init__(self, config: BenchmarkConfig) -> None:
+    def __init__(self, config: BenchmarkConfig, infra: InfraConfig | None = None) -> None:
         self.config: BenchmarkConfig = config
+        self._infra: InfraConfig | None = infra
         self._runtime_context: RuntimeContext = {}
 
     @abstractmethod
@@ -698,8 +710,11 @@ class CompositeBenchmark(Benchmark):
     provisioned resources.
     """
 
-    def __init__(self, config: "CompositeBenchmarkConfig") -> None:
-        super().__init__(config)
+    def __init__(self, config: "CompositeBenchmarkConfig", infra: InfraConfig | None = None) -> None:
+        # Sub-benchmarks each got their own infra via their own ``make(infra)``;
+        # the composite itself does not consume ``infra`` but accepts it to match
+        # the base ``Benchmark.__init__`` signature.
+        super().__init__(config, infra=infra)
         self.config: CompositeBenchmarkConfig = config  # type: ignore[assignment]
         self.sub_benchmarks: dict[str, Benchmark] = {}
 
