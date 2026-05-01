@@ -181,10 +181,11 @@ declarations like `task_config_class: ClassVar = WorkArenaTaskConfig` against
 the parent's `ClassVar[type[TaskConfig]]` are already sound without an
 override.
 
-**`CompositeBenchmarkConfig`** subclasses `BenchmarkConfig[TaskMetadata]`
-(the heterogeneous case): a composite's merged `task_metadata` mixes
-metadata types across sub-benchmarks, so the upper bound is the only
-correct narrowing.
+**`CompositeBenchmarkConfig`** subclasses `BenchmarkConfig` directly
+(unparametrised). A composite's merged `task_metadata` mixes metadata types
+across sub-benchmarks, so the only correct narrowing would be the upper
+bound — equivalent to leaving the type parameter to default to
+`TaskMetadata`. The cleaner `BenchmarkConfig` form is used.
 
 **Runtime behaviour is unchanged.** `__init_subclass__` validation continues
 to enforce ClassVar wiring on user classes; Pydantic's parametrised

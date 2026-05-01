@@ -151,8 +151,8 @@ concurrent tasks. Writes are not safe across workers.
 
 ### `TaskConfig` (abstract, serializable)
 ```python
-class TaskConfig(TypedBaseModel, ABC):
-    metadata: SerializeAsAny[TaskMetadata]       # travels with the config
+class TaskConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
+    metadata: SerializeAsAny[TTMetadata]         # travels with the config
     seed: int | None = None
     tool_config: SerializeAsAny[ToolConfig] | None = None
     sub_bench_name: str | None = None            # composite routing hint (see below)

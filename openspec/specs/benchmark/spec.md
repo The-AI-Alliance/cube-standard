@@ -47,6 +47,18 @@ the framework-defined fields above.
 
 ### `BenchmarkConfig` (abstract, Pydantic — serializable)
 
+`BenchmarkConfig` is generic over the task-metadata type:
+
+```python
+class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC): ...
+```
+
+The narrowing is method-level only — `task_metadata: ClassVar` stays at
+the base type (PEP 526 forbids type parameters inside `ClassVar`, and
+`dict` is invariant), and `tasks()` returns the covariant `Mapping[str,
+TTMetadata]` view at every read site. Subclassing is opt-in; existing
+unparametrised subclasses keep working unchanged.
+
 **Required class-level attributes** (ClassVar):
 ```python
 class MyBenchmarkConfig(BenchmarkConfig):
@@ -90,8 +102,11 @@ happens.
 
 **Concrete methods:**
 
-- `tasks() -> dict[str, TaskMetadata]` — class-level `task_metadata` filtered by
-  `task_ids` (full dict when `task_ids is None`).
+- `tasks() -> Mapping[str, TTMetadata]` — class-level `task_metadata` filtered by
+  `task_ids` (full dict when `task_ids is None`). Returns a read-only
+  `Mapping` so subclasses parametrised as `BenchmarkConfig[FooTaskMetadata]`
+  get a covariantly-narrowed view at every read site; the runtime value is
+  still a `dict`.
 - `num_tasks` (property) — `len(self.tasks())`; differs from
   `benchmark_metadata.num_tasks` for subsets.
 - `name` (property) — `self.benchmark_metadata.name`.
@@ -158,9 +173,9 @@ state. Not Pydantic — no fields, no `arbitrary_types_allowed`, nothing to
 round-trip.
 
 ```python
-class Benchmark(ABC):
-    def __init__(self, config: BenchmarkConfig) -> None:
-        self.config: BenchmarkConfig = config
+class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
+    def __init__(self, config: TBenchConfig) -> None:
+        self.config: TBenchConfig = config
         self._runtime_context: RuntimeContext = {}
 ```
 

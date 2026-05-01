@@ -444,10 +444,9 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         """
         # PEP 526 forbids ``ClassVar[dict[str, TTMetadata]]``, so ``full`` is
         # statically ``dict[str, TaskMetadata]`` — ``cast`` is the only way to
-        # narrow. It's a ``type: ignore`` in disguise; sound here because the
-        # loaders (``task_metadata_from_json`` / ``task_metadata_from_csv``)
-        # dispatch via ``TypedBaseModel._type`` to inflate each row as the
-        # registered subclass.
+        # narrow. Soundness is the cube author's responsibility: the values in
+        # ``task_metadata`` must actually be instances of the parametrised
+        # ``TTMetadata`` subclass.
         full = self.task_metadata
         if self.task_ids is None:
             return cast(Mapping[str, TTMetadata], full)
