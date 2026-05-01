@@ -606,13 +606,18 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
 
         1. For every declared resource whose ``provision_status(infra) != 'ready'``,
            call ``infra.provision(resource)``. Idempotent.
-        2. Instantiate ``type(self).benchmark_class(config=self)``.
+        2. Instantiate ``type(self).benchmark_class(config=self, infra=infra)``.
         3. Call ``benchmark.setup()`` so the returned instance is live.
 
         If ``resources`` is non-empty but ``infra`` is None, provisioning is
         skipped with a debug log. Benchmarks that rely entirely on task-scoped
         (L3) resources may not need infra at ``make`` time — their resources
         are launched per-task by the task itself.
+
+        ``infra`` is forwarded to ``Benchmark.__init__`` (stashed as
+        ``self._infra``) so cubes that publish it into ``runtime_context``
+        for per-task container launches can do so from ``_setup()`` without
+        overriding ``make``.
         """
         if self.resources:
             if infra is None:
@@ -631,7 +636,7 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
                     logger.info("Provisioning resource %s on %s...", resource.name, infra.fingerprint())
                     infra.provision(resource)
 
-        benchmark = type(self).benchmark_class(config=self)
+        benchmark = type(self).benchmark_class(config=self, infra=infra)
         benchmark.setup()
         return benchmark
 
@@ -661,10 +666,17 @@ class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
         # Parametrised — ``self.config`` typed as ``FooBenchmarkConfig``,
         # autocomplete and static checking work for subclass-specific fields.
         class FooBenchmark(Benchmark[FooBenchmarkConfig]): ...
+
+    The ``infra`` argument received by ``BenchmarkConfig.make(infra)`` is
+    forwarded into ``__init__`` and stashed as ``self._infra`` so subclasses
+    can reach it from ``_setup()`` (e.g. to publish it into
+    ``runtime_context["infra"]`` for per-task container launches) without
+    overriding ``__init__`` or ``BenchmarkConfig.make``.
     """
 
-    def __init__(self, config: TBenchConfig) -> None:
+    def __init__(self, config: TBenchConfig, infra: InfraConfig | None = None) -> None:
         self.config: TBenchConfig = config
+        self._infra: InfraConfig | None = infra
         self._runtime_context: RuntimeContext = {}
 
     @abstractmethod
@@ -675,6 +687,11 @@ class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
         ``BenchmarkConfig.make``. Storing live handles directly on ``self``
         (outside ``_runtime_context``) is also allowed — they simply won't be
         visible to tasks via ``runtime_context``.
+
+        Cubes that thread per-task infra publish ``self._infra`` here, e.g.
+        ``self._runtime_context["infra"] = self._infra``. The base does not
+        auto-publish it because some cubes expose a launched service handle
+        instead of the bare ``InfraConfig``.
         """
 
     @abstractmethod
@@ -753,8 +770,14 @@ class CompositeBenchmark(Benchmark["CompositeBenchmarkConfig"]):
     provisioned resources.
     """
 
-    def __init__(self, config: "CompositeBenchmarkConfig") -> None:
-        super().__init__(config)
+    def __init__(self, config: "CompositeBenchmarkConfig", infra: InfraConfig | None = None) -> None:
+        # ``infra`` is stashed on ``self._infra`` via ``super().__init__`` for
+        # symmetry with leaf benchmarks — callers can read ``bench._infra``
+        # uniformly regardless of whether ``bench`` is composite. The composite
+        # itself doesn't consume it (no shared resources, no ``_setup`` body);
+        # each sub-benchmark receives the same ``infra`` through its own
+        # ``make(infra)`` in ``CompositeBenchmarkConfig.make``.
+        super().__init__(config, infra=infra)
         self.sub_benchmarks: dict[str, Benchmark] = {}
 
     def _setup(self) -> None:
@@ -952,7 +975,9 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
         Each sub-config's ``make(infra)`` is called in order; on any failure,
         already-built sub-benchmarks are closed before the error propagates.
         """
-        composite = CompositeBenchmark(config=self)
+        composite = CompositeBenchmark(config=self, infra=infra)
+        # CompositeBenchmark.__init__ takes `infra` even if it is never used by composite.
+        # Kept for symmetry with leaf benchmarks; users can read `bench._infra` uniformly regardless of whether `bench` is composite.
         try:
             for sub_bench_config in self.sub_bench_configs:
                 composite.sub_benchmarks[sub_bench_config.name] = sub_bench_config.make(infra)

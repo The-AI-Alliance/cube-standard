@@ -83,8 +83,8 @@ class FailTaskConfig(TaskConfig):
 class DoneBenchmark(Benchmark):
     """Runtime pair used by the test fixtures; counts setup/close calls."""
 
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, config, infra=None):
+        super().__init__(config, infra=infra)
         self.setup_calls = 0
         self.close_calls = 0
 
@@ -295,8 +295,8 @@ def test_suite_benchmark_closed_even_when_get_task_configs_raises():
     captured: list["FailingTaskConfigsBenchmark"] = []
 
     class FailingTaskConfigsBenchmark(Benchmark):
-        def __init__(self, config):
-            super().__init__(config)
+        def __init__(self, config, infra=None):
+            super().__init__(config, infra=infra)
             self.close_calls = 0
 
         def _setup(self) -> None:

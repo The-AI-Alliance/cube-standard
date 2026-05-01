@@ -407,6 +407,22 @@ def test_benchmark_is_context_manager():
     # close() was called on exit
 
 
+def test_make_threads_infra_to_runtime():
+    """``make(infra)`` forwards ``infra`` into ``Benchmark.__init__`` so cubes can reach
+    it as ``self._infra`` from ``_setup()`` without overriding ``__init__`` or ``make``."""
+    from cube.infra_local import LocalInfraConfig
+
+    infra = LocalInfraConfig()
+    bench = MyBenchmarkConfig().make(infra=infra)
+    assert bench._infra is infra
+
+
+def test_make_without_infra_leaves_runtime_infra_none():
+    """When called without infra, ``self._infra`` stays None — base does not default."""
+    bench = MyBenchmarkConfig().make()
+    assert bench._infra is None
+
+
 def test_spawn_returns_ready_task():
     bench = MyBenchmarkConfig().make()
     task = bench.spawn(_TaskConfig(metadata=TaskMetadata(id="t1")))
