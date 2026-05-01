@@ -26,6 +26,12 @@ _TUNNEL_LOG_DIR = Path(os.environ.get("CUBE_SSH_TUNNEL_LOG_DIR", "/tmp/cube-tunn
 # concurrent callers can both probe-bind, both close, and both return the
 # same number — and the slower SSH tunnel binds last and wins, sending the
 # first caller's traffic to the wrong VM.
+#
+# EX-002 documented exception: _RESERVED_PORTS is an intentional module-level
+# singleton. Ray forks a fresh worker process per episode, so each worker has
+# its own isolated copy — no cross-episode sharing occurs. This is the same
+# pattern as the OTel TracerProvider exception in the constitution (Pillar II,
+# "No Global State"). The lock ensures thread-safety within a single worker.
 _RESERVED_PORTS: set[int] = set()
 _RESERVED_PORTS_LOCK = threading.Lock()
 
@@ -152,7 +158,10 @@ def open_tunnel(
             if attempt > 1:
                 logger.info(
                     "open_tunnel: established localhost:%d → %s:%d on attempt %d",
-                    local_port, vm_ip, remote_port, attempt,
+                    local_port,
+                    vm_ip,
+                    remote_port,
+                    attempt,
                 )
             return proc, local_port
         # Either SSH exited (collision) or timeout. Tear down and retry.

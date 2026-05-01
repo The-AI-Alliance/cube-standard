@@ -241,7 +241,7 @@ class TestAzureLaunch:
             patch.object(infra, "_network", return_value=mock_network),
             patch.object(infra, "_create_network_resources", return_value=(MagicMock(), MagicMock(), "pip-1", "nic-1")),
             patch("cube_infra_azure.azure.wait_for_ssh", return_value="cube"),
-            patch("cube_infra_azure.azure.open_tunnel", return_value=MagicMock()),
+            patch("cube_infra_azure.azure.open_tunnel", return_value=(MagicMock(), 15000)),
             patch("cube_infra_azure.azure.free_port", return_value=15000),
         ):
             infra.launch(resource)
@@ -286,7 +286,7 @@ class TestAzureLaunch:
             patch.object(infra, "_network", return_value=mock_network),
             patch.object(infra, "_create_network_resources", return_value=(MagicMock(), MagicMock(), "pip-1", "nic-1")),
             patch("cube_infra_azure.azure.wait_for_ssh", return_value="cube"),
-            patch("cube_infra_azure.azure.open_tunnel", return_value=MagicMock()),
+            patch("cube_infra_azure.azure.open_tunnel", return_value=(MagicMock(), 15000)),
             patch("cube_infra_azure.azure.free_port", return_value=15000),
         ):
             infra.launch(resource)

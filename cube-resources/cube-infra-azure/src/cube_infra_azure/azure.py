@@ -71,11 +71,13 @@ import subprocess
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from azure.identity import AzureCliCredential
 from pydantic import Field, model_validator
 
 from cube.infra_utils import build_volume_setup_script
@@ -89,7 +91,7 @@ from cube.resource import (
     UnsupportedResourceType,
     VMResourceConfig,
 )
-from cube_infra_azure._utils import BootstrapMonitor, free_port, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
+from cube_infra_azure._utils import BootstrapMonitor, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
 
 logger = logging.getLogger(__name__)
 
@@ -588,8 +590,6 @@ class _CachedCliCredential:
     """
 
     def __init__(self) -> None:
-        from azure.identity import AzureCliCredential
-
         self._inner = AzureCliCredential()
         self._lock = threading.Lock()
         self._cache: dict[Any, Any] = {}
@@ -624,6 +624,14 @@ class _CachedCliCredential:
         return self.get_token(*scopes, **kwargs)
 
 
+# EX-002 documented exception: _CACHED_CLI_CREDENTIAL is an intentional
+# module-level singleton. Ray forks a fresh worker process per episode so each
+# worker has its own isolated copy — no cross-episode sharing occurs. This is
+# the same pattern as the OTel TracerProvider exception in the constitution
+# (Pillar II, "No Global State"). The lock provides thread-safety within a
+# single worker. AzureCliCredential.get_token() shells out to the `az` CLI,
+# which is slow; caching here avoids hundreds of redundant subprocess spawns
+# when 50 parallel workers all resolve credentials at startup.
 _CACHED_CLI_CREDENTIAL: _CachedCliCredential | None = None
 _CACHED_CLI_CREDENTIAL_LOCK = threading.Lock()
 
@@ -849,7 +857,6 @@ class AzureInfraConfig(InfraConfig):
             ]
         )
         if needs_azure_discovery:
-            from azure.identity import AzureCliCredential
             from azure.mgmt.network import NetworkManagementClient
             from azure.mgmt.storage import StorageManagementClient
 
@@ -1440,8 +1447,6 @@ class AzureInfraConfig(InfraConfig):
 
         Returns list of deleted VM names.
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         compute = self._compute()
         now = datetime.now(timezone.utc)
 
@@ -1492,9 +1497,7 @@ class AzureInfraConfig(InfraConfig):
                     pass
 
             if should_delete:
-                to_delete.append(
-                    (vm.name or "", vm_tags.get("cube:ip_name", ""), vm_tags.get("cube:nic_name", ""))
-                )
+                to_delete.append((vm.name or "", vm_tags.get("cube:ip_name", ""), vm_tags.get("cube:nic_name", "")))
 
         if not to_delete:
             return []
@@ -1539,8 +1542,6 @@ class AzureInfraConfig(InfraConfig):
 
         Returns dict with keys "nics", "ips", "disks" listing deleted resource names.
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         from azure.core.exceptions import ResourceNotFoundError
 
         compute = self._compute()

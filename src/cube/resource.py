@@ -74,6 +74,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
+from pydantic import Field
+
 from cube.core import TypedBaseModel
 
 if TYPE_CHECKING:
@@ -173,7 +175,7 @@ class VMResourceConfig(ResourceConfig):
     os_profile at launch — admin credentials and SSH keys must already be baked into
     the image. If False, the image was sysprep /generalize'd and Azure applies fresh
     os_profile at first boot."""
-    forwarded_ports: list[int] = []
+    forwarded_ports: list[int] = Field(default_factory=list)
     """Additional VM ports to expose on the host beyond the guest-agent port.
     Each port gets its own SSH tunnel from a free host port to the named VM port.
     The host-side URL appears in ResourceHandle.endpoints under the key

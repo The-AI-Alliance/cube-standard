@@ -13,6 +13,7 @@ Originally ported from desktop_env / kusha/AgentLab2 osworld_axtree.py.
 
 from __future__ import annotations
 
+import ast
 import io
 import xml.etree.ElementTree as ET
 from typing import List, Tuple
@@ -137,8 +138,8 @@ def judge_node(node: ET.Element, platform: str = "ubuntu", check_image: bool = F
         return False
 
     # --- Valid screen coordinates ---
-    coords: Tuple[int, int] = eval(node.get(f"{{{_component_ns}}}screencoord", "(-1, -1)"))
-    sizes: Tuple[int, int] = eval(node.get(f"{{{_component_ns}}}size", "(-1, -1)"))
+    coords: Tuple[int, int] = ast.literal_eval(node.get(f"{{{_component_ns}}}screencoord", "(-1, -1)"))
+    sizes: Tuple[int, int] = ast.literal_eval(node.get(f"{{{_component_ns}}}size", "(-1, -1)"))
     return coords[0] >= 0 and coords[1] >= 0 and sizes[0] > 0 and sizes[1] > 0
 
 
