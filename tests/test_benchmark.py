@@ -119,6 +119,52 @@ def test_missing_task_config_class_raises():
             # missing: task_config_class
 
 
+def test_classvar_override_of_parent_property_is_validated():
+    """A subclass that shadows a parent ``@property`` with a ClassVar must be
+    *validated* — the parent's property must not bleed through and skip the
+    type-check branch in ``__init_subclass__``.
+
+    ``_is_dynamic`` has to look at the *nearest* definition in the MRO, not
+    ``any()`` over the whole chain; otherwise an invalid ClassVar on the
+    child slips past validation.
+    """
+
+    class _DynamicParent(BenchmarkConfig):
+        task_config_class = _TaskConfig
+        benchmark_class = MyBenchmark
+
+        @property
+        def benchmark_metadata(self) -> BenchmarkMetadata:  # type: ignore[override]
+            return BenchmarkMetadata(name="dynamic", version="0", description="computed")
+
+        @property
+        def task_metadata(self) -> dict[str, TaskMetadata]:  # type: ignore[override]
+            return {}
+
+    # An invalid ClassVar override on the child must be rejected — proves the
+    # validation branch ran instead of being skipped because of the parent's
+    # ``@property``.
+    with pytest.raises(TypeError, match="benchmark_metadata"):
+
+        class _BadStaticChild(_DynamicParent):  # noqa: F841
+            benchmark_metadata = "not a BenchmarkMetadata"  # type: ignore[assignment]
+            task_metadata = {"s1": TaskMetadata(id="s1")}
+
+    # A valid ClassVar override must be accepted, and the ClassVar value must
+    # surface on the class.
+    class _StaticChild(_DynamicParent):
+        benchmark_metadata = BenchmarkMetadata(name="static", version="1", description="x")
+        task_metadata = {"s1": TaskMetadata(id="s1")}
+
+    assert _StaticChild.benchmark_metadata.name == "static"
+    assert "s1" in _StaticChild.task_metadata
+
+    # Grandchild that adds nothing must inherit the child's ClassVars cleanly,
+    # i.e. validation walks the MRO and stops at ``_StaticChild``.
+    class _StaticGrandchild(_StaticChild):  # noqa: F841
+        pass
+
+
 # ── tasks() view (ClassVar filtered by task_ids) ──────────────────────────────
 
 

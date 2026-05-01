@@ -113,7 +113,7 @@ class TaskExecutionInfo(TypedBaseModel):
     """
 
 
-class Task(TypedBaseModel, ABC):
+class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     """
     Represents a task that an agent must complete in an environment.
 
@@ -133,13 +133,24 @@ class Task(TypedBaseModel, ABC):
         + reset() -> (Observation, dict)           abstract — set up initial state, return first obs
         - step(action) -> EnvironmentOutput        execute action via tool, evaluate if done
         - close()                                  optional resource cleanup
+
+    Type parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
+    statically narrow ``self.metadata`` to a ``TaskMetadata`` subclass without
+    re-annotating the field. Two equivalent forms at runtime:
+
+        # Unparametrised — ``self.metadata`` typed as ``TaskMetadata``.
+        class FooTask(Task): ...
+
+        # Parametrised — ``self.metadata`` typed as ``FooTaskMetadata``,
+        # autocomplete and static checking work for subclass-specific fields.
+        class FooTask(Task[FooTaskMetadata]): ...
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # Serializable fields — SerializeAsAny preserves subclass-specific fields
     # through JSON round-trip (Pydantic otherwise strips to the declared base type).
-    metadata: SerializeAsAny[TaskMetadata]
+    metadata: SerializeAsAny[TTMetadata]
     # Same rationale for TaskExecutionInfo and ToolConfig below.
     execution_info: SerializeAsAny[TaskExecutionInfo] | None = Field(
         default=None,
@@ -394,7 +405,7 @@ class Task(TypedBaseModel, ABC):
             self._container = None
 
 
-class TaskConfig(ABC, TypedBaseModel):
+class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
     """Serializable task configuration — self-contained unit handed to workers.
 
     Carries everything needed to instantiate a Task, including its
@@ -409,13 +420,24 @@ class TaskConfig(ABC, TypedBaseModel):
     ``sub_bench_name`` is an optional routing hint used by
     ``CompositeBenchmark.spawn`` to dispatch a task to its origin
     sub-benchmark. Standalone benchmarks leave it None.
+
+    Type parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
+    statically narrow ``self.metadata`` to a ``TaskMetadata`` subclass without
+    re-annotating the field. Two equivalent forms at runtime:
+
+        # Unparametrised — ``self.metadata`` typed as ``TaskMetadata``.
+        class FooTaskConfig(TaskConfig): ...
+
+        # Parametrised — ``self.metadata`` typed as ``FooTaskMetadata``,
+        # autocomplete and static checking work for subclass-specific fields.
+        class FooTaskConfig(TaskConfig[FooTaskMetadata]): ...
     """
 
     # ``SerializeAsAny`` preserves subclass-specific fields through JSON
     # round-trip. Every cube subclasses TaskMetadata with extra
     # per-task data — without this annotation those fields get silently
     # stripped when the config crosses a process / network / storage boundary.
-    metadata: SerializeAsAny[TaskMetadata] = Field(
+    metadata: SerializeAsAny[TTMetadata] = Field(
         ...,
         description=(
             "Full task metadata. Stamped onto the config by "

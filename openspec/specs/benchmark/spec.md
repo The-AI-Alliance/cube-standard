@@ -47,6 +47,18 @@ the framework-defined fields above.
 
 ### `BenchmarkConfig` (abstract, Pydantic — serializable)
 
+`BenchmarkConfig` is generic over the task-metadata type:
+
+```python
+class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC): ...
+```
+
+The narrowing is method-level only — `task_metadata: ClassVar` stays at
+the base type (PEP 526 forbids type parameters inside `ClassVar`, and
+`dict` is invariant), and `tasks()` returns the covariant `Mapping[str,
+TTMetadata]` view at every read site. Subclassing is opt-in; existing
+unparametrised subclasses keep working unchanged.
+
 **Required class-level attributes** (ClassVar):
 ```python
 class MyBenchmarkConfig(BenchmarkConfig):
@@ -90,24 +102,31 @@ happens.
 
 **Concrete methods:**
 
-- `tasks() -> dict[str, TaskMetadata]` — class-level `task_metadata` filtered by
-  `task_ids` (full dict when `task_ids is None`).
+- `tasks() -> Mapping[str, TTMetadata]` — class-level `task_metadata` filtered by
+  `task_ids` (full dict when `task_ids is None`). Returns a read-only
+  `Mapping` so subclasses parametrised as `BenchmarkConfig[FooTaskMetadata]`
+  get a covariantly-narrowed view at every read site; the runtime value is
+  still a `dict`.
 - `num_tasks` (property) — `len(self.tasks())`; differs from
   `benchmark_metadata.num_tasks` for subsets.
 - `name` (property) — `self.benchmark_metadata.name`.
 - `get_task_configs()` → `Generator[TaskConfig]` — yields one
   `task_config_class` per task in `tasks()`, expanding via `seed_generator` if
   set.
-- `subset_from_list(tasks, benchmark_name_suffix="custom")` → new
-  `BenchmarkConfig` with `task_ids` populated. Accepts ids or `TaskMetadata`
-  objects. Duplicates deduped (first-wins order).
-- `subset_from_glob(glob_key, pattern)` → new `BenchmarkConfig`. `glob_key` is
-  any top-level field on the (subclassed) `TaskMetadata` — built-ins like
+- `subset_from_list(tasks, benchmark_name_suffix="custom")` → `Self` (same
+  subclass, new instance) with `task_ids` populated. Accepts ids or `TaskMetadata` objects.
+  Duplicates deduped (first-wins order).
+- `subset_from_glob(glob_key, pattern)` → `Self` (same subclass, new instance). `glob_key`
+  is any top-level field on the (subclassed) `TaskMetadata` — built-ins like
   `id` / `split` / `abstract_description`, or any named field declared by a
   `TaskMetadata` subclass.
 - `named_subsets()` (classmethod) → list of names from
   `benchmark_metadata.named_subsets`.
-- `named_subset(name)` → new `BenchmarkConfig` via `subset_from_glob(*...)`.
+- `named_subset(name)` → `Self` (same subclass, new instance) via `subset_from_glob(*...)`.
+
+  All three subsetting methods return `Self`, so chained calls and
+  subclass-typed assignments preserve the concrete type without
+  `# type: ignore`.
 
 **Class-level data lifecycle (classmethods):**
 
@@ -156,9 +175,9 @@ state. Not Pydantic — no fields, no `arbitrary_types_allowed`, nothing to
 round-trip.
 
 ```python
-class Benchmark(ABC):
-    def __init__(self, config: BenchmarkConfig, infra: InfraConfig | None = None) -> None:
-        self.config: BenchmarkConfig = config
+class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
+    def __init__(self, config: TBenchConfig, infra: InfraConfig | None = None) -> None:
+        self.config: TBenchConfig = config
         self._infra: InfraConfig | None = infra
         self._runtime_context: RuntimeContext = {}
 ```
