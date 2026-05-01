@@ -16,7 +16,7 @@ TaskConfig is the serialisable boundary that crosses process/network lines.
 It carries its own metadata (stamped by BenchmarkConfig.get_task_configs()
 on the driver) so workers never need to import the owning BenchmarkConfig.
 Implement make() using self.metadata directly; populate execution_info from
-self.load_task_execution_info(self.task_id) when your cube ships heavy data.
+self.load_task_execution_info() when your cube ships heavy data.
 """
 
 from typing import Any
@@ -83,15 +83,14 @@ class CubeTaskConfig(TaskConfig):
     ``CubeBenchmarkConfig.get_task_configs()`` on the driver.
     """
 
-    @classmethod
-    def verify_installed(cls) -> None:
+    def verify_installed(self) -> None:
         """Optional fail-fast check before workers attempt to load heavy data.
 
         Default base implementation is a no-op. Override when your cube ships
         heavy data via ``BenchmarkConfig.install()`` so misconfigured workers
         error early with an actionable message instead of timing out::
 
-            cache_dir = cls.task_execution_cache_dir()
+            cache_dir = type(self).task_execution_cache_dir()
             if not cache_dir.exists() or not any(cache_dir.iterdir()):
                 raise RuntimeError(
                     f"Run `cube install new-cube-package` first."
@@ -104,10 +103,10 @@ class CubeTaskConfig(TaskConfig):
         container_backend: ContainerBackend | None = None,
     ) -> CubeTask:
         # By convention, fail fast if this worker is misconfigured.
-        type(self).verify_installed()
+        self.verify_installed()
         # If your cube uses heavy per-task data, hydrate it here:
         # exec_info = CubeExecutionInfo.model_validate(
-        #     self.load_task_execution_info(self.task_id)
+        #     self.load_task_execution_info()
         # )
         return CubeTask(
             metadata=self.metadata,

@@ -140,8 +140,12 @@ class _CacheTaskConfig(TaskConfig):
         return SimpleTask(metadata=self.metadata, tool_config=GreetToolConfig())
 
 
-def test_task_execution_cache_dir_default(monkeypatch, tmp_path):
-    """Default cache dir is ``<cube cache>/<top-level-package>/tasks_execution_info/``."""
+def _cache_task_config(task_id: str = "task-1") -> _CacheTaskConfig:
+    return _CacheTaskConfig(metadata=TaskMetadata(id=task_id), tool_config=GreetToolConfig())
+
+
+def test_task_execution_cache_dir_falls_back_to_package_when_unowned(monkeypatch, tmp_path):
+    """Without a back-stamp, the default keys on the top-level Python package."""
     import cube as cube_pkg
 
     monkeypatch.setattr(cube_pkg, "_CUBE_CACHE_ROOT", tmp_path)
@@ -150,18 +154,24 @@ def test_task_execution_cache_dir_default(monkeypatch, tmp_path):
     assert _CacheTaskConfig.task_execution_cache_dir() == expected
 
 
+def test_task_execution_cache_dir_uses_back_stamped_benchmark_dir(monkeypatch, tmp_path):
+    """When BenchmarkConfig back-stamps ``_benchmark_cache_dir``, the cache lives under it."""
+    monkeypatch.setattr(_CacheTaskConfig, "_benchmark_cache_dir", tmp_path / "my-bench")
+    assert _CacheTaskConfig.task_execution_cache_dir() == tmp_path / "my-bench" / "tasks_execution_info"
+
+
 def test_load_task_execution_info_raises_when_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(_CacheTaskConfig, "task_execution_cache_dir", classmethod(lambda cls: tmp_path))
     with pytest.raises(RuntimeError, match="No execution data"):
-        _CacheTaskConfig.load_task_execution_info("missing-task")
+        _cache_task_config("missing-task").load_task_execution_info()
 
 
 def test_load_task_execution_info_returns_dict_when_present(monkeypatch, tmp_path):
     monkeypatch.setattr(_CacheTaskConfig, "task_execution_cache_dir", classmethod(lambda cls: tmp_path))
     (tmp_path / "task-1.json").write_text(json.dumps({"instruction": "solve it"}))
-    assert _CacheTaskConfig.load_task_execution_info("task-1") == {"instruction": "solve it"}
+    assert _cache_task_config("task-1").load_task_execution_info() == {"instruction": "solve it"}
 
 
 def test_verify_installed_default_is_noop():
     """Base ``verify_installed`` is a no-op so cubes opt in only when they want fail-fast."""
-    assert _CacheTaskConfig.verify_installed() is None
+    assert _cache_task_config().verify_installed() is None

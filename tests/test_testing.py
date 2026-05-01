@@ -305,10 +305,13 @@ def test_suite_benchmark_closed_even_when_get_task_configs_raises():
         def close(self) -> None:
             self.close_calls += 1
 
+    class FailingDoneTaskConfig(DoneTaskConfig):
+        pass
+
     class FailingTaskConfigsConfig(BenchmarkConfig):
         benchmark_metadata: ClassVar = BenchmarkMetadata(name="fail-bench", version="0.1", description="test")
         task_metadata: ClassVar[dict[str, TaskMetadata]] = {"t1": TaskMetadata(id="t1")}
-        task_config_class: ClassVar = DoneTaskConfig
+        task_config_class: ClassVar = FailingDoneTaskConfig
         benchmark_class: ClassVar = FailingTaskConfigsBenchmark
 
         def get_task_configs(self):
