@@ -152,9 +152,13 @@ def test_classvar_override_of_parent_property_is_validated():
 
     # A valid ClassVar override must be accepted, and the ClassVar value must
     # surface on the class.
+    class _StaticChildTaskConfig(_TaskConfig):
+        pass
+
     class _StaticChild(_DynamicParent):
         benchmark_metadata = BenchmarkMetadata(name="static", version="1", description="x")
         task_metadata = {"s1": TaskMetadata(id="s1")}
+        task_config_class = _StaticChildTaskConfig
 
     assert _StaticChild.benchmark_metadata.name == "static"
     assert "s1" in _StaticChild.task_metadata
@@ -165,10 +169,10 @@ def test_classvar_override_of_parent_property_is_validated():
         pass
 
 
-def test_init_subclass_back_stamps_benchmark_cache_name():
-    """Concrete BenchmarkConfig subclasses stamp ``benchmark_metadata.name`` onto
-    their ``task_config_class`` so ``TaskConfig.task_execution_cache_dir()``
-    keys on the same name as ``BenchmarkConfig.cache_dir()``."""
+def test_init_subclass_back_stamps_benchmark_cache_dir():
+    """Concrete BenchmarkConfig subclasses stamp ``cls.cache_dir()`` onto their
+    ``task_config_class`` so ``TaskConfig.task_execution_cache_dir()`` lives
+    directly under ``BenchmarkConfig.cache_dir()``."""
 
     class _StampTaskConfig(TaskConfig):
         def make(self, runtime_context=None, container_backend=None):
@@ -180,16 +184,62 @@ def test_init_subclass_back_stamps_benchmark_cache_name():
         task_config_class = _StampTaskConfig
         benchmark_class = MyBenchmark
 
-    assert _StampTaskConfig._benchmark_cache_name == "stamp-bench"
-    assert _StampBenchmarkConfig.cache_dir().name == "stamp-bench"
-    assert _StampTaskConfig.task_execution_cache_dir().parent.name == "stamp-bench"
+    assert _StampTaskConfig._benchmark_cache_dir == _StampBenchmarkConfig.cache_dir()
+    assert _StampTaskConfig.task_execution_cache_dir() == _StampBenchmarkConfig.cache_dir() / "tasks_execution_info"
 
 
 def test_init_subclass_skips_back_stamp_for_abstract_taskconfig_placeholder():
     """``CompositeBenchmarkConfig`` uses the abstract ``TaskConfig`` as a placeholder
     (it overrides ``get_task_configs``). The back-stamp must skip it so the
-    abstract base never carries a benchmark name."""
-    assert TaskConfig._benchmark_cache_name is None
+    abstract base never carries a benchmark cache dir."""
+    assert TaskConfig._benchmark_cache_dir is None
+
+
+def test_init_subclass_rejects_shared_task_config_class():
+    """Two ``BenchmarkConfig`` subclasses pointing at the same ``task_config_class``
+    would silently overwrite each other's stamp. Class definition must fail loudly."""
+
+    class _SharedTaskConfig(TaskConfig):
+        def make(self, runtime_context=None, container_backend=None):
+            return _Task(metadata=self.metadata, tool_config=_ToolConfig())
+
+    class _OwnerOne(BenchmarkConfig):
+        benchmark_metadata = BenchmarkMetadata(name="owner-one", version="1", description="x")
+        task_metadata = {"t1": TaskMetadata(id="t1")}
+        task_config_class = _SharedTaskConfig
+        benchmark_class = MyBenchmark
+
+    with pytest.raises(TypeError, match="already owned by benchmark"):
+
+        class _OwnerTwo(BenchmarkConfig):  # noqa: F841
+            benchmark_metadata = BenchmarkMetadata(name="owner-two", version="1", description="x")
+            task_metadata = {"t1": TaskMetadata(id="t1")}
+            task_config_class = _SharedTaskConfig
+            benchmark_class = MyBenchmark
+
+
+def test_task_execution_cache_dir_does_not_inherit_via_mro():
+    """A ``TaskConfig`` subclass without its own owning ``BenchmarkConfig`` must
+    fall back to the package name — it must NOT silently inherit the parent's
+    stamp through the MRO."""
+
+    class _OwnedTaskConfig(TaskConfig):
+        def make(self, runtime_context=None, container_backend=None):
+            return _Task(metadata=self.metadata, tool_config=_ToolConfig())
+
+    class _OwningBenchmarkConfig(BenchmarkConfig):  # noqa: F841
+        benchmark_metadata = BenchmarkMetadata(name="owning-bench", version="1", description="x")
+        task_metadata = {"t1": TaskMetadata(id="t1")}
+        task_config_class = _OwnedTaskConfig
+        benchmark_class = MyBenchmark
+
+    class _DerivedTaskConfig(_OwnedTaskConfig):
+        """Test-scaffold subclass with no owning BenchmarkConfig of its own."""
+
+    # Parent is stamped.
+    assert _OwnedTaskConfig.task_execution_cache_dir().parent.name == "owning-bench"
+    # Derived falls back to top-level package name (here: "tests"), not "owning-bench".
+    assert _DerivedTaskConfig.task_execution_cache_dir().parent.name == "tests"
 
 
 # ── tasks() view (ClassVar filtered by task_ids) ──────────────────────────────
@@ -254,6 +304,9 @@ def test_subset_from_list_is_idempotent():
 
 
 def test_subset_from_list_preserves_subclass_and_instance_fields():
+    class _FieldTaskConfig(_TaskConfig):
+        pass
+
     class ConfigWithField(BenchmarkConfig):
         benchmark_metadata = BenchmarkMetadata(
             name="FieldBench",
@@ -268,7 +321,7 @@ def test_subset_from_list_preserves_subclass_and_instance_fields():
             "f2": TaskMetadata(id="f2"),
             "f3": TaskMetadata(id="f3"),
         }
-        task_config_class = _TaskConfig
+        task_config_class = _FieldTaskConfig
         benchmark_class = MyBenchmark
         a: str = "hello"
 
@@ -334,6 +387,9 @@ def test_subset_from_glob_composes_with_subset_from_list():
 
 
 def test_named_subsets_and_named_subset():
+    class _NamedTaskConfig(_TaskConfig):
+        pass
+
     class ConfigWithNamed(BenchmarkConfig):
         benchmark_metadata = BenchmarkMetadata(
             name="Named",
@@ -343,7 +399,7 @@ def test_named_subsets_and_named_subset():
             named_subsets={"train": ("split", "train"), "easy": ("difficulty", "easy")},
         )
         task_metadata = MyBenchmarkConfig.task_metadata
-        task_config_class = _TaskConfig
+        task_config_class = _NamedTaskConfig
         benchmark_class = MyBenchmark
 
     assert set(ConfigWithNamed.named_subsets()) == {"train", "easy"}
@@ -550,8 +606,12 @@ class _RichTaskMetadata(TaskMetadata):
     marker: str = "meta-default"
 
 
+class _RichTaskConfig(_TaskConfig):
+    pass
+
+
 class _BenchWithRichDefaults(BenchmarkConfig):
     benchmark_metadata = BenchmarkMetadata(name="rich-defaults-bench", version="1", description="x")
     task_metadata = {"t1": TaskMetadata(id="t1")}
-    task_config_class = _TaskConfig
+    task_config_class = _RichTaskConfig
     benchmark_class = MyBenchmark

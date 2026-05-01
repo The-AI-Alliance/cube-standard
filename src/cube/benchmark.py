@@ -404,20 +404,6 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
                 f"'task_config_class' as a ClassVar subclass of TaskConfig, not {task_cfg_cls!r}."
             )
 
-        # Back-stamp the benchmark name onto the task config class so
-        # ``TaskConfig.task_execution_cache_dir()`` defaults match
-        # ``BenchmarkConfig.cache_dir()`` (both keyed on
-        # ``benchmark_metadata.name``) without ``task.py`` importing
-        # ``benchmark.py``. Skip when ``task_config_class`` is abstract
-        # (e.g. the bare ``TaskConfig`` placeholder used by
-        # ``CompositeBenchmarkConfig``) — stamping on an abstract class would
-        # leak the name to every concrete subclass via the MRO. Skip dynamic
-        # ``benchmark_metadata`` (composite @property — no fixed name at
-        # class-creation time).
-        is_abstract = bool(getattr(task_cfg_cls, "__abstractmethods__", None))
-        if not is_abstract and not _is_dynamic("benchmark_metadata"):
-            task_cfg_cls._benchmark_cache_name = cls.benchmark_metadata.name
-
         # ── benchmark_class ─────────────────────────────────────────────────
         bench_cls = getattr(cls, "benchmark_class", None)
         if not (isinstance(bench_cls, type) and issubclass(bench_cls, Benchmark)):
@@ -425,6 +411,27 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
                 f"Concrete benchmark config class {cls.__name__} must define "
                 f"'benchmark_class' as a ClassVar subclass of Benchmark, not {bench_cls!r}."
             )
+
+        # Back-stamp the benchmark cache dir onto the task config class so
+        # ``TaskConfig.task_execution_cache_dir()`` lives directly under
+        # ``BenchmarkConfig.cache_dir()`` without ``task.py`` importing
+        # ``benchmark.py``. Done last so an invalid subclass (failed
+        # validation above) never stamps.
+        # Skip when ``task_config_class`` is abstract (e.g. the bare
+        # ``TaskConfig`` placeholder used by ``CompositeBenchmarkConfig``).
+        # Skip dynamic ``benchmark_metadata`` since ``benchmark_metadata.name``
+        # and has no fixed value at class-creation time.
+        is_abstract = bool(getattr(task_cfg_cls, "__abstractmethods__", None))
+        if not is_abstract and not _is_dynamic("benchmark_metadata"):
+            new_dir = cls.cache_dir()
+            existing = task_cfg_cls.__dict__.get("_benchmark_cache_dir")
+            if existing is not None and existing != new_dir:
+                raise TypeError(
+                    f"{task_cfg_cls.__qualname__} is already owned by "
+                    f"benchmark at {existing!s}; cannot reassign to {new_dir!s}. "
+                    f"Each BenchmarkConfig must declare its own TaskConfig subclass."
+                )
+            task_cfg_cls._benchmark_cache_dir = new_dir
 
     # ──────────────────────────────────────────────────────────────────────────
     # Views
@@ -585,9 +592,9 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
 
         Convention: write each task's processed data as a JSON file at
         ``cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"``
-        — that path is the single source of truth, owned by ``TaskConfig``,
-        and read back by workers via ``self.load_task_execution_info()``
-        inside ``TaskConfig.make()``.
+        — that path is the single source of truth, and is read back by
+        workers via ``self.load_task_execution_info()`` inside
+        ``TaskConfig.make()``.
 
         ``install()`` MUST NOT mutate ``task_metadata`` — that registry is
         populated at class-definition time from a shipped file (or declared

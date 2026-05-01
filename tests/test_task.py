@@ -154,12 +154,9 @@ def test_task_execution_cache_dir_falls_back_to_package_when_unowned(monkeypatch
     assert _CacheTaskConfig.task_execution_cache_dir() == expected
 
 
-def test_task_execution_cache_dir_uses_back_stamped_benchmark_name(monkeypatch, tmp_path):
-    """When BenchmarkConfig back-stamps ``_benchmark_cache_name``, the cache keys on it."""
-    import cube as cube_pkg
-
-    monkeypatch.setattr(cube_pkg, "_CUBE_CACHE_ROOT", tmp_path)
-    monkeypatch.setattr(_CacheTaskConfig, "_benchmark_cache_name", "my-bench")
+def test_task_execution_cache_dir_uses_back_stamped_benchmark_dir(monkeypatch, tmp_path):
+    """When BenchmarkConfig back-stamps ``_benchmark_cache_dir``, the cache lives under it."""
+    monkeypatch.setattr(_CacheTaskConfig, "_benchmark_cache_dir", tmp_path / "my-bench")
     assert _CacheTaskConfig.task_execution_cache_dir() == tmp_path / "my-bench" / "tasks_execution_info"
 
 

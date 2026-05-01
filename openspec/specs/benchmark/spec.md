@@ -142,11 +142,11 @@ happens.
 - `cache_dir()` → `~/.cube/<benchmark_metadata.name>/` (overridable).
 
 The per-task execution cache helpers (`task_execution_cache_dir()`,
-`load_task_execution_info()`, `verify_installed()`) live on `TaskConfig`,
-not on `BenchmarkConfig` — see [task/spec.md](../task/spec.md) for the
+`load_task_execution_info()`, `verify_installed()`) live on
+`TaskConfig` — see [task/spec.md](../task/spec.md) for the
 worker-side surface. `BenchmarkConfig.__init_subclass__` back-stamps
-`benchmark_metadata.name` onto `task_config_class._benchmark_cache_name`
-so `task_execution_cache_dir()` defaults match `cache_dir()`, and
+`cls.cache_dir()` onto `task_config_class._benchmark_cache_dir` so
+`task_execution_cache_dir()` lives directly under `cache_dir()`, and
 `install()` writes via `cls.task_config_class.task_execution_cache_dir()`
 so the path has a single definition.
 

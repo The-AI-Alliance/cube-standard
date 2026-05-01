@@ -409,7 +409,10 @@ class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
     Carries everything needed to instantiate a Task, including its
     ``TaskMetadata``. Workers never import the owning ``BenchmarkConfig`` to
     look up metadata; the config arrives complete and ``make()`` just uses
-    ``self.metadata`` directly.
+    ``self.metadata`` directly. Cache helpers do require the owning
+    ``BenchmarkConfig`` to have been imported (automatic for normal cube
+    package layouts) — without it the cache path falls back to the
+    top-level Python package name.
 
     ``task_id`` is derived from ``metadata.id`` (prefixed with
     ``sub_bench_name`` for composite-routed configs) so there is a single
@@ -502,10 +505,10 @@ class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
     # ──────────────────────────────────────────────────────────────────────────
 
     # Set by ``BenchmarkConfig.__init_subclass__`` on each owning benchmark's
-    # ``task_config_class`` so the default cache path matches
-    # ``BenchmarkConfig.cache_dir()`` (which keys on ``benchmark_metadata.name``)
+    # ``task_config_class`` to ``cls.cache_dir()`` so the default
+    # task-execution cache lives directly under the benchmark's cache dir
     # without ``task.py`` importing ``benchmark.py``. ClassVar — not serialized.
-    _benchmark_cache_name: ClassVar[str | None] = None
+    _benchmark_cache_dir: ClassVar[Path | None] = None
 
     @classmethod
     def task_execution_cache_dir(cls) -> Path:
@@ -513,15 +516,18 @@ class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
 
         Default: ``BenchmarkConfig.cache_dir() / "tasks_execution_info"`` —
         i.e. ``~/.cube/<benchmark-name>/tasks_execution_info/`` once the owning
-        ``BenchmarkConfig`` has stamped its name. Falls back to the top-level
-        Python package name (``cls.__module__.split(".")[0]``) when no owner is
-        attached (e.g. direct test instantiation).
+        ``BenchmarkConfig`` has stamped its cache dir.
+        Falls back to ``~/.cube/<top-level-package-name>/tasks_execution_info/``
+        when ``_benchmark_cache_dir`` is None.
 
         Override on subclasses that use a non-default cache layout (e.g. cubes
         that co-locate the cache with other on-disk state).
         """
-        name = cls._benchmark_cache_name or cls.__module__.split(".")[0]
-        return get_cache_dir(name) / "tasks_execution_info"
+        # ``__dict__.get`` (not attribute lookup) so derived subclasses without
+        # their own owning BenchmarkConfig don't silently inherit the parent's
+        # stamp via the MRO.
+        cache_dir = cls.__dict__.get("_benchmark_cache_dir") or get_cache_dir(cls.__module__.split(".")[0])
+        return cache_dir / "tasks_execution_info"
 
     def load_task_execution_info(self) -> dict[str, Any]:
         """Read the per-task execution-info dict written by ``BenchmarkConfig.install()``.
@@ -547,8 +553,11 @@ class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
         """Optional fail-fast check that data this task relies on is locally available.
 
         Default: no-op. Cube authors override with a check appropriate to
-        their cache (e.g. ``not list(type(self).task_execution_cache_dir().iterdir())``
-        or ``HF_HOME / 'datasets' / '...'.exists()``).
+        their cache, e.g.::
+
+            cache_dir = type(self).task_execution_cache_dir()
+            if not cache_dir.exists() or not any(cache_dir.iterdir()):
+                raise RuntimeError("Run `cube install <bench>` first.")
 
         Convention: ``TaskConfig.make()`` calls ``self.verify_installed()`` at
         the top so misconfigured workers fail fast with an actionable error
