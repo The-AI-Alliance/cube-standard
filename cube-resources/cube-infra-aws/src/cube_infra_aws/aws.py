@@ -72,7 +72,7 @@ from cube.resource import (
     UnsupportedResourceType,
     VMResourceConfig,
 )
-from cube_infra_aws._utils import BootstrapMonitor, free_port, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
+from cube_infra_aws._utils import BootstrapMonitor, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
 
 logger = logging.getLogger(__name__)
 
