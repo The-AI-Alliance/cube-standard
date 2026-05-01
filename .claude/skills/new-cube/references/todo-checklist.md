@@ -89,16 +89,15 @@ If a task needs heavy data (problem statements, binaries, evaluation code, patch
 3. `TaskConfig.make()` hydrates `Task.execution_info` from the cache:
    ```python
    class MyTaskConfig(TaskConfig):
-       @classmethod
-       def verify_installed(cls) -> None:
-           cache_dir = cls.task_execution_cache_dir()
+       def verify_installed(self) -> None:
+           cache_dir = type(self).task_execution_cache_dir()
            if not cache_dir.exists() or not any(cache_dir.iterdir()):
                raise RuntimeError("Run `cube install <bench>` first.")
 
        def make(self, runtime_context=None, container_backend=None):
-           type(self).verify_installed()
+           self.verify_installed()
            exec_info = MyExecutionInfo.model_validate(
-               self.load_task_execution_info(self.task_id)
+               self.load_task_execution_info()
            )
            return MyTask(
                metadata=self.metadata,
@@ -187,7 +186,7 @@ Each entry is `(glob_key, glob_pattern)` — `glob_key` is a top-level field on 
 - [ ] `close()` tears down whatever `_setup()` created, idempotently.
 - [ ] If Option B: `scripts/create_task_metadata.py` exists, is idempotent, and has been run.
 - [ ] If splits: declared as `named_subsets`, not separate files.
-- [ ] If heavy per-task data: declared on a typed `TaskExecutionInfo` subclass, written to the per-task cache by `install()`, hydrated on workers in `TaskConfig.make()` via `cls.load_task_execution_info(self.task_id)`.
+- [ ] If heavy per-task data: declared on a typed `TaskExecutionInfo` subclass, written to the per-task cache by `install()`, hydrated on workers in `TaskConfig.make()` via `self.load_task_execution_info()`.
 
 ## Layer 4 — `debug.py`
 

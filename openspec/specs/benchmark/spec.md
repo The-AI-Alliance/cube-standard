@@ -47,6 +47,18 @@ the framework-defined fields above.
 
 ### `BenchmarkConfig` (abstract, Pydantic — serializable)
 
+`BenchmarkConfig` is generic over the task-metadata type:
+
+```python
+class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC): ...
+```
+
+The narrowing is method-level only — `task_metadata: ClassVar` stays at
+the base type (PEP 526 forbids type parameters inside `ClassVar`, and
+`dict` is invariant), and `tasks()` returns the covariant `Mapping[str,
+TTMetadata]` view at every read site. Subclassing is opt-in; existing
+unparametrised subclasses keep working unchanged.
+
 **Required class-level attributes** (ClassVar):
 ```python
 class MyBenchmarkConfig(BenchmarkConfig):
@@ -90,24 +102,31 @@ happens.
 
 **Concrete methods:**
 
-- `tasks() -> dict[str, TaskMetadata]` — class-level `task_metadata` filtered by
-  `task_ids` (full dict when `task_ids is None`).
+- `tasks() -> Mapping[str, TTMetadata]` — class-level `task_metadata` filtered by
+  `task_ids` (full dict when `task_ids is None`). Returns a read-only
+  `Mapping` so subclasses parametrised as `BenchmarkConfig[FooTaskMetadata]`
+  get a covariantly-narrowed view at every read site; the runtime value is
+  still a `dict`.
 - `num_tasks` (property) — `len(self.tasks())`; differs from
   `benchmark_metadata.num_tasks` for subsets.
 - `name` (property) — `self.benchmark_metadata.name`.
 - `get_task_configs()` → `Generator[TaskConfig]` — yields one
   `task_config_class` per task in `tasks()`, expanding via `seed_generator` if
   set.
-- `subset_from_list(tasks, benchmark_name_suffix="custom")` → new
-  `BenchmarkConfig` with `task_ids` populated. Accepts ids or `TaskMetadata`
-  objects. Duplicates deduped (first-wins order).
-- `subset_from_glob(glob_key, pattern)` → new `BenchmarkConfig`. `glob_key` is
-  any top-level field on the (subclassed) `TaskMetadata` — built-ins like
+- `subset_from_list(tasks, benchmark_name_suffix="custom")` → `Self` (same
+  subclass, new instance) with `task_ids` populated. Accepts ids or `TaskMetadata` objects.
+  Duplicates deduped (first-wins order).
+- `subset_from_glob(glob_key, pattern)` → `Self` (same subclass, new instance). `glob_key`
+  is any top-level field on the (subclassed) `TaskMetadata` — built-ins like
   `id` / `split` / `abstract_description`, or any named field declared by a
   `TaskMetadata` subclass.
 - `named_subsets()` (classmethod) → list of names from
   `benchmark_metadata.named_subsets`.
-- `named_subset(name)` → new `BenchmarkConfig` via `subset_from_glob(*...)`.
+- `named_subset(name)` → `Self` (same subclass, new instance) via `subset_from_glob(*...)`.
+
+  All three subsetting methods return `Self`, so chained calls and
+  subclass-typed assignments preserve the concrete type without
+  `# type: ignore`.
 
 **Class-level data lifecycle (classmethods):**
 
@@ -117,16 +136,19 @@ happens.
   mutate `task_metadata`. By convention writes one JSON per task to
   `cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"` —
   the path has a single owner (`TaskConfig`), and the same cache dir is
-  read back on workers via `TaskConfig.load_task_execution_info(task_id)`.
+  read back on workers via `self.load_task_execution_info()` inside
+  `TaskConfig.make()`.
 - `uninstall()` — remove assets installed by `install()`. Default: no-op.
-- `cache_dir()` → `~/.cube/<name>/` (overridable).
+- `cache_dir()` → `~/.cube/<benchmark_metadata.name>/` (overridable).
 
 The per-task execution cache helpers (`task_execution_cache_dir()`,
-`load_task_execution_info()`, `verify_installed()`) live on `TaskConfig`,
-not on `BenchmarkConfig` — see [task/spec.md](../task/spec.md) for the
-worker-side surface. `BenchmarkConfig.install()` writes via
-`cls.task_config_class.task_execution_cache_dir()` so the path has a
-single definition.
+`load_task_execution_info()`, `verify_installed()`) live on
+`TaskConfig` — see [task/spec.md](../task/spec.md) for the
+worker-side surface. `BenchmarkConfig.__init_subclass__` back-stamps
+`cls.cache_dir()` onto `task_config_class._benchmark_cache_dir` so
+`task_execution_cache_dir()` lives directly under `cache_dir()`, and
+`install()` writes via `cls.task_config_class.task_execution_cache_dir()`
+so the path has a single definition.
 
 **Metadata loaders (staticmethods, also usable at class definition):**
 - `benchmark_metadata_from_{json,csv}(path)` → `BenchmarkMetadata`
@@ -141,8 +163,10 @@ JSON-encoded strings as well.
 - `make(infra: InfraConfig | None = None) -> Benchmark` — for every
   resource whose `infra.provision_status(resource) != "ready"`, call
   `infra.provision(resource)` (idempotent), then instantiate
-  `type(self).benchmark_class(config=self)`, call `benchmark.setup()`, and
-  return the live `Benchmark`. When `infra` is None and `resources` is
+  `type(self).benchmark_class(config=self, infra=infra)`, call
+  `benchmark.setup()`, and return the live `Benchmark`. `infra` is
+  forwarded to the runtime constructor so subclasses can reach it via
+  `self._infra` from `_setup()`. When `infra` is None and `resources` is
   non-empty, provisioning is skipped with a debug log — benchmarks that use
   only task-scoped (L3) resources launched per-task can legitimately pass
   `infra=None` at `make` time.
@@ -154,14 +178,22 @@ state. Not Pydantic — no fields, no `arbitrary_types_allowed`, nothing to
 round-trip.
 
 ```python
-class Benchmark(ABC):
-    def __init__(self, config: BenchmarkConfig) -> None:
-        self.config: BenchmarkConfig = config
+class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
+    def __init__(self, config: TBenchConfig, infra: InfraConfig | None = None) -> None:
+        self.config: TBenchConfig = config
+        self._infra: InfraConfig | None = infra
         self._runtime_context: RuntimeContext = {}
 ```
 
+`infra` is forwarded by `BenchmarkConfig.make(infra)` and stashed as
+`self._infra` so cubes that publish it into `runtime_context["infra"]` for
+per-task container launches can do so from `_setup()` without overriding
+`__init__` or `make`.
+
 **Abstract methods:**
 - `_setup()` — create shared infrastructure, populate `self._runtime_context`.
+  Cubes that thread per-task infra publish it here (e.g.
+  `self._runtime_context["infra"] = self._infra`).
 - `close()` — tear down what `_setup()` created.
 
 **Concrete methods:**
@@ -223,9 +255,10 @@ class SWEBenchConfig(BenchmarkConfig):
     def install(cls) -> None:
         # Download problem statements, patches, tests — write per-task JSON to
         # cls.task_config_class.task_execution_cache_dir(). Idempotent.
-        # task_metadata untouched. Read back on workers via
-        # TaskConfig.load_task_execution_info(task_id) and validated against
-        # a typed TaskExecutionInfo subclass surfaced as Task.execution_info.
+        # task_metadata untouched. Read back on workers inside
+        # TaskConfig.make() via self.load_task_execution_info() and validated
+        # against a typed TaskExecutionInfo subclass surfaced as
+        # Task.execution_info.
         ...
 ```
 
@@ -349,5 +382,5 @@ with suite.make(infra) as bench:
   class-definition time (directly or via file auto-load). `install()` writes
   heavy execution-time data to the per-task cache under
   `cls.task_config_class.task_execution_cache_dir()`, read back on workers
-  via `TaskConfig.load_task_execution_info(task_id)` and surfaced as
-  `Task.execution_info` (a typed `TaskExecutionInfo` subclass).
+  inside `TaskConfig.make()` via `self.load_task_execution_info()` and
+  surfaced as `Task.execution_info` (a typed `TaskExecutionInfo` subclass).

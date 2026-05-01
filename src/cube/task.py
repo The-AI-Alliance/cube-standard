@@ -21,7 +21,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Tuple
+from typing import Any, ClassVar, Dict, List, Literal, Tuple
 
 from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
 
@@ -104,16 +104,14 @@ class TaskExecutionInfo(TypedBaseModel):
     ``TypedBaseModel`` ``_type`` discriminator.
 
     Populated on the worker — typically inside ``TaskConfig.make()`` by
-    validating ``cls.load_task_execution_info(task_id)`` against the
-    subclass, but ``Task.model_post_init`` and ``Task.reset()`` are also
-    valid hydration points.
+    validating ``self.load_task_execution_info()`` against the subclass.
 
     Cubes with no heavy data leave the slot ``None``; the base class is
     instantiable but carries no fields.
     """
 
 
-class Task(TypedBaseModel, ABC):
+class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     """
     Represents a task that an agent must complete in an environment.
 
@@ -133,13 +131,24 @@ class Task(TypedBaseModel, ABC):
         + reset() -> (Observation, dict)           abstract — set up initial state, return first obs
         - step(action) -> EnvironmentOutput        execute action via tool, evaluate if done
         - close()                                  optional resource cleanup
+
+    Type parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
+    statically narrow ``self.metadata`` to a ``TaskMetadata`` subclass without
+    re-annotating the field. Two equivalent forms at runtime:
+
+        # Unparametrised — ``self.metadata`` typed as ``TaskMetadata``.
+        class FooTask(Task): ...
+
+        # Parametrised — ``self.metadata`` typed as ``FooTaskMetadata``,
+        # autocomplete and static checking work for subclass-specific fields.
+        class FooTask(Task[FooTaskMetadata]): ...
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # Serializable fields — SerializeAsAny preserves subclass-specific fields
     # through JSON round-trip (Pydantic otherwise strips to the declared base type).
-    metadata: SerializeAsAny[TaskMetadata]
+    metadata: SerializeAsAny[TTMetadata]
     # Same rationale for TaskExecutionInfo and ToolConfig below.
     execution_info: SerializeAsAny[TaskExecutionInfo] | None = Field(
         default=None,
@@ -394,13 +403,16 @@ class Task(TypedBaseModel, ABC):
             self._container = None
 
 
-class TaskConfig(ABC, TypedBaseModel):
+class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
     """Serializable task configuration — self-contained unit handed to workers.
 
     Carries everything needed to instantiate a Task, including its
     ``TaskMetadata``. Workers never import the owning ``BenchmarkConfig`` to
     look up metadata; the config arrives complete and ``make()`` just uses
-    ``self.metadata`` directly.
+    ``self.metadata`` directly. Cache helpers do require the owning
+    ``BenchmarkConfig`` to have been imported (automatic for normal cube
+    package layouts) — without it the cache path falls back to the
+    top-level Python package name.
 
     ``task_id`` is derived from ``metadata.id`` (prefixed with
     ``sub_bench_name`` for composite-routed configs) so there is a single
@@ -409,13 +421,24 @@ class TaskConfig(ABC, TypedBaseModel):
     ``sub_bench_name`` is an optional routing hint used by
     ``CompositeBenchmark.spawn`` to dispatch a task to its origin
     sub-benchmark. Standalone benchmarks leave it None.
+
+    Type parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
+    statically narrow ``self.metadata`` to a ``TaskMetadata`` subclass without
+    re-annotating the field. Two equivalent forms at runtime:
+
+        # Unparametrised — ``self.metadata`` typed as ``TaskMetadata``.
+        class FooTaskConfig(TaskConfig): ...
+
+        # Parametrised — ``self.metadata`` typed as ``FooTaskMetadata``,
+        # autocomplete and static checking work for subclass-specific fields.
+        class FooTaskConfig(TaskConfig[FooTaskMetadata]): ...
     """
 
     # ``SerializeAsAny`` preserves subclass-specific fields through JSON
     # round-trip. Every cube subclasses TaskMetadata with extra
     # per-task data — without this annotation those fields get silently
     # stripped when the config crosses a process / network / storage boundary.
-    metadata: SerializeAsAny[TaskMetadata] = Field(
+    metadata: SerializeAsAny[TTMetadata] = Field(
         ...,
         description=(
             "Full task metadata. Stamped onto the config by "
@@ -471,10 +494,9 @@ class TaskConfig(ABC, TypedBaseModel):
         Cubes with heavy execution data (problem statements, patches, …)
         subclass ``TaskExecutionInfo`` and populate ``Task.execution_info``
         in this method, typically by calling
-        ``MyTaskExecutionInfo.model_validate(cls.load_task_execution_info(self.task_id))``.
-        By convention, implementations call ``type(self).verify_installed()``
-        at the top so misconfigured workers fail fast with an actionable
-        error.
+        ``MyTaskExecutionInfo.model_validate(self.load_task_execution_info())``.
+        By convention, implementations call ``self.verify_installed()`` at
+        the top so misconfigured workers fail fast with an actionable error.
         """
         pass
 
@@ -482,51 +504,62 @@ class TaskConfig(ABC, TypedBaseModel):
     # Per-task execution cache (worker-side)
     # ──────────────────────────────────────────────────────────────────────────
 
+    # Set by ``BenchmarkConfig.__init_subclass__`` on each owning benchmark's
+    # ``task_config_class`` to ``cls.cache_dir()`` so the default
+    # task-execution cache lives directly under the benchmark's cache dir
+    # without ``task.py`` importing ``benchmark.py``. ClassVar — not serialized.
+    _benchmark_cache_dir: ClassVar[Path | None] = None
+
     @classmethod
     def task_execution_cache_dir(cls) -> Path:
         """Directory where heavy per-task execution data is cached on this worker.
 
-        Default: ``~/.cube/<top-level-package-name>/tasks_execution_info/``
-        where ``<top-level-package-name>`` is ``cls.__module__.split(".")[0]``.
-        Override on subclasses whose owning benchmark uses a non-default
-        cache layout (e.g. when the benchmark display name differs from the
-        Python package name).
+        Default: ``BenchmarkConfig.cache_dir() / "tasks_execution_info"`` —
+        i.e. ``~/.cube/<benchmark-name>/tasks_execution_info/`` once the owning
+        ``BenchmarkConfig`` has stamped its cache dir.
+        Falls back to ``~/.cube/<top-level-package-name>/tasks_execution_info/``
+        when ``_benchmark_cache_dir`` is None.
 
-        ``BenchmarkConfig.install()`` writes via
-        ``cls.task_config_class.task_execution_cache_dir()`` so the path is
-        defined exactly once.
+        Override on subclasses that use a non-default cache layout (e.g. cubes
+        that co-locate the cache with other on-disk state).
         """
-        return get_cache_dir(cls.__module__.split(".")[0]) / "tasks_execution_info"
+        # ``__dict__.get`` (not attribute lookup) so derived subclasses without
+        # their own owning BenchmarkConfig don't silently inherit the parent's
+        # stamp via the MRO.
+        cache_dir = cls.__dict__.get("_benchmark_cache_dir") or get_cache_dir(cls.__module__.split(".")[0])
+        return cache_dir / "tasks_execution_info"
 
-    @classmethod
-    def load_task_execution_info(cls, task_id: str) -> dict[str, Any]:
+    def load_task_execution_info(self) -> dict[str, Any]:
         """Read the per-task execution-info dict written by ``BenchmarkConfig.install()``.
 
-        Returns the raw JSON-loaded dict. Cube authors typically wrap this in
-        ``MyTaskExecutionInfo.model_validate(...)`` inside ``make()`` to get
-        a typed ``TaskExecutionInfo`` instance.
+        Uses ``self.task_id`` to locate the file under
+        ``type(self).task_execution_cache_dir()``. Cube authors typically wrap
+        this in ``MyTaskExecutionInfo.model_validate(...)`` inside ``make()``
+        to get a typed ``TaskExecutionInfo`` instance.
 
         Raises ``RuntimeError`` with an actionable message if the cache file
         is missing — signals that ``install()`` has not run on this worker.
         """
-        cache_file = cls.task_execution_cache_dir() / f"{task_id}.json"
+        cache_file = type(self).task_execution_cache_dir() / f"{self.task_id}.json"
         if not cache_file.exists():
             raise RuntimeError(
-                f"No execution data for task_id={task_id!r} at {cache_file}. "
+                f"No execution data for task_id={self.task_id!r} at {cache_file}. "
                 f"Run `cube install <bench>` (or `<OwnerBenchmarkConfig>.install()`) "
                 f"to populate the per-task execution cache on this worker."
             )
         return json.loads(cache_file.read_text())
 
-    @classmethod
-    def verify_installed(cls) -> None:
+    def verify_installed(self) -> None:
         """Optional fail-fast check that data this task relies on is locally available.
 
         Default: no-op. Cube authors override with a check appropriate to
-        their cache (e.g. ``not list(cls.task_execution_cache_dir().iterdir())``
-        or ``HF_HOME / 'datasets' / '...'.exists()``).
+        their cache, e.g.::
 
-        Convention: ``TaskConfig.make()`` calls ``type(self).verify_installed()``
-        at the top so misconfigured workers fail fast with an actionable
-        error instead of timing out on a surprise download.
+            cache_dir = type(self).task_execution_cache_dir()
+            if not cache_dir.exists() or not any(cache_dir.iterdir()):
+                raise RuntimeError("Run `cube install <bench>` first.")
+
+        Convention: ``TaskConfig.make()`` calls ``self.verify_installed()`` at
+        the top so misconfigured workers fail fast with an actionable error
+        instead of timing out on a surprise download.
         """
