@@ -136,16 +136,19 @@ happens.
   mutate `task_metadata`. By convention writes one JSON per task to
   `cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"` —
   the path has a single owner (`TaskConfig`), and the same cache dir is
-  read back on workers via `TaskConfig.load_task_execution_info(task_id)`.
+  read back on workers via `self.load_task_execution_info()` inside
+  `TaskConfig.make()`.
 - `uninstall()` — remove assets installed by `install()`. Default: no-op.
-- `cache_dir()` → `~/.cube/<name>/` (overridable).
+- `cache_dir()` → `~/.cube/<benchmark_metadata.name>/` (overridable).
 
 The per-task execution cache helpers (`task_execution_cache_dir()`,
 `load_task_execution_info()`, `verify_installed()`) live on `TaskConfig`,
 not on `BenchmarkConfig` — see [task/spec.md](../task/spec.md) for the
-worker-side surface. `BenchmarkConfig.install()` writes via
-`cls.task_config_class.task_execution_cache_dir()` so the path has a
-single definition.
+worker-side surface. `BenchmarkConfig.__init_subclass__` back-stamps
+`benchmark_metadata.name` onto `task_config_class._benchmark_cache_name`
+so `task_execution_cache_dir()` defaults match `cache_dir()`, and
+`install()` writes via `cls.task_config_class.task_execution_cache_dir()`
+so the path has a single definition.
 
 **Metadata loaders (staticmethods, also usable at class definition):**
 - `benchmark_metadata_from_{json,csv}(path)` → `BenchmarkMetadata`
@@ -252,9 +255,10 @@ class SWEBenchConfig(BenchmarkConfig):
     def install(cls) -> None:
         # Download problem statements, patches, tests — write per-task JSON to
         # cls.task_config_class.task_execution_cache_dir(). Idempotent.
-        # task_metadata untouched. Read back on workers via
-        # TaskConfig.load_task_execution_info(task_id) and validated against
-        # a typed TaskExecutionInfo subclass surfaced as Task.execution_info.
+        # task_metadata untouched. Read back on workers inside
+        # TaskConfig.make() via self.load_task_execution_info() and validated
+        # against a typed TaskExecutionInfo subclass surfaced as
+        # Task.execution_info.
         ...
 ```
 
@@ -378,5 +382,5 @@ with suite.make(infra) as bench:
   class-definition time (directly or via file auto-load). `install()` writes
   heavy execution-time data to the per-task cache under
   `cls.task_config_class.task_execution_cache_dir()`, read back on workers
-  via `TaskConfig.load_task_execution_info(task_id)` and surfaced as
-  `Task.execution_info` (a typed `TaskExecutionInfo` subclass).
+  inside `TaskConfig.make()` via `self.load_task_execution_info()` and
+  surfaced as `Task.execution_info` (a typed `TaskExecutionInfo` subclass).

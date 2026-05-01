@@ -404,6 +404,16 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
                 f"'task_config_class' as a ClassVar subclass of TaskConfig, not {task_cfg!r}."
             )
 
+        # Back-stamp the benchmark name onto the task config class so
+        # ``TaskConfig.task_execution_cache_dir()`` defaults match
+        # ``BenchmarkConfig.cache_dir()`` (both keyed on
+        # ``benchmark_metadata.name``) without ``task.py`` importing
+        # ``benchmark.py``. Skip the abstract base used as a placeholder by
+        # ``CompositeBenchmarkConfig`` and skip dynamic ``benchmark_metadata``
+        # (composite @property — has no fixed name at class-creation time).
+        if task_cfg is not TaskConfig and not _is_dynamic("benchmark_metadata"):
+            task_cfg._benchmark_cache_name = cls.benchmark_metadata.name
+
         # ── benchmark_class ─────────────────────────────────────────────────
         bench_cls = getattr(cls, "benchmark_class", None)
         if not (isinstance(bench_cls, type) and issubclass(bench_cls, Benchmark)):
@@ -460,7 +470,7 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
 
         Cubes with heavy execution data (problem statements, patches, …)
         populate ``Task.execution_info`` inside ``TaskConfig.make()`` by
-        validating ``cls.load_task_execution_info(task_id)`` against a typed
+        validating ``self.load_task_execution_info()`` against a typed
         ``TaskExecutionInfo`` subclass — no override of this method needed.
         """
         for tm in self.tasks().values():
@@ -572,8 +582,8 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         Convention: write each task's processed data as a JSON file at
         ``cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"``
         — that path is the single source of truth, owned by ``TaskConfig``,
-        and read back by workers via
-        ``TaskConfig.load_task_execution_info(task_id)``.
+        and read back by workers via ``self.load_task_execution_info()``
+        inside ``TaskConfig.make()``.
 
         ``install()`` MUST NOT mutate ``task_metadata`` — that registry is
         populated at class-definition time from a shipped file (or declared

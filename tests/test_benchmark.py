@@ -165,6 +165,33 @@ def test_classvar_override_of_parent_property_is_validated():
         pass
 
 
+def test_init_subclass_back_stamps_benchmark_cache_name():
+    """Concrete BenchmarkConfig subclasses stamp ``benchmark_metadata.name`` onto
+    their ``task_config_class`` so ``TaskConfig.task_execution_cache_dir()``
+    keys on the same name as ``BenchmarkConfig.cache_dir()``."""
+
+    class _StampTaskConfig(TaskConfig):
+        def make(self, runtime_context=None, container_backend=None):
+            return _Task(metadata=self.metadata, tool_config=_ToolConfig())
+
+    class _StampBenchmarkConfig(BenchmarkConfig):
+        benchmark_metadata = BenchmarkMetadata(name="stamp-bench", version="1", description="x")
+        task_metadata = {"t1": TaskMetadata(id="t1")}
+        task_config_class = _StampTaskConfig
+        benchmark_class = MyBenchmark
+
+    assert _StampTaskConfig._benchmark_cache_name == "stamp-bench"
+    assert _StampBenchmarkConfig.cache_dir().name == "stamp-bench"
+    assert _StampTaskConfig.task_execution_cache_dir().parent.name == "stamp-bench"
+
+
+def test_init_subclass_skips_back_stamp_for_abstract_taskconfig_placeholder():
+    """``CompositeBenchmarkConfig`` uses the abstract ``TaskConfig`` as a placeholder
+    (it overrides ``get_task_configs``). The back-stamp must skip it so the
+    abstract base never carries a benchmark name."""
+    assert TaskConfig._benchmark_cache_name is None
+
+
 # ── tasks() view (ClassVar filtered by task_ids) ──────────────────────────────
 
 

@@ -53,7 +53,7 @@ class SWEBenchExecutionInfo(TaskExecutionInfo):
 
 Polymorphic via the `TypedBaseModel` `_type` discriminator. Populated on
 the worker — typically inside `TaskConfig.make()` by validating
-`cls.load_task_execution_info(self.task_id)` against the subclass, but
+`self.load_task_execution_info()` against the subclass, but
 `Task.model_post_init` and `Task.reset()` are also valid hydration points.
 The framework never reads `execution_info` itself; it is for cube authors
 to surface domain-specific heavy data with autocomplete and Pydantic
@@ -84,7 +84,7 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
 `execution_info` is the typed surface for heavy per-task data. Cubes
 populate it from one of three places:
 - inside `TaskConfig.make()` — most common; validate
-  `cls.load_task_execution_info(self.task_id)` against the cube's
+  `self.load_task_execution_info()` against the cube's
   `TaskExecutionInfo` subclass and pass to the `Task` constructor.
 - inside `Task.model_post_init` — for cubes that prefer hydration during
   Task construction.
@@ -168,16 +168,22 @@ class TaskConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         container_backend: ContainerBackend | None = None,
     ) -> Task
 
+    # ClassVar back-stamped by BenchmarkConfig.__init_subclass__ so the
+    # default cache path matches BenchmarkConfig.cache_dir(). None for
+    # TaskConfig subclasses constructed without an owning BenchmarkConfig
+    # (direct test instantiation, etc.).
+    _benchmark_cache_name: ClassVar[str | None] = None
+
     @classmethod
     def task_execution_cache_dir(cls) -> Path:
-        """Default: ~/.cube/<top-level-package-name>/tasks_execution_info/."""
+        """Default: ~/.cube/<benchmark-name>/tasks_execution_info/, falling back
+        to the top-level Python package name when ``_benchmark_cache_name`` is
+        not set."""
 
-    @classmethod
-    def load_task_execution_info(cls, task_id: str) -> dict[str, Any]:
-        """Read processed per-task data written by BenchmarkConfig.install()."""
+    def load_task_execution_info(self) -> dict[str, Any]:
+        """Read processed per-task data for ``self.task_id`` from the cache."""
 
-    @classmethod
-    def verify_installed(cls) -> None:
+    def verify_installed(self) -> None:
         """Optional fail-fast check. Default: no-op."""
 ```
 
@@ -192,30 +198,34 @@ Subclasses that carry heavy install-time data (e.g. SWE-bench problem
 statements, OSWorld evaluator configs) declare a `TaskExecutionInfo`
 subclass for the heavy fields and populate `Task.execution_info` inside
 `TaskConfig.make()` — typically by calling
-`cls.load_task_execution_info(self.task_id)` (read from the per-task
-on-disk cache) and validating the resulting dict against the
-`TaskExecutionInfo` subclass. The cache itself is written by
-`BenchmarkConfig.install()` — operators run `cube install <bench>` once
-per worker environment.
+`self.load_task_execution_info()` (read from the per-task on-disk cache)
+and validating the resulting dict against the `TaskExecutionInfo`
+subclass. The cache itself is written by `BenchmarkConfig.install()` —
+operators run `cube install <bench>` once per worker environment.
 
-**Per-task cache helpers (worker-side classmethods).**
-- `task_execution_cache_dir()` — default
-  `~/.cube/<top-level-package-name>/tasks_execution_info/` where
-  `<top-level-package-name>` is `cls.__module__.split(".")[0]`. Override
-  on subclasses whose owning benchmark uses a non-default cache layout
-  (e.g. when the benchmark display name differs from the Python package
-  name). `BenchmarkConfig.install()` writes via
+**Per-task cache helpers (worker-side).**
+- `task_execution_cache_dir()` (classmethod) — default
+  `~/.cube/<benchmark-name>/tasks_execution_info/`, where
+  `<benchmark-name>` is the value back-stamped by
+  `BenchmarkConfig.__init_subclass__` from `benchmark_metadata.name` onto
+  the owning `task_config_class` via `_benchmark_cache_name`. Falls back
+  to `cls.__module__.split(".")[0]` (top-level Python package name) when
+  no owner is attached — relevant for direct test instantiation.
+  Override on subclasses that use a non-default cache layout (e.g. cubes
+  that co-locate the cache with other on-disk state).
+  `BenchmarkConfig.install()` writes via
   `cls.task_config_class.task_execution_cache_dir()` so the path has a
   single owner.
-- `load_task_execution_info(task_id)` — reads
-  `task_execution_cache_dir() / f"{task_id}.json"`. Raises `RuntimeError`
-  with an actionable remediation message if the file is missing.
-- `verify_installed()` — optional fail-fast check that data this task
-  relies on is locally available on this worker. Default: no-op. Cube
-  authors override with a check appropriate to their cache. Convention:
-  `TaskConfig.make()` calls `type(self).verify_installed()` at the top
-  so misconfigured workers fail fast with an actionable error instead of
-  timing out on a surprise download.
+- `load_task_execution_info()` (instance method) — reads
+  `type(self).task_execution_cache_dir() / f"{self.task_id}.json"`.
+  Raises `RuntimeError` with an actionable remediation message if the
+  file is missing.
+- `verify_installed()` (instance method) — optional fail-fast check that
+  data this task relies on is locally available on this worker. Default:
+  no-op. Cube authors override with a check appropriate to their cache.
+  Convention: `TaskConfig.make()` calls `self.verify_installed()` at the
+  top so misconfigured workers fail fast with an actionable error
+  instead of timing out on a surprise download.
 
 These helpers live on `TaskConfig` (worker-side) so workers do not need
 to import the owning `BenchmarkConfig` to verify their environment or
@@ -269,12 +279,12 @@ always retains the native un-prefixed id.
   is unsound under invariant-field semantics and type checkers reject it;
   the parametrised form expresses the intent correctly without an override.
   Pairs naturally with `class FooTaskConfig(TaskConfig[FooTaskMetadata]):`.
-- `task_execution_cache_dir()` uses the Python **package** name (underscores), not the
-  benchmark display name (which may use hyphens). For example, a benchmark named
-  `"osworld-cube"` (in `BenchmarkMetadata`) whose `TaskConfig` lives in the
-  `osworld_cube` package caches at `~/.cube/osworld_cube/`, not
-  `~/.cube/osworld-cube/`. Override `task_execution_cache_dir()` on the subclass if
-  the two diverge and you need a specific path.
+- `task_execution_cache_dir()` keys on `benchmark_metadata.name` (back-stamped
+  onto the `TaskConfig` subclass at class-definition time by
+  `BenchmarkConfig.__init_subclass__`), so the default matches
+  `BenchmarkConfig.cache_dir()`. The fallback to the top-level Python package
+  name only kicks in for `TaskConfig` subclasses that have no owning
+  `BenchmarkConfig` (direct test instantiation).
 - `validate_per_step=True` means `evaluate()` runs every step — expensive. Default is
   only on termination.
 - STOP_ACTION is not automatically in the tool's action set — the harness / agent
