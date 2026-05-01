@@ -1,6 +1,6 @@
 # Thread `infra` through `Benchmark.__init__`
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-04-30
 **Scope:** `cube.benchmark`
 **Targets:** `main`

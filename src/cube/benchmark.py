@@ -687,6 +687,11 @@ class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
         ``BenchmarkConfig.make``. Storing live handles directly on ``self``
         (outside ``_runtime_context``) is also allowed — they simply won't be
         visible to tasks via ``runtime_context``.
+
+        Cubes that thread per-task infra publish ``self._infra`` here, e.g.
+        ``self._runtime_context["infra"] = self._infra``. The base does not
+        auto-publish it because some cubes expose a launched service handle
+        instead of the bare ``InfraConfig``.
         """
 
     @abstractmethod
@@ -766,11 +771,13 @@ class CompositeBenchmark(Benchmark["CompositeBenchmarkConfig"]):
     """
 
     def __init__(self, config: "CompositeBenchmarkConfig", infra: InfraConfig | None = None) -> None:
-        # Sub-benchmarks each got their own infra via their own ``make(infra)``;
-        # the composite itself does not consume ``infra`` but accepts it to match
-        # the base ``Benchmark.__init__`` signature.
+        # ``infra`` is stashed on ``self._infra`` via ``super().__init__`` for
+        # symmetry with leaf benchmarks — callers can read ``bench._infra``
+        # uniformly regardless of whether ``bench`` is composite. The composite
+        # itself doesn't consume it (no shared resources, no ``_setup`` body);
+        # each sub-benchmark receives the same ``infra`` through its own
+        # ``make(infra)`` in ``CompositeBenchmarkConfig.make``.
         super().__init__(config, infra=infra)
-        self.config: CompositeBenchmarkConfig = config  # type: ignore[assignment]
         self.sub_benchmarks: dict[str, Benchmark] = {}
 
     def _setup(self) -> None:
@@ -968,7 +975,9 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
         Each sub-config's ``make(infra)`` is called in order; on any failure,
         already-built sub-benchmarks are closed before the error propagates.
         """
-        composite = CompositeBenchmark(config=self)
+        composite = CompositeBenchmark(config=self, infra=infra)
+        # CompositeBenchmark.__init__ takes `infra` even if it is never used by composite.
+        # Kept for symmetry with leaf benchmarks; users can read `bench._infra` uniformly regardless of whether `bench` is composite.
         try:
             for sub_bench_config in self.sub_bench_configs:
                 composite.sub_benchmarks[sub_bench_config.name] = sub_bench_config.make(infra)
