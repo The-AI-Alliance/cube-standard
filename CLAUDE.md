@@ -110,9 +110,17 @@ never live in cube-harness.** Full rule: [tool/spec.md § Packaging conventions]
 
 Active proposals: `openspec/changes/`. Archived: `openspec/changes/archive/`.
 
-## Testing
+## Testing and linting
 
-`make lint` and `make test`. For benchmark debug suite: `cube test <benchmark-name>`.
+```bash
+make lint               # uv run ruff check --fix && uv run ruff format  (auto-fixes in place)
+make lint-check         # uv run ruff check --diff && uv run ruff format --diff  (read-only, what CI runs)
+make test               # uv run pytest -n 10
+cube test <benchmark>   # benchmark debug suite
+```
+
+Always run `make lint` before finishing a task. `ruff check` and `ruff format` are
+**separate passes** — running only one is not enough for CI.
 
 ### Test categories
 
