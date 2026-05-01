@@ -22,6 +22,7 @@ System requirements (Docker):
 from __future__ import annotations
 
 import fcntl
+import importlib.resources
 import json
 import logging
 import os
@@ -335,6 +336,13 @@ class LocalInfraConfig(InfraConfig):
     image_dir: str = str(_IMAGE_DIR)
 
     # ── InfraConfig interface ─────────────────────────────────────────────────
+
+    def install(self) -> None:
+        """Install qemu and docker system dependencies if not already present."""
+        ref = importlib.resources.files("cube").joinpath("scripts/install_local_infra.sh")
+        with importlib.resources.as_file(ref) as script:
+            if script.exists():
+                subprocess.run(["bash", str(script)], check=True)
 
     def fingerprint(self) -> str:
         return "local"

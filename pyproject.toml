@@ -64,6 +64,7 @@ counter-cube = { path = "examples/counter-cube", editable = true }
 
 [tool.uv.build-backend]
 module-name = "cube"
+include = ["src/cube/scripts/install_local_infra.sh"]
 
 [tool.ruff]
 fix = true

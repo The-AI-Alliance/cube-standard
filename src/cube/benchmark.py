@@ -657,6 +657,9 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         for per-task container launches can do so from ``_setup()`` without
         overriding ``make``.
         """
+        if infra is not None:
+            infra.install()
+
         if self.resources:
             if infra is None:
                 logger.debug(
