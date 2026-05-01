@@ -1323,29 +1323,28 @@ class AzureInfraConfig(InfraConfig):
                 # Use the first endpoint as the canonical single endpoint for compat.
                 endpoint = next(iter(endpoints.values())) if endpoints else None
             else:
-                local_port = free_port()
+                tunnel, local_port = open_tunnel(public_ip, active_user, self.ssh_privkey_path, self.guest_port)
                 logger.info(
-                    "launch: opening tunnel localhost:%d → %s:%d",
+                    "launch: opened tunnel localhost:%d → %s:%d",
                     local_port,
                     public_ip,
                     self.guest_port,
                 )
-                tunnel = open_tunnel(public_ip, active_user, self.ssh_privkey_path, local_port, self.guest_port)
                 endpoint = f"http://localhost:{local_port}"
                 endpoints = {}
                 tunnels = [tunnel]
                 # Open additional tunnels for ports the resource asks to expose.
-                # Each gets a unique host freeport so parallel workers don't collide.
+                # Each gets its own kernel-assigned local port — atomic, race-free.
                 extra_ports = getattr(resource, "forwarded_ports", []) or []
                 for vm_port in extra_ports:
-                    extra_local = free_port()
+                    extra_tunnel, extra_local = open_tunnel(public_ip, active_user, self.ssh_privkey_path, vm_port)
                     logger.info(
-                        "launch: opening extra tunnel localhost:%d → %s:%d",
+                        "launch: opened extra tunnel localhost:%d → %s:%d",
                         extra_local,
                         public_ip,
                         vm_port,
                     )
-                    tunnels.append(open_tunnel(public_ip, active_user, self.ssh_privkey_path, extra_local, vm_port))
+                    tunnels.append(extra_tunnel)
                     endpoints[f"vm_port_{vm_port}"] = f"http://localhost:{extra_local}"
         except Exception:
             logger.warning("launch: SSH/tunnel failed — cleaning up VM %s", vm_name)
@@ -1423,43 +1422,61 @@ class AzureInfraConfig(InfraConfig):
     def cleanup_stale(self, max_age_seconds: int | None = None) -> list[str]:
         """Delete CUBE VMs that have expired or exceeded max_age_seconds.
 
-        Checks in priority order:
-          1. cube:expires_at tag < now  →  delete (TTL set at launch time)
-          2. max_age_seconds set and cube:created_at age > max_age_seconds  →  delete
+        Delete-condition is the OR of:
+          1. cube:expires_at tag is in the past (TTL set at launch time has elapsed).
+          2. ``max_age_seconds`` set and cube:created_at age > max_age_seconds.
+
+        Both checks run independently — passing ``max_age_seconds`` is an
+        explicit caller opt-in to "kill anything older than this regardless
+        of TTL". If only the TTL was honoured, callers wanting to nuke
+        prior-run VMs would have to wait out a 24h TTL by default, which
+        defeats the point of the override knob.
+
+        Per-VM ``_delete_vm()`` calls are fanned out across a thread pool —
+        on a recipe-startup sweep with hundreds of stale VMs from prior
+        crashed runs, the serial alternative was ~15 min (per-VM
+        ``begin_delete().result()`` blocks ~5-10 s each). With 32 in-flight
+        deletes the same sweep finishes in ~60 s.
 
         Returns list of deleted VM names.
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         compute = self._compute()
-        deleted: list[str] = []
         now = datetime.now(timezone.utc)
 
         try:
             vms = list(compute.virtual_machines.list(self.resource_group))
         except Exception as e:
             logger.warning("cleanup_stale: failed to list VMs: %s", e)
-            return deleted
+            return []
 
+        # Filter pass — figure out which VMs to delete and remember their tag-side
+        # NIC/IP names (we look those up before deletion since the tags vanish
+        # along with the VM).
+        to_delete: list[tuple[str, str, str]] = []
         for vm in vms:
             vm_tags = vm.tags or {}
             if vm_tags.get("cube:infra") != self.fingerprint():
                 continue
 
             should_delete = False
-            has_valid_expires_at = False
 
-            # Priority 1: explicit TTL tag written at launch time.
+            # Check 1: explicit TTL tag written at launch time has elapsed.
             expires_at_str = vm_tags.get("cube:expires_at")
             if expires_at_str:
                 try:
                     expires_at = datetime.fromisoformat(expires_at_str)
-                    has_valid_expires_at = True
                     if expires_at < now:
                         should_delete = True
                 except ValueError:
                     logger.warning("cleanup_stale: invalid cube:expires_at %r on %s", expires_at_str, vm.name)
 
-            # Priority 2: age-based fallback (skipped if expires_at is set).
-            if not has_valid_expires_at and not should_delete and max_age_seconds is not None:
+            # Check 2: caller-provided max_age_seconds — independent of TTL.
+            # The caller is explicitly opting in to "kill anything older
+            # than this regardless of TTL", so we honour it even when the
+            # TTL says the VM is still valid.
+            if not should_delete and max_age_seconds is not None:
                 created_at_str = vm_tags.get("cube:created_at")
                 try:
                     if created_at_str:
@@ -1469,19 +1486,36 @@ class AzureInfraConfig(InfraConfig):
                         age = (now - vm.time_created).total_seconds()
                     else:
                         age = 0
-                    should_delete = age > max_age_seconds
+                    if age > max_age_seconds:
+                        should_delete = True
                 except (ValueError, TypeError):
                     pass
 
             if should_delete:
-                vm_name = vm.name or ""
-                pip_name = vm_tags.get("cube:ip_name", "")
-                nic_name = vm_tags.get("cube:nic_name", "")
-                self._delete_vm(vm_name, pip_name, nic_name)
-                deleted.append(vm_name)
+                to_delete.append(
+                    (vm.name or "", vm_tags.get("cube:ip_name", ""), vm_tags.get("cube:nic_name", ""))
+                )
+
+        if not to_delete:
+            return []
+
+        logger.info("cleanup_stale: deleting %d VM(s) in parallel", len(to_delete))
+        deleted: list[str] = []
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            futures = {
+                pool.submit(self._delete_vm, vm_name, pip_name, nic_name): vm_name
+                for vm_name, pip_name, nic_name in to_delete
+            }
+            for fut in as_completed(futures):
+                vm_name = futures[fut]
+                try:
+                    fut.result()
+                    deleted.append(vm_name)
+                except Exception as exc:
+                    logger.warning("cleanup_stale: VM %s delete failed: %s", vm_name, exc)
 
         if deleted:
-            logger.info("cleanup_stale: removed %d VM(s): %s", len(deleted), deleted)
+            logger.info("cleanup_stale: removed %d VM(s)", len(deleted))
         return deleted
 
     def cleanup_orphaned_resources(self) -> dict[str, list[str]]:
