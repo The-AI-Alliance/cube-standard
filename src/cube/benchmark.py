@@ -397,22 +397,26 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         # Always required. Subclasses that override ``get_task_configs`` (and
         # therefore don't use the factory) can set ``task_config_class = TaskConfig``
         # as a placeholder — see ``CompositeBenchmarkConfig``.
-        task_cfg = getattr(cls, "task_config_class", None)
-        if not (isinstance(task_cfg, type) and issubclass(task_cfg, TaskConfig)):
+        task_cfg_cls = getattr(cls, "task_config_class", None)
+        if not (isinstance(task_cfg_cls, type) and issubclass(task_cfg_cls, TaskConfig)):
             raise TypeError(
                 f"Concrete benchmark config class {cls.__name__} must define "
-                f"'task_config_class' as a ClassVar subclass of TaskConfig, not {task_cfg!r}."
+                f"'task_config_class' as a ClassVar subclass of TaskConfig, not {task_cfg_cls!r}."
             )
 
         # Back-stamp the benchmark name onto the task config class so
         # ``TaskConfig.task_execution_cache_dir()`` defaults match
         # ``BenchmarkConfig.cache_dir()`` (both keyed on
         # ``benchmark_metadata.name``) without ``task.py`` importing
-        # ``benchmark.py``. Skip the abstract base used as a placeholder by
-        # ``CompositeBenchmarkConfig`` and skip dynamic ``benchmark_metadata``
-        # (composite @property — has no fixed name at class-creation time).
-        if task_cfg is not TaskConfig and not _is_dynamic("benchmark_metadata"):
-            task_cfg._benchmark_cache_name = cls.benchmark_metadata.name
+        # ``benchmark.py``. Skip when ``task_config_class`` is abstract
+        # (e.g. the bare ``TaskConfig`` placeholder used by
+        # ``CompositeBenchmarkConfig``) — stamping on an abstract class would
+        # leak the name to every concrete subclass via the MRO. Skip dynamic
+        # ``benchmark_metadata`` (composite @property — no fixed name at
+        # class-creation time).
+        is_abstract = bool(getattr(task_cfg_cls, "__abstractmethods__", None))
+        if not is_abstract and not _is_dynamic("benchmark_metadata"):
+            task_cfg_cls._benchmark_cache_name = cls.benchmark_metadata.name
 
         # ── benchmark_class ─────────────────────────────────────────────────
         bench_cls = getattr(cls, "benchmark_class", None)

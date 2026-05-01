@@ -104,9 +104,7 @@ class TaskExecutionInfo(TypedBaseModel):
     ``TypedBaseModel`` ``_type`` discriminator.
 
     Populated on the worker — typically inside ``TaskConfig.make()`` by
-    validating ``self.load_task_execution_info()`` against the subclass,
-    but ``Task.model_post_init`` and ``Task.reset()`` are also valid
-    hydration points.
+    validating ``self.load_task_execution_info()`` against the subclass.
 
     Cubes with no heavy data leave the slot ``None``; the base class is
     instantiable but carries no fields.
