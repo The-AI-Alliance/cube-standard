@@ -163,7 +163,12 @@ class TestAzureProvision:
         ) as mock_bootstrap:
             infra.provision(resource)
             mock_bootstrap.assert_called_once_with(
-                url="http://example.com/img.qcow2.zip", image_name="vm", version="1.0.0"
+                url="http://example.com/img.qcow2.zip",
+                image_name="vm",
+                version="1.0.0",
+                uefi=False,
+                trusted_launch=False,
+                specialized=False,
             )
         assert infra.provision_status(resource) == "ready"
 
@@ -236,8 +241,7 @@ class TestAzureLaunch:
             patch.object(infra, "_network", return_value=mock_network),
             patch.object(infra, "_create_network_resources", return_value=(MagicMock(), MagicMock(), "pip-1", "nic-1")),
             patch("cube_infra_azure.azure.wait_for_ssh", return_value="cube"),
-            patch("cube_infra_azure.azure.open_tunnel", return_value=MagicMock()),
-            patch("cube_infra_azure.azure.free_port", return_value=15000),
+            patch("cube_infra_azure.azure.open_tunnel", return_value=(MagicMock(), 15000)),
         ):
             infra.launch(resource)
 
@@ -281,8 +285,7 @@ class TestAzureLaunch:
             patch.object(infra, "_network", return_value=mock_network),
             patch.object(infra, "_create_network_resources", return_value=(MagicMock(), MagicMock(), "pip-1", "nic-1")),
             patch("cube_infra_azure.azure.wait_for_ssh", return_value="cube"),
-            patch("cube_infra_azure.azure.open_tunnel", return_value=MagicMock()),
-            patch("cube_infra_azure.azure.free_port", return_value=15000),
+            patch("cube_infra_azure.azure.open_tunnel", return_value=(MagicMock(), 15000)),
         ):
             infra.launch(resource)
 
@@ -348,6 +351,19 @@ class TestDockerBootstrapScript:
 
         assert "waagent" in _DOCKER_BOOTSTRAP_SCRIPT
         assert "deprovision" in _DOCKER_BOOTSTRAP_SCRIPT
+
+
+# ── AzureResourceHandle ───────────────────────────────────────────────────────
+
+
+def test_windows_admin_password_excluded_from_repr() -> None:
+    """windows_admin_password must not appear in repr or serialization."""
+    from cube_infra_azure import AzureInfraConfig
+
+    fields = AzureInfraConfig.model_fields
+    assert "windows_admin_password" in fields
+    field_info = fields["windows_admin_password"]
+    assert field_info.exclude is True
 
 
 # ── AzureResourceHandle ───────────────────────────────────────────────────────

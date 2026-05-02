@@ -72,7 +72,7 @@ from cube.resource import (
     UnsupportedResourceType,
     VMResourceConfig,
 )
-from cube_infra_aws._utils import BootstrapMonitor, free_port, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
+from cube_infra_aws._utils import BootstrapMonitor, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
 
 logger = logging.getLogger(__name__)
 
@@ -787,18 +787,16 @@ class AWSInfraConfig(InfraConfig):
                     _tunnels=tunnels,
                 )
 
-            local_port = free_port()
-            logger.info(
-                "launch: opening tunnel localhost:%d → %s:%d",
-                local_port,
-                public_ip,
-                self.guest_port,
-            )
-            tunnel = open_tunnel(
+            tunnel, local_port = open_tunnel(
                 public_ip,
                 active_user,
                 self.ssh_privkey_path,  # type: ignore[arg-type]
+                self.guest_port,
+            )
+            logger.info(
+                "launch: opened tunnel localhost:%d → %s:%d",
                 local_port,
+                public_ip,
                 self.guest_port,
             )
         except Exception:

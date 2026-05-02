@@ -11,9 +11,11 @@ import logging
 import random
 import time
 import traceback
+from io import BytesIO
 from typing import Any
 
 import requests
+from PIL import Image, UnidentifiedImageError
 
 logger = logging.getLogger(__name__)
 
@@ -85,11 +87,21 @@ class GuestAgent:
         logger.error("Failed to get screenshot after %d attempts", _RETRY_TIMES)
         return None
 
-    def get_accessibility_tree(self) -> str | None:
-        """Return the XML accessibility tree string, or None on failure."""
+    def get_accessibility_tree(self, backend: str = "uia") -> str | None:
+        """Return the XML accessibility tree string, or None on failure.
+
+        Parameters
+        ----------
+        backend : str
+            Accessibility backend passed as ``?backend=`` query param.
+            ``"uia"`` (default) uses Windows UI Automation — richer element
+            data matching the original WindowsAgentArena behavior.
+            ``"win32"`` is faster but only returns top-level window containers.
+            On Linux the backend parameter is ignored (AT-SPI is always used).
+        """
         for _ in range(_RETRY_TIMES):
             try:
-                resp = requests.get(self._base_url + "/accessibility")
+                resp = requests.get(self._base_url + "/accessibility", params={"backend": backend}, timeout=300)
                 if resp.status_code == 200:
                     return resp.json()["AT"]
                 logger.error("Accessibility tree error: %d", resp.status_code)
@@ -111,6 +123,30 @@ class GuestAgent:
                 logger.error("Terminal output error: %s", exc)
             time.sleep(_RETRY_INTERVAL)
         logger.error("Failed to get terminal output")
+        return None
+
+    def get_obs_winagent(self) -> dict[str, Any] | None:
+        """Return lightweight window context from the /obs_winagent endpoint.
+
+        Returns a dict with keys: window_title, window_names_str, computer_clipboard.
+        The window_image and human_input fields from the server are skipped
+        (we already have a full screenshot, and human_input is unused).
+        """
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.get(self._base_url + "/obs_winagent", timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return {
+                        "window_title": data.get("window_title", ""),
+                        "window_names_str": data.get("window_names_str", ""),
+                        "computer_clipboard": data.get("computer_clipboard"),
+                    }
+                logger.error("obs_winagent error: %d", resp.status_code)
+            except Exception as exc:
+                logger.error("obs_winagent error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        logger.error("Failed to get obs_winagent")
         return None
 
     def get_file(self, file_path: str) -> bytes | None:
@@ -410,6 +446,246 @@ class GuestAgent:
         return None
 
     # ------------------------------------------------------------------
+    # VM state queries (used by WAA evaluation getters)
+    # ------------------------------------------------------------------
+
+    def get_vm_documents_path(self) -> str | None:
+        """Return the Documents directory path inside the VM."""
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(self._base_url + "/documents_path", timeout=30)
+                if resp.status_code == 200:
+                    return resp.json()["documents_path"]
+            except Exception as exc:
+                logger.error("Documents path error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return None
+
+    def get_vm_folder_exists_in_path(self, folder_name: str, path: str) -> bool:
+        """Return True if *folder_name* exists inside *path* on the VM."""
+        payload = json.dumps({"folder_name": folder_name, "path": path})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/folder_exists",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return True
+                return False
+            except Exception as exc:
+                logger.error("Folder exists error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return False
+
+    def get_vm_file_exists_in_path(self, file_name: str, path: str) -> bool:
+        """Return True if *file_name* exists inside *path* on the VM."""
+        payload = json.dumps({"file_name": file_name, "path": path})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/file_exists",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return True
+                return False
+            except Exception as exc:
+                logger.error("File exists error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return False
+
+    def get_vm_are_files_sorted_by_modified_time(self, directory: str) -> bool:
+        """Return True if files in *directory* are sorted by modified time."""
+        payload = json.dumps({"directory": directory})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/are_files_sorted_by_modified_time",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return True
+                return False
+            except Exception as exc:
+                logger.error("Files sorted check error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return False
+
+    def get_file_as_text(self, file_path: str) -> str | None:
+        """Download a file from the VM and return its contents as text."""
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(self._base_url + "/file", data={"file_path": file_path}, timeout=30)
+                if resp.status_code == 200:
+                    return resp.text
+            except Exception as exc:
+                logger.error("Get file as text error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return None
+
+    def get_vm_file_explorer_is_details_view(self, path: str) -> bool:
+        """Return True if File Explorer is in details view for *path*."""
+        payload = json.dumps({"path": path})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/is_details_view",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return True
+                return False
+            except Exception as exc:
+                logger.error("Details view check error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return False
+
+    def get_file_hidden_status(self, file_path: str) -> int:
+        """Return 1 if the file is hidden (dotfile or Windows hidden attribute), 0 otherwise."""
+        command = (
+            f"import os; print(1 if os.path.basename(r'{file_path}').startswith('.') "
+            f"or (os.name == 'nt' and bool(os.stat(r'{file_path}').st_file_attributes & 2)) else 0)"
+        )
+        response = self.execute_python_command(command)
+        if response and response.get("status") == "success" and response.get("returncode") == 0:
+            try:
+                return int(response["output"].strip())
+            except (ValueError, KeyError):
+                return 0
+        return 0
+
+    def get_vm_is_directory_read_only_for_user(self, directory: str, user: str) -> bool:
+        """Return True if *directory* is read-only for *user* on the VM."""
+        payload = json.dumps({"directory": directory, "user": user})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/is_directory_read_only_for_user",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return True
+                return False
+            except Exception as exc:
+                logger.error("Directory read-only check error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return False
+
+    def get_vm_are_all_images_tagged(self, directory: str, tag: str) -> bool:
+        """Return True if all images in *directory* are tagged with *tag*."""
+        payload = json.dumps({"directory": directory, "tag": tag})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/are_all_images_tagged",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return True
+                return False
+            except Exception as exc:
+                logger.error("Images tagged check error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return False
+
+    def get_vm_library_folders(self, library_name: str) -> str | None:
+        """Return the library folders output for *library_name*."""
+        payload = json.dumps({"library_name": library_name})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/library_folders",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return resp.json()["output"]
+            except Exception as exc:
+                logger.error("Library folders error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return None
+
+    def get_vm_check_if_timer_started(self, hours: int, minutes: int, seconds: int) -> str:
+        """Return 'True' if a timer with the given duration exists in the Clock app."""
+        payload = json.dumps({"hours": hours, "minutes": minutes, "seconds": seconds})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/check_if_timer_started",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return "True"
+                return "False"
+            except Exception as exc:
+                logger.error("Timer check error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return "False"
+
+    def get_vm_check_if_world_clock_exists(self, city: str, country: str) -> str:
+        """Return 'True' if a world clock for *city*, *country* exists in the Clock app."""
+        payload = json.dumps({"city": city, "country": country})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/check_if_world_clock_exists",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return "True"
+                return "False"
+            except Exception as exc:
+                logger.error("World clock check error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return "False"
+
+    def execute_shell_command(self, command: str) -> dict[str, Any] | None:
+        """Execute a shell command inside the VM via the /execute endpoint."""
+        payload = json.dumps({"command": command})
+        for _ in range(_RETRY_TIMES):
+            try:
+                resp = requests.post(
+                    self._base_url + "/execute",
+                    headers={"Content-Type": "application/json"},
+                    data=payload,
+                    timeout=90,
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+            except Exception as exc:
+                logger.error("Shell command error: %s", exc)
+            time.sleep(_RETRY_INTERVAL)
+        return None
+
+    def get_registry_key(self, path: str, value: str) -> dict[str, Any] | None:
+        """Read a Windows registry key via PowerShell."""
+        command = f"powershell -Command \"Get-ItemPropertyValue -Path '{path}' -Name '{value}'\""
+        return self.execute_shell_command(command)
+
+    def get_all_installed_apps(self) -> dict[str, Any] | None:
+        """Return JSON of all installed Windows apps via PowerShell."""
+        command = 'powershell -Command "Get-AppxPackage | Select-Object Name,PackageFullName | ConvertTo-Json"'
+        return self.execute_shell_command(command)
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -417,10 +693,22 @@ class GuestAgent:
     def _is_valid_image(content_type: str, data: bytes | None) -> bool:
         if not isinstance(data, (bytes, bytearray)) or not data:
             return False
-        if len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n":
+        # Magic-byte check is necessary but not sufficient — a truncated PNG with
+        # a valid 8-byte header still passes here and chokes PIL downstream
+        # ("broken PNG file (chunk b'\\x00\\x00\\x00\\x00')"). Verify the image
+        # actually decodes before declaring it valid.
+        header_ok = (
+            (len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n")
+            or (len(data) >= 3 and data[:3] == b"\xff\xd8\xff")
+            or (content_type and any(t in content_type for t in ("image/png", "image/jpeg", "image/jpg")))
+        )
+        if not header_ok:
+            return False
+        try:
+            # load() actually decodes the bytes — catches truncation that
+            # verify() may pass and that magic-byte checks definitely pass.
+            Image.open(BytesIO(data)).load()
             return True
-        if len(data) >= 3 and data[:3] == b"\xff\xd8\xff":
-            return True
-        if content_type and any(t in content_type for t in ("image/png", "image/jpeg", "image/jpg")):
-            return True
+        except (UnidentifiedImageError, SyntaxError, OSError, ValueError):
+            return False
         return False
