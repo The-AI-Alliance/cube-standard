@@ -78,6 +78,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from azure.identity import AzureCliCredential
+from azure.identity._exceptions import CredentialUnavailableError as _CredUnavail
 from pydantic import Field, model_validator
 
 from cube.infra_utils import build_volume_setup_script
@@ -607,9 +608,26 @@ class _CachedCliCredential:
             tok = self._cache.get(key)
             if tok is not None and tok.expires_on - time.time() > 300:
                 return tok
-        # Fetch outside the lock so concurrent get_token calls for *different*
-        # scopes don't serialise on each other.
-        fresh = self._inner.get_token(*scopes, **kwargs)
+        # Retry around the cold cache miss. With ~150 Ray workers spawning
+        # concurrently, all hitting `az account get-access-token` at the same
+        # moment, the Azure CLI's MSAL token cache file lock contends and a
+        # subset get CredentialUnavailableError. Exponential backoff with
+        # jitter spreads them out so each gets its turn.
+        last_exc: Exception | None = None
+        for attempt in range(6):  # 6 tries total: 0,1,2,4,8,16s + jitter
+            try:
+                fresh = self._inner.get_token(*scopes, **kwargs)
+                break
+            except _CredUnavail as e:
+                last_exc = e
+                if attempt == 5:
+                    raise
+                # Backoff: 2^attempt seconds + 0-1s jitter to break thundering herd.
+                import random
+                time.sleep((2 ** attempt) + random.random())
+        else:
+            assert last_exc is not None
+            raise last_exc
         with self._lock:
             self._cache[key] = fresh
         return fresh
@@ -619,9 +637,23 @@ class _CachedCliCredential:
         # older versions. We don't try to cache the AccessTokenInfo wrapper —
         # the inner SDK does its own caching for that path.
         inner_get_token_info = getattr(self._inner, "get_token_info", None)
-        if inner_get_token_info is not None:
-            return inner_get_token_info(*scopes, **kwargs)
-        return self.get_token(*scopes, **kwargs)
+        if inner_get_token_info is None:
+            return self.get_token(*scopes, **kwargs)
+        # Mirror get_token's retry+backoff: the SDK's auth pipeline calls this
+        # path (not get_token), so without retries here a transient
+        # CredentialUnavailableError from the az CLI tears down the whole task.
+        last_exc: Exception | None = None
+        for attempt in range(6):  # 6 tries total: 0,1,2,4,8,16s + jitter
+            try:
+                return inner_get_token_info(*scopes, **kwargs)
+            except _CredUnavail as e:
+                last_exc = e
+                if attempt == 5:
+                    raise
+                import random
+                time.sleep((2 ** attempt) + random.random())
+        assert last_exc is not None
+        raise last_exc
 
 
 # EX-002 documented exception: _CACHED_CLI_CREDENTIAL is an intentional
