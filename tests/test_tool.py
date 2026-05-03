@@ -130,6 +130,21 @@ def test_tool_execute_action_exception_returns_step_error():
     assert result.exception_str == "intentional error"
 
 
+def test_tool_execute_action_missing_required_arg_returns_observation() -> None:
+    """Missing required argument → recoverable error Observation, not StepError."""
+    result = EchoTool().execute_action(Action(name="echo", arguments={}))
+    assert isinstance(result, Observation)
+    assert "Bad arguments" in result.contents[0].data
+    assert "echo" in result.contents[0].data
+
+
+def test_tool_execute_action_unknown_kwarg_returns_observation() -> None:
+    """Unknown keyword argument → recoverable error Observation, not StepError."""
+    result = EchoTool().execute_action(Action(name="echo", arguments={"text": "hi", "typo": "x"}))
+    assert isinstance(result, Observation)
+    assert "Bad arguments" in result.contents[0].data
+
+
 # ── AsyncTool ─────────────────────────────────────────────────────────────────
 
 
@@ -188,6 +203,23 @@ async def test_async_tool_execute_action_exception_returns_step_error():
     assert isinstance(result, StepError)
     assert result.error_type == "RuntimeError"
     assert result.exception_str == "intentional error"
+
+
+@pytest.mark.asyncio
+async def test_async_tool_missing_required_arg_returns_observation() -> None:
+    """Missing required argument → recoverable error Observation, not StepError."""
+    result = await AsyncEchoTool().execute_action(Action(name="echo", arguments={}))
+    assert isinstance(result, Observation)
+    assert "Bad arguments" in result.contents[0].data
+    assert "echo" in result.contents[0].data
+
+
+@pytest.mark.asyncio
+async def test_async_tool_unknown_kwarg_returns_observation() -> None:
+    """Unknown keyword argument → recoverable error Observation, not StepError."""
+    result = await AsyncEchoTool().execute_action(Action(name="echo", arguments={"text": "hi", "typo": "x"}))
+    assert isinstance(result, Observation)
+    assert "Bad arguments" in result.contents[0].data
 
 
 def test_async_tool_rejects_sync_action_at_class_definition():

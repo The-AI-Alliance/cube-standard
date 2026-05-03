@@ -336,13 +336,29 @@ class Tool(_ToolActionsMixin, AbstractTool):
     """
 
     def execute_action(self, action: Action) -> Observation | StepError:
-        """Execute an action by name."""
+        """Execute an action by name.
+
+        Argument-binding errors (wrong argument name, missing required argument)
+        are returned as error Observations so the agent can recover. Any exception
+        raised *inside* the method body is treated as a fatal infrastructure error
+        and returned as a StepError, terminating the episode.
+        """
         method = self.get_action_method(action)
         try:
-            action_result = method(**action.arguments) or "Success"
+            bound = inspect.signature(method).bind(**action.arguments)
+        except TypeError as e:
+            return Observation(
+                contents=[
+                    Content.from_data(
+                        f"Bad arguments for {action.name}: {e}",
+                        tool_call_id=action.id,
+                    )
+                ]
+            )
+        try:
+            action_result = method(*bound.args, **bound.kwargs) or "Success"
         except Exception as e:
-            action_result = f"Error executing action {action.name}: {e}"
-            logger.exception(action_result)
+            logger.exception("action %s raised an unexpected error", action.name)
             return StepError.from_exception(e)
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
@@ -386,13 +402,27 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
                 )
 
     async def execute_action(self, action: Action) -> Observation | StepError:
-        """Execute an async action by name."""
+        """Execute an async action by name.
+
+        Argument-binding errors are returned as error Observations (recoverable).
+        Exceptions from inside the method body are fatal StepErrors.
+        """
         method = self.get_action_method(action)
         try:
-            action_result = (await method(**action.arguments)) or "Success"
+            bound = inspect.signature(method).bind(**action.arguments)
+        except TypeError as e:
+            return Observation(
+                contents=[
+                    Content.from_data(
+                        f"Bad arguments for {action.name}: {e}",
+                        tool_call_id=action.id,
+                    )
+                ]
+            )
+        try:
+            action_result = (await method(*bound.args, **bound.kwargs)) or "Success"
         except Exception as e:
-            action_result = f"Error executing action {action.name}: {e}"
-            logger.exception(action_result)
+            logger.exception("action %s raised an unexpected error", action.name)
             return StepError.from_exception(e)
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
