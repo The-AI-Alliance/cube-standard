@@ -51,7 +51,11 @@ example:
 logger = logging.getLogger(__name__)
 
 
-STOP_ACTION = ActionSchema(name="final_step", description="Stop the task execution.")
+STOP_ACTION = ActionSchema(
+    name="final_step",
+    description="Stop the task execution.",
+    parameters={"type": "object", "properties": {}},
+)
 
 
 class TaskMetadata(TypedBaseModel):
@@ -250,12 +254,16 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
             }
         ]
         """
-        return self.filter_actions(self.tool.action_set)
+        actions = self.filter_actions(self.tool.action_set)
+        if self.accept_agent_stop and not any(a.name == STOP_ACTION.name for a in actions):
+            actions = [*actions, STOP_ACTION]
+        return actions
 
     def filter_actions(self, actions: list[ActionSchema]) -> list[ActionSchema]:
         """
-        (Optional) Allows the task to whitelist subset of all the actions provided by the tool.
-        By default filters nothing, keep all tool actions.
+        (Optional) Allows the task to whitelist a subset of the actions provided by the tool.
+        By default keeps all tool actions. STOP_ACTION is appended automatically by
+        action_set when accept_agent_stop=True — do not add it here.
         """
         return actions
 
