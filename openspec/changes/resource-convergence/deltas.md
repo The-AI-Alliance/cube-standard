@@ -53,6 +53,20 @@ Backwards-compatible: callers that only use `exec()` are unaffected.
 
 Then call `self._build_tool()`. Cubes no longer need to override `model_post_init` purely to route between infra and backend paths — the base class does it. The container-backend path is preserved for back-compat with the legacy `cube.backends.*` stubs, but is scheduled for removal in a follow-up (see PR #116 review discussion).
 
+## ADDED — `VMResourceConfig.forwarded_ports`
+
+**Spec:** resource
+
+`VMResourceConfig` gains an optional `forwarded_ports: list[int]` field (default empty list) listing additional VM guest ports to expose on the host beyond the built-in guest-agent port.
+
+```python
+forwarded_ports: list[int] = Field(default_factory=list)
+```
+
+Each port in the list gets its own SSH tunnel from a free host port to the named VM guest port. The resulting host-side URL is added to `ResourceHandle.endpoints` under the key `"vm_port_{port}"` (e.g. `"vm_port_9222"` → `"http://localhost:54321"`). Callers must never assume host port == VM port; the indirection allows multiple parallel workers to share a host without colliding on a fixed local port.
+
+Backwards-compatible: existing `VMResourceConfig` callers that omit `forwarded_ports` are unaffected.
+
 ---
 
 See `proposal.md` for items deferred to a future follow-up (launch-label convention, `ResourceHandle.container` typed property, network capability tokens).

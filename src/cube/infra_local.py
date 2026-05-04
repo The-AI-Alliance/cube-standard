@@ -21,6 +21,7 @@ System requirements (Docker):
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -56,26 +57,37 @@ _ACTIVE_JSON = Path(os.environ.get("CUBE_CACHE_DIR", str(Path.home() / ".cube"))
 def _load_active() -> dict:
     if not _ACTIVE_JSON.exists():
         return {}
-    with open(_ACTIVE_JSON) as f:
-        return json.load(f)
+    try:
+        with open(_ACTIVE_JSON) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, ValueError, OSError):
+        return {}
 
 
 def _save_active(data: dict) -> None:
-    _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
-    with open(_ACTIVE_JSON, "w") as f:
-        json.dump(data, f, indent=2)
+    tmp = _ACTIVE_JSON.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(_ACTIVE_JSON)
 
 
 def _register_active(entry_id: str, entry: dict) -> None:
-    data = _load_active()
-    data[entry_id] = entry
-    _save_active(data)
+    _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = _ACTIVE_JSON.with_suffix(".lock")
+    with open(lock_path, "w") as lock_fd:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        data = _load_active()
+        data[entry_id] = entry
+        _save_active(data)
 
 
 def _deregister_active(entry_id: str) -> None:
-    data = _load_active()
-    data.pop(entry_id, None)
-    _save_active(data)
+    _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = _ACTIVE_JSON.with_suffix(".lock")
+    with open(lock_path, "w") as lock_fd:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        data = _load_active()
+        data.pop(entry_id, None)
+        _save_active(data)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -92,7 +104,7 @@ def _free_port(start: int = 15000, count: int = 200) -> int:
     raise RuntimeError(f"No free port in {start}–{start + count - 1}")
 
 
-def _wait_for_http(endpoint: str, timeout: int = 300) -> None:
+def _wait_for_http(endpoint: str, timeout: int = 600) -> None:
     """Poll {endpoint}/screenshot until HTTP 200 or timeout."""
     try:
         import requests as _requests
@@ -172,6 +184,52 @@ def _convert_to_qcow2(src: Path, dst: Path) -> None:
     logger.info("Conversion done (%.1f GB)", dst.stat().st_size / 1024**3)
 
 
+_OVMF_CODE = Path("/usr/share/OVMF/OVMF_CODE_4M.ms.fd")
+_OVMF_VARS = Path("/usr/share/OVMF/OVMF_VARS_4M.ms.fd")
+
+
+def _launch_swtpm(run_id: str) -> tuple[subprocess.Popen, Path, Path]:
+    """Start a swtpm daemon and return (proc, state_dir, socket_path)."""
+    if not shutil.which("swtpm"):
+        raise RuntimeError("swtpm not found — install with `apt install swtpm swtpm-tools`.")
+    state_dir = Path(f"/tmp/cube-swtpm-{run_id[:8]}")
+    state_dir.mkdir(parents=True, exist_ok=True)
+    sock = state_dir / "sock"
+    proc = subprocess.Popen(
+        [
+            "swtpm",
+            "socket",
+            "--tpmstate",
+            f"dir={state_dir}",
+            "--ctrl",
+            f"type=unixio,path={sock}",
+            "--tpm2",
+            "--log",
+            f"file={state_dir}/swtpm.log,level=20",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    # Wait briefly for socket to appear
+    for _ in range(50):
+        if sock.exists():
+            break
+        time.sleep(0.1)
+    else:
+        proc.kill()
+        raise RuntimeError(f"swtpm socket never appeared at {sock}")
+    return proc, state_dir, sock
+
+
+def _create_pflash_vars(run_id: str) -> Path:
+    """Copy OVMF_VARS to a per-VM writable file."""
+    if not _OVMF_CODE.exists() or not _OVMF_VARS.exists():
+        raise RuntimeError(f"OVMF firmware not found at {_OVMF_CODE.parent} — install with `apt install ovmf`.")
+    dst = Path(f"/tmp/cube-ovmf-vars-{run_id[:8]}.fd")
+    shutil.copy(_OVMF_VARS, dst)
+    return dst
+
+
 def _create_overlay(base_image: Path, run_id: str) -> Path:
     """Create a qcow2 copy-on-write overlay over base_image for this run."""
     overlay_dir = base_image.parent / "overlays"
@@ -206,6 +264,9 @@ class LocalResourceHandle(ResourceHandle):
     _entry_id: str = field(default="", repr=False)
     _qemu_proc: subprocess.Popen | None = field(default=None, repr=False)
     _overlay_path: Path | None = field(default=None, repr=False)
+    _swtpm_proc: subprocess.Popen | None = field(default=None, repr=False)
+    _swtpm_dir: Path | None = field(default=None, repr=False)
+    _pflash_vars: Path | None = field(default=None, repr=False)
 
     def close(self) -> None:
         """Terminate the QEMU process and remove the overlay image."""
@@ -220,6 +281,25 @@ class LocalResourceHandle(ResourceHandle):
                     pass
             self._qemu_proc = None
             logger.info("Terminated QEMU process for run %s", self.run_id[:8])
+
+        if self._swtpm_proc is not None:
+            try:
+                self._swtpm_proc.terminate()
+                self._swtpm_proc.wait(timeout=5)
+            except Exception:
+                try:
+                    self._swtpm_proc.kill()
+                except Exception:
+                    pass
+            self._swtpm_proc = None
+
+        if self._swtpm_dir and self._swtpm_dir.exists():
+            shutil.rmtree(self._swtpm_dir, ignore_errors=True)
+            self._swtpm_dir = None
+
+        if self._pflash_vars and self._pflash_vars.exists():
+            self._pflash_vars.unlink()
+            self._pflash_vars = None
 
         if self._overlay_path and self._overlay_path.exists():
             self._overlay_path.unlink()
@@ -270,7 +350,14 @@ class LocalDockerServiceHandle(ResourceHandle):
 
         from cube.backends.local import LocalContainer
 
-        client = docker.from_env()
+        # Podman advertises DOCKER_HOST with http+unix:// but the Docker SDK
+        # only accepts unix://. Normalize locally rather than mutating os.environ
+        # (which would be a process-global side effect visible to other workers).
+        _host = os.environ.get("DOCKER_HOST", "")
+        if _host.startswith("http+unix://"):
+            client = docker.DockerClient(base_url=_host[len("http+") :])
+        else:
+            client = docker.from_env()
         docker_container = client.containers.get(self._container_ids[0])
         # remove_on_close=False — this handle, not the wrapper, owns the lifecycle.
         self._container_cache = LocalContainer(docker_container, client, remove_on_close=False)
@@ -405,12 +492,42 @@ class LocalInfraConfig(InfraConfig):
         overlay = _create_overlay(image_path, run_id)
         entry_id = f"cube-{run_id[:8]}-vm-{uuid.uuid4().hex[:6]}"
 
+        ram_gb = max(self.ram_gb, resource.min_ram_gb or 0)
+        cpu_cores = max(self.cpu_cores, resource.min_cpu_cores or 0)
+
+        swtpm_proc: subprocess.Popen | None = None
+        swtpm_dir: Path | None = None
+        pflash_vars: Path | None = None
+
+        machine = "q35,smm=on" if resource.uefi else "q35"
         cmd = [
             "qemu-system-x86_64",
+            "-machine",
+            machine,
             "-m",
-            f"{self.ram_gb}G",
+            f"{ram_gb}G",
             "-smp",
-            str(self.cpu_cores),
+            str(cpu_cores),
+        ]
+        if resource.uefi:
+            pflash_vars = _create_pflash_vars(run_id)
+            cmd += [
+                "-drive",
+                f"if=pflash,format=raw,readonly=on,file={_OVMF_CODE}",
+                "-drive",
+                f"if=pflash,format=raw,file={pflash_vars}",
+            ]
+        if resource.tpm:
+            swtpm_proc, swtpm_dir, tpm_sock = _launch_swtpm(run_id)
+            cmd += [
+                "-chardev",
+                f"socket,id=chrtpm,path={tpm_sock}",
+                "-tpmdev",
+                "emulator,id=tpm0,chardev=chrtpm",
+                "-device",
+                "tpm-tis,tpmdev=tpm0",
+            ]
+        cmd += [
             "-drive",
             f"file={overlay},format=qcow2,if=virtio",
             "-netdev",
@@ -425,7 +542,15 @@ class LocalInfraConfig(InfraConfig):
         if self.enable_kvm and Path("/dev/kvm").exists():
             cmd += ["-enable-kvm", "-cpu", "host"]
 
-        logger.info("Starting QEMU VM for %r (run=%s, port=%d)", resource.name, run_id[:8], port)
+        logger.info(
+            "Starting QEMU VM for %r (run=%s, port=%d, ram=%dG, uefi=%s, tpm=%s)",
+            resource.name,
+            run_id[:8],
+            port,
+            ram_gb,
+            resource.uefi,
+            resource.tpm,
+        )
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         endpoint = f"http://127.0.0.1:{port}"
@@ -455,6 +580,12 @@ class LocalInfraConfig(InfraConfig):
             _wait_for_http(endpoint)
         except TimeoutError:
             proc.kill()
+            if swtpm_proc is not None:
+                swtpm_proc.kill()
+            if swtpm_dir and swtpm_dir.exists():
+                shutil.rmtree(swtpm_dir, ignore_errors=True)
+            if pflash_vars and pflash_vars.exists():
+                pflash_vars.unlink()
             overlay.unlink(missing_ok=True)
             _deregister_active(entry_id)
             raise
@@ -469,6 +600,9 @@ class LocalInfraConfig(InfraConfig):
             _entry_id=entry_id,
             _qemu_proc=proc,
             _overlay_path=overlay,
+            _swtpm_proc=swtpm_proc,
+            _swtpm_dir=swtpm_dir,
+            _pflash_vars=pflash_vars,
         )
 
     def _provision_docker_service(self, resource: DockerServiceConfig) -> None:
@@ -635,65 +769,77 @@ class LocalInfraConfig(InfraConfig):
 
         # Clean up dead VM entries.
         if stale_ids:
-            data = _load_active()
-            for sid in stale_ids:
-                data.pop(sid, None)
-            _save_active(data)
+            _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
+            lock_path = _ACTIVE_JSON.with_suffix(".lock")
+            with open(lock_path, "w") as lock_fd:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                data = _load_active()
+                for sid in stale_ids:
+                    data.pop(sid, None)
+                _save_active(data)
 
         return handles
 
     def cleanup(self, run_id: str) -> None:
         """Kill all QEMU processes and remove overlays for run_id."""
-        data = _load_active()
-        to_remove = []
-        for entry_id, entry in list(data.items()):
-            if entry.get("run_id") != run_id:
-                continue
-            if entry.get("infra_fingerprint") != self.fingerprint():
-                continue
-            _kill_entry(entry)
-            to_remove.append(entry_id)
+        _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = _ACTIVE_JSON.with_suffix(".lock")
+        with open(lock_path, "w") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            data = _load_active()
+            to_remove = []
+            for entry_id, entry in list(data.items()):
+                if entry.get("run_id") != run_id:
+                    continue
+                if entry.get("infra_fingerprint") != self.fingerprint():
+                    continue
+                _kill_entry(entry)
+                to_remove.append(entry_id)
 
-        for entry_id in to_remove:
-            data.pop(entry_id, None)
-        if to_remove:
-            _save_active(data)
-            logger.info("Cleaned up %d resource(s) for run %s", len(to_remove), run_id[:8])
+            for entry_id in to_remove:
+                data.pop(entry_id, None)
+            if to_remove:
+                _save_active(data)
+                logger.info("Cleaned up %d resource(s) for run %s", len(to_remove), run_id[:8])
 
     def cleanup_stale(self, max_age_seconds: int | None = None) -> list[str]:
         """Kill expired resources and resources older than max_age_seconds.
 
         Returns list of deleted entry_ids.
         """
-        data = _load_active()
-        now = datetime.utcnow()
-        to_remove = []
+        _ACTIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = _ACTIVE_JSON.with_suffix(".lock")
+        with open(lock_path, "w") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            data = _load_active()
+            now = datetime.utcnow()
+            to_remove = []
 
-        for entry_id, entry in list(data.items()):
-            if entry.get("infra_fingerprint") != self.fingerprint():
-                continue
+            for entry_id, entry in list(data.items()):
+                if entry.get("infra_fingerprint") != self.fingerprint():
+                    continue
 
-            expired = False
-            expires_at_str = entry.get("expires_at")
-            if expires_at_str:
-                expired = datetime.fromisoformat(expires_at_str) < now
+                expired = False
+                expires_at_str = entry.get("expires_at")
+                if expires_at_str:
+                    expired = datetime.fromisoformat(expires_at_str) < now
 
-            too_old = False
-            if not expired and max_age_seconds is not None:
-                created_at_str = entry.get("created_at")
-                if created_at_str:
-                    age = (now - datetime.fromisoformat(created_at_str)).total_seconds()
-                    too_old = age > max_age_seconds
+                too_old = False
+                if not expired and max_age_seconds is not None:
+                    created_at_str = entry.get("created_at")
+                    if created_at_str:
+                        age = (now - datetime.fromisoformat(created_at_str)).total_seconds()
+                        too_old = age > max_age_seconds
 
-            if expired or too_old:
-                _kill_entry(entry)
-                to_remove.append(entry_id)
+                if expired or too_old:
+                    _kill_entry(entry)
+                    to_remove.append(entry_id)
 
-        for entry_id in to_remove:
-            data.pop(entry_id, None)
-        if to_remove:
-            _save_active(data)
-            logger.info("cleanup_stale: removed %d stale resource(s)", len(to_remove))
+            for entry_id in to_remove:
+                data.pop(entry_id, None)
+            if to_remove:
+                _save_active(data)
+                logger.info("cleanup_stale: removed %d stale resource(s)", len(to_remove))
 
         return to_remove
 

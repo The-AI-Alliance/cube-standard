@@ -11,7 +11,7 @@ requires-python = ">=3.12"
 dependencies = [
     "cube-standard",
     "azure-identity>=1.15",
-    "azure-mgmt-compute>=31.0",
+    "azure-mgmt-compute>=31.0,<38.0",
     "azure-mgmt-network>=25.0",
     "azure-mgmt-storage>=21.0",
     "azure-storage-blob>=12.28.0",

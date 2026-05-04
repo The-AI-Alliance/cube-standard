@@ -67,7 +67,7 @@ Write a **Requirements Summary** (markdown, in chat, ≤1 page) covering:
 - Scoring logic (how `evaluate()` decides reward)
 - Infra model (self-contained / shared env / per-task env)
 - Task count + data source; whether task metadata will be **Option A (inline ClassVars)** or **Option B (generated JSON file)**. Most cubes pick B.
-- Whether any per-task data is heavy enough to live on a typed `TaskExecutionInfo` subclass (populated on the worker inside `TaskConfig.make()` by validating `cls.load_task_execution_info(task_id)` against the subclass; the on-disk cache is written one-time per worker environment by `BenchmarkConfig.install()` and refreshed via `cube install <bench>`). Lightweight per-task fields live as named typed fields on a `TaskMetadata` subclass.
+- Whether any per-task data is heavy enough to live on a typed `TaskExecutionInfo` subclass (populated on the worker inside `TaskConfig.make()` by validating `self.load_task_execution_info()` against the subclass; the on-disk cache is written one-time per worker environment by `BenchmarkConfig.install()` and refreshed via `cube install <bench>`). Lightweight per-task fields live as named typed fields on a `TaskMetadata` subclass.
 - **Reusable building blocks** — which `cube-tools/*` and `cube-resources/*` packages apply, and how (import directly, subclass, or not applicable). Consult `references/shared-packages.md`.
 - Closest archetype match from `references/archetypes.md`. If ≥80% fit, say so and fetch that archetype's code (local `cube-harness/cubes/<name>` on `main` preferred, else WebFetch).
 

@@ -33,7 +33,8 @@ one-time setup such as downloading datasets or pulling Docker images.  The base
 class provides no-op defaults.  When your cube ships heavy per-task data,
 write each task's processed JSON to
 ``cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"`` —
-workers read it back via ``TaskConfig.load_task_execution_info(task_id)``.
+workers read it back via ``self.load_task_execution_info()`` inside
+``TaskConfig.make()``.
 """
 
 from typing import ClassVar
@@ -97,7 +98,7 @@ class CubeBenchmarkConfig(BenchmarkConfig):
     # with heavy data (problem statements, patches, archives, …). Each
     # processed task is written to
     # ``cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"``
-    # and read back by workers via ``TaskConfig.load_task_execution_info``.
+    # and read back by workers via ``self.load_task_execution_info()``.
     #
     # @classmethod
     # def install(cls) -> None:

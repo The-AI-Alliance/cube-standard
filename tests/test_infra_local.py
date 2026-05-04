@@ -8,6 +8,7 @@ daemon — subprocess.run is mocked wherever Docker calls would be made.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -20,6 +21,7 @@ from cube.infra_local import (
     LocalInfraConfig,
     LocalResourceHandle,
     _kill_entry,
+    _register_active,
 )
 from cube.infra_utils import build_volume_setup_script
 from cube.resource import DockerServiceConfig, VolumeSpec
@@ -285,3 +287,138 @@ class TestLocalDockerServiceHandleClose:
             handle.close()
 
         assert "entry-1" not in json.loads(active_path.read_text())
+
+
+# ── Regression: concurrent active.json writes ────────────────────────────────
+
+
+class TestActiveLocking:
+    """Verify all active.json write paths hold the fcntl lock.
+
+    Each test starts N threads that all call the same write path simultaneously.
+    Without locking, rapid concurrent read-modify-writes reliably lose entries
+    under load; with the lock the final file must contain every registration.
+    """
+
+    def test_register_concurrent_writes_are_serialised(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        active_path = tmp_path / "active.json"
+        monkeypatch.setattr(_mod, "_ACTIVE_JSON", active_path)
+
+        n = 20
+        threads = [threading.Thread(target=_register_active, args=(f"id-{i}", {"v": i})) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        result = json.loads(active_path.read_text())
+        assert len(result) == n, f"Expected {n} entries, got {len(result)}: {list(result.keys())}"
+
+    def test_cleanup_concurrent_writes_are_serialised(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        active_path = tmp_path / "active.json"
+        monkeypatch.setattr(_mod, "_ACTIVE_JSON", active_path)
+
+        n = 10
+        # Pre-populate some entries to clean up alongside concurrent registers.
+        for i in range(n):
+            _register_active(f"id-{i}", {"run_id": "run-x", "infra_fingerprint": "local"})
+
+        infra = LocalInfraConfig()
+        threads = [threading.Thread(target=infra.cleanup, args=("run-x",)) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        result = json.loads(active_path.read_text())
+        # All run-x entries must be gone; the file must still be valid JSON.
+        assert all(e.get("run_id") != "run-x" for e in result.values())
+
+    def test_cleanup_stale_concurrent_with_register(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        active_path = tmp_path / "active.json"
+        monkeypatch.setattr(_mod, "_ACTIVE_JSON", active_path)
+
+        # Pre-populate stale entries (expired in the past).
+        for i in range(5):
+            _register_active(
+                f"stale-{i}",
+                {
+                    "run_id": "run-stale",
+                    "infra_fingerprint": "local",
+                    "created_at": "2000-01-01T00:00:00",
+                    "expires_at": "2000-01-01T01:00:00",
+                },
+            )
+
+        infra = LocalInfraConfig()
+
+        # Simultaneously register new entries while cleanup_stale runs.
+        def register_many() -> None:
+            for i in range(5):
+                _register_active(f"fresh-{i}", {"run_id": "run-fresh", "infra_fingerprint": "local"})
+
+        t_register = threading.Thread(target=register_many)
+        t_cleanup = threading.Thread(target=infra.cleanup_stale)
+        t_register.start()
+        t_cleanup.start()
+        t_register.join()
+        t_cleanup.join()
+
+        # File must be valid JSON — no corruption from the race.
+        result = json.loads(active_path.read_text())
+        assert isinstance(result, dict)
+
+
+# ── Regression: Podman DOCKER_HOST normalisation ──────────────────────────────
+
+
+class TestPodmanDockerHostNormalisation:
+    """Verify DOCKER_HOST is not mutated when Podman's http+unix:// prefix is stripped."""
+
+    def test_environ_not_mutated_for_podman_host(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        original = "http+unix:///run/user/1000/podman/podman.sock"
+        monkeypatch.setenv("DOCKER_HOST", original)
+
+        import docker as _docker
+
+        mock_client = MagicMock()
+        mock_container = MagicMock()
+        mock_container.id = "cid-podman"
+        mock_client.containers.get.return_value = mock_container
+
+        with patch.object(_docker, "DockerClient", return_value=mock_client):
+            handle = LocalDockerServiceHandle(
+                run_id="run-p",
+                resource=DockerServiceConfig(name="svc", scope="task"),
+                infra=LocalInfraConfig(),
+                endpoint="http://127.0.0.1:7780",
+                created_at=datetime.utcnow(),
+                _entry_id="e-p",
+                _container_ids=["cid-podman"],
+            )
+            _ = handle.container
+
+        # os.environ must be unchanged — the normalisation is local to DockerClient().
+        import os
+
+        assert os.environ.get("DOCKER_HOST") == original
+
+
+# ── Regression: _pull_image creates a fresh DockerClient per retry ────────────
+
+
+class TestPullImageFreshClient:
+    """Verify _pull_image does not accept an external client that could be stale."""
+
+    def test_pull_image_signature_takes_no_client(self) -> None:
+        import inspect
+
+        from cube.backends.local import LocalContainerBackend
+
+        sig = inspect.signature(LocalContainerBackend._pull_image)
+        param_names = list(sig.parameters.keys())
+        # Only 'self' and 'image' — no 'client' parameter.
+        assert "client" not in param_names, (
+            "_pull_image must not accept an external client; it should create one internally "
+            "so each retry attempt gets a fresh connection."
+        )

@@ -57,7 +57,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections import Counter
 from pathlib import Path
-from typing import Any, ClassVar, Generator, Mapping, Self, Sequence
+from typing import Any, ClassVar, Generator, Mapping, Self, Sequence, cast
 
 from pydantic import Field, SerializeAsAny
 
@@ -130,7 +130,7 @@ class BenchmarkMetadata(TypedBaseModel):
     )
 
 
-class BenchmarkConfig(TypedBaseModel, ABC):
+class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     """Serializable description of a benchmark. Safe to copy, serialize, and ship.
 
     Subclasses declare four class-level attributes:
@@ -152,6 +152,22 @@ class BenchmarkConfig(TypedBaseModel, ABC):
     ``Benchmark``: it provisions any declared resources idempotently, then
     constructs and sets up the runtime pair. Users never call ``setup()``
     directly — a ``Benchmark`` returned from ``make`` is born ready.
+
+    Type parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
+    statically narrow the TaskMetadata type of BenchmarkConfig:
+
+        # Unparametrised — ``cfg.tasks()`` typed as Mapping[str, TaskMetadata].
+        class FooBenchmarkConfig(BenchmarkConfig): ...
+
+        # Parametrised — ``cfg.tasks()`` typed as Mapping[str, FooTaskMetadata]
+        # so iterating values gives autocomplete on FooTaskMetadata fields.
+        class FooBenchmarkConfig(BenchmarkConfig[FooTaskMetadata]): ...
+
+    The ``task_metadata`` ClassVar registry stays typed as
+    ``dict[str, TaskMetadata]`` regardless of parametrisation. ``ClassVar``
+    cannot reference a class's own type parameter (PEP 526 — ClassVars are
+    shared across all generic specialisations).
+    Reads go through ``cfg.tasks()`` to get the narrowed view.
     """
 
     # ── Class-level registries (populated by subclasses or __init_subclass__) ──
@@ -313,11 +329,15 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         module_dir = Path(module_file).resolve().parent if module_file else None
 
         def _is_dynamic(name: str) -> bool:
-            """True iff *name* is declared as a ``@property`` somewhere in the MRO
-            below ``BenchmarkConfig`` — meaning the attribute is computed at access
-            time and should not be overwritten with a file-loaded ClassVar value.
+            """True iff the nearest definition of *name* in the MRO is a ``@property``
+            — meaning the attribute is computed at access time and should not be
+            overwritten with a file-loaded ClassVar value. A subclass ClassVar that
+            shadows a parent ``@property`` is treated as static.
             """
-            return any(isinstance(klass.__dict__.get(name), property) for klass in cls.__mro__)
+            for klass in cls.__mro__:
+                if name in klass.__dict__:
+                    return isinstance(klass.__dict__[name], property)
+            return False
 
         # ── benchmark_metadata ───────────────────────────────────────────────
         if not _is_dynamic("benchmark_metadata"):
@@ -377,11 +397,11 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         # Always required. Subclasses that override ``get_task_configs`` (and
         # therefore don't use the factory) can set ``task_config_class = TaskConfig``
         # as a placeholder — see ``CompositeBenchmarkConfig``.
-        task_cfg = getattr(cls, "task_config_class", None)
-        if not (isinstance(task_cfg, type) and issubclass(task_cfg, TaskConfig)):
+        task_cfg_cls = getattr(cls, "task_config_class", None)
+        if not (isinstance(task_cfg_cls, type) and issubclass(task_cfg_cls, TaskConfig)):
             raise TypeError(
                 f"Concrete benchmark config class {cls.__name__} must define "
-                f"'task_config_class' as a ClassVar subclass of TaskConfig, not {task_cfg!r}."
+                f"'task_config_class' as a ClassVar subclass of TaskConfig, not {task_cfg_cls!r}."
             )
 
         # ── benchmark_class ─────────────────────────────────────────────────
@@ -391,6 +411,27 @@ class BenchmarkConfig(TypedBaseModel, ABC):
                 f"Concrete benchmark config class {cls.__name__} must define "
                 f"'benchmark_class' as a ClassVar subclass of Benchmark, not {bench_cls!r}."
             )
+
+        # Back-stamp the benchmark cache dir onto the task config class so
+        # ``TaskConfig.task_execution_cache_dir()`` lives directly under
+        # ``BenchmarkConfig.cache_dir()`` without ``task.py`` importing
+        # ``benchmark.py``. Done last so an invalid subclass (failed
+        # validation above) never stamps.
+        # Skip when ``task_config_class`` is abstract (e.g. the bare
+        # ``TaskConfig`` placeholder used by ``CompositeBenchmarkConfig``).
+        # Skip dynamic ``benchmark_metadata`` since ``benchmark_metadata.name``
+        # and has no fixed value at class-creation time.
+        is_abstract = bool(getattr(task_cfg_cls, "__abstractmethods__", None))
+        if not is_abstract and not _is_dynamic("benchmark_metadata"):
+            new_dir = cls.cache_dir()
+            existing = task_cfg_cls.__dict__.get("_benchmark_cache_dir")
+            if existing is not None and existing != new_dir:
+                raise TypeError(
+                    f"{task_cfg_cls.__qualname__} is already owned by "
+                    f"benchmark at {existing!s}; cannot reassign to {new_dir!s}. "
+                    f"Each BenchmarkConfig must declare its own TaskConfig subclass."
+                )
+            task_cfg_cls._benchmark_cache_dir = new_dir
 
     # ──────────────────────────────────────────────────────────────────────────
     # Views
@@ -408,7 +449,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         """Number of tasks in the current (possibly subset) view."""
         return len(self.tasks())
 
-    def tasks(self) -> Mapping[str, TaskMetadata]:
+    def tasks(self) -> Mapping[str, TTMetadata]:
         """Return the current task view — ``task_metadata`` filtered by ``task_ids``.
 
         When ``task_ids`` is None, returns the full ``task_metadata`` registry.
@@ -416,15 +457,21 @@ class BenchmarkConfig(TypedBaseModel, ABC):
         ids, in the order given by ``task_ids``. Access via ``self.`` so the
         composite's @property override resolves correctly.
 
-        The return type is ``Mapping`` (read-only) — the runtime value is a
-        ``dict`` but the static contract is the wider type so subclasses can
-        override with a narrower value type if they need ``TaskMetadata``
-        subclass fields visible at use sites.
+        The return type is ``Mapping`` (read-only, covariant in the value
+        type) so subclasses parametrised as ``BenchmarkConfig[FooTaskMetadata]``
+        get a narrowed view at every read site without needing to override
+        the registry. The runtime value is still a ``dict`` — ``Mapping`` is
+        only the static contract.
         """
+        # PEP 526 forbids ``ClassVar[dict[str, TTMetadata]]``, so ``full`` is
+        # statically ``dict[str, TaskMetadata]`` — ``cast`` is the only way to
+        # narrow. Soundness is the cube author's responsibility: the values in
+        # ``task_metadata`` must actually be instances of the parametrised
+        # ``TTMetadata`` subclass.
         full = self.task_metadata
         if self.task_ids is None:
-            return full
-        return {tid: full[tid] for tid in self.task_ids}
+            return cast(Mapping[str, TTMetadata], full)
+        return cast(Mapping[str, TTMetadata], {tid: full[tid] for tid in self.task_ids})
 
     def get_task_configs(self) -> Generator[TaskConfig, None, None]:
         """Yield one ``TaskConfig`` per task (expanded by seed_generator if set).
@@ -434,7 +481,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
 
         Cubes with heavy execution data (problem statements, patches, …)
         populate ``Task.execution_info`` inside ``TaskConfig.make()`` by
-        validating ``cls.load_task_execution_info(task_id)`` against a typed
+        validating ``self.load_task_execution_info()`` against a typed
         ``TaskExecutionInfo`` subclass — no override of this method needed.
         """
         for tm in self.tasks().values():
@@ -545,9 +592,9 @@ class BenchmarkConfig(TypedBaseModel, ABC):
 
         Convention: write each task's processed data as a JSON file at
         ``cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"``
-        — that path is the single source of truth, owned by ``TaskConfig``,
-        and read back by workers via
-        ``TaskConfig.load_task_execution_info(task_id)``.
+        — that path is the single source of truth, and is read back by
+        workers via ``self.load_task_execution_info()`` inside
+        ``TaskConfig.make()``.
 
         ``install()`` MUST NOT mutate ``task_metadata`` — that registry is
         populated at class-definition time from a shipped file (or declared
@@ -580,13 +627,18 @@ class BenchmarkConfig(TypedBaseModel, ABC):
 
         1. For every declared resource whose ``provision_status(infra) != 'ready'``,
            call ``infra.provision(resource)``. Idempotent.
-        2. Instantiate ``type(self).benchmark_class(config=self)``.
+        2. Instantiate ``type(self).benchmark_class(config=self, infra=infra)``.
         3. Call ``benchmark.setup()`` so the returned instance is live.
 
         If ``resources`` is non-empty but ``infra`` is None, provisioning is
         skipped with a debug log. Benchmarks that rely entirely on task-scoped
         (L3) resources may not need infra at ``make`` time — their resources
         are launched per-task by the task itself.
+
+        ``infra`` is forwarded to ``Benchmark.__init__`` (stashed as
+        ``self._infra``) so cubes that publish it into ``runtime_context``
+        for per-task container launches can do so from ``_setup()`` without
+        overriding ``make``.
         """
         if self.resources:
             if infra is None:
@@ -605,7 +657,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
                     logger.info("Provisioning resource %s on %s...", resource.name, infra.fingerprint())
                     infra.provision(resource)
 
-        benchmark = type(self).benchmark_class(config=self)
+        benchmark = type(self).benchmark_class(config=self, infra=infra)
         benchmark.setup()
         return benchmark
 
@@ -635,10 +687,17 @@ class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
         # Parametrised — ``self.config`` typed as ``FooBenchmarkConfig``,
         # autocomplete and static checking work for subclass-specific fields.
         class FooBenchmark(Benchmark[FooBenchmarkConfig]): ...
+
+    The ``infra`` argument received by ``BenchmarkConfig.make(infra)`` is
+    forwarded into ``__init__`` and stashed as ``self._infra`` so subclasses
+    can reach it from ``_setup()`` (e.g. to publish it into
+    ``runtime_context["infra"]`` for per-task container launches) without
+    overriding ``__init__`` or ``BenchmarkConfig.make``.
     """
 
-    def __init__(self, config: TBenchConfig) -> None:
+    def __init__(self, config: TBenchConfig, infra: InfraConfig | None = None) -> None:
         self.config: TBenchConfig = config
+        self._infra: InfraConfig | None = infra
         self._runtime_context: RuntimeContext = {}
 
     @abstractmethod
@@ -649,6 +708,11 @@ class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
         ``BenchmarkConfig.make``. Storing live handles directly on ``self``
         (outside ``_runtime_context``) is also allowed — they simply won't be
         visible to tasks via ``runtime_context``.
+
+        Cubes that thread per-task infra publish ``self._infra`` here, e.g.
+        ``self._runtime_context["infra"] = self._infra``. The base does not
+        auto-publish it because some cubes expose a launched service handle
+        instead of the bare ``InfraConfig``.
         """
 
     @abstractmethod
@@ -727,8 +791,14 @@ class CompositeBenchmark(Benchmark["CompositeBenchmarkConfig"]):
     provisioned resources.
     """
 
-    def __init__(self, config: "CompositeBenchmarkConfig") -> None:
-        super().__init__(config)
+    def __init__(self, config: "CompositeBenchmarkConfig", infra: InfraConfig | None = None) -> None:
+        # ``infra`` is stashed on ``self._infra`` via ``super().__init__`` for
+        # symmetry with leaf benchmarks — callers can read ``bench._infra``
+        # uniformly regardless of whether ``bench`` is composite. The composite
+        # itself doesn't consume it (no shared resources, no ``_setup`` body);
+        # each sub-benchmark receives the same ``infra`` through its own
+        # ``make(infra)`` in ``CompositeBenchmarkConfig.make``.
+        super().__init__(config, infra=infra)
         self.sub_benchmarks: dict[str, Benchmark] = {}
 
     def _setup(self) -> None:
@@ -926,7 +996,9 @@ class CompositeBenchmarkConfig(BenchmarkConfig):
         Each sub-config's ``make(infra)`` is called in order; on any failure,
         already-built sub-benchmarks are closed before the error propagates.
         """
-        composite = CompositeBenchmark(config=self)
+        composite = CompositeBenchmark(config=self, infra=infra)
+        # CompositeBenchmark.__init__ takes `infra` even if it is never used by composite.
+        # Kept for symmetry with leaf benchmarks; users can read `bench._infra` uniformly regardless of whether `bench` is composite.
         try:
             for sub_bench_config in self.sub_bench_configs:
                 composite.sub_benchmarks[sub_bench_config.name] = sub_bench_config.make(infra)

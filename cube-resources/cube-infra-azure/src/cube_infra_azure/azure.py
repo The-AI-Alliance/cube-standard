@@ -68,13 +68,16 @@ from __future__ import annotations
 import base64
 import logging
 import subprocess
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+from azure.identity import AzureCliCredential
 from pydantic import Field, model_validator
 
 from cube.infra_utils import build_volume_setup_script
@@ -88,13 +91,39 @@ from cube.resource import (
     UnsupportedResourceType,
     VMResourceConfig,
 )
-from cube_infra_azure._utils import BootstrapMonitor, free_port, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
+from cube_infra_azure._utils import BootstrapMonitor, open_tunnel, open_tunnels, ssh_run, wait_for_ssh
 
 logger = logging.getLogger(__name__)
 
 
+# ── VM size selection ─────────────────────────────────────────────────────────
+# Ordered list of (cpu, ram_gb, size_name) — smallest first.
+# Used by _select_vm_size() to satisfy VMResourceConfig.min_cpu_cores / min_ram_gb.
+_AZURE_VM_SIZES: list[tuple[int, int, str]] = [
+    (2, 8, "Standard_D2s_v3"),
+    (4, 16, "Standard_D4s_v3"),
+    (8, 32, "Standard_D8s_v3"),
+    (16, 64, "Standard_D16s_v3"),
+    (32, 128, "Standard_D32s_v3"),
+]
+
+
+def _select_vm_size(default: str, min_cpu: int | None, min_ram: int | None) -> str:
+    """Return the smallest Standard_D*s_v3 size satisfying min_cpu and min_ram.
+
+    Falls back to default if no constraint is set or no size matches.
+    """
+    if min_cpu is None and min_ram is None:
+        return default
+    for cpu, ram, name in _AZURE_VM_SIZES:
+        if (min_cpu is None or cpu >= min_cpu) and (min_ram is None or ram >= min_ram):
+            return name
+    return default
+
+
 # ── Bootstrap script ───────────────────────────────────────────────────────────
-# Placeholders: {hf_url}, {vhd_sas_url}, {sentinel_sas_url}, {failed_sas_url}
+# Placeholders: {hf_url}, {vhd_sas_url}, {sentinel_sas_url}, {failed_sas_url},
+#               {os_type_sas_url}, {winrm_password}
 
 _AZURE_BOOTSTRAP_SCRIPT = """\
 #!/bin/bash
@@ -117,7 +146,7 @@ mkdir -p /data
 # ── install tools ─────────────────────────────────────────────────────────────
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq qemu-utils wget curl unzip
+apt-get install -y -qq qemu-utils qemu-system-x86 ovmf wget curl unzip netcat-openbsd aria2
 
 wget -q "https://aka.ms/downloadazcopy-v10-linux" -O /tmp/azcopy.tar.gz
 tar -xzf /tmp/azcopy.tar.gz -C /tmp --wildcards "*/azcopy" 2>/dev/null || \\
@@ -126,9 +155,17 @@ find /tmp -name azcopy -type f | head -1 | xargs -I{{}} mv {{}} /usr/local/bin/a
 chmod +x /usr/local/bin/azcopy
 echo "[bootstrap] Tools ready"
 
-# ── download ──────────────────────────────────────────────────────────────────
-echo "[bootstrap] Downloading: {hf_url}"
-wget --progress=dot:giga -O /data/source.download "{hf_url}"
+# ── download (use Azure cache blob if available, else HuggingFace) ────────────
+if [ -n "{cache_sas_url}" ]; then
+    echo "[bootstrap] Downloading from Azure cache: {cache_sas_url}"
+    azcopy copy "{cache_sas_url}" /data/source.download --blob-type BlockBlob
+else
+    echo "[bootstrap] Downloading: {hf_url}"
+    # aria2c with 16 parallel connections — single-threaded wget capped at 2-8 MB/s
+    # from HF→Azure long-haul; parallel chunks typically reach 50-200 MB/s.
+    aria2c --console-log-level=warn --summary-interval=10 -x 16 -s 16 \\
+           -d /data -o source.download "{hf_url}"
+fi
 echo "[bootstrap] Downloaded: $(du -sh /data/source.download)"
 
 # ── unzip if needed ───────────────────────────────────────────────────────────
@@ -141,15 +178,286 @@ else
     QCOW2=/data/source.download
 fi
 
-# ── convert ───────────────────────────────────────────────────────────────────
-echo "[bootstrap] Converting qcow2 → fixed VHD..."
-qemu-img convert -f qcow2 -O vpc -o subformat=fixed,force_size "$QCOW2" /data/output.vhd
+# ── detect OS type from qcow2 partition table ────────────────────────────────
+echo "[bootstrap] Detecting OS type from partition table..."
+apt-get install -y -qq gdisk ntfs-3g qemu-utils
+modprobe nbd max_part=16
+qemu-nbd --connect=/dev/nbd0 "$QCOW2"
+sleep 2
+partprobe /dev/nbd0 2>/dev/null || true
+sleep 1
+ROOT_EXT4=$(lsblk -rno NAME,FSTYPE /dev/nbd0 | awk '$2=="ext4" {{print "/dev/"$1}}' | tail -1)
+ROOT_NTFS=$(lsblk -rno NAME,FSTYPE /dev/nbd0 | awk '$2=="ntfs" {{print "/dev/"$1}}' | tail -1)
+qemu-nbd --disconnect /dev/nbd0 2>/dev/null || true
+
+if [ -n "$ROOT_NTFS" ]; then
+    OS_TYPE="windows"
+elif [ -n "$ROOT_EXT4" ]; then
+    OS_TYPE="linux"
+else
+    echo "[bootstrap] WARNING: no ext4 or ntfs partition found — assuming linux"
+    OS_TYPE="linux"
+fi
+echo "[bootstrap] Detected OS type: $OS_TYPE"
+
+# ── write os_type metadata blob ───────────────────────────────────────────────
+curl -s -X PUT -H "x-ms-blob-type: BlockBlob" \\
+     -H "Content-Length: ${{#OS_TYPE}}" -d "$OS_TYPE" "{os_type_sas_url}" || true
+echo "[bootstrap] OS type blob written"
+
+if [ "$OS_TYPE" = "windows" ]; then
+SPECIALIZED="{specialized}"
+if [ "$SPECIALIZED" = "true" ]; then
+# ── Windows Specialized: just convert qcow2 → fixed VHD, no sysprep needed ──
+echo "[bootstrap] Windows Specialized image — converting directly to VHD (no sysprep)..."
+qemu-img convert -p -O vpc -o subformat=fixed,force_size "$QCOW2" /data/output.vhd
 echo "[bootstrap] Converted: $(du -sh /data/output.vhd)"
 
-# ── prepare VHD for Generalized image ─────────────────────────────────────────
-# Install openssh-server + walinuxagent, enable sshd, then deprovision so that
-# Azure can inject os_profile (SSH key, hostname) at launch time via waagent.
-echo "[bootstrap] Preparing VHD (install walinuxagent + deprovision)..."
+else
+# ── Windows Generalized: inject RunOnce offline, boot, sysprep, then convert ─
+echo "[bootstrap] Windows Generalized image — injecting offline setup..."
+
+# Mount NTFS partition via qemu-nbd (losetup cannot read qcow2 partition tables)
+apt-get install -y -qq ntfs-3g python3-hivex
+modprobe nbd max_part=16
+qemu-nbd --connect=/dev/nbd0 "$QCOW2"
+sleep 2
+partprobe /dev/nbd0 2>/dev/null || true
+sleep 1
+WIN_PART=$(lsblk -rno NAME,FSTYPE /dev/nbd0 | awk '$2=="ntfs" {{print "/dev/"$1}}' | head -1)
+echo "[bootstrap] Windows partition: $WIN_PART"
+if [ -z "$WIN_PART" ]; then
+    echo "[bootstrap] FAILED: could not find NTFS partition on /dev/nbd0"
+    sudo lsblk -rno NAME,FSTYPE /dev/nbd0
+    exit 1
+fi
+mkdir -p /mnt/win
+mount -t ntfs-3g -o rw,uid=0,gid=0 "$WIN_PART" /mnt/win
+echo "[bootstrap] NTFS mounted: $(ls /mnt/win | head -5)"
+
+# Write the setup PowerShell script to C:\\cube-setup.ps1
+cat > /mnt/win/cube-setup.ps1 << 'PSEOF'
+# Enable WinRM with Basic auth
+winrm quickconfig -q
+winrm set winrm/config/service '@{{AllowUnencrypted="true"}}'
+winrm set winrm/config/service/auth '@{{Basic="true"}}'
+netsh advfirewall firewall add rule name="WinRM-HTTP" dir=in action=allow protocol=TCP localport=5985
+# Install OpenSSH
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
+Set-Service -Name sshd -StartupType Automatic
+New-ItemProperty -Path "HKLM:\\SOFTWARE\\OpenSSH" -Name DefaultShell `
+    -Value "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" `
+    -PropertyType String -Force | Out-Null
+$setupDir = "C:\\Windows\\Setup\\Scripts"
+New-Item -ItemType Directory -Force -Path $setupDir | Out-Null
+Set-Content -Path "$setupDir\\SetupComplete.cmd" -Value @"
+netsh advfirewall firewall add rule name="OpenSSH-Server-In-TCP" dir=in action=allow protocol=TCP localport=22
+net start sshd
+"@
+# Run sysprep
+& "C:\\Windows\\System32\\Sysprep\\sysprep.exe" /generalize /oobe /shutdown /quiet
+PSEOF
+echo "[bootstrap] Setup script written"
+
+# Add RunOnce registry key using python-hivex
+SOFTWARE_HIVE="/mnt/win/Windows/System32/config/SOFTWARE"
+python3 - "$SOFTWARE_HIVE" << 'PYEOF'
+import sys
+import hivex
+
+hive = hivex.Hivex(sys.argv[1], write=True)
+root = hive.root()
+
+def find_or_create(node, *parts):
+    for part in parts:
+        try:
+            node = hive.node_get_child(node, part)
+        except RuntimeError:
+            node = hive.node_add_child(node, part)
+    return node
+
+run_once = find_or_create(
+    root,
+    "Microsoft", "Windows", "CurrentVersion", "RunOnce"
+)
+hive.node_set_value(run_once, {{
+    "key": "CubeSetup",
+    "t": 1,  # REG_SZ
+    "value": b"powershell.exe -NonInteractive -ExecutionPolicy Bypass -File C:\\cube-setup.ps1\x00",
+}})
+hive.commit(None)
+print("RunOnce key written")
+PYEOF
+
+umount /mnt/win
+qemu-nbd --disconnect /dev/nbd0 2>/dev/null || true
+echo "[bootstrap] Offline setup complete, unmounted"
+
+# Boot QEMU from raw image (no OVMF — SeaBIOS handles UEFI via CSM, or use OVMF)
+QEMU_FMT=$(qemu-img info --output=json "$QCOW2" | python3 -c "import sys,json; print(json.load(sys.stdin)['format'])")
+echo "[bootstrap] Image format: $QEMU_FMT"
+BIOS_ARGS="-bios /usr/share/ovmf/OVMF.fd"
+if [ ! -f /usr/share/ovmf/OVMF.fd ]; then
+    echo "[bootstrap] OVMF not found — using SeaBIOS"
+    BIOS_ARGS=""
+fi
+qemu-system-x86_64 \\
+    -m 4096 -smp 4 \\
+    -drive file="$QCOW2",format="$QEMU_FMT",if=ide \\
+    $BIOS_ARGS \\
+    -net nic,model=e1000 -net user,hostfwd=tcp::5985-:5985 \\
+    -display none \\
+    -serial file:/tmp/qemu-serial.log \\
+    -daemonize -pidfile /tmp/qemu.pid
+echo "[bootstrap] QEMU started (pid $(cat /tmp/qemu.pid))"
+
+echo "[bootstrap] Waiting for Windows WinRM (port 5985, up to 30 min)..."
+timeout 1800 bash -c '
+    set +e
+    while true; do
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{{http_code}}" --max-time 5 \
+            -X POST http://localhost:5985/wsman \
+            -H "Content-Type: application/soap+xml;charset=UTF-8" \
+            -d "<test/>" 2>/dev/null)
+        if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "200" ]; then
+            break
+        fi
+        echo "[bootstrap] WinRM not ready yet (HTTP $HTTP_CODE) — sleeping 15s..."
+        sleep 15
+    done
+' || {{ echo "[bootstrap] FAILED: WinRM not ready within 1800s"; tail -50 /tmp/qemu-serial.log || true; exit 1; }}
+echo "[bootstrap] WinRM reachable"
+
+PS_SCRIPT='
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
+Set-Service -Name sshd -StartupType Automatic
+New-ItemProperty -Path "HKLM:\\SOFTWARE\\OpenSSH" -Name DefaultShell `
+    -Value "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" `
+    -PropertyType String -Force | Out-Null
+$setupDir = "C:\\Windows\\Setup\\Scripts"
+New-Item -ItemType Directory -Force -Path $setupDir | Out-Null
+Set-Content -Path "$setupDir\\SetupComplete.cmd" -Value @"
+netsh advfirewall firewall add rule name=""OpenSSH-Server-In-TCP"" dir=in action=allow protocol=TCP localport=22
+net start sshd
+"@
+& "C:\\Windows\\System32\\Sysprep\\sysprep.exe" /generalize /oobe /shutdown /quiet
+'
+PS_ENCODED=$(echo "$PS_SCRIPT" | iconv -t UTF-16LE | base64 -w 0)
+
+WINRM_URL="http://localhost:5985/wsman"
+WINRM_AUTH="Administrator:{winrm_password}"
+WINRM_HDRS=(-H "Content-Type: application/soap+xml;charset=UTF-8" -u "$WINRM_AUTH")
+
+# Step 1: Create a WinRM cmd shell, get the shell ID back
+CREATE_BODY='<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+            xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+            xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"
+            xmlns:rsp="http://schemas.microsoft.com/wbem/wsman/1/windows/shell">
+  <s:Header>
+    <wsa:Action>http://schemas.xmlsoap.org/ws/2004/09/transfer/Create</wsa:Action>
+    <wsa:To>'"$WINRM_URL"'</wsa:To>
+    <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd</wsman:ResourceURI>
+    <wsa:MessageID>uuid:create-1</wsa:MessageID>
+    <wsa:ReplyTo><wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address></wsa:ReplyTo>
+    <wsman:OperationTimeout>PT60.000S</wsman:OperationTimeout>
+  </s:Header>
+  <s:Body>
+    <rsp:Shell><rsp:OutputStreams>stdout stderr</rsp:OutputStreams><rsp:InputStreams>stdin</rsp:InputStreams></rsp:Shell>
+  </s:Body>
+</s:Envelope>'
+
+echo "[bootstrap] Running PowerShell via WinRM (OpenSSH install + sysprep)..."
+set +e
+CREATE_RESPONSE=$(curl -s -X POST "$WINRM_URL" "${{WINRM_HDRS[@]}}" --max-time 60 -d "$CREATE_BODY")
+CREATE_EXIT=$?
+set -e
+echo "[bootstrap] WinRM Create exit=$CREATE_EXIT response=$CREATE_RESPONSE"
+if [ $CREATE_EXIT -ne 0 ]; then
+    echo "[bootstrap] FAILED: WinRM Create returned exit=$CREATE_EXIT"
+    echo "[bootstrap] qemu-serial.log tail:"; tail -50 /tmp/qemu-serial.log || true
+    exit 1
+fi
+SHELL_ID=$(echo "$CREATE_RESPONSE" | grep -oP '(?<=<rsp:ShellId>)[^<]+' || true)
+if [ -z "$SHELL_ID" ]; then
+    echo "[bootstrap] FAILED: could not extract ShellId from Create response"
+    echo "[bootstrap] Create response: $CREATE_RESPONSE"
+    echo "[bootstrap] qemu-serial.log tail:"; tail -50 /tmp/qemu-serial.log || true
+    exit 1
+fi
+echo "[bootstrap] Shell created: $SHELL_ID"
+
+# Step 2: Send the Command (encoded PowerShell)
+CMD_BODY="<?xml version=\\"1.0\\" encoding=\\"UTF-8\\"?>
+<s:Envelope xmlns:s=\\"http://www.w3.org/2003/05/soap-envelope\\"
+            xmlns:wsa=\\"http://schemas.xmlsoap.org/ws/2004/08/addressing\\"
+            xmlns:wsman=\\"http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd\\"
+            xmlns:rsp=\\"http://schemas.microsoft.com/wbem/wsman/1/windows/shell\\">
+  <s:Header>
+    <wsa:Action>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Command</wsa:Action>
+    <wsa:To>$WINRM_URL</wsa:To>
+    <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd</wsman:ResourceURI>
+    <wsa:MessageID>uuid:cmd-1</wsa:MessageID>
+    <wsa:ReplyTo><wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address></wsa:ReplyTo>
+    <wsman:SelectorSet><wsman:Selector Name=\\"ShellId\\">$SHELL_ID</wsman:Selector></wsman:SelectorSet>
+    <wsman:OperationTimeout>PT600.000S</wsman:OperationTimeout>
+  </s:Header>
+  <s:Body>
+    <rsp:CommandLine>
+      <rsp:Command>powershell.exe</rsp:Command>
+      <rsp:Arguments>-NonInteractive -EncodedCommand $PS_ENCODED</rsp:Arguments>
+    </rsp:CommandLine>
+  </s:Body>
+</s:Envelope>"
+
+set +e
+CMD_RESPONSE=$(curl -s -X POST "$WINRM_URL" "${{WINRM_HDRS[@]}}" --max-time 60 -d "$CMD_BODY")
+CMD_EXIT=$?
+set -e
+echo "[bootstrap] WinRM Command exit=$CMD_EXIT response=$CMD_RESPONSE"
+if [ $CMD_EXIT -ne 0 ]; then
+    echo "[bootstrap] FAILED: WinRM Command returned exit=$CMD_EXIT"
+    echo "[bootstrap] qemu-serial.log tail:"; tail -50 /tmp/qemu-serial.log || true
+    exit 1
+fi
+CMD_ID=$(echo "$CMD_RESPONSE" | grep -oP '(?<=<rsp:CommandId>)[^<]+' || true)
+if [ -z "$CMD_ID" ]; then
+    echo "[bootstrap] FAILED: could not extract CommandId from Command response"
+    echo "[bootstrap] Command response: $CMD_RESPONSE"
+    exit 1
+fi
+echo "[bootstrap] Command dispatched: $CMD_ID — waiting for sysprep shutdown..."
+
+QEMU_PID=$(cat /tmp/qemu.pid)
+WAIT_START=$(date +%s)
+SYSPREP_DEADLINE=$(( $(date +%s) + 1800 ))
+while kill -0 "$QEMU_PID" 2>/dev/null; do
+    ELAPSED=$(( $(date +%s) - WAIT_START ))
+    if [ $(date +%s) -gt $SYSPREP_DEADLINE ]; then
+        echo "[bootstrap] TIMEOUT: sysprep did not complete within 30 minutes"
+        echo "[bootstrap] qemu-serial.log tail:"; tail -100 /tmp/qemu-serial.log || true
+        kill "$QEMU_PID" 2>/dev/null || true
+        exit 1
+    fi
+    echo "[bootstrap] Waiting for sysprep... ${{ELAPSED}}s elapsed (QEMU pid=$QEMU_PID)"
+    sleep 30
+done
+echo "[bootstrap] Windows VM shut down (sysprep complete) after $(( $(date +%s) - WAIT_START ))s"
+
+# ── convert sysprepped qcow2 → fixed VHD for Azure upload ────────────────────
+echo "[bootstrap] Converting sysprepped image → fixed VHD..."
+qemu-img convert -p -O vpc -o subformat=fixed,force_size "$QCOW2" /data/output.vhd
+echo "[bootstrap] Converted: $(du -sh /data/output.vhd)"
+
+fi  # end Specialized/Generalized Windows branch
+
+else
+# ── Linux: chroot install openssh + walinuxagent + deprovision ───────────────
+echo "[bootstrap] Linux image detected — preparing via chroot..."
+# Convert first for Linux (chroot path works on VHD via losetup)
+echo "[bootstrap] Converting image → fixed VHD..."
+qemu-img convert -O vpc -o subformat=fixed,force_size "$QCOW2" /data/output.vhd
+echo "[bootstrap] Converted: $(du -sh /data/output.vhd)"
 LOOP=$(losetup -f --show -P /data/output.vhd)
 sleep 2
 ROOT_PART=$(lsblk -rno NAME,FSTYPE "$LOOP" | awk '$2=="ext4" {{print "/dev/"$1}}' | tail -1)
@@ -189,7 +497,9 @@ done
 for fs in run sys proc dev/pts dev; do umount "/mnt/guest/$fs" 2>/dev/null || true; done
 umount /mnt/guest
 losetup -d "$LOOP" 2>/dev/null || true
-echo "[bootstrap] VHD prepared"
+echo "[bootstrap] Linux VHD prepared"
+
+fi  # end OS_TYPE branch
 
 # ── upload ────────────────────────────────────────────────────────────────────
 echo "[bootstrap] Uploading to Azure Blob Storage..."
@@ -251,6 +561,89 @@ waagent -force -deprovision+user
 curl -s -X PUT -H "x-ms-blob-type: BlockBlob" -H "Content-Length: 0" "{sentinel_sas_url}"
 echo "[bootstrap] Done at $(date)"
 """
+
+
+# ── AzureCliCredential cache ──────────────────────────────────────────────────
+#
+# AzureCliCredential.get_token() shells out to `az account get-access-token`
+# on every call. With many Ray workers running real eval episodes, each
+# launch() makes a dozen+ SDK calls, and each new ManagementClient instance
+# constructs a fresh AzureCliCredential — so we end up with hundreds of
+# concurrent `az` subprocesses racing on the local credential cache file
+# (~/.azure/msal_token_cache.json). Some lose the race and surface
+# CredentialUnavailableError("Failed to invoke the Azure CLI").
+#
+# Fix: cache the AccessToken in-process per (scope, tenant_id, claims) key
+# and only re-fetch when within 5 minutes of expiry. After this each worker
+# shells out `az` ~once per token-scope per hour instead of dozens of times
+# per minute. The cache lives at module scope so it's shared across every
+# AzureInfraConfig instance and every SDK client within a single Ray worker
+# (each worker gets its own module-level state, which is what we want).
+
+
+class _CachedCliCredential:
+    """In-process token cache wrapping AzureCliCredential.
+
+    Implements the azure-core TokenCredential protocol (``get_token`` /
+    ``get_token_info``) by delegating to the inner AzureCliCredential on a
+    miss and serving cached tokens on a hit.
+    """
+
+    def __init__(self) -> None:
+        self._inner = AzureCliCredential()
+        self._lock = threading.Lock()
+        self._cache: dict[Any, Any] = {}
+
+    @staticmethod
+    def _key(scopes: tuple[str, ...], kwargs: dict[str, Any]) -> tuple[Any, ...]:
+        # Tokens are scoped by (resource scopes, tenant override, additional
+        # claims). Bucket by all three so we don't return a token for the wrong
+        # tenant or one that's missing required claims.
+        return tuple(scopes), kwargs.get("tenant_id"), kwargs.get("claims")
+
+    def get_token(self, *scopes: str, **kwargs: Any) -> Any:
+        key = self._key(scopes, kwargs)
+        with self._lock:
+            tok = self._cache.get(key)
+            if tok is not None and tok.expires_on - time.time() > 300:
+                return tok
+        # Fetch outside the lock so concurrent get_token calls for *different*
+        # scopes don't serialise on each other.
+        fresh = self._inner.get_token(*scopes, **kwargs)
+        with self._lock:
+            self._cache[key] = fresh
+        return fresh
+
+    def get_token_info(self, *scopes: str, **kwargs: Any) -> Any:
+        # azure-identity 1.16+ adds get_token_info; fall back to get_token on
+        # older versions. We don't try to cache the AccessTokenInfo wrapper —
+        # the inner SDK does its own caching for that path.
+        inner_get_token_info = getattr(self._inner, "get_token_info", None)
+        if inner_get_token_info is not None:
+            return inner_get_token_info(*scopes, **kwargs)
+        return self.get_token(*scopes, **kwargs)
+
+
+# EX-002 documented exception: _CACHED_CLI_CREDENTIAL is an intentional
+# module-level singleton. Ray forks a fresh worker process per episode so each
+# worker has its own isolated copy — no cross-episode sharing occurs. This is
+# the same pattern as the OTel TracerProvider exception in the constitution
+# (Pillar II, "No Global State"). The lock provides thread-safety within a
+# single worker. AzureCliCredential.get_token() shells out to the `az` CLI,
+# which is slow; caching here avoids hundreds of redundant subprocess spawns
+# when 50 parallel workers all resolve credentials at startup.
+_CACHED_CLI_CREDENTIAL: _CachedCliCredential | None = None
+_CACHED_CLI_CREDENTIAL_LOCK = threading.Lock()
+
+
+def _get_cached_cred() -> _CachedCliCredential:
+    """Return the per-process cached AzureCliCredential, creating it lazily."""
+    global _CACHED_CLI_CREDENTIAL
+    if _CACHED_CLI_CREDENTIAL is None:
+        with _CACHED_CLI_CREDENTIAL_LOCK:
+            if _CACHED_CLI_CREDENTIAL is None:
+                _CACHED_CLI_CREDENTIAL = _CachedCliCredential()
+    return _CACHED_CLI_CREDENTIAL
 
 
 # ── AzureResourceHandle ───────────────────────────────────────────────────────
@@ -425,6 +818,20 @@ class AzureInfraConfig(InfraConfig):
     bootstrap_gallery_image: str = "cube-ubuntu-22-04"
     bootstrap_gallery_image_ver: str = "1.0.0"
     bootstrap_os_disk_gb: int = 128
+    windows_admin_username: str = "Docker"
+    """Administrator username for Windows VMs. Must match the admin user baked into
+    the image (for Specialized images) or the username injected via os_profile
+    (for Generalized images)."""
+    windows_admin_password: str | None = Field(default=None, repr=False, exclude=True)
+    """Administrator password for Windows VMs (Generalized images only).
+    Set via WAA_WINDOWS_ADMIN_PASSWORD env var in your recipe.
+    Not used for Specialized images — credentials are baked into the image.
+    """
+
+    source_cache_blob: str = ""
+    """Blob name of a cached source image (e.g. 'sources/waa-windows-vm.img').
+    If set and the blob exists, bootstrap downloads from Azure instead of source_url (~3 min vs ~85 min).
+    """
 
     # ── Auto-discovery ────────────────────────────────────────────────────────
 
@@ -450,7 +857,6 @@ class AzureInfraConfig(InfraConfig):
             ]
         )
         if needs_azure_discovery:
-            from azure.identity import AzureCliCredential
             from azure.mgmt.network import NetworkManagementClient
             from azure.mgmt.storage import StorageManagementClient
 
@@ -635,6 +1041,9 @@ class AzureInfraConfig(InfraConfig):
                 url=resource.source_url,
                 image_name=image_name,
                 version=version,
+                uefi=resource.uefi,
+                trusted_launch=resource.uefi or resource.tpm,
+                specialized=resource.specialized,
             )
 
         store.put(
@@ -756,45 +1165,105 @@ class AzureInfraConfig(InfraConfig):
         }
         pubkey = Path(self.ssh_pubkey_path).read_text().strip()  # type: ignore[arg-type]  # set by _autodiscover
 
-        logger.info("launch: creating VM %s (%s)  image=%s/%s", vm_name, self.vm_size, image_def, version)
+        is_windows = isinstance(resource, VMResourceConfig) and resource.os_type == "windows"
+        uefi = isinstance(resource, VMResourceConfig) and resource.uefi
+        tpm = isinstance(resource, VMResourceConfig) and resource.tpm
+        specialized = isinstance(resource, VMResourceConfig) and resource.specialized
+
+        effective_vm_size = _select_vm_size(
+            self.vm_size,
+            resource.min_cpu_cores if isinstance(resource, VMResourceConfig) else None,
+            resource.min_ram_gb if isinstance(resource, VMResourceConfig) else None,
+        )
+        logger.info(
+            "launch: creating VM %s (%s)  image=%s/%s  os=%s%s",
+            vm_name,
+            effective_vm_size,
+            image_def,
+            version,
+            "windows" if is_windows else "linux",
+            " specialized" if specialized else "",
+        )
         t0 = time.time()
 
-        # Generalized gallery image: os_profile injects the caller's SSH key via
-        # linux_configuration.ssh.public_keys. ARM waits for waagent to signal back.
+        if specialized:
+            logger.info("launch: specialized image — skipping os_profile")
+            os_profile_spec: dict | None = None
+        elif is_windows:
+            os_profile_spec = {
+                "computer_name": vm_name[:15],  # Windows NetBIOS limit
+                "admin_username": self.windows_admin_username,
+                "admin_password": self.windows_admin_password,
+                "windows_configuration": {
+                    "provision_vm_agent": True,
+                    "enable_automatic_updates": False,
+                },
+            }
+        else:
+            os_profile_spec = {
+                "computer_name": vm_name,
+                "admin_username": "cube",
+                "linux_configuration": {
+                    "disable_password_authentication": True,
+                    "ssh": {
+                        "public_keys": [
+                            {
+                                "path": "/home/cube/.ssh/authorized_keys",
+                                "key_data": pubkey,
+                            }
+                        ]
+                    },
+                },
+            }
+
+        vm_spec: dict[str, Any] = {
+            "location": self.location,
+            "tags": vm_tags,
+            "hardware_profile": {"vm_size": effective_vm_size},
+            "storage_profile": {
+                "image_reference": {"id": image_id},
+                "os_disk": {
+                    "create_option": "FromImage",
+                    "managed_disk": {"storage_account_type": "Standard_LRS"},
+                    "delete_option": "Delete",
+                    **(
+                        {"disk_size_gb": resource.os_disk_gb}
+                        if isinstance(resource, VMResourceConfig) and resource.os_disk_gb
+                        else {}
+                    ),
+                },
+            },
+            "network_profile": {"network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]},
+        }
+        if os_profile_spec is not None:
+            vm_spec["os_profile"] = os_profile_spec
+        if uefi or tpm:
+            vm_spec["security_profile"] = {
+                "security_type": "TrustedLaunch",
+                "uefi_settings": {
+                    "secure_boot_enabled": True,
+                    "v_tpm_enabled": tpm,
+                },
+            }
+
         poller = compute.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
             self.resource_group,
             vm_name,
-            {  # type: ignore[arg-type]
-                "location": self.location,
-                "tags": vm_tags,
-                "hardware_profile": {"vm_size": self.vm_size},
-                "storage_profile": {
-                    "image_reference": {"id": image_id},
-                    "os_disk": {
-                        "create_option": "FromImage",
-                        "managed_disk": {"storage_account_type": "Standard_LRS"},
-                        "delete_option": "Delete",
-                    },
-                },
-                "os_profile": {
-                    "computer_name": vm_name,
-                    "admin_username": "cube",
-                    "linux_configuration": {
-                        "disable_password_authentication": True,
-                        "ssh": {
-                            "public_keys": [
-                                {
-                                    "path": "/home/cube/.ssh/authorized_keys",
-                                    "key_data": pubkey,
-                                }
-                            ]
-                        },
-                    },
-                },
-                "network_profile": {"network_interfaces": [{"id": nic.id, "properties": {"primary": True}}]},
-            },
+            vm_spec,  # type: ignore[arg-type]
         )
-        poller.result()
+        # Wait up to 10 min for ARM to confirm provisioning. Windows VMs sometimes
+        # report PowerState/running before the Azure guest agent checks in, so we
+        # proceed as long as the VM is running even if ARM says still Creating.
+        _vm_create_timeout = 600
+        try:
+            poller.result(timeout=_vm_create_timeout)
+        except Exception as exc:
+            vm_view = compute.virtual_machines.instance_view(self.resource_group, vm_name)
+            power_states = [s.code for s in (vm_view.statuses or []) if s.code and s.code.startswith("PowerState/")]
+            if "PowerState/running" not in power_states:
+                self._delete_vm(vm_name, pip_name, nic_name)
+                raise RuntimeError(f"VM {vm_name} did not reach running state: {exc}") from exc
+            logger.warning("launch: ARM poller timed out but VM is running — continuing (power=%s)", power_states)
         elapsed = time.time() - t0
 
         pip_info = self._network().public_ip_addresses.get(self.resource_group, pip_name)
@@ -802,15 +1271,52 @@ class AzureInfraConfig(InfraConfig):
         public_ip = pip_info.ip_address
         logger.info("launch: VM ready in %.0fs: %s @ %s", elapsed, vm_name, public_ip)
 
+        # For Windows: use VMAccessAgent to open firewall + inject SSH public key.
+        # For Windows: inject SSH key + open firewall via RunCommand.
+        # RunCommand goes through the Azure VM Agent and works for both Specialized
+        # and Generalized images. VMAccessAgent is unreliable for Specialized images
+        # because it may not overwrite a pre-existing administrators_authorized_keys.
+        if is_windows:
+            logger.info("launch: injecting SSH key + firewall rule via RunCommand for %s", vm_name)
+            escaped_pubkey = pubkey.replace("'", "''")
+            run_cmd_payload = {
+                "command_id": "RunPowerShellScript",
+                "script": [
+                    f"Set-Content -Path 'C:\\ProgramData\\ssh\\administrators_authorized_keys' -Value '{escaped_pubkey}'",
+                    "icacls 'C:\\ProgramData\\ssh\\administrators_authorized_keys' /inheritance:r /grant 'SYSTEM:(F)' /grant 'BUILTIN\\Administrators:(F)'",
+                    'netsh advfirewall firewall add rule name="OpenSSH-Server-In-TCP" dir=in action=allow protocol=TCP localport=22',
+                    "Start-Service sshd",
+                ],
+            }
+            last_exc: Exception | None = None
+            for attempt in range(1, 6):
+                try:
+                    compute.virtual_machines.begin_run_command(self.resource_group, vm_name, run_cmd_payload).result(
+                        timeout=300
+                    )
+                    logger.info("launch: SSH key injected and firewall rule opened for %s", vm_name)
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning("launch: RunCommand attempt %d/5 failed for %s: %s", attempt, vm_name, exc)
+                    time.sleep(min(2**attempt, 30))
+            if last_exc is not None:
+                raise RuntimeError(
+                    f"RunCommand failed for {vm_name} after 5 attempts; last error: {last_exc}"
+                ) from last_exc
+
         # SSH + tunnel — clean up VM on any failure to avoid orphaned resources.
+        primary_user = self.windows_admin_username if is_windows else "cube"
+        fallback_users = ["Administrator"] if is_windows else ["ubuntu", "azureuser", "root"]
         try:
             logger.info("launch: waiting for SSH on %s…", public_ip)
             active_user = wait_for_ssh(
                 public_ip,
-                "cube",
+                primary_user,
                 self.ssh_privkey_path,
-                fallback_users=["ubuntu", "azureuser", "root"],
-                timeout=900,  # VM boot (~5-8 min) + waagent provisioning on Generalized image
+                fallback_users=fallback_users,
+                timeout=900,
             )
 
             if isinstance(resource, DockerServiceConfig):
@@ -824,17 +1330,29 @@ class AzureInfraConfig(InfraConfig):
                 # Use the first endpoint as the canonical single endpoint for compat.
                 endpoint = next(iter(endpoints.values())) if endpoints else None
             else:
-                local_port = free_port()
+                tunnel, local_port = open_tunnel(public_ip, active_user, self.ssh_privkey_path, self.guest_port)
                 logger.info(
-                    "launch: opening tunnel localhost:%d → %s:%d",
+                    "launch: opened tunnel localhost:%d → %s:%d",
                     local_port,
                     public_ip,
                     self.guest_port,
                 )
-                tunnel = open_tunnel(public_ip, active_user, self.ssh_privkey_path, local_port, self.guest_port)
                 endpoint = f"http://localhost:{local_port}"
                 endpoints = {}
                 tunnels = [tunnel]
+                # Open additional tunnels for ports the resource asks to expose.
+                # Each gets its own kernel-assigned local port — atomic, race-free.
+                extra_ports = getattr(resource, "forwarded_ports", []) or []
+                for vm_port in extra_ports:
+                    extra_tunnel, extra_local = open_tunnel(public_ip, active_user, self.ssh_privkey_path, vm_port)
+                    logger.info(
+                        "launch: opened extra tunnel localhost:%d → %s:%d",
+                        extra_local,
+                        public_ip,
+                        vm_port,
+                    )
+                    tunnels.append(extra_tunnel)
+                    endpoints[f"vm_port_{vm_port}"] = f"http://localhost:{extra_local}"
         except Exception:
             logger.warning("launch: SSH/tunnel failed — cleaning up VM %s", vm_name)
             self._delete_vm(vm_name, pip_name, nic_name)
@@ -911,43 +1429,59 @@ class AzureInfraConfig(InfraConfig):
     def cleanup_stale(self, max_age_seconds: int | None = None) -> list[str]:
         """Delete CUBE VMs that have expired or exceeded max_age_seconds.
 
-        Checks in priority order:
-          1. cube:expires_at tag < now  →  delete (TTL set at launch time)
-          2. max_age_seconds set and cube:created_at age > max_age_seconds  →  delete
+        Delete-condition is the OR of:
+          1. cube:expires_at tag is in the past (TTL set at launch time has elapsed).
+          2. ``max_age_seconds`` set and cube:created_at age > max_age_seconds.
+
+        Both checks run independently — passing ``max_age_seconds`` is an
+        explicit caller opt-in to "kill anything older than this regardless
+        of TTL". If only the TTL was honoured, callers wanting to nuke
+        prior-run VMs would have to wait out a 24h TTL by default, which
+        defeats the point of the override knob.
+
+        Per-VM ``_delete_vm()`` calls are fanned out across a thread pool —
+        on a recipe-startup sweep with hundreds of stale VMs from prior
+        crashed runs, the serial alternative was ~15 min (per-VM
+        ``begin_delete().result()`` blocks ~5-10 s each). With 32 in-flight
+        deletes the same sweep finishes in ~60 s.
 
         Returns list of deleted VM names.
         """
         compute = self._compute()
-        deleted: list[str] = []
         now = datetime.now(timezone.utc)
 
         try:
             vms = list(compute.virtual_machines.list(self.resource_group))
         except Exception as e:
             logger.warning("cleanup_stale: failed to list VMs: %s", e)
-            return deleted
+            return []
 
+        # Filter pass — figure out which VMs to delete and remember their tag-side
+        # NIC/IP names (we look those up before deletion since the tags vanish
+        # along with the VM).
+        to_delete: list[tuple[str, str, str]] = []
         for vm in vms:
             vm_tags = vm.tags or {}
             if vm_tags.get("cube:infra") != self.fingerprint():
                 continue
 
             should_delete = False
-            has_valid_expires_at = False
 
-            # Priority 1: explicit TTL tag written at launch time.
+            # Check 1: explicit TTL tag written at launch time has elapsed.
             expires_at_str = vm_tags.get("cube:expires_at")
             if expires_at_str:
                 try:
                     expires_at = datetime.fromisoformat(expires_at_str)
-                    has_valid_expires_at = True
                     if expires_at < now:
                         should_delete = True
                 except ValueError:
                     logger.warning("cleanup_stale: invalid cube:expires_at %r on %s", expires_at_str, vm.name)
 
-            # Priority 2: age-based fallback (skipped if expires_at is set).
-            if not has_valid_expires_at and not should_delete and max_age_seconds is not None:
+            # Check 2: caller-provided max_age_seconds — independent of TTL.
+            # The caller is explicitly opting in to "kill anything older
+            # than this regardless of TTL", so we honour it even when the
+            # TTL says the VM is still valid.
+            if not should_delete and max_age_seconds is not None:
                 created_at_str = vm_tags.get("cube:created_at")
                 try:
                     if created_at_str:
@@ -957,19 +1491,34 @@ class AzureInfraConfig(InfraConfig):
                         age = (now - vm.time_created).total_seconds()
                     else:
                         age = 0
-                    should_delete = age > max_age_seconds
+                    if age > max_age_seconds:
+                        should_delete = True
                 except (ValueError, TypeError):
                     pass
 
             if should_delete:
-                vm_name = vm.name or ""
-                pip_name = vm_tags.get("cube:ip_name", "")
-                nic_name = vm_tags.get("cube:nic_name", "")
-                self._delete_vm(vm_name, pip_name, nic_name)
-                deleted.append(vm_name)
+                to_delete.append((vm.name or "", vm_tags.get("cube:ip_name", ""), vm_tags.get("cube:nic_name", "")))
+
+        if not to_delete:
+            return []
+
+        logger.info("cleanup_stale: deleting %d VM(s) in parallel", len(to_delete))
+        deleted: list[str] = []
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            futures = {
+                pool.submit(self._delete_vm, vm_name, pip_name, nic_name): vm_name
+                for vm_name, pip_name, nic_name in to_delete
+            }
+            for fut in as_completed(futures):
+                vm_name = futures[fut]
+                try:
+                    fut.result()
+                    deleted.append(vm_name)
+                except Exception as exc:
+                    logger.warning("cleanup_stale: VM %s delete failed: %s", vm_name, exc)
 
         if deleted:
-            logger.info("cleanup_stale: removed %d VM(s): %s", len(deleted), deleted)
+            logger.info("cleanup_stale: removed %d VM(s)", len(deleted))
         return deleted
 
     def cleanup_orphaned_resources(self) -> dict[str, list[str]]:
@@ -984,6 +1533,13 @@ class AzureInfraConfig(InfraConfig):
           - IPs:    cube-*-ip-*   with no NIC attached
           - Disks:  cube-disk-*   that are Unattached
 
+        Each phase fans out the per-resource ``begin_delete().result()`` calls
+        across a thread pool so a 600-orphan cleanup completes in ~30 s instead
+        of the ~15 min a serial pass takes. NICs, then IPs, then disks: each
+        phase fully drains before the next starts so we don't hit Azure's
+        ``CanceledAndSupersededDueToAnotherOperation`` race when a NIC's IP is
+        deleted before the NIC itself.
+
         Returns dict with keys "nics", "ips", "disks" listing deleted resource names.
         """
         from azure.core.exceptions import ResourceNotFoundError
@@ -993,55 +1549,75 @@ class AzureInfraConfig(InfraConfig):
         rg = self.resource_group
         result: dict[str, list[str]] = {"nics": [], "ips": [], "disks": []}
 
+        # Tunable: 32 in-flight deletes per phase keeps Azure happy without
+        # tripping ARM's per-subscription throttle.
+        max_workers = 32
+
+        def _drain(names: list[str], delete_fn, kind: str) -> list[str]:
+            """Run delete_fn(name) for each name in parallel, return successes."""
+            if not names:
+                return []
+            done: list[str] = []
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(delete_fn, n): n for n in names}
+                for fut in as_completed(futures):
+                    name = futures[fut]
+                    try:
+                        fut.result()
+                        done.append(name)
+                    except (ResourceNotFoundError, Exception) as exc:
+                        logger.warning("cleanup_orphaned_resources: %s %s: %s", kind, name, exc)
+            return done
+
         # Orphaned NICs — no VM attached, name matches cube convention
         try:
-            for nic in network.network_interfaces.list(rg):
-                if not (nic.name and "nic" in nic.name and nic.name.startswith("cube-")):
-                    continue
-                if nic.virtual_machine:
-                    continue  # still attached to a VM
-                logger.info("cleanup_orphaned_resources: deleting NIC %s", nic.name)
-                try:
-                    network.network_interfaces.begin_delete(rg, nic.name).result()
-                    result["nics"].append(nic.name)
-                except (ResourceNotFoundError, Exception) as exc:
-                    logger.warning("cleanup_orphaned_resources: NIC %s: %s", nic.name, exc)
+            nic_names = [
+                nic.name
+                for nic in network.network_interfaces.list(rg)
+                if nic.name and "nic" in nic.name and nic.name.startswith("cube-") and not nic.virtual_machine
+            ]
+            logger.info("cleanup_orphaned_resources: deleting %d NIC(s) in parallel", len(nic_names))
+            result["nics"] = _drain(
+                nic_names,
+                lambda n: network.network_interfaces.begin_delete(rg, n).result(),
+                "NIC",
+            )
         except Exception as exc:
             logger.warning("cleanup_orphaned_resources: failed to list NICs: %s", exc)
 
         # Orphaned IPs — no NIC attached (NIC deletion above may free them),
         # name matches cube convention
         try:
-            for pip in network.public_ip_addresses.list(rg):
-                if not (pip.name and "ip" in pip.name and pip.name.startswith("cube-")):
-                    continue
-                if pip.ip_configuration:
-                    continue  # still attached to a NIC
-                logger.info("cleanup_orphaned_resources: deleting IP %s", pip.name)
-                try:
-                    network.public_ip_addresses.begin_delete(rg, pip.name).result()
-                    result["ips"].append(pip.name)
-                except (ResourceNotFoundError, Exception) as exc:
-                    logger.warning("cleanup_orphaned_resources: IP %s: %s", pip.name, exc)
+            ip_names = [
+                pip.name
+                for pip in network.public_ip_addresses.list(rg)
+                if pip.name and "ip" in pip.name and pip.name.startswith("cube-") and not pip.ip_configuration
+            ]
+            logger.info("cleanup_orphaned_resources: deleting %d IP(s) in parallel", len(ip_names))
+            result["ips"] = _drain(
+                ip_names,
+                lambda n: network.public_ip_addresses.begin_delete(rg, n).result(),
+                "IP",
+            )
         except Exception as exc:
             logger.warning("cleanup_orphaned_resources: failed to list IPs: %s", exc)
 
         # Orphaned intermediate disks — Unattached, name matches cube-disk-* or
         # cube-dockerhost-disk-* (bootstrap OS disks left after interrupted provision).
         try:
-            for disk in compute.disks.list_by_resource_group(rg):
-                if not (
-                    disk.name and (disk.name.startswith("cube-disk-") or disk.name.startswith("cube-dockerhost-disk-"))
-                ):
-                    continue
-                if disk.disk_state != "Unattached":
-                    continue
-                logger.info("cleanup_orphaned_resources: deleting disk %s (%dGB)", disk.name, disk.disk_size_gb or 0)
-                try:
-                    compute.disks.begin_delete(rg, disk.name).result()
-                    result["disks"].append(disk.name)
-                except (ResourceNotFoundError, Exception) as exc:
-                    logger.warning("cleanup_orphaned_resources: disk %s: %s", disk.name, exc)
+            disk_names = [
+                disk.name
+                for disk in compute.disks.list_by_resource_group(rg)
+                if disk.name
+                and (disk.name.startswith("cube-disk-") or disk.name.startswith("cube-dockerhost-disk-"))
+                and disk.disk_state == "Unattached"
+            ]
+            logger.info("cleanup_orphaned_resources: deleting %d disk(s) in parallel", len(disk_names))
+            result["disks"] = _drain(
+                disk_names,
+                lambda n: compute.disks.begin_delete(rg, n).result(),
+                "disk",
+            )
         except Exception as exc:
             logger.warning("cleanup_orphaned_resources: failed to list disks: %s", exc)
 
@@ -1082,9 +1658,10 @@ class AzureInfraConfig(InfraConfig):
     # ── Private Azure SDK methods ─────────────────────────────────────────────
 
     def _cred(self) -> Any:
-        from azure.identity import AzureCliCredential
-
-        return AzureCliCredential()
+        # Return a per-process cached credential — see _CachedCliCredential
+        # below for the rationale (avoid `az` subprocess storm at high Ray
+        # concurrency).
+        return _get_cached_cred()
 
     def _compute(self) -> Any:
         from azure.mgmt.compute import ComputeManagementClient
@@ -1265,12 +1842,13 @@ class AzureInfraConfig(InfraConfig):
 
     # ── Provisioning internals ────────────────────────────────────────────────
 
-    def _import_disk(self, blob_url: str, disk_name: str) -> str:
+    def _import_disk(self, blob_url: str, disk_name: str, os_type: str = "linux") -> str:
         """Create a Managed Disk from a VHD blob. Returns the disk name.
 
         Always deletes any existing disk first (import is a no-op if disk exists).
         """
-        logger.info("_import_disk: %s → %s", blob_url.split("/")[-1].split("?")[0], disk_name)
+        arm_os_type = "Windows" if os_type == "windows" else "Linux"
+        logger.info("_import_disk: %s → %s (%s)", blob_url.split("/")[-1].split("?")[0], disk_name, arm_os_type)
         t0 = time.time()
         compute = self._compute()
 
@@ -1296,7 +1874,7 @@ class AzureInfraConfig(InfraConfig):
                             f"/providers/Microsoft.Storage/storageAccounts/{self.storage_account}"
                         ),
                     },
-                    "osType": "Linux",
+                    "osType": arm_os_type,
                 },
             },
         )
@@ -1327,7 +1905,14 @@ class AzureInfraConfig(InfraConfig):
             ).result()
         return self.gallery_name
 
-    def _create_image_definition(self, name: str, os_state: str = "Generalized") -> str:
+    def _create_image_definition(
+        self,
+        name: str,
+        os_state: Literal["Generalized", "Specialized"] = "Generalized",
+        os_type: Literal["linux", "windows"] = "linux",
+        uefi: bool = False,
+        trusted_launch: bool = False,
+    ) -> str:
         """Create a gallery image definition (idempotent). Returns definition name."""
         self._ensure_gallery()
         compute = self._compute()
@@ -1338,19 +1923,32 @@ class AzureInfraConfig(InfraConfig):
         except Exception:
             pass
 
-        logger.info("_create_image_definition: %s (%s, HyperV V1)", name, os_state)
+        hyper_v = "V2" if uefi else "V1"
+        arm_os_type = "Windows" if os_type == "windows" else "Linux"
+        sku = "windows" if os_type == "windows" else "linux"
+        logger.info(
+            "_create_image_definition: %s (%s, HyperV %s, os=%s%s)",
+            name,
+            os_state,
+            hyper_v,
+            os_type,
+            ", TrustedLaunch" if trusted_launch else "",
+        )
+        props: dict[str, Any] = {
+            "location": self.location,
+            "tags": self.tags,
+            "os_type": arm_os_type,
+            "os_state": os_state,
+            "hyper_v_generation": hyper_v,
+            "identifier": {"publisher": "cube", "offer": name, "sku": sku},
+        }
+        if trusted_launch:
+            props["features"] = [{"name": "SecurityType", "value": "TrustedLaunchSupported"}]
         compute.gallery_images.begin_create_or_update(  # type: ignore[call-overload]
             self.resource_group,
             self.gallery_name,
             name,
-            {  # type: ignore[arg-type]
-                "location": self.location,
-                "tags": self.tags,
-                "os_type": "Linux",
-                "os_state": os_state,
-                "hyper_v_generation": "V1",
-                "identifier": {"publisher": "cube", "offer": name, "sku": "linux"},
-            },
+            props,
         ).result()
         logger.info("_create_image_definition: created %s", name)
         return name
@@ -1410,15 +2008,30 @@ class AzureInfraConfig(InfraConfig):
         logger.info("_create_image_version: done in %.0fs: %s", time.time() - t0, version_obj.id)
         return version_obj.id or ""
 
-    def _ensure_resource_from_blob(self, vhd_blob_name: str, name: str, version: str = "1.0.0") -> str:
+    def _ensure_resource_from_blob(
+        self,
+        vhd_blob_name: str,
+        name: str,
+        version: str = "1.0.0",
+        os_type: Literal["linux", "windows"] = "linux",
+        uefi: bool = False,
+        trusted_launch: bool = False,
+        specialized: bool = False,
+    ) -> str:
         """Import VHD blob → disk → gallery image definition + version.
 
         Idempotent at each step. Returns the gallery image version resource ID.
         """
         blob_url = f"https://{self.storage_account}.blob.core.windows.net/{self.container_name}/{vhd_blob_name}"
         disk_name = f"cube-disk-{name}"
-        self._import_disk(blob_url, disk_name)
-        self._create_image_definition(name)
+        self._import_disk(blob_url, disk_name, os_type=os_type)
+        self._create_image_definition(
+            name,
+            os_state="Specialized" if specialized else "Generalized",
+            os_type=os_type,
+            uefi=uefi,
+            trusted_launch=trusted_launch,
+        )
         image_id = self._create_image_version(name, version, disk_name)
         logger.info("_ensure_resource_from_blob: image ready: %s/%s", name, version)
 
@@ -1708,7 +2321,25 @@ class AzureInfraConfig(InfraConfig):
             except Exception as exc:
                 logger.warning("_delete_network_resources: could not delete %s %s: %s", resource_type, name, exc)
 
-    def _bootstrap(self, url: str, image_name: str, version: str = "1.0.0") -> str:
+    def _read_blob_text(self, blob_name: str, default: str = "linux") -> str:
+        """Read a small text blob and return its content stripped. Returns default on error."""
+        try:
+            svc = self._blob_service_client()
+            blob = svc.get_blob_client(self.container_name, blob_name)
+            return blob.download_blob().readall().decode().strip()
+        except Exception as exc:
+            logger.warning("_read_blob_text: could not read %s: %s — defaulting to %r", blob_name, exc, default)
+            return default
+
+    def _bootstrap(
+        self,
+        url: str,
+        image_name: str,
+        version: str = "1.0.0",
+        uefi: bool = False,
+        trusted_launch: bool = False,
+        specialized: bool = False,
+    ) -> str:
         """In-cloud bootstrap: spin up Azure VM to download, convert, and upload the image.
 
         Idempotent — skips the VM phase if the sentinel blob already exists.
@@ -1717,6 +2348,7 @@ class AzureInfraConfig(InfraConfig):
         blob_name = image_name + ".vhd"
         sentinel_name = blob_name + ".bootstrap_done"
         failed_name = blob_name + ".bootstrap_failed"
+        os_type_blob_name = image_name + ".os_type"
 
         logger.info("_bootstrap: %s  source=%s", image_name, url)
         logger.info("_bootstrap: blob=%s", blob_name)
@@ -1725,17 +2357,29 @@ class AzureInfraConfig(InfraConfig):
             vhd_sas_url = self.generate_sas_url(blob_name, expiry_hours=8, write=True)
             sentinel_sas_url = self.generate_sas_url(sentinel_name, expiry_hours=8, write=True)
             failed_sas_url = self.generate_sas_url(failed_name, expiry_hours=8, write=True)
+            os_type_sas_url = self.generate_sas_url(os_type_blob_name, expiry_hours=8, write=True)
+            cache_sas_url = (
+                self.generate_sas_url(self.source_cache_blob, expiry_hours=8, write=False)
+                if self.source_cache_blob and self.blob_exists(self.source_cache_blob)
+                else ""
+            )
+            if cache_sas_url:
+                logger.info("_bootstrap: source cache found — skipping HuggingFace download")
             script = _AZURE_BOOTSTRAP_SCRIPT.format(
                 hf_url=url,
+                cache_sas_url=cache_sas_url,
                 vhd_sas_url=vhd_sas_url,
                 sentinel_sas_url=sentinel_sas_url,
                 failed_sas_url=failed_sas_url,
+                os_type_sas_url=os_type_sas_url,
+                winrm_password=self.windows_admin_password or "",
+                specialized="true" if specialized else "false",
             )
             vm_info = self._launch_bootstrap_vm(script)
             t0 = time.time()
+            logger.info("_bootstrap: VM running, streaming logs from %s", vm_info["public_ip"])
+            logger.info("_bootstrap: SSH: ssh -i %s azureuser@%s", self.ssh_privkey_path, vm_info["public_ip"])
             try:
-                logger.info("_bootstrap: VM running, streaming logs from %s", vm_info["public_ip"])
-                logger.info("_bootstrap: SSH: ssh -i %s azureuser@%s", self.ssh_privkey_path, vm_info["public_ip"])
                 with BootstrapMonitor(
                     public_ip=vm_info["public_ip"],
                     ssh_privkey=self.ssh_privkey_path,
@@ -1743,13 +2387,38 @@ class AzureInfraConfig(InfraConfig):
                     sentinel_fn=lambda: self.blob_exists(sentinel_name),
                 ) as monitor:
                     monitor.wait(timeout=7200)
-            finally:
+            except TimeoutError:
+                logger.error("_bootstrap: timed out — VM kept alive for debugging")
+                logger.error("_bootstrap: SSH:  ssh -i %s azureuser@%s", self.ssh_privkey_path, vm_info["public_ip"])
+                logger.error("_bootstrap: logs: sudo tail -f /var/log/cube-bootstrap.log")
+                logger.error("_bootstrap: qemu: sudo tail -f /tmp/qemu-serial.log")
+                logger.error(
+                    "_bootstrap: delete when done: INFRA._delete_vm(%r, %r, %r)",
+                    vm_info["vm_name"],
+                    vm_info["pip_name"],
+                    vm_info["nic_name"],
+                )
+                raise
+            except Exception:
                 self._delete_vm(vm_info["vm_name"], vm_info["pip_name"], vm_info["nic_name"])
+                raise
+            self._delete_vm(vm_info["vm_name"], vm_info["pip_name"], vm_info["nic_name"])
             logger.info("_bootstrap: VHD ready in blob storage (%.1f min)", (time.time() - t0) / 60)
         else:
             logger.info("_bootstrap: sentinel exists — skipping VM phase")
 
-        return self._ensure_resource_from_blob(blob_name, image_name, version)
+        os_type = self._read_blob_text(os_type_blob_name)
+        logger.info("_bootstrap: os_type=%s", os_type)
+
+        return self._ensure_resource_from_blob(
+            blob_name,
+            image_name,
+            version,
+            os_type=os_type,
+            uefi=uefi,
+            trusted_launch=trusted_launch,
+            specialized=specialized,
+        )
 
     def list_images(self) -> list[dict]:
         """Return all image definitions in the gallery (informational)."""

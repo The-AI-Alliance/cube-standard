@@ -45,11 +45,21 @@ class _Task(Task):
 
 
 class _TaskConfig(TaskConfig):
+    """Base TaskConfig; each BenchmarkConfig binds to its own subclass below."""
+
     def make(self, runtime_context=None, container_backend=None):
         return _Task(
             metadata=self.metadata,
             tool_config=self.tool_config or _ToolConfig(),
         )
+
+
+class _TaskConfigA(_TaskConfig):
+    pass
+
+
+class _TaskConfigB(_TaskConfig):
+    pass
 
 
 class _BenchmarkA(Benchmark):
@@ -74,7 +84,7 @@ class ConfigA(BenchmarkConfig):
         "task-1": TaskMetadata(id="task-1"),
         "task-2": TaskMetadata(id="task-2"),
     }
-    task_config_class = _TaskConfig
+    task_config_class = _TaskConfigA
     benchmark_class = _BenchmarkA
 
 
@@ -84,7 +94,7 @@ class ConfigB(BenchmarkConfig):
     task_metadata = {
         "task-1": TaskMetadata(id="task-1"),
     }
-    task_config_class = _TaskConfig
+    task_config_class = _TaskConfigB
     benchmark_class = _BenchmarkB
 
 
@@ -221,16 +231,22 @@ def test_composite_close_closes_every_sub():
         def close(self):
             closed.append(self.name_tag)
 
+    class _TaskConfigX(_TaskConfig):
+        pass
+
+    class _TaskConfigY(_TaskConfig):
+        pass
+
     class ConfigX(BenchmarkConfig):
         benchmark_metadata = BenchmarkMetadata(name="x", version="1", description="x")
         task_metadata = {"x": TaskMetadata(id="x")}
-        task_config_class = _TaskConfig
+        task_config_class = _TaskConfigX
         benchmark_class = RecordingBench
 
     class ConfigY(BenchmarkConfig):
         benchmark_metadata = BenchmarkMetadata(name="y", version="1", description="y")
         task_metadata = {"y": TaskMetadata(id="y")}
-        task_config_class = _TaskConfig
+        task_config_class = _TaskConfigY
         benchmark_class = RecordingBench
 
     # Wire sub_benchmarks manually (RecordingBench needs a tag kwarg, which make() can't provide).
@@ -260,16 +276,22 @@ def test_composite_close_continues_after_sub_failure():
             closed.append("bad-attempted")
             raise RuntimeError("close failed")
 
+    class _TaskConfigOK(_TaskConfig):
+        pass
+
+    class _TaskConfigBad(_TaskConfig):
+        pass
+
     class ConfigOK(BenchmarkConfig):
         benchmark_metadata = BenchmarkMetadata(name="ok", version="1", description="ok")
         task_metadata = {"x": TaskMetadata(id="x")}
-        task_config_class = _TaskConfig
+        task_config_class = _TaskConfigOK
         benchmark_class = OKBench
 
     class ConfigBad(BenchmarkConfig):
         benchmark_metadata = BenchmarkMetadata(name="bad", version="1", description="bad")
         task_metadata = {"y": TaskMetadata(id="y")}
-        task_config_class = _TaskConfig
+        task_config_class = _TaskConfigBad
         benchmark_class = BadBench
 
     suite = CompositeBenchmarkConfig(sub_bench_configs=[ConfigBad(), ConfigOK()])
@@ -380,10 +402,16 @@ def test_composite_of_composite_spawn_routing():
 def test_composite_install_delegates_to_subs():
     call_log: list[str] = []
 
+    class _TaskConfigInstall1(_TaskConfig):
+        pass
+
+    class _TaskConfigInstall2(_TaskConfig):
+        pass
+
     class InstallingConfig(BenchmarkConfig):
         benchmark_metadata = BenchmarkMetadata(name="installable", version="1", description="x")
         task_metadata = {"x": TaskMetadata(id="x")}
-        task_config_class = _TaskConfig
+        task_config_class = _TaskConfigInstall1
         benchmark_class = _BenchmarkA
 
         @classmethod
@@ -393,7 +421,7 @@ def test_composite_install_delegates_to_subs():
     class AnotherInstallingConfig(BenchmarkConfig):
         benchmark_metadata = BenchmarkMetadata(name="other", version="1", description="x")
         task_metadata = {"y": TaskMetadata(id="y")}
-        task_config_class = _TaskConfig
+        task_config_class = _TaskConfigInstall2
         benchmark_class = _BenchmarkA
 
         @classmethod
