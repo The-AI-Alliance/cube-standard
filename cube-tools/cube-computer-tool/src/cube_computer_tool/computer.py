@@ -131,6 +131,9 @@ class ComputerBase(Tool):
         """Execute action; append full VM observation if observe_after_action=True."""
         action_obs = super().execute_action(action)
 
+        if isinstance(action_obs, StepError):
+            return action_obs
+
         if self.config.observe_after_action and action.name not in ("done", "fail"):
             action_obs += self.get_observation()
 
