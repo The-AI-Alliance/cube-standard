@@ -131,10 +131,17 @@ class ComputerBase(Tool):
         """Execute action; append full VM observation if observe_after_action=True."""
         action_obs = super().execute_action(action)
 
-        if isinstance(action_obs, StepError):
-            return action_obs
-
         if self.config.observe_after_action and action.name not in ("done", "fail"):
+            if isinstance(action_obs, StepError):
+                # Action failed but VM is still alive — take a screenshot so the agent
+                # can see the current state and retry, and include the error message.
+                screen = self.get_observation()
+                return (
+                    Observation.from_text(
+                        f"{action_obs.error_type} executing action '{action.name}': {action_obs.exception_str}"
+                    )
+                    + screen
+                )
             action_obs += self.get_observation()
 
         return action_obs
