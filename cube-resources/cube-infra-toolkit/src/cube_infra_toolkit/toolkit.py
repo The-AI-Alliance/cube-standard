@@ -59,6 +59,11 @@ class ToolkitInfraConfig(InfraConfig):
     # "cube-sidecar" at its root; it is mounted read-only at /opt/cube-sidecar.
     # When set, the relay works on any image — no python3 required.
     sidecar_data: str | None = None
+    # Optional EAI data full name mounted read-only at /opt/cube-assets/ for
+    # cube-side helper binaries (e.g. uv, pytest tarball) that the harness can
+    # copy into the container at runtime when the image lacks them.  Cubes
+    # consult this path in their evaluator setup; unset → no asset mount.
+    assets_data: str | None = None
 
     # ── InfraConfig interface ─────────────────────────────────────────────────
 
@@ -121,6 +126,8 @@ class ToolkitInfraConfig(InfraConfig):
         cmd += ["--mem", str(mem_gb)]
         if self.sidecar_data is not None:
             cmd += ["--data", f"{self.sidecar_data}:/opt/cube-sidecar:ro"]
+        if self.assets_data is not None:
+            cmd += ["--data", f"{self.assets_data}:/opt/cube-assets:ro"]
         if relay_token is not None:
             # Embed relay startup + token into the job command; relay is up before
             # port-forward is established — no bootstrap eai execs needed.
