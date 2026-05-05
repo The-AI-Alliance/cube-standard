@@ -129,7 +129,13 @@ class ComputerBase(Tool):
 
     def execute_action(self, action: Action) -> Observation | StepError:
         """Execute action; append full VM observation if observe_after_action=True."""
-        action_obs = super().execute_action(action)
+        try:
+            action_obs = super().execute_action(action)
+        except Exception as e:
+            # Tool.get_action_method raises ValueError for unknown actions before the
+            # try/except in Tool.execute_action can catch it. Convert to StepError here
+            # so unknown actions are handled as recoverable errors, not episode crashes.
+            action_obs = StepError.from_exception(e)
 
         if self.config.observe_after_action and action.name not in ("done", "fail"):
             if isinstance(action_obs, StepError):
