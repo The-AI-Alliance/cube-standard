@@ -143,8 +143,14 @@ class ComputerBase(Tool):
         """Read current screen state from the VM and return as Observation."""
         if self._guest is None:
             raise RuntimeError("No VM attached — call attach_vm() or pass vm= to ComputerConfig.make()")
+        screenshot = self._guest.get_screenshot()
+        if screenshot is None:
+            raise RuntimeError(
+                "VM guest agent is unreachable — screenshot returned None after retries. "
+                "The guest agent process may have crashed or the VM is unresponsive."
+            )
         raw_obs: dict[str, Any] = {
-            "screenshot": self._guest.get_screenshot(),
+            "screenshot": screenshot,
             "accessibility_tree": self._guest.get_accessibility_tree() if self.config.require_a11y_tree else None,
             "terminal": self._guest.get_terminal_output() if self.config.require_terminal else None,
         }
