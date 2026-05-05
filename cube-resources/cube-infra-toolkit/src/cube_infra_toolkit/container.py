@@ -44,6 +44,8 @@ _EXEC_RELAY_SERVER_PATH = Path(__file__).parent / "_exec_relay_server.py"
 _EXEC_RELAY_PORT = 8787
 _EXEC_RELAY_KICK_TIMEOUT = 15  # eai exec calls during bootstrap; short so CLOSE_WAIT fails fast
 _EXEC_RELAY_HEALTH_TIMEOUT = 15
+# Path inside the container where the sidecar binary is mounted via --data.
+_SIDECAR_MOUNT_PATH = "/opt/cube-sidecar/cube-sidecar"
 
 
 class _ExecRelayUnavailable(Exception):
@@ -155,31 +157,32 @@ def _find_free_port() -> int:
 def relay_startup_args(token: str) -> list[str]:
     """Return the ``['/bin/sh', '-c', <script>]`` args for a job launch command.
 
-    Embeds the exec relay script + token directly in the job's startup command so
-    the relay is running before the first port-forward — eliminating all bootstrap
-    ``eai job exec`` calls for images that already have python3.
+    Prefers the Go sidecar binary if mounted at ``_SIDECAR_MOUNT_PATH`` (works on
+    any image regardless of python3).  Falls back to the Python relay if python3 is
+    available.  Either way the relay is up before the first port-forward — zero
+    bootstrap ``eai job exec`` calls.
 
-    Security tradeoff: the base64-encoded token is embedded in the startup
-    script, so the ``eai job new`` submission and the brief ``/bin/sh -c`` process
-    that runs it have the token (base64) in argv. The ``/_exec_relay_server.py``
-    "token never on argv" invariant applies to the long-lived relay server
-    process itself — it reads the token from a file, never from its own argv —
-    not to the one-shot startup shell. Moving the token off startup argv would
-    require a second round-trip (generate token on container, fetch back via
-    ``eai job exec`` after RUNNING), defeating the zero-bootstrap optimization.
-    Slow-path ``_kick_relay_python`` does deliver its script via stdin.
+    Security note: the base64-encoded token appears in the one-shot startup shell's
+    argv.  The long-lived relay server reads the token from a file, never its argv.
     """
     script_b64 = base64.b64encode(_EXEC_RELAY_SERVER_PATH.read_bytes()).decode()
     token_b64 = base64.b64encode(token.encode()).decode()
-    startup = (
-        f"printf '%s' '{token_b64}' | base64 -d > /tmp/.cube_exec_relay_token && "
-        f"printf '%s' '{script_b64}' | base64 -d > /tmp/_cube_exec_relay.py && "
-        "chmod 600 /tmp/.cube_exec_relay_token /tmp/_cube_exec_relay.py && "
-        f"CUBE_EXEC_RELAY_PORT={_EXEC_RELAY_PORT} "
-        "CUBE_EXEC_RELAY_TOKEN_FILE=/tmp/.cube_exec_relay_token "
-        "nohup python3 /tmp/_cube_exec_relay.py "
-        "</dev/null >/tmp/_cube_exec_relay.log 2>&1 & "
-        "exec sleep infinity"
+    startup = "\n".join(
+        [
+            f"printf '%s' '{token_b64}' | base64 -d > /tmp/.cube_relay_token",
+            "chmod 600 /tmp/.cube_relay_token",
+            f"if [ -f {_SIDECAR_MOUNT_PATH} ]; then",
+            f"  cp {_SIDECAR_MOUNT_PATH} /tmp/cube-sidecar && chmod +x /tmp/cube-sidecar",
+            f"  CUBE_SIDECAR_PORT={_EXEC_RELAY_PORT} CUBE_SIDECAR_TOKEN_FILE=/tmp/.cube_relay_token"
+            " nohup /tmp/cube-sidecar </dev/null >/tmp/_cube_sidecar.log 2>&1 &",
+            "elif command -v python3 >/dev/null 2>&1; then",
+            f"  printf '%s' '{script_b64}' | base64 -d > /tmp/_cube_exec_relay.py",
+            "  chmod 600 /tmp/_cube_exec_relay.py",
+            f"  CUBE_EXEC_RELAY_PORT={_EXEC_RELAY_PORT} CUBE_EXEC_RELAY_TOKEN_FILE=/tmp/.cube_relay_token"
+            " nohup python3 /tmp/_cube_exec_relay.py </dev/null >/tmp/_cube_exec_relay.log 2>&1 &",
+            "fi",
+            "exec sleep infinity",
+        ]
     )
     return ["/bin/sh", "-c", startup]
 
@@ -235,44 +238,6 @@ class ToolkitContainer(Container):
         )
 
     # ------------------------- exec relay bootstrap -------------------------
-
-    def _ensure_python3(self) -> None:
-        """Install python3 via apt if the image doesn't have it (slow path only)."""
-        check = _run_eai(
-            [
-                "job",
-                "exec",
-                self._job_id,
-                "--",
-                "bash",
-                "-c",
-                "python3 --version 2>/dev/null && echo HAS_PYTHON || echo NO_PYTHON",
-            ],
-            eai_path=self._eai_path,
-            profile=self._profile,
-            account=self._account,
-            timeout=15,
-            retries=1,
-        )
-        if "NO_PYTHON" not in check.stdout:
-            return
-        logger.info("python3 missing in job %s — installing via apt-get", self._job_id[:8])
-        _run_eai(
-            [
-                "job",
-                "exec",
-                self._job_id,
-                "--",
-                "bash",
-                "-c",
-                "apt-get update -qq && apt-get install -y --no-install-recommends python3 python3-pip 2>&1",
-            ],
-            eai_path=self._eai_path,
-            profile=self._profile,
-            account=self._account,
-            timeout=120,
-            retries=1,
-        )
 
     def _kick_relay_python(self, token: str) -> None:
         """Upload the Python relay script + token, kill any prior instance, start detached."""
@@ -330,10 +295,11 @@ class ToolkitContainer(Container):
         """Port-forward + health-check the exec relay; kick via eai exec if needed.
 
         Fast path (relay_prestarted_token set): relay was started as part of the
-        job launch command — just open the tunnel and health-check.  Zero eai execs.
+        job launch command (sidecar binary or python3) — just open the tunnel and
+        health-check.  Zero eai execs.
 
-        Slow path (no token, or health check fails): install python3 if needed,
-        kick the relay via eai exec, health-check again.
+        Slow path (health check fails): kick the Python relay via eai exec (requires
+        python3 in the image).  Falls to direct exec if that also fails.
         """
         if self._relay_ready or self._exec_mode == "direct":
             return
@@ -352,9 +318,8 @@ class ToolkitContainer(Container):
                 self._job_id[:8],
             )
 
-        # Slow path: need to kick the relay manually via eai exec.
+        # Slow path: kick the Python relay via eai exec (requires python3 in image).
         token = self._relay_token or secrets.token_urlsafe(32)
-        self._ensure_python3()
         last_diag = ""
         for attempt in range(2):
             self._kick_relay_python(token)
@@ -466,7 +431,9 @@ class ToolkitContainer(Container):
         env: Dict[str, str] | None,
     ) -> ExecResult:
         assert self._relay_ready and self._relay_token and self._relay_local_port
-        payload: dict = {"command": command, "timeout": timeout}
+        # Clamp to relay server's 24-hour hard limit (86400s) so we never get a
+        # bad_timeout 400. The real cap is enforced by the caller (e.g. bash tool).
+        payload: dict = {"command": command, "timeout": min(timeout, 86399)}
         if workdir:
             payload["workdir"] = workdir
         if env:
@@ -487,6 +454,19 @@ class ToolkitContainer(Container):
         try:
             with urllib.request.urlopen(req, timeout=timeout + 30) as r:
                 body = json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_body = ""
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            logger.warning(
+                "exec [%s] (relay): HTTP %d — body: %s",
+                self._job_id[:8],
+                exc.code,
+                error_body or "<empty>",
+            )
+            raise _ExecRelayUnavailable(f"HTTP {exc.code}: {exc.reason} — {error_body}") from exc
         except (urllib.error.URLError, ConnectionError, OSError, json.JSONDecodeError) as exc:
             raise _ExecRelayUnavailable(str(exc)) from exc
 
@@ -528,15 +508,31 @@ class ToolkitContainer(Container):
         logger.info("exec [%s] (direct): %s", self._job_id[:8], command)
         result = None
         duration = 0.0
+        # Use a tight overhead (+5s) so a CLOSE_WAIT hang costs only 5s beyond the
+        # actual command timeout, not 30s.  retries=0 prevents _run_eai from
+        # multiplying that overhead by 3; the outer loop handles retries instead.
+        eai_timeout = effective_timeout + 5
         for attempt in range(3):
             start = time.monotonic()
-            result = _run_eai(
-                ["job", "exec", self._job_id, "--", "bash", "-c", wrapped],
-                eai_path=self._eai_path,
-                profile=self._profile,
-                account=self._account,
-                timeout=effective_timeout + 30,
-            )
+            try:
+                result = _run_eai(
+                    ["job", "exec", self._job_id, "--", "bash", "-c", wrapped],
+                    eai_path=self._eai_path,
+                    profile=self._profile,
+                    account=self._account,
+                    timeout=eai_timeout,
+                    retries=0,
+                )
+            except ContainerExecError:
+                duration = time.monotonic() - start
+                logger.warning(
+                    "exec [%s] (direct): CLOSE_WAIT hang on attempt %d/3 (%.1fs); retrying in 2s",
+                    self._job_id[:8],
+                    attempt + 1,
+                    duration,
+                )
+                time.sleep(2)
+                continue
             duration = time.monotonic() - start
             logger.info(
                 "exec [%s] (direct): done in %.1fs, exit_code=%s",
@@ -556,6 +552,15 @@ class ToolkitContainer(Container):
                 time.sleep(5)
                 continue
             break
+        if result is None:
+            # All 3 attempts hit CLOSE_WAIT — return a failed result rather than crashing.
+            logger.warning("exec [%s] (direct): all 3 attempts hung; returning error", self._job_id[:8])
+            return ExecResult(
+                stdout="",
+                stderr="exec timed out (CLOSE_WAIT, all retries exhausted)",
+                exit_code=1,
+                duration_seconds=round(duration, 3),
+            )
 
         stdout = result.stdout  # type: ignore[union-attr]
         stderr = result.stderr  # type: ignore[union-attr]

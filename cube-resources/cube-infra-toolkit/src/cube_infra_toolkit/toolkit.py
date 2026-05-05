@@ -54,6 +54,11 @@ class ToolkitInfraConfig(InfraConfig):
     exec_mode: Literal["exec_relay", "direct"] = "exec_relay"
     # Override when eai is not on PATH (e.g. installed in ~/bin via .zshrc).
     eai_path: str = "eai"
+    # EAI data full name to mount as the exec-relay sidecar binary (e.g.
+    # "snow.allac.cube_sidecar").  The data must contain a single file named
+    # "cube-sidecar" at its root; it is mounted read-only at /opt/cube-sidecar.
+    # When set, the relay works on any image — no python3 required.
+    sidecar_data: str | None = None
 
     # ── InfraConfig interface ─────────────────────────────────────────────────
 
@@ -114,6 +119,8 @@ class ToolkitInfraConfig(InfraConfig):
         cmd += ["-i", image]
         cmd += ["--cpu", str(cpu)]
         cmd += ["--mem", str(mem_gb)]
+        if self.sidecar_data is not None:
+            cmd += ["--data", f"{self.sidecar_data}:/opt/cube-sidecar:ro"]
         if relay_token is not None:
             # Embed relay startup + token into the job command; relay is up before
             # port-forward is established — no bootstrap eai execs needed.
