@@ -136,12 +136,11 @@ class ComputerBase(Tool):
                 # Action failed but VM is still alive — take a screenshot so the agent
                 # can see the current state and retry, and include the error message.
                 screen = self.get_observation()
-                return (
-                    Observation.from_text(
-                        f"{action_obs.error_type} executing action '{action.name}': {action_obs.exception_str}"
-                    )
-                    + screen
+                error_content = TextContent(
+                    data=f"{action_obs.error_type} executing action '{action.name}': {action_obs.exception_str}",
+                    tool_call_id=action.id,
                 )
+                return Observation(contents=[error_content]) + screen
             action_obs += self.get_observation()
 
         return action_obs
