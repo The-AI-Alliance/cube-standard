@@ -251,6 +251,26 @@ class _ToolActionsMixin:
             )
         return method
 
+    def _validate_action_args(self, action: Action, method: Callable) -> Observation | None:
+        """Pre-validate action.arguments against the bound method's signature.
+
+        Returns an error Observation when the agent passed unknown / mismatched
+        kwargs (so the agent can correct itself on the next step), or None when
+        the args bind cleanly.
+
+        This is necessary because raising would surface as a fatal StepError
+        upstream (Task.step terminates the episode), and a single LLM-side typo
+        like ``write_file(path=…, content=…, timeout=120)`` shouldn't end an
+        episode — the agent should see the mistake and retry.
+        """
+        try:
+            inspect.signature(method).bind(**action.arguments)
+            return None
+        except TypeError as e:
+            params = list(inspect.signature(method).parameters)
+            msg = f"Invalid arguments for {action.name}: {e}. Expected parameters: {params}."
+            return Observation(contents=[Content.from_data(msg, tool_call_id=action.id)])
+
     @property
     def action_set(self) -> List[ActionSchema]:
         """Automatically discover all methods marked with @tool_action decorator."""
@@ -338,6 +358,9 @@ class Tool(_ToolActionsMixin, AbstractTool):
     def execute_action(self, action: Action) -> Observation | StepError:
         """Execute an action by name."""
         method = self.get_action_method(action)
+        invalid = self._validate_action_args(action, method)
+        if invalid is not None:
+            return invalid
         try:
             action_result = method(**action.arguments) or "Success"
         except Exception as e:
@@ -388,6 +411,9 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
     async def execute_action(self, action: Action) -> Observation | StepError:
         """Execute an async action by name."""
         method = self.get_action_method(action)
+        invalid = self._validate_action_args(action, method)
+        if invalid is not None:
+            return invalid
         try:
             action_result = (await method(**action.arguments)) or "Success"
         except Exception as e:
