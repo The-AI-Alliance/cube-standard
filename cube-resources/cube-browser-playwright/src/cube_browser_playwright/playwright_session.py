@@ -183,8 +183,7 @@ class PlaywrightSession(BrowserSession):
             self._context.tracing.stop(path=self._trace_out_file)
         except Exception as e:
             # Trace flush failure should not leak browser processes.
-            if "Event loop is closed" not in str(e):
-                logger.error("Error stopping playwright tracing; trace may be unavailable: %s", e)
+            logger.debug("Error stopping playwright tracing; trace may be unavailable: %s", e)
         try:
             self._context.close()
         except Exception as e:
