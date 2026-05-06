@@ -147,7 +147,7 @@ class PlaywrightSession(BrowserSession):
         self._context: BrowserContext = context
         self._cdp_url: str = cdp_url
         self._user_data_dir: str = user_data_dir
-        self._trace_out_file = Path(tempfile.mktemp(prefix="playwright_trace_"))
+        self._trace_out_file = Path(tempfile.mktemp(prefix="playwright_trace_", suffix=".zip"))
         self._closed = False
         context.tracing.start(
             title="CUBE playwright session",
@@ -179,6 +179,12 @@ class PlaywrightSession(BrowserSession):
 
     def stop(self) -> None:
         """Close the context, release all Playwright resources, and remove the temp profile dir."""
+        try:
+            self._context.tracing.stop(path=self._trace_out_file)
+        except Exception as e:
+            # Trace flush failure should not leak browser processes.
+            if "Event loop is closed" not in str(e):
+                logger.error("Error stopping playwright tracing; trace may be unavailable: %s", e)
         try:
             self._context.close()
         except Exception as e:
