@@ -1,4 +1,4 @@
-"""Tests for cube.tools.bash — BashTool, BashToolConfig, _format_exec_result,
+"""Tests for cube_bash_tool.bash — BashTool, BashToolConfig, _format_exec_result,
 and Tool._truncate_output."""
 
 from __future__ import annotations
@@ -7,10 +7,10 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-
 from cube.container import ExecResult
 from cube.tool import Tool
-from cube.tools.bash import BashTool, BashToolConfig, _format_exec_result
+
+from cube_bash_tool.bash import BashTool, BashToolConfig, _format_exec_result
 
 # ---------------------------------------------------------------------------
 # Helpers
