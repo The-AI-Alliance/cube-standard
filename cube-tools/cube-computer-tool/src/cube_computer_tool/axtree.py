@@ -13,22 +13,24 @@ Originally ported from desktop_env / kusha/AgentLab2 osworld_axtree.py.
 
 from __future__ import annotations
 
+import ast
 import io
 import xml.etree.ElementTree as ET
 from typing import List, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
-# XML namespace URLs for accessibility tree attributes
-attributes_ns_ubuntu = "https://accessibility.ubuntu.example.org/ns/attributes"
-attributes_ns_windows = "https://accessibility.windows.example.org/ns/attributes"
-state_ns_ubuntu = "https://accessibility.ubuntu.example.org/ns/state"
-state_ns_windows = "https://accessibility.windows.example.org/ns/state"
-component_ns_ubuntu = "https://accessibility.ubuntu.example.org/ns/component"
-component_ns_windows = "https://accessibility.windows.example.org/ns/component"
-value_ns_ubuntu = "https://accessibility.ubuntu.example.org/ns/value"
-value_ns_windows = "https://accessibility.windows.example.org/ns/value"
-class_ns_windows = "https://accessibility.windows.example.org/ns/class"
+# XML namespace URIs used by the pyatspi / UIA accessibility tree servers.
+# These match the xmlns declarations emitted by the WAA and OSWorld guest agents.
+attributes_ns_ubuntu = "uri:deskat:attributes.at-spi.gnome.org"
+attributes_ns_windows = "uri:deskat:attributes.at-spi.gnome.org"
+state_ns_ubuntu = "uri:deskat:state.at-spi.gnome.org"
+state_ns_windows = "uri:deskat:state.at-spi.gnome.org"
+component_ns_ubuntu = "uri:deskat:component.at-spi.gnome.org"
+component_ns_windows = "uri:deskat:component.at-spi.gnome.org"
+value_ns_ubuntu = "uri:deskat:value.at-spi.gnome.org"
+value_ns_windows = "uri:deskat:value.at-spi.gnome.org"
+class_ns_windows = "uri:deskat:uia.windows.microsoft.org"
 
 
 def _get_ns(platform: str) -> tuple[str, str, str, str]:
@@ -40,28 +42,23 @@ def _get_ns(platform: str) -> tuple[str, str, str, str]:
     raise ValueError(f"Invalid platform '{platform}': must be 'ubuntu' or 'windows'")
 
 
-def judge_node(node: ET.Element, platform: str = "ubuntu", check_image: bool = False) -> bool:
-    """Return True if this accessibility tree node should be included in the output.
-
-    Filters to visible, enabled, and interactable nodes that have a name or text.
-    """
-    _, _state_ns, _component_ns, _ = _get_ns(platform)
-
-    keeps: bool = (
-        node.tag.startswith("document")
-        or node.tag.endswith("item")
-        or node.tag.endswith("button")
-        or node.tag.endswith("heading")
-        or node.tag.endswith("label")
-        or node.tag.endswith("scrollbar")
-        or node.tag.endswith("searchbox")
-        or node.tag.endswith("textbox")
-        or node.tag.endswith("link")
-        or node.tag.endswith("tabelement")
-        or node.tag.endswith("textfield")
-        or node.tag.endswith("textarea")
-        or node.tag.endswith("menu")
-        or node.tag
+def _is_interactive_tag_ubuntu(tag: str) -> bool:
+    """Return True if the tag name looks like an interactive UI element (Linux AT-SPI)."""
+    return (
+        tag.startswith("document")
+        or tag.endswith("item")
+        or tag.endswith("button")
+        or tag.endswith("heading")
+        or tag.endswith("label")
+        or tag.endswith("scrollbar")
+        or tag.endswith("searchbox")
+        or tag.endswith("textbox")
+        or tag.endswith("link")
+        or tag.endswith("tabelement")
+        or tag.endswith("textfield")
+        or tag.endswith("textarea")
+        or tag.endswith("menu")
+        or tag
         in {
             "alert",
             "canvas",
@@ -88,34 +85,62 @@ def judge_node(node: ET.Element, platform: str = "ubuntu", check_image: bool = F
         }
     )
 
-    keeps = (
-        keeps
-        and (
-            platform == "ubuntu"
-            and node.get(f"{{{_state_ns}}}showing", "false") == "true"
-            and node.get(f"{{{_state_ns}}}visible", "false") == "true"
-            or platform == "windows"
-            and node.get(f"{{{_state_ns}}}visible", "false") == "true"
-        )
-        and (
-            node.get(f"{{{_state_ns}}}enabled", "false") == "true"
-            or node.get(f"{{{_state_ns}}}editable", "false") == "true"
-            or node.get(f"{{{_state_ns}}}expandable", "false") == "true"
-            or node.get(f"{{{_state_ns}}}checkable", "false") == "true"
-        )
-        and (
-            node.get("name", "") != ""
-            or node.text is not None
-            and len(node.text) > 0
-            or check_image
-            and node.get("image", "false") == "true"
-        )
-    )
 
-    coords: Tuple[int, int] = eval(node.get(f"{{{_component_ns}}}screencoord", "(-1, -1)"))
-    sizes: Tuple[int, int] = eval(node.get(f"{{{_component_ns}}}size", "(-1, -1)"))
-    keeps = keeps and coords[0] >= 0 and coords[1] >= 0 and sizes[0] > 0 and sizes[1] > 0
-    return keeps
+def judge_node(node: ET.Element, platform: str = "ubuntu", check_image: bool = False) -> bool:
+    """Return True if this accessibility tree node should be included in the output.
+
+    Filters to visible, enabled, and interactable nodes that have a name or text.
+
+    On Ubuntu the tag name is checked against a list of known interactive roles
+    (AT-SPI semantic types like ``button``, ``textbox``, ``link``).
+
+    On Windows the tag name check is skipped because both the ``win32`` and
+    ``uia`` backends emit raw window class names (e.g. ``sysheader32``,
+    ``appbarbutton``) rather than standardised roles.  Filtering by
+    visibility, enabled state, name/text, and valid coordinates is sufficient.
+    """
+    _, _state_ns, _component_ns, _ = _get_ns(platform)
+
+    # --- Tag name filter (Ubuntu only) ---
+    if platform == "ubuntu":
+        if not _is_interactive_tag_ubuntu(node.tag):
+            return False
+
+    # --- Visibility ---
+    if platform == "ubuntu":
+        visible = (
+            node.get(f"{{{_state_ns}}}showing", "false") == "true"
+            and node.get(f"{{{_state_ns}}}visible", "false") == "true"
+        )
+    else:
+        visible = node.get(f"{{{_state_ns}}}visible", "false") == "true"
+
+    if not visible:
+        return False
+
+    # --- Enabled / editable / expandable / checkable ---
+    interactive = (
+        node.get(f"{{{_state_ns}}}enabled", "false") == "true"
+        or node.get(f"{{{_state_ns}}}editable", "false") == "true"
+        or node.get(f"{{{_state_ns}}}expandable", "false") == "true"
+        or node.get(f"{{{_state_ns}}}checkable", "false") == "true"
+    )
+    if not interactive:
+        return False
+
+    # --- Must have a name or text ---
+    has_content = (
+        node.get("name", "") != ""
+        or (node.text is not None and len(node.text) > 0)
+        or (check_image and node.get("image", "false") == "true")
+    )
+    if not has_content:
+        return False
+
+    # --- Valid screen coordinates ---
+    coords: Tuple[int, int] = ast.literal_eval(node.get(f"{{{_component_ns}}}screencoord", "(-1, -1)"))
+    sizes: Tuple[int, int] = ast.literal_eval(node.get(f"{{{_component_ns}}}size", "(-1, -1)"))
+    return coords[0] >= 0 and coords[1] >= 0 and sizes[0] > 0 and sizes[1] > 0
 
 
 def filter_nodes(root: ET.Element, platform: str = "ubuntu", check_image: bool = False) -> list[ET.Element]:

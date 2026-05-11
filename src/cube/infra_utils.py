@@ -7,65 +7,183 @@ Used by cube-infra-aws, cube-infra-azure, and any future cloud backends.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import socket
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
+
+logger = logging.getLogger(__name__)
+
+_TUNNEL_LOG_DIR = Path(os.environ.get("CUBE_SSH_TUNNEL_LOG_DIR", "/tmp/cube-tunnels"))
+
+# Tracks ports already handed out by free_port() in this process. Closing the
+# probe socket releases the OS-level reservation, so without this set, two
+# concurrent callers can both probe-bind, both close, and both return the
+# same number — and the slower SSH tunnel binds last and wins, sending the
+# first caller's traffic to the wrong VM.
+#
+# EX-002 documented exception: _RESERVED_PORTS is an intentional module-level
+# singleton. Ray forks a fresh worker process per episode, so each worker has
+# its own isolated copy — no cross-episode sharing occurs. This is the same
+# pattern as the OTel TracerProvider exception in the constitution (Pillar II,
+# "No Global State"). The lock ensures thread-safety within a single worker.
+_RESERVED_PORTS: set[int] = set()
+_RESERVED_PORTS_LOCK = threading.Lock()
 
 # ── SSH utilities ─────────────────────────────────────────────────────────────
 
 
-def free_port(start: int = 15000, count: int = 200) -> int:
-    """Find a free local TCP port. Raises RuntimeError if none found."""
-    for port in range(start, start + count):
-        try:
-            with socket.socket() as s:
-                s.bind(("127.0.0.1", port))
-                return port
-        except OSError:
-            continue
-    raise RuntimeError(f"No free port in {start}–{start + count - 1}")
+def free_port(start: int = 15000, count: int = 1000) -> int:
+    """Find a free local TCP port. Raises RuntimeError if none found.
+
+    Thread-safe: callers in the same process never receive duplicates, even if
+    the port hasn't been bound yet by the eventual consumer (e.g. ssh -L).
+    Released ports are not recycled — assumes the process lifetime is bounded
+    (an eval run, a probe), which keeps the set small in practice.
+
+    Iteration starts at a process-PID-derived offset within ``[start, start+count)``
+    to spread parallel workers across the range — without this, 50 Ray workers
+    all start at ``start`` and stomp on each other 90%+ of the time when the
+    SSH tunnel races to actually bind the port.
+    """
+    pid_offset = (os.getpid() * 7919) % count  # cheap deterministic spread
+    with _RESERVED_PORTS_LOCK:
+        for i in range(count):
+            port = start + ((pid_offset + i) % count)
+            if port in _RESERVED_PORTS:
+                continue
+            try:
+                with socket.socket() as s:
+                    s.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            _RESERVED_PORTS.add(port)
+            return port
+        raise RuntimeError(f"No free port in {start}–{start + count - 1}")
+
+
+_TUNNEL_BOUND_RE = re.compile(r"Local forwarding listening on 127\.0\.0\.1 port \d+\.")
 
 
 def open_tunnel(
     vm_ip: str,
     ssh_user: str,
     ssh_privkey: str,
-    local_port: int,
     remote_port: int = 5000,
-) -> subprocess.Popen:
-    """Open SSH tunnel localhost:{local_port} → vm_ip:{remote_port}.
+    max_attempts: int = 30,
+    establish_timeout: float = 30.0,
+) -> tuple[subprocess.Popen, int]:
+    """Open SSH tunnel localhost:<picked-port> → vm_ip:{remote_port}.
 
-    Returns the subprocess — caller must .terminate() it.
-    Waits 2 seconds for the tunnel to establish.
+    Returns ``(subprocess, local_port)`` — caller must .terminate() the subprocess
+    when done.
+
+    Picks a local port via ``free_port()``, spawns SSH with ``-L``, then waits
+    for SSH to log "Local forwarding listening on 127.0.0.1 port N." (which
+    SSH only writes after auth completes AND the local bind succeeds). If SSH
+    exits before that line (almost always a port collision: free_port's
+    test-bind window let a parallel worker grab the same port first), retries
+    with a different port.
+
+    Why we have to wait for the log line, not just check ``proc.poll()`` after
+    a fixed sleep: SSH binds the local listener *after* SSH-level auth, which
+    on Azure routinely takes 2–5 s. A naive ``sleep(2) + poll()`` returns
+    "alive" mid-auth, before the bind has even been attempted, and we'd
+    wrongly hand back an endpoint pointing at a tunnel that crashes seconds
+    later — which then routes to whatever else binds that port, surfacing as
+    a mysterious "dead Flask" 502 from a Caddy on a *different* VM. See
+    `recipes/waa/DEAD_FLASK_FINDINGS.md`.
+
+    Raises ``RuntimeError`` after ``max_attempts`` consecutive failures.
     """
-    proc = subprocess.Popen(
-        [
-            "ssh",
-            "-N",
-            "-L",
-            f"127.0.0.1:{local_port}:localhost:{remote_port}",
-            "-i",
-            ssh_privkey,
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-o",
-            "ServerAliveInterval=30",
-            "-o",
-            "IdentitiesOnly=yes",
-            f"{ssh_user}@{vm_ip}",
-        ],
-        stderr=subprocess.DEVNULL,
+    _TUNNEL_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    last_log_path: Path | None = None
+    last_rc: int | None = None
+    for attempt in range(1, max_attempts + 1):
+        local_port = free_port()
+        log_path = _TUNNEL_LOG_DIR / f"{vm_ip}_{local_port}_{remote_port}.log"
+        log_fh = open(log_path, "w")
+        proc = subprocess.Popen(
+            [
+                "ssh",
+                "-N",
+                "-vv",  # log connection-level events to stderr; captured in log_fh
+                "-L",
+                f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
+                "-i",
+                ssh_privkey,
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "ServerAliveInterval=30",
+                # Default ServerAliveCountMax=3 → ssh exits after 90s of network silence.
+                # Bumping to 30 means we tolerate up to 15 min of host-side network blips
+                # before the tunnel gives up. Mac networks have intermittent multi-second
+                # hiccups (DNS, WiFi roaming, VPN reconnect) that would otherwise drop
+                # 8+ parallel tunnels simultaneously.
+                "-o",
+                "ServerAliveCountMax=30",
+                "-o",
+                "TCPKeepAlive=yes",
+                "-o",
+                "IdentitiesOnly=yes",
+                f"{ssh_user}@{vm_ip}",
+            ],
+            stderr=log_fh,
+        )
+        # Wait for either: SSH writes the bind-success line, SSH exits, or
+        # we exceed the establish_timeout. Polling cadence ~100ms.
+        deadline = time.time() + establish_timeout
+        established = False
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break  # SSH exited — collision or auth failure
+            try:
+                if _TUNNEL_BOUND_RE.search(log_path.read_text()):
+                    established = True
+                    break
+            except OSError:
+                pass
+            time.sleep(0.1)
+        if established:
+            if attempt > 1:
+                logger.info(
+                    "open_tunnel: established localhost:%d → %s:%d on attempt %d",
+                    local_port,
+                    vm_ip,
+                    remote_port,
+                    attempt,
+                )
+            return proc, local_port
+        # Either SSH exited (collision) or timeout. Tear down and retry.
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        last_rc = proc.returncode
+        last_log_path = log_path
+        log_fh.flush()
+        log_fh.close()
+    try:
+        tail = last_log_path.read_text()[-1500:] if last_log_path else "<no log>"
+    except Exception:
+        tail = "<could not read tunnel log>"
+    raise RuntimeError(
+        f"SSH tunnel to {vm_ip}:{remote_port} failed to establish after "
+        f"{max_attempts} attempts (last rc={last_rc}). Most recent tunnel "
+        f"log tail:\n{tail}"
     )
-    time.sleep(2)
-    return proc
 
 
 def open_tunnels(
@@ -83,8 +201,7 @@ def open_tunnels(
     endpoints: dict[str, str] = {}
     procs: list[subprocess.Popen] = []
     for name, remote_port in service_ports.items():
-        local_port = free_port()
-        proc = open_tunnel(vm_ip, ssh_user, ssh_privkey, local_port, remote_port)
+        proc, local_port = open_tunnel(vm_ip, ssh_user, ssh_privkey, remote_port)
         procs.append(proc)
         endpoints[name] = f"http://localhost:{local_port}"
     return endpoints, procs

@@ -74,6 +74,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
+from pydantic import Field
+
 from cube.core import TypedBaseModel
 
 if TYPE_CHECKING:
@@ -153,6 +155,33 @@ class VMResourceConfig(ResourceConfig):
     """VM-based resource (OSWorld, WindowsAgentArena, macOSWorld, AndroidWorld...)."""
 
     requires_kvm: bool = True
+    os_disk_gb: int | None = None
+    """Minimum OS disk size (GB) for task VMs. None means use the image's native size."""
+    min_cpu_cores: int | None = None
+    """Minimum vCPU count required. None defers to the infra's default instance size."""
+    min_ram_gb: int | None = None
+    """Minimum RAM (GB) required. None defers to the infra's default instance size."""
+    uefi: bool = False
+    """Boot with UEFI firmware. Required for Windows 11 / Trusted Launch images."""
+    tpm: bool = False
+    """Attach emulated TPM 2.0. Required for Windows 11."""
+    os_type: Literal["linux", "windows"] = "linux"
+    """Guest operating system. Infras branch on this to pick the correct os_profile
+    (linux_configuration with SSH key vs windows_configuration with admin password),
+    image os_type, and platform-specific bootstrap steps."""
+    specialized: bool = False
+    """If True, the image is a byte-for-byte clone of a specific VM (hostname, SID,
+    user accounts, credentials all preserved). Azure deploys it without applying
+    os_profile at launch — admin credentials and SSH keys must already be baked into
+    the image. If False, the image was sysprep /generalize'd and Azure applies fresh
+    os_profile at first boot."""
+    forwarded_ports: list[int] = Field(default_factory=list)
+    """Additional VM ports to expose on the host beyond the guest-agent port.
+    Each port gets its own SSH tunnel from a free host port to the named VM port.
+    The host-side URL appears in ResourceHandle.endpoints under the key
+    ``"vm_port_{port}"`` (e.g. ``"vm_port_9222"`` → ``"http://localhost:54321"``).
+    Use a freeport indirection — never assume host port == VM port — so multiple
+    parallel workers can share a host without colliding on a fixed local port."""
 
     def requirements(self) -> set[str]:
         return {"kvm"} if self.requires_kvm else set()
