@@ -30,9 +30,10 @@ through ``task.tool_config = config``.
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from cube.container import Container, ExecResult
 from cube.core import ActionSchema
@@ -80,6 +81,41 @@ def _format_exec_result(result: ExecResult, timeout: int) -> str:
     return "\n".join(parts) if parts else "(no output)"
 
 
+def _parse_line_arg(val: Any) -> int | None:
+    """Parse a line-number argument that may arrive as int, str, or range notation.
+
+    Handles LLM edge cases such as ``"[200, 210]"`` or ``"10-20"`` by returning
+    the first number found. Returns ``None`` for ``None`` or unparseable input.
+    """
+    if val is None:
+        return None
+    if isinstance(val, int):
+        return val
+    s = str(val).strip().strip("[](){}")
+    parts = re.split(r"[,\s\-:]+", s)
+    try:
+        return int(parts[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_line_range(line_start: Any, line_end: Any) -> tuple[int | None, int | None]:
+    """Parse line_start / line_end, recovering range-style inputs.
+
+    When a model passes ``line_start="[200, 210]"`` with no ``line_end``, both
+    endpoints are extracted from that single value so the intent is preserved.
+    """
+    if isinstance(line_start, str) and line_end is None:
+        s = line_start.strip().strip("[](){}")
+        parts = re.split(r"[,\s\-:]+", s)
+        if len(parts) >= 2:
+            try:
+                return int(parts[0]), int(parts[-1])
+            except (ValueError, IndexError):
+                pass
+    return _parse_line_arg(line_start), _parse_line_arg(line_end)
+
+
 class TerminalToolConfig(ToolConfig):
     """Configuration for ``TerminalTool``.
 
@@ -96,6 +132,9 @@ class TerminalToolConfig(ToolConfig):
         enable_file_actions: When ``True``, ``read_file()`` and
             ``write_file()`` are included in ``action_set`` in addition to
             ``bash()``.
+        max_timeout: Optional ceiling (seconds) applied to every ``bash()``
+            call. Prevents agents from requesting arbitrarily long timeouts.
+            ``None`` means no cap.
     """
 
     working_dir: str = "/app"
@@ -103,6 +142,7 @@ class TerminalToolConfig(ToolConfig):
     extra_env: dict[str, str] = {}
     output_format: Literal["plain", "returncode_envelope"] = "plain"
     enable_file_actions: bool = False
+    max_timeout: int | None = None
 
     def make(self, container: Container | None = None) -> "TerminalTool":
         if container is None:
@@ -141,6 +181,15 @@ class TerminalTool(Tool):
             ]
         return actions
 
+    def bash_unlimited(self, command: str, timeout: int = 120) -> str:
+        """Like ``bash()`` but without output truncation — for internal harness use only.
+
+        Not exposed as an agent action. Use this in ``evaluate()`` / ``apply_patch()``
+        where the caller needs the full output and truncation would cause silent data loss.
+        """
+        result = self._container.exec(command, timeout=timeout, workdir=self._config.working_dir, env=self._env)
+        return _format_exec_result(result, timeout)
+
     @tool_action
     def bash(self, command: str, timeout: int = 120) -> str:
         """Execute a bash command in the sandbox and return its output.
@@ -152,6 +201,8 @@ class TerminalTool(Tool):
             timeout: Wall-clock seconds (not milliseconds). Default 120s. Use
                 larger values (600–1800) for test suites or builds.
         """
+        if self._config.max_timeout is not None:
+            timeout = min(timeout, self._config.max_timeout)
         result = self._container.exec(
             command,
             timeout=timeout,
@@ -168,20 +219,22 @@ class TerminalTool(Tool):
         return _truncate_output(output, self._config.max_output_bytes)
 
     @tool_action
-    def read_file(self, path: str, line_start: int | None = None, line_end: int | None = None) -> str:
+    def read_file(self, path: str, line_start: Any = None, line_end: Any = None) -> str:
         """Read the contents of a file in the sandbox.
 
         Args:
             path: Path to the file. Relative paths resolve against the
                 working directory.
             line_start: First line to return (1-indexed, inclusive). Omit to
-                read from the beginning.
+                read from the beginning. Also accepts range notation like
+                ``[200, 210]`` when ``line_end`` is omitted.
             line_end: Last line to return (1-indexed, inclusive). Omit to
                 read to the end.
         """
-        if line_start is not None or line_end is not None:
-            start = max(1, line_start if line_start is not None else 1)
-            end = str(line_end) if line_end is not None else "$"
+        parsed_start, parsed_end = _parse_line_range(line_start, line_end)
+        if parsed_start is not None or parsed_end is not None:
+            start = max(1, parsed_start if parsed_start is not None else 1)
+            end = str(parsed_end) if parsed_end is not None else "$"
             cmd = f"sed -n '{start},{end}p' {shlex.quote(path)}"
             result = self._container.exec(cmd, workdir=self._config.working_dir)
             if result.exit_code != 0:

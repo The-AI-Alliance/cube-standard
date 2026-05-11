@@ -1,5 +1,5 @@
 """Tests for cube.tools.terminal — TerminalTool, TerminalToolConfig, _format_exec_result,
-and _truncate_output."""
+_truncate_output, and _parse_line_range."""
 
 from __future__ import annotations
 
@@ -9,7 +9,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from cube.container import ExecResult
-from cube.tools.terminal import TerminalTool, TerminalToolConfig, _format_exec_result, _truncate_output
+from cube.tools.terminal import (
+    TerminalTool,
+    TerminalToolConfig,
+    _format_exec_result,
+    _parse_line_range,
+    _truncate_output,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -303,3 +309,90 @@ class TestTerminalToolWriteFile:
         tool = TerminalTool(config=TerminalToolConfig(enable_file_actions=True), container=container)
         result = tool.write_file("/tmp/out.txt", "hello")
         assert "Error writing" in result
+
+
+# ---------------------------------------------------------------------------
+# _parse_line_range
+# ---------------------------------------------------------------------------
+
+
+class TestParseLineRange:
+    def test_plain_ints(self) -> None:
+        assert _parse_line_range(10, 20) == (10, 20)
+
+    def test_none_passthrough(self) -> None:
+        assert _parse_line_range(None, None) == (None, None)
+
+    def test_string_int(self) -> None:
+        assert _parse_line_range("10", "20") == (10, 20)
+
+    def test_range_string_extracts_both(self) -> None:
+        # LLM passes whole range as line_start with no line_end
+        assert _parse_line_range("[200, 210]", None) == (200, 210)
+
+    def test_dash_range_string(self) -> None:
+        assert _parse_line_range("10-20", None) == (10, 20)
+
+    def test_unparseable_returns_none(self) -> None:
+        assert _parse_line_range("abc", None) == (None, None)
+
+    def test_read_file_range_string(self) -> None:
+        container = MagicMock()
+        container.exec.return_value = ExecResult(stdout="lines", stderr="", exit_code=0)
+        tool = TerminalTool(config=TerminalToolConfig(enable_file_actions=True), container=container)
+        tool.read_file("/tmp/f.txt", line_start="[200, 210]")
+        cmd = container.exec.call_args[0][0]
+        assert "200,210" in cmd
+
+
+# ---------------------------------------------------------------------------
+# TerminalTool.bash_unlimited
+# ---------------------------------------------------------------------------
+
+
+class TestBashUnlimited:
+    def test_not_in_action_set(self) -> None:
+        tool = _make_tool()
+        names = {a.name for a in tool.action_set}
+        assert "bash_unlimited" not in names
+
+    def test_returns_full_output(self) -> None:
+        big = "x" * 200
+        tool = _make_tool(stdout=big, max_output_bytes=50)
+        # bash() would truncate; bash_unlimited() must not
+        assert tool.bash_unlimited("cmd") == big
+
+    def test_exit_code_annotated(self) -> None:
+        tool = _make_tool(exit_code=1)
+        assert "[exit_code: 1]" in tool.bash_unlimited("false")
+
+
+# ---------------------------------------------------------------------------
+# TerminalToolConfig.max_timeout
+# ---------------------------------------------------------------------------
+
+
+class TestMaxTimeout:
+    def test_timeout_capped(self) -> None:
+        container = MagicMock()
+        container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
+        tool = TerminalTool(config=TerminalToolConfig(max_timeout=600), container=container)
+        tool.bash("sleep 9999", timeout=9999)
+        _, kwargs = container.exec.call_args
+        assert kwargs["timeout"] == 600
+
+    def test_timeout_below_cap_unchanged(self) -> None:
+        container = MagicMock()
+        container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
+        tool = TerminalTool(config=TerminalToolConfig(max_timeout=600), container=container)
+        tool.bash("sleep 1", timeout=30)
+        _, kwargs = container.exec.call_args
+        assert kwargs["timeout"] == 30
+
+    def test_no_cap_by_default(self) -> None:
+        container = MagicMock()
+        container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
+        tool = TerminalTool(config=TerminalToolConfig(), container=container)
+        tool.bash("sleep 1", timeout=1800)
+        _, kwargs = container.exec.call_args
+        assert kwargs["timeout"] == 1800
