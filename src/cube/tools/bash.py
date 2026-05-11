@@ -40,6 +40,26 @@ from cube.tool import Tool, ToolConfig, tool_action
 
 logger = logging.getLogger(__name__)
 
+NON_INTERACTIVE_ENV: dict[str, str] = {
+    "PAGER": "cat",
+    "MANPAGER": "cat",
+    "LESS": "-R",
+    "PIP_PROGRESS_BAR": "off",
+    "TQDM_DISABLE": "1",
+}
+
+
+def _truncate_output(text: str, max_bytes: int, head_ratio: float = 0.2) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    head_bytes = max(0, int(max_bytes * head_ratio))
+    tail_bytes = max_bytes - head_bytes
+    head = encoded[:head_bytes].decode("utf-8", errors="ignore")
+    tail = encoded[-tail_bytes:].decode("utf-8", errors="ignore") if tail_bytes > 0 else ""
+    elided = len(encoded) - max_bytes
+    return f"{head}\n[... {elided} bytes elided ...]\n{tail}"
+
 
 def _format_exec_result(result: ExecResult, timeout: int) -> str:
     """Merge stdout+stderr and append plain-text exit-code annotations.
@@ -106,7 +126,7 @@ class BashTool(Tool):
     def __init__(self, config: BashToolConfig, container: Container) -> None:
         self._config = config
         self._container = container
-        self._env = {**Tool.NON_INTERACTIVE_ENV, **config.extra_env}
+        self._env = {**NON_INTERACTIVE_ENV, **config.extra_env}
 
     def reset(self) -> None:
         pass
@@ -142,10 +162,10 @@ class BashTool(Tool):
             merged = "\n".join(filter(None, [result.stdout, result.stderr])) or "(no output)"
             if result.exit_code == 124:
                 merged = f"{merged}\n[timed out after {timeout}s]"
-            body = Tool._truncate_output(merged, self._config.max_output_bytes)
+            body = _truncate_output(merged, self._config.max_output_bytes)
             return f"<returncode>{result.exit_code}</returncode>\n<output>\n{body}\n</output>"
         output = _format_exec_result(result, timeout)
-        return Tool._truncate_output(output, self._config.max_output_bytes)
+        return _truncate_output(output, self._config.max_output_bytes)
 
     @tool_action
     def read_file(self, path: str, line_start: int | None = None, line_end: int | None = None) -> str:

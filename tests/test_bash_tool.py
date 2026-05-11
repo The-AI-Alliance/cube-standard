@@ -1,5 +1,5 @@
 """Tests for cube.tools.bash — BashTool, BashToolConfig, _format_exec_result,
-and Tool._truncate_output."""
+and _truncate_output."""
 
 from __future__ import annotations
 
@@ -9,8 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from cube.container import ExecResult
-from cube.tool import Tool
-from cube.tools.bash import BashTool, BashToolConfig, _format_exec_result
+from cube.tools.bash import BashTool, BashToolConfig, _format_exec_result, _truncate_output
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,26 +31,26 @@ def _make_tool(
 
 
 # ---------------------------------------------------------------------------
-# Tool._truncate_output
+# _truncate_output
 # ---------------------------------------------------------------------------
 
 
 class TestTruncateOutput:
     def test_short_text_unchanged(self) -> None:
-        assert Tool._truncate_output("hello", 100) == "hello"
+        assert _truncate_output("hello", 100) == "hello"
 
     def test_exact_limit_unchanged(self) -> None:
         text = "a" * 100
-        assert Tool._truncate_output(text, 100) == text
+        assert _truncate_output(text, 100) == text
 
     def test_truncated_contains_elided_marker(self) -> None:
         text = "a" * 200
-        result = Tool._truncate_output(text, 100)
+        result = _truncate_output(text, 100)
         assert "bytes elided" in result
 
     def test_truncated_respects_max_bytes(self) -> None:
         text = "x" * 1000
-        result = Tool._truncate_output(text, 100)
+        result = _truncate_output(text, 100)
         # Result may exceed max_bytes slightly due to the marker string, but
         # head + tail together must not exceed max_bytes.
         head_tail_bytes = len(result.split("bytes elided")[0].encode()) + len(result.split("\n")[-1].encode())
@@ -59,27 +58,27 @@ class TestTruncateOutput:
 
     def test_head_ratio_zero_is_tail_only(self) -> None:
         text = "HEAD" + ("x" * 200) + "TAIL"
-        result = Tool._truncate_output(text, 20, head_ratio=0.0)
+        result = _truncate_output(text, 20, head_ratio=0.0)
         assert "HEAD" not in result
         assert "TAIL" in result
 
     def test_head_ratio_one_is_head_only(self) -> None:
         text = "HEAD" + ("x" * 200) + "TAIL"
-        result = Tool._truncate_output(text, 20, head_ratio=1.0)
+        result = _truncate_output(text, 20, head_ratio=1.0)
         assert "HEAD" in result
         assert "TAIL" not in result
 
     def test_default_ratio_biases_tail(self) -> None:
         # 1000 bytes, limit 100, head_ratio=0.2 → 20 head / 80 tail
         text = "H" * 500 + "T" * 500
-        result = Tool._truncate_output(text, 100)
+        result = _truncate_output(text, 100)
         head_part = result.split("bytes elided")[0]
         tail_part = result.split("\n")[-1]
         assert len(tail_part) > len(head_part)
 
     def test_multibyte_utf8_no_decode_error(self) -> None:
         text = "αβγδ" * 100  # 4 bytes per char
-        result = Tool._truncate_output(text, 50)
+        result = _truncate_output(text, 50)
         # Must not raise, and marker must be present
         assert "bytes elided" in result
 

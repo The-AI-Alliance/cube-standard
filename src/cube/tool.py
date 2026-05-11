@@ -61,7 +61,7 @@ harness users swap browser backends without touching benchmark logic.
 import inspect
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable, ClassVar, List
+from typing import Any, Callable, List
 
 from cube.container import Container
 from cube.core import Action, ActionSchema, Content, Observation, StepError, TypedBaseModel
@@ -334,26 +334,6 @@ class Tool(_ToolActionsMixin, AbstractTool):
         - No duplication: Each function defined exactly once
         - Clear intent: Obvious which methods are actions
     """
-
-    NON_INTERACTIVE_ENV: ClassVar[dict[str, str]] = {
-        "PAGER": "cat",
-        "MANPAGER": "cat",
-        "LESS": "-R",
-        "PIP_PROGRESS_BAR": "off",
-        "TQDM_DISABLE": "1",
-    }
-
-    @staticmethod
-    def _truncate_output(text: str, max_bytes: int, head_ratio: float = 0.2) -> str:
-        encoded = text.encode("utf-8")
-        if len(encoded) <= max_bytes:
-            return text
-        head_bytes = max(0, int(max_bytes * head_ratio))
-        tail_bytes = max_bytes - head_bytes
-        head = encoded[:head_bytes].decode("utf-8", errors="ignore")
-        tail = encoded[-tail_bytes:].decode("utf-8", errors="ignore") if tail_bytes > 0 else ""
-        elided = len(encoded) - max_bytes
-        return f"{head}\n[... {elided} bytes elided ...]\n{tail}"
 
     def execute_action(self, action: Action) -> Observation | StepError:
         """Execute an action by name."""
