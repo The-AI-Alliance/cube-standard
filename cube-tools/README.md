@@ -10,7 +10,6 @@ For instance, web browsing benchmarks (MiniWob, WorkArena, WebArena) can use the
 
 | Package | PyPI name | Description |
 | --- | --- | --- |
-| [`cube-bash-tool/`](cube-bash-tool/) | `cube-bash-tool` | Container-backed bash tool for SWE-style benchmarks |
 | [`cube-browser-tool/`](cube-browser-tool/) | `cube-browser-tool` | BrowserGym and Playwright concrete browser tools |
 | [`cube-computer-tool/`](cube-computer-tool/) | `cube-computer-tool` | Generic desktop computer tool for VM-based benchmarks |
 | [`cube-web-tool/`](cube-web-tool/) | `cube-web-tool` | Web search (Brave) and web fetch+extract tools |
