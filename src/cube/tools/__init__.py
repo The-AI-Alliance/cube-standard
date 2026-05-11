@@ -1,5 +1,5 @@
 """Tool domain subclasses for cube-standard benchmarks."""
 
-from cube.tools.bash import BashTool, BashToolConfig
+from cube.tools.terminal import TerminalTool, TerminalToolConfig
 
-__all__ = ["BashTool", "BashToolConfig"]
+__all__ = ["TerminalTool", "TerminalToolConfig"]

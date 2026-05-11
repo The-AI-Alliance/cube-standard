@@ -1,24 +1,24 @@
-"""Concrete bash tool for container-backed sandbox execution.
+"""Terminal tool for container-backed sandbox execution.
 
-``BashTool`` exposes a ``bash()`` action and, optionally, ``read_file()`` and
+``TerminalTool`` exposes a ``bash()`` action and, optionally, ``read_file()`` and
 ``write_file()`` when ``enable_file_actions=True``.  All execution is delegated
 to a ``cube.container.Container``.
 
 Typical usage::
 
-    from cube.tools.bash import BashToolConfig
+    from cube.tools.terminal import TerminalToolConfig
 
     # Bash-only (SWE-agent style):
-    config = BashToolConfig(working_dir="/testbed")
+    config = TerminalToolConfig(working_dir="/testbed")
 
     # With file helpers:
-    config = BashToolConfig(
+    config = TerminalToolConfig(
         working_dir="/testbed",
         enable_file_actions=True,
     )
 
     # Genny2 / mini-SWE-agent returncode envelope:
-    config = BashToolConfig(
+    config = TerminalToolConfig(
         working_dir="/testbed",
         output_format="returncode_envelope",
     )
@@ -80,15 +80,15 @@ def _format_exec_result(result: ExecResult, timeout: int) -> str:
     return "\n".join(parts) if parts else "(no output)"
 
 
-class BashToolConfig(ToolConfig):
-    """Configuration for ``BashTool``.
+class TerminalToolConfig(ToolConfig):
+    """Configuration for ``TerminalTool``.
 
     Args:
         working_dir: Default working directory inside the container.
         max_output_bytes: Maximum byte length of any returned observation.
             Output exceeding this limit is head+tail truncated.
         extra_env: Additional environment variables merged on top of
-            ``Tool.NON_INTERACTIVE_ENV`` (pager / progress-bar suppression).
+            ``NON_INTERACTIVE_ENV`` (pager / progress-bar suppression).
         output_format: ``"plain"`` appends ``[exit_code: N]`` to failed
             commands; ``"returncode_envelope"`` wraps output in
             ``<returncode>N</returncode>\\n<output>…</output>`` for agents
@@ -104,17 +104,17 @@ class BashToolConfig(ToolConfig):
     output_format: Literal["plain", "returncode_envelope"] = "plain"
     enable_file_actions: bool = False
 
-    def make(self, container: Container | None = None) -> "BashTool":
+    def make(self, container: Container | None = None) -> "TerminalTool":
         if container is None:
-            raise ValueError("BashTool requires a container")
-        return BashTool(config=self, container=container)
+            raise ValueError("TerminalTool requires a container")
+        return TerminalTool(config=self, container=container)
 
 
-class BashTool(Tool):
-    """Container-backed bash tool.
+class TerminalTool(Tool):
+    """Container-backed terminal tool.
 
     Always exposes ``bash()``.  Opt in to ``read_file()`` / ``write_file()``
-    via ``BashToolConfig(enable_file_actions=True)``.
+    via ``TerminalToolConfig(enable_file_actions=True)``.
 
     The tool never splits commands on ``&&`` — multi-command strings are
     passed verbatim to the container's exec, which returns the exit code of
@@ -123,7 +123,7 @@ class BashTool(Tool):
     in Python via ``_truncate_output`` instead.
     """
 
-    def __init__(self, config: BashToolConfig, container: Container) -> None:
+    def __init__(self, config: TerminalToolConfig, container: Container) -> None:
         self._config = config
         self._container = container
         self._env = {**NON_INTERACTIVE_ENV, **config.extra_env}

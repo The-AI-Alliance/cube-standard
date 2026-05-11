@@ -1,4 +1,4 @@
-"""Tests for cube.tools.bash — BashTool, BashToolConfig, _format_exec_result,
+"""Tests for cube.tools.terminal — TerminalTool, TerminalToolConfig, _format_exec_result,
 and _truncate_output."""
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from cube.container import ExecResult
-from cube.tools.bash import BashTool, BashToolConfig, _format_exec_result, _truncate_output
+from cube.tools.terminal import TerminalTool, TerminalToolConfig, _format_exec_result, _truncate_output
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -22,12 +22,12 @@ def _make_tool(
     stderr: str = "",
     exit_code: int = 0,
     **cfg_kwargs: Any,
-) -> BashTool:
-    """Build a BashTool backed by a mock container that always returns the given result."""
+) -> TerminalTool:
+    """Build a TerminalTool backed by a mock container that always returns the given result."""
     container = MagicMock()
     container.exec.return_value = ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
-    cfg = BashToolConfig(**cfg_kwargs)
-    return BashTool(config=cfg, container=container)
+    cfg = TerminalToolConfig(**cfg_kwargs)
+    return TerminalTool(config=cfg, container=container)
 
 
 # ---------------------------------------------------------------------------
@@ -120,26 +120,26 @@ class TestFormatExecResult:
 
 
 # ---------------------------------------------------------------------------
-# BashToolConfig
+# TerminalToolConfig
 # ---------------------------------------------------------------------------
 
 
-class TestBashToolConfig:
+class TestTerminalToolConfig:
     def test_requires_container(self) -> None:
-        cfg = BashToolConfig()
+        cfg = TerminalToolConfig()
         with pytest.raises(ValueError, match="requires a container"):
             cfg.make(container=None)
 
     def test_make_returns_bash_tool(self) -> None:
         container = MagicMock()
-        cfg = BashToolConfig()
+        cfg = TerminalToolConfig()
         tool = cfg.make(container=container)
-        assert isinstance(tool, BashTool)
+        assert isinstance(tool, TerminalTool)
 
     def test_non_interactive_env_merged(self) -> None:
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
-        cfg = BashToolConfig(extra_env={"MY_VAR": "1"})
+        cfg = TerminalToolConfig(extra_env={"MY_VAR": "1"})
         tool = cfg.make(container=container)
         tool.bash("echo hi")
         _, kwargs = container.exec.call_args
@@ -150,7 +150,7 @@ class TestBashToolConfig:
     def test_extra_env_overrides_default(self) -> None:
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
-        cfg = BashToolConfig(extra_env={"PAGER": "less"})
+        cfg = TerminalToolConfig(extra_env={"PAGER": "less"})
         tool = cfg.make(container=container)
         tool.bash("echo hi")
         _, kwargs = container.exec.call_args
@@ -158,11 +158,11 @@ class TestBashToolConfig:
 
 
 # ---------------------------------------------------------------------------
-# BashTool.action_set
+# TerminalTool.action_set
 # ---------------------------------------------------------------------------
 
 
-class TestBashToolActionSet:
+class TestTerminalToolActionSet:
     def test_bash_only_by_default(self) -> None:
         tool = _make_tool()
         names = {a.name for a in tool.action_set}
@@ -175,11 +175,11 @@ class TestBashToolActionSet:
 
 
 # ---------------------------------------------------------------------------
-# BashTool.bash — plain format
+# TerminalTool.bash — plain format
 # ---------------------------------------------------------------------------
 
 
-class TestBashToolPlain:
+class TestTerminalToolPlain:
     def test_returns_stdout(self) -> None:
         tool = _make_tool(stdout="hello\n")
         assert tool.bash("echo hello") == "hello\n"
@@ -197,18 +197,18 @@ class TestBashToolPlain:
     def test_timeout_forwarded(self) -> None:
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
-        tool = BashTool(config=BashToolConfig(), container=container)
+        tool = TerminalTool(config=TerminalToolConfig(), container=container)
         tool.bash("sleep 5", timeout=300)
         _, kwargs = container.exec.call_args
         assert kwargs["timeout"] == 300
 
 
 # ---------------------------------------------------------------------------
-# BashTool.bash — returncode_envelope format
+# TerminalTool.bash — returncode_envelope format
 # ---------------------------------------------------------------------------
 
 
-class TestBashToolEnvelope:
+class TestTerminalToolEnvelope:
     def test_envelope_wraps_output(self) -> None:
         tool = _make_tool(stdout="hello", output_format="returncode_envelope")
         result = tool.bash("echo hello")
@@ -231,11 +231,11 @@ class TestBashToolEnvelope:
 
 
 # ---------------------------------------------------------------------------
-# BashTool.read_file
+# TerminalTool.read_file
 # ---------------------------------------------------------------------------
 
 
-class TestBashToolReadFile:
+class TestTerminalToolReadFile:
     def test_returns_content(self) -> None:
         tool = _make_tool(stdout="line1\nline2\n", enable_file_actions=True)
         assert tool.read_file("/tmp/f.txt") == "line1\nline2\n"
@@ -255,7 +255,7 @@ class TestBashToolReadFile:
     def test_line_range_uses_sed(self) -> None:
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="lines", stderr="", exit_code=0)
-        tool = BashTool(config=BashToolConfig(enable_file_actions=True), container=container)
+        tool = TerminalTool(config=TerminalToolConfig(enable_file_actions=True), container=container)
         tool.read_file("/tmp/f.txt", line_start=10, line_end=20)
         cmd = container.exec.call_args[0][0]
         assert "sed" in cmd
@@ -265,8 +265,8 @@ class TestBashToolReadFile:
         # A range read of a "big" file should return content, not a size error.
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="x" * 200, stderr="", exit_code=0)
-        tool = BashTool(
-            config=BashToolConfig(enable_file_actions=True, max_output_bytes=50),
+        tool = TerminalTool(
+            config=TerminalToolConfig(enable_file_actions=True, max_output_bytes=50),
             container=container,
         )
         result = tool.read_file("/tmp/f.txt", line_start=1, line_end=5)
@@ -274,15 +274,15 @@ class TestBashToolReadFile:
 
 
 # ---------------------------------------------------------------------------
-# BashTool.write_file
+# TerminalTool.write_file
 # ---------------------------------------------------------------------------
 
 
-class TestBashToolWriteFile:
+class TestTerminalToolWriteFile:
     def test_success_message(self) -> None:
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="", stderr="", exit_code=0)
-        tool = BashTool(config=BashToolConfig(enable_file_actions=True), container=container)
+        tool = TerminalTool(config=TerminalToolConfig(enable_file_actions=True), container=container)
         result = tool.write_file("/tmp/out.txt", "hello")
         assert "Wrote" in result
         assert "5" in result  # len("hello")
@@ -300,6 +300,6 @@ class TestBashToolWriteFile:
 
         container = MagicMock()
         container.exec.side_effect = fake_exec
-        tool = BashTool(config=BashToolConfig(enable_file_actions=True), container=container)
+        tool = TerminalTool(config=TerminalToolConfig(enable_file_actions=True), container=container)
         result = tool.write_file("/tmp/out.txt", "hello")
         assert "Error writing" in result
