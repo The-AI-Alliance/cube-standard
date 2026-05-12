@@ -396,3 +396,44 @@ class TestMaxTimeout:
         tool.bash("sleep 1", timeout=1800)
         _, kwargs = container.exec.call_args
         assert kwargs["timeout"] == 1800
+
+
+# ---------------------------------------------------------------------------
+# TerminalToolConfig.normalize_ms_timeout
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeMsTimeout:
+    def test_ms_timeout_converted(self) -> None:
+        """LLM passes 120000 (ms); normalize_ms_timeout=True divides by 1000."""
+        container = MagicMock()
+        container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
+        tool = TerminalTool(config=TerminalToolConfig(normalize_ms_timeout=True), container=container)
+        tool.bash("echo ok", timeout=120_000)
+        _, kwargs = container.exec.call_args
+        assert kwargs["timeout"] == 120
+
+    def test_ms_timeout_not_converted_when_disabled(self) -> None:
+        container = MagicMock()
+        container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
+        tool = TerminalTool(config=TerminalToolConfig(normalize_ms_timeout=False), container=container)
+        tool.bash("echo ok", timeout=120_000)
+        _, kwargs = container.exec.call_args
+        assert kwargs["timeout"] == 120_000
+
+    def test_reasonable_timeout_unchanged(self) -> None:
+        container = MagicMock()
+        container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
+        tool = TerminalTool(config=TerminalToolConfig(normalize_ms_timeout=True), container=container)
+        tool.bash("sleep 5", timeout=60)
+        _, kwargs = container.exec.call_args
+        assert kwargs["timeout"] == 60
+
+    def test_ms_normalize_applied_before_max_timeout_cap(self) -> None:
+        """normalize_ms_timeout runs before max_timeout: 1_800_000 ms → 1800s → capped at 900."""
+        container = MagicMock()
+        container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
+        tool = TerminalTool(config=TerminalToolConfig(normalize_ms_timeout=True, max_timeout=900), container=container)
+        tool.bash("sleep 1", timeout=1_800_000)
+        _, kwargs = container.exec.call_args
+        assert kwargs["timeout"] == 900

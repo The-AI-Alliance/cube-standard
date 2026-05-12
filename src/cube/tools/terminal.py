@@ -135,6 +135,10 @@ class TerminalToolConfig(ToolConfig):
         max_timeout: Optional ceiling (seconds) applied to every ``bash()``
             call. Prevents agents from requesting arbitrarily long timeouts.
             ``None`` means no cap.
+        normalize_ms_timeout: When ``True``, timeout values > 3600 are
+            divided by 1000 before use. Compensates for LLMs that pass
+            milliseconds instead of seconds (observed with some models on
+            TerminalBench-style tasks). Applied before ``max_timeout`` cap.
     """
 
     working_dir: str = "/app"
@@ -143,6 +147,7 @@ class TerminalToolConfig(ToolConfig):
     output_format: Literal["plain", "returncode_envelope"] = "plain"
     enable_file_actions: bool = False
     max_timeout: int | None = None
+    normalize_ms_timeout: bool = False
 
     def make(self, container: Container | None = None) -> "TerminalTool":
         if container is None:
@@ -201,6 +206,8 @@ class TerminalTool(Tool):
             timeout: Wall-clock seconds (not milliseconds). Default 120s. Use
                 larger values (600–1800) for test suites or builds.
         """
+        if self._config.normalize_ms_timeout and timeout > 3600:
+            timeout = timeout // 1000
         if self._config.max_timeout is not None:
             timeout = min(timeout, self._config.max_timeout)
         result = self._container.exec(
