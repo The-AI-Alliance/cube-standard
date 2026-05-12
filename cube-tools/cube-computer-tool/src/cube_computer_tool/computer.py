@@ -129,9 +129,24 @@ class ComputerBase(Tool):
 
     def execute_action(self, action: Action) -> Observation | StepError:
         """Execute action; append full VM observation if observe_after_action=True."""
-        action_obs = super().execute_action(action)
+        try:
+            action_obs = super().execute_action(action)
+        except Exception as e:
+            # Tool.get_action_method raises ValueError for unknown actions before the
+            # try/except in Tool.execute_action can catch it. Convert to StepError here
+            # so unknown actions are handled as recoverable errors, not episode crashes.
+            action_obs = StepError.from_exception(e)
 
         if self.config.observe_after_action and action.name not in ("done", "fail"):
+            if isinstance(action_obs, StepError):
+                # Action failed but VM is still alive — take a screenshot so the agent
+                # can see the current state and retry, and include the error message.
+                screen = self.get_observation()
+                error_content = TextContent(
+                    data=f"{action_obs.error_type} executing action '{action.name}': {action_obs.exception_str}",
+                    tool_call_id=action.id,
+                )
+                return Observation(contents=[error_content]) + screen
             action_obs += self.get_observation()
 
         return action_obs
@@ -140,8 +155,14 @@ class ComputerBase(Tool):
         """Read current screen state from the VM and return as Observation."""
         if self._guest is None:
             raise RuntimeError("No VM attached — call attach_vm() or pass vm= to ComputerConfig.make()")
+        screenshot = self._guest.get_screenshot()
+        if screenshot is None:
+            raise RuntimeError(
+                "VM guest agent is unreachable — screenshot returned None after retries. "
+                "The guest agent process may have crashed or the VM is unresponsive."
+            )
         raw_obs: dict[str, Any] = {
-            "screenshot": self._guest.get_screenshot(),
+            "screenshot": screenshot,
             "accessibility_tree": self._guest.get_accessibility_tree() if self.config.require_a11y_tree else None,
             "terminal": self._guest.get_terminal_output() if self.config.require_terminal else None,
         }
