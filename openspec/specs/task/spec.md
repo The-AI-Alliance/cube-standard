@@ -126,11 +126,36 @@ Returns `EnvironmentOutput(obs, reward, done, info, error)`. `truncated` is alwa
 
 ### `STOP_ACTION` (module-level constant)
 ```python
-STOP_ACTION = ActionSchema(name="final_step", description="Stop the task execution.")
+STOP_ACTION = ActionSchema(
+    name="final_step",
+    description="Stop the task execution.",
+    parameters={"type": "object", "properties": {}},
+)
 ```
 Protocol for agent-initiated termination. Tasks that reject it must set
 `accept_agent_stop = False` (e.g., tasks that require the agent to reach a terminal
 state via environment interaction, not a self-declaration).
+
+`Task.action_set` auto-appends `STOP_ACTION` whenever `accept_agent_stop=True`
+(deduping by name), so cube authors do not re-add it in `filter_actions`. The
+non-empty `parameters` schema is the minimal payload Anthropic accepts for
+`input_schema`; LiteLLM passes it through verbatim.
+
+### `Task.action_set` (concrete property)
+
+```python
+@property
+def action_set(self) -> list[ActionSchema]:
+    actions = self.filter_actions(self.tool.action_set)
+    if self.accept_agent_stop and not any(a.name == STOP_ACTION.name for a in actions):
+        actions = [*actions, STOP_ACTION]
+    return actions
+```
+
+Returns the action schemas the agent should see. Runs `filter_actions()`
+first, then appends `STOP_ACTION` when `accept_agent_stop=True` unless an
+action with that name is already present. The dedup branch keeps legacy
+`filter_actions` overrides that still append `STOP_ACTION` working.
 
 ### `RuntimeContext`
 ```python
@@ -246,7 +271,9 @@ always retains the native un-prefixed id.
    `evaluate`, `filter_actions`, `obs_postprocess`, `finished`.
 3. Tool is built eagerly in `model_post_init` — once a Task is constructed, its tool is live.
 4. `accept_agent_stop=True` (default) means the agent can self-terminate via
-   `Action(name="final_step")`. Evaluate is called on termination.
+   `Action(name="final_step")`. `Task.action_set` auto-appends `STOP_ACTION`
+   in this case (dedup by name); `step()` recognises it and calls
+   `evaluate()` on termination.
 5. `info["profiling"]` is always populated after `step()` unless no actions ran (empty list).
 
 ## Contracts for implementers
@@ -282,8 +309,9 @@ always retains the native un-prefixed id.
   instantiation).
 - `validate_per_step=True` means `evaluate()` runs every step — expensive. Default is
   only on termination.
-- STOP_ACTION is not automatically in the tool's action set — the harness / agent
-  framework is responsible for including it in the action list shown to the LLM.
+- `filter_actions` overrides MUST NOT append `STOP_ACTION` — `Task.action_set`
+  does it automatically when `accept_agent_stop=True`. Manual appends still
+  work (dedup by name) but are redundant and should be removed.
 - `runtime_context` is a dict, not a Pydantic model — no type safety. Document keys
   in your `Benchmark._setup()` docstring.
 - `model_post_init` launches the container. If your ToolConfig `make()` fails and
