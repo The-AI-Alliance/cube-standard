@@ -225,7 +225,10 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     @property
     def action_set(self) -> List[ActionSchema]:
         """
-        Returns tool.action_set filtered if self.filter_actions() is implemented.
+        Returns tool.action_set filtered through self.filter_actions(), then with
+        STOP_ACTION appended when self.accept_agent_stop is True (dedup by name).
+        Cube authors should NOT add STOP_ACTION in filter_actions.
+
         Tool definitions in litellm-compatible format.
 
         Returns a JSON-serializable list of tool descriptors, each with:

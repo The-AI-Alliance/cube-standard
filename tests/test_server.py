@@ -224,7 +224,9 @@ def test_tools_list(task_client):
     resp = _rpc(task_client, "tools/list")
     assert resp.status_code == 200
     names = {t["name"] for t in resp.json()["result"]}
-    assert names == {"increment", "get_value"}
+    # `final_step` is STOP_ACTION, auto-appended by Task.action_set when
+    # accept_agent_stop=True (the default).
+    assert names == {"increment", "get_value", "final_step"}
 
 
 def test_reset(task_client):
