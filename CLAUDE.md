@@ -87,6 +87,16 @@ Active proposals: `openspec/changes/`. Archived: `openspec/changes/archive/`.
 
 `make lint` and `make test`. For benchmark debug suite: `cube test <benchmark-name>`.
 
+### Test categories
+
+| Type | When | Where |
+|---|---|---|
+| Unit (`pytest tests/`) | every iteration | `tests/` — fast, no external deps. CI default. |
+| Integration (`pytest -m integration`) | when touching the marked area | `tests/` with `@pytest.mark.integration`. Setup details live in the marker's docstring in `pyproject.toml`. |
+| Smoke (`scripts/smoke/*.py`) | when a PR touches plumbing unit tests can't reach | Standalone scripts a coding agent runs to verify end-to-end behavior. Never CI. May stand up real infrastructure or call external APIs; minutes-long runs are fine. Each prints `SMOKE OK/FAIL/SKIP: <name>` (exit 0/1/2). Discover with `find . -path '*/scripts/smoke/*.py'`. |
+
+Smokes are the coding agent's judgment call — for a PR that touches a marked area, pick the relevant smokes, adapt the environment (auth, credentials, profiles), and iterate until green. **Reflex:** when adding complex new code, drop a smoke alongside it; a green end-to-end run is the strongest signal the change actually works as intended.
+
 ## What lives elsewhere
 
 - **cube-harness** — runs experiments, agents, trajectories, XRay viewer
