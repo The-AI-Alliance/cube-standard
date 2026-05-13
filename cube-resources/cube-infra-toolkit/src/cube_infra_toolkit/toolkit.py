@@ -14,9 +14,16 @@ import json
 import logging
 import os
 import secrets
+import shutil
+import subprocess
+import tarfile
+import tempfile
 import time
+import urllib.request
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Literal
 
 from cube.container import ContainerLaunchError
 from cube.resource import (
@@ -26,6 +33,15 @@ from cube.resource import (
     UnsupportedResourceType,
 )
 from cube_infra_toolkit.container import ToolkitContainer, _run_eai, relay_startup_args
+
+# Pinned versions baked into the published bundle.  Bump when either the Go
+# sidecar or the upstream uv binary changes — the bump triggers exactly one
+# re-publish per user (see ``_BUNDLE_CACHE_DIR`` markers).
+_BUNDLE_VERSION = 1  # increment to force re-publish for every user
+_UV_VERSION = "0.5.18"
+_UV_TARBALL_URL = f"https://github.com/astral-sh/uv/releases/download/{_UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"
+_BUNDLED_SIDECAR_BINARY = Path(__file__).parent / "_bin" / "linux-amd64" / "cube-sidecar"
+_BUNDLE_CACHE_DIR = Path.home() / ".cache" / "cube_infra_toolkit"
 
 logger = logging.getLogger(__name__)
 
@@ -49,25 +65,25 @@ class ToolkitInfraConfig(InfraConfig):
     launch_timeout_seconds: int = 600
     # Override when eai is not on PATH (e.g. installed in ~/bin via .zshrc).
     eai_path: str = "eai"
-    # EAI data full name to mount as the exec-relay sidecar binary.  The data
-    # must contain a single file named ``cube-sidecar`` at its root; it is
-    # mounted read-only at ``/opt/cube-sidecar/``.  With the binary mounted,
-    # the relay works on any image — no ``python3`` required in the container.
+    # EAI data slot mounted read-only at ``/opt/cube/`` inside every container.
+    # Bundles cube-side helper binaries that real-world task images may lack:
     #
-    # Default points at the maintainer's personal account (``snow.allac``);
-    # that's the only place we can publish today — ``snow.shared`` is admin-
-    # locked.  Tracking ticket to migrate to a world-readable shared location:
-    # TODO once admin approves the write grant.
+    #   /opt/cube/cube-sidecar   — Go exec-relay binary (CGO_ENABLED=0 static).
+    #                              Used by the launcher's startup script to
+    #                              boot the relay on python3-less images.
+    #   /opt/cube/uv             — astral-sh uv (pinned at _UV_VERSION).
+    #   /opt/cube/uvx            — uv companion.
     #
-    # Republish with ``scripts/publish-cube-sidecar.sh`` after rebuilding the
-    # Go binary in ``sidecar-go/``.
-    sidecar_data: str | None = "snow.allac.cube_sidecar"
-    # Optional EAI data full name mounted read-only at ``/opt/cube-assets/``
-    # for cube-side helper binaries (e.g. ``uv``) that the harness can copy
-    # into the container at runtime when the image lacks them.  Cubes consult
-    # this path in their evaluator setup; unset → no asset mount.  Same
-    # account caveat as ``sidecar_data``.
-    assets_data: str | None = "snow.allac.cube_uv"
+    # Resolution:
+    #   * ``"auto"`` (default): publish the bundle under the caller's EAI
+    #     account on first launch, mount it on every subsequent launch.
+    #     ~40 MB one-time upload per user per ``_BUNDLE_VERSION`` bump.
+    #   * Explicit data full name (e.g. ``"snow.shared.cube_assets"``): use
+    #     it as-is — advanced override for shared deployments.
+    #   * ``None``: don't mount anything.  The relay can still come up if the
+    #     image has ``python3`` on PATH; otherwise ``.exec()`` raises
+    #     ``ExecRelayUnavailable`` on first call.
+    cube_data: str | Literal["auto"] | None = "auto"
 
     # ── InfraConfig interface ─────────────────────────────────────────────────
 
@@ -127,10 +143,9 @@ class ToolkitInfraConfig(InfraConfig):
         cmd += ["-i", image]
         cmd += ["--cpu", str(cpu)]
         cmd += ["--mem", str(mem_gb)]
-        if self.sidecar_data is not None:
-            cmd += ["--data", f"{self.sidecar_data}:/opt/cube-sidecar:ro"]
-        if self.assets_data is not None:
-            cmd += ["--data", f"{self.assets_data}:/opt/cube-assets:ro"]
+        cube_data = self._resolve_cube_data(profile)
+        if cube_data is not None:
+            cmd += ["--data", f"{cube_data}:/opt/cube:ro"]
         # Embed relay startup + token into the job command; relay is up before
         # port-forward is established — no bootstrap eai execs needed.
         cmd += ["--"] + relay_startup_args(relay_token)
@@ -248,6 +263,39 @@ class ToolkitInfraConfig(InfraConfig):
         """No-op — EAI job TTLs are managed cluster-side."""
         return []
 
+    # ── cube_data auto-provision ─────────────────────────────────────────────
+
+    def _resolve_cube_data(self, profile: str | None) -> str | None:
+        """Return the EAI data full name to mount at ``/opt/cube``, or None.
+
+        For ``cube_data == "auto"``: publish the bundle under the caller's
+        personal account on first call (cached per-process via a file marker),
+        then return that name on every subsequent call.
+        """
+        if self.cube_data is None:
+            return None
+        if self.cube_data != "auto":
+            return self.cube_data
+
+        account = _resolve_eai_account(self.eai_path, profile)
+        full_name = f"{account}.cube_assets"
+        marker = _BUNDLE_CACHE_DIR / f"published_{account.replace('.', '_')}_v{_BUNDLE_VERSION}"
+        if marker.exists():
+            return full_name
+
+        if _data_exists(full_name, self.eai_path, profile):
+            logger.debug("Cube assets data %s already exists; recording marker", full_name)
+        else:
+            logger.info(
+                "Auto-publishing cube assets to %s on profile %s (one-time, ~40 MB)…",
+                full_name,
+                profile,
+            )
+            _publish_cube_bundle(full_name, self.eai_path, profile)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        return full_name
+
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -288,3 +336,97 @@ def _wait_for_running(
 
     _run_eai(["job", "kill", job_id], eai_path=eai_path, profile=profile, account=account, timeout=30)
     raise ContainerLaunchError(f"EAI job {job_id} did not reach RUNNING within {timeout}s (last state: {last_state!r})")
+
+
+def _resolve_eai_account(eai_path: str, profile: str | None) -> str:
+    """Return the caller's EAI account full name (e.g. ``snow.alice``).
+
+    Reads ``eai user get --fields account --no-header``, which prints exactly
+    the account name in table format.
+    """
+    env = {**os.environ}
+    if profile:
+        env["EAI_PROFILE"] = profile
+    r = subprocess.run(
+        [eai_path, "user", "get", "--fields", "account", "--no-header"],
+        env=env,
+        capture_output=True,
+        timeout=15,
+    )
+    if r.returncode != 0:
+        raise ContainerLaunchError(
+            f"Could not resolve EAI account via `{eai_path} user get` "
+            f"(profile={profile}): {r.stderr.decode(errors='replace')[:300]}"
+        )
+    name = r.stdout.decode().strip()
+    if not name or "." not in name:
+        raise ContainerLaunchError(f"`eai user get` returned unexpected account name: {name!r}")
+    return name
+
+
+def _data_exists(full_name: str, eai_path: str, profile: str | None) -> bool:
+    env = {**os.environ}
+    if profile:
+        env["EAI_PROFILE"] = profile
+    r = subprocess.run(
+        [eai_path, "data", "get", full_name],
+        env=env,
+        capture_output=True,
+        timeout=30,
+    )
+    return r.returncode == 0
+
+
+def _publish_cube_bundle(full_name: str, eai_path: str, profile: str | None) -> None:
+    """Stage cube-sidecar + uv + uvx, push as EAI data ``full_name``.
+
+    Idempotent at the EAI layer — re-pushing the same name adds a new
+    commit; mount always uses latest.  Falls back to ``data new`` if the
+    data didn't exist yet.
+    """
+    if not _BUNDLED_SIDECAR_BINARY.exists():
+        raise ContainerLaunchError(
+            f"Bundled sidecar binary missing at {_BUNDLED_SIDECAR_BINARY}. "
+            "Rebuild via `make -C cube-resources/cube-infra-toolkit/sidecar-go linux-amd64`."
+        )
+    env = {**os.environ}
+    if profile:
+        env["EAI_PROFILE"] = profile
+
+    with tempfile.TemporaryDirectory(prefix="cube_assets_") as staging:
+        staging_path = Path(staging)
+        # cube-sidecar from package data
+        shutil.copy2(_BUNDLED_SIDECAR_BINARY, staging_path / "cube-sidecar")
+        # uv + uvx from astral-sh release tarball
+        logger.info("Fetching uv %s from astral-sh release…", _UV_VERSION)
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz") as tarball_f:
+            urllib.request.urlretrieve(_UV_TARBALL_URL, tarball_f.name)
+            with tarfile.open(tarball_f.name) as tar:
+                tar.extractall(staging_path, filter="data")
+        # The tarball extracts to ``uv-x86_64-unknown-linux-gnu/{uv,uvx}``; flatten it.
+        nested = staging_path / "uv-x86_64-unknown-linux-gnu"
+        if nested.is_dir():
+            for item in nested.iterdir():
+                item.rename(staging_path / item.name)
+            nested.rmdir()
+
+        # Sanity check expected files
+        for expected in ("cube-sidecar", "uv", "uvx"):
+            if not (staging_path / expected).exists():
+                raise ContainerLaunchError(f"Cube assets staging missing {expected!r}; bundle build broken")
+
+        # Push. Try `data new` first; on already-exists, fall back to `data push`.
+        new_cmd = [eai_path, "data", "new", full_name, str(staging_path)]
+        r = subprocess.run(new_cmd, env=env, capture_output=True, timeout=300)
+        if r.returncode != 0:
+            err = r.stderr.decode(errors="replace")
+            if "already exists" in err.lower() or "conflict" in err.lower() or "data already" in err.lower():
+                push_cmd = [eai_path, "data", "push", full_name, str(staging_path)]
+                r = subprocess.run(push_cmd, env=env, capture_output=True, timeout=300)
+                if r.returncode != 0:
+                    raise ContainerLaunchError(
+                        f"eai data push {full_name} failed: {r.stderr.decode(errors='replace')[:500]}"
+                    )
+            else:
+                raise ContainerLaunchError(f"eai data new {full_name} failed: {err[:500]}")
+    logger.info("Cube assets published to %s", full_name)

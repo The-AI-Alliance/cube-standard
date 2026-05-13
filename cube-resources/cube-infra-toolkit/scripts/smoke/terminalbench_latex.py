@@ -7,7 +7,7 @@ Terminal-Bench that surfaced every problem this PR fixes:
   * no ``python3`` in the image → the in-container Python relay can't boot;
     only the mounted Go ``cube-sidecar`` binary can serve ``.exec()``.
   * no ``curl`` / no ``apt`` → the evaluator's ``uv`` bootstrap fails; the
-    only working source for ``uv`` is the ``/opt/cube-assets/`` mount.
+    only working source for ``uv`` is the ``/opt/cube/`` mount.
 
 The smoke launches the image with both ``sidecar_data`` and ``assets_data``
 mounted, then runs a sequence of ``.exec()`` calls that exercise every code
@@ -33,7 +33,10 @@ Run from cube-standard repo root:
 
 Skip rules:
   - ``eai`` CLI not on PATH or not authed → SMOKE SKIP
-  - ``snow.allac.cube_sidecar`` OR ``snow.allac.cube_uv`` not readable → SMOKE SKIP
+
+The cube-assets bundle (sidecar + uv) is auto-published to the caller's EAI
+account on first launch via ``ToolkitInfraConfig.cube_data="auto"`` — no
+maintainer-specific data needed.
 """
 
 from __future__ import annotations
@@ -62,41 +65,32 @@ def banner(status: str, reason: str = "") -> int:
     return {"OK": 0, "FAIL": 1, "SKIP": 2}[status]
 
 
-def preflight(profile: str, *data_names: str) -> str | None:
+def preflight(profile: str) -> str | None:
     if shutil.which("eai") is None:
         return "eai CLI not on PATH"
     env = {**os.environ, "EAI_PROFILE": profile}
     r = subprocess.run(["eai", "user", "get"], env=env, capture_output=True, timeout=15)
     if r.returncode != 0:
         return f"eai user get failed on {profile}: {r.stderr.decode()[:200]}"
-    for name in data_names:
-        r = subprocess.run(["eai", "data", "get", name], env=env, capture_output=True, timeout=15)
-        if r.returncode != 0:
-            return f"data {name} not accessible on {profile}"
     return None
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--profile", default="yul101")
-    ap.add_argument("--sidecar-data", default="snow.allac.cube_sidecar")
-    ap.add_argument("--assets-data", default="snow.allac.cube_uv")
     ap.add_argument("--image", default=_LATEX_IMAGE)
     args = ap.parse_args()
 
-    skip = preflight(args.profile, args.sidecar_data, args.assets_data)
+    skip = preflight(args.profile)
     if skip:
         return banner("SKIP", skip)
 
-    infra = ToolkitInfraConfig(
-        profile=args.profile,
-        preemptable=True,
-        sidecar_data=args.sidecar_data,
-        assets_data=args.assets_data,
-    )
+    # cube_data defaults to "auto" — bundle is published to the caller's
+    # personal account on first call this process, then mounted at /opt/cube.
+    infra = ToolkitInfraConfig(profile=args.profile, preemptable=True)
     resource = DockerServiceConfig(name="cube-tbench-smoke", docker_images=[args.image])
 
-    print(f"Launching {args.image} on {args.profile} with sidecar+assets mounted…")
+    print(f"Launching {args.image} on {args.profile} (cube_data='auto')…")
     container = None
     try:
         container = infra.launch(resource)
@@ -126,7 +120,7 @@ def main() -> int:
 
         # 4. assets mount + uv runs (the cluster-B fast path)
         r = container.exec(
-            "cp /opt/cube-assets/uv /tmp/uv && chmod +x /tmp/uv && /tmp/uv --version",
+            "cp /opt/cube/uv /tmp/uv && chmod +x /tmp/uv && /tmp/uv --version",
             timeout=30,
         )
         if r.exit_code != 0 or not r.stdout.startswith("uv "):

@@ -42,8 +42,9 @@ _EXEC_RELAY_SERVER_PATH = Path(__file__).parent / "_exec_relay_server.py"
 _EXEC_RELAY_PORT = 8787
 _EXEC_RELAY_KICK_TIMEOUT = 15  # eai exec calls during bootstrap; short so CLOSE_WAIT fails fast
 _EXEC_RELAY_HEALTH_TIMEOUT = 15
-# Path inside the container where the sidecar binary is mounted via --data.
-_SIDECAR_MOUNT_PATH = "/opt/cube-sidecar/cube-sidecar"
+# Path inside the container where the sidecar binary lives once
+# ``ToolkitInfraConfig.cube_data`` is mounted at ``/opt/cube:ro``.
+_SIDECAR_MOUNT_PATH = "/opt/cube/cube-sidecar"
 
 
 class ExecRelayUnavailable(RuntimeError):
@@ -200,8 +201,8 @@ class ToolkitContainer(Container):
     bypassing the ``eai job exec`` CLOSE_WAIT hang bug entirely.
 
     The relay starts in one of two ways at job launch (see ``relay_startup_args``):
-      1. Pre-built Go binary mounted at ``/opt/cube-sidecar/cube-sidecar`` via
-         ``ToolkitInfraConfig.sidecar_data``.  Works on any image (no python3).
+      1. Pre-built Go binary mounted at ``/opt/cube/cube-sidecar`` via
+         ``ToolkitInfraConfig.cube_data``.  Works on any image (no python3).
       2. Python relay script embedded in the startup command, if the image has
          ``python3`` on PATH.
 
@@ -244,7 +245,7 @@ class ToolkitContainer(Container):
         """Port-forward + health-check the exec relay started at job launch.
 
         Single path: the relay was started by the job's startup command (either
-        the cube-sidecar Go binary mounted at ``/opt/cube-sidecar/cube-sidecar``
+        the cube-sidecar Go binary mounted at ``/opt/cube/cube-sidecar``
         or, on images with python3, the embedded relay script — see
         ``relay_startup_args``).  Open the tunnel, health-check, done.
 
@@ -271,8 +272,9 @@ class ToolkitContainer(Container):
         diag = self._fetch_relay_diagnostics()
         raise ExecRelayUnavailable(
             f"Exec relay never came up in job {self._job_id[:8]}. The image likely "
-            "lacks both /opt/cube-sidecar/cube-sidecar (set ToolkitInfraConfig."
-            "sidecar_data) and python3 on PATH. Diagnostics:\n" + diag
+            "lacks both /opt/cube/cube-sidecar (set ToolkitInfraConfig."
+            "cube_data, or rely on the 'auto' default) and python3 on PATH. "
+            "Diagnostics:\n" + diag
         )
 
     def _probe_health(self, local_port: int, *, timeout: float) -> bool:
