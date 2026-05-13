@@ -53,9 +53,7 @@ def banner(status: str, reason: str = "") -> int:
 
 
 def _eai(*args: str, profile: str, timeout: float) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
-        ["eai", "--profile", profile, *args], capture_output=True, timeout=timeout
-    )
+    return subprocess.run(["eai", "--profile", profile, *args], capture_output=True, timeout=timeout)
 
 
 def preflight(profile: str) -> str | None:
