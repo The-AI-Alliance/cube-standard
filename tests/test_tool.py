@@ -130,6 +130,21 @@ def test_tool_execute_action_exception_returns_step_error():
     assert result.exception_str == "intentional error"
 
 
+def test_tool_execute_action_unknown_kwarg_returns_observation():
+    """LLM-side typos like an extra `timeout=` should not kill the episode."""
+    result = EchoTool().execute_action(Action(name="echo", arguments={"text": "hi", "timeout": 120}))
+    assert isinstance(result, Observation)
+    assert "Invalid arguments for echo" in result.contents[0].data
+    assert "['text']" in result.contents[0].data
+
+
+def test_tool_execute_action_missing_required_returns_observation():
+    """Missing a required argument is also a recoverable, agent-correctable error."""
+    result = EchoTool().execute_action(Action(name="add", arguments={"a": 1.0}))
+    assert isinstance(result, Observation)
+    assert "Invalid arguments for add" in result.contents[0].data
+
+
 # ── AsyncTool ─────────────────────────────────────────────────────────────────
 
 
@@ -188,6 +203,13 @@ async def test_async_tool_execute_action_exception_returns_step_error():
     assert isinstance(result, StepError)
     assert result.error_type == "RuntimeError"
     assert result.exception_str == "intentional error"
+
+
+@pytest.mark.asyncio
+async def test_async_tool_execute_action_unknown_kwarg_returns_observation():
+    result = await AsyncEchoTool().execute_action(Action(name="echo", arguments={"text": "hi", "timeout": 120}))
+    assert isinstance(result, Observation)
+    assert "Invalid arguments for echo" in result.contents[0].data
 
 
 def test_async_tool_rejects_sync_action_at_class_definition():
