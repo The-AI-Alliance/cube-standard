@@ -50,6 +50,47 @@ No code change.
 
 ---
 
-## ADDED — none
+## ADDED — `openspec/specs/task/spec.md`
+
+### Optional `Task.primitive_toolbox()` method
+
+```python
+class Task(ABC):
+    # ... existing methods ...
+
+    def primitive_toolbox(self) -> AsyncToolbox | None:
+        """Optional Pi-style primitive toolset for shell-accessible cubes.
+
+        Returns a toolbox exposing the four generic primitives
+        (`read`, `write`, `edit`, `bash`) operating on the task's sandbox,
+        or `None` if the task has no shell. Default returns `None`.
+
+        Agents that want a primitive-only surface (e.g. PiStyleAgent,
+        PiCliAgent) call this; agents that want the rich per-task action
+        set use `task.toolbox` (today's behavior) instead. Both shapes
+        compose with cube-harness's `MonitoredToolbox` identically.
+        """
+        return None
+```
+
+### Invariants
+
+- Default implementation returns `None`. Shell-based cubes
+  (TerminalBench, SWEBench, OSWorld, …) override to return a populated
+  toolbox. Browser / API cubes leave it `None`.
+- The primitive toolbox and `task.toolbox` (rich action set) are
+  independent surfaces; a task may expose both. Agents pick one.
+- The four primitive tools (`read`, `write`, `edit`, `bash`) ship from
+  a future `cube-tools/cube-shell-tools/` package — **not part of this
+  RFC**. Phase 1 only declares the method.
+
+### Phase 2 deliverables (out of scope here, listed for context)
+
+- `cube-tools/cube-shell-tools/` package shipping `ReadTool`, `WriteTool`,
+  `EditTool`, `BashTool` parametrized by a `Container`.
+- TerminalBench / SWEBench / OSWorld override `primitive_toolbox()` to
+  return one of these.
+- cube-harness ships a `PiStyleAgent` reference using the primitive
+  toolbox, and a `PiCliAgent` that spawns the real Pi CLI as a subprocess.
 
 ## REMOVED — none

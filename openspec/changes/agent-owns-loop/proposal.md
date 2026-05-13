@@ -34,6 +34,13 @@ harness model and the existing RPC layer agree on the boundary.
   follow-up — no action needed here.
 - Confirm that `Toolbox` / `AsyncToolbox` are stable enough to be the
   composition target for harness-side `MonitoredToolbox`. No API change.
+- Declare an optional `Task.primitive_toolbox() -> AsyncToolbox | None`
+  method in `task/spec.md`. Returns a Pi-style primitive toolset
+  (`read`/`write`/`edit`/`bash`) for cubes with a shell-accessible sandbox;
+  returns `None` by default. **Protocol declaration only in Phase 1;
+  concrete implementations are Phase 2.** This seam lets agents declare
+  whether they want the rich per-task action set (MCP-style) or the
+  primitive toolset (Pi-style) without changing the agent contract.
 
 ### Out
 
