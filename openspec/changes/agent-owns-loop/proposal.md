@@ -41,13 +41,6 @@ harness model and the existing RPC layer agree on the boundary.
   concrete implementations are Phase 2.** This seam lets agents declare
   whether they want the rich per-task action set (MCP-style) or the
   primitive toolset (Pi-style) without changing the agent contract.
-- Declare an optional `Task.requires_step_eval: bool` property in
-  `task/spec.md`. Default `False`. Cubes that need a per-tool-call
-  evaluation signal (dense reward for RL, mid-episode success criteria)
-  override to `True`. When `True`, cube-harness's `MonitoredTool` calls
-  `task.evaluate(obs)` after every tool call and records the result as
-  `StepEval(reward, info)` on the `ToolCallEvent`. Cheap, opt-in, and
-  independent of `EnvironmentOutput.reward`.
 
 ### Out
 

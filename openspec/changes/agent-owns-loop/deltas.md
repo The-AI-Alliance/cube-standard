@@ -52,46 +52,6 @@ No code change.
 
 ## ADDED — `openspec/specs/task/spec.md`
 
-### Optional `Task.requires_step_eval` property
-
-```python
-class Task(ABC):
-    # ... existing methods ...
-
-    @property
-    def requires_step_eval(self) -> bool:
-        """Whether `task.evaluate(obs)` should be called after every tool call.
-
-        Default `False`. Cubes that need a per-tool-call evaluation signal —
-        dense reward for RL training, mid-episode success criteria, or
-        diagnostic feedback that doesn't live in `EnvironmentOutput.reward` —
-        override to return `True`.
-
-        When `True`, cube-harness's `MonitoredTool` invokes
-        `self.evaluate(env_output.obs)` after each successful tool call and
-        attaches a `StepEval(reward, info)` to the recorded `ToolCallEvent`.
-        Exceptions inside `evaluate` during step-wise eval are caught and
-        recorded as `StepEval(0.0, {"step_eval_failed": str(exc)})` rather
-        than propagating — a broken step evaluator must not crash the
-        episode.
-
-        Independent of `EnvironmentOutput.reward` (which comes from
-        `task.step`). A cube can use either, both, or neither.
-        """
-        return False
-```
-
-### Invariants
-
-- Default returns `False`. Per-tool-call eval is opt-in; most cubes don't
-  need it.
-- When `True`, the cube's `evaluate(obs)` must be cheap enough to run on
-  every tool call without dominating episode wall-clock time. Heavy
-  evaluators (long-running tests, network round-trips) should remain
-  terminal-only.
-- The terminal `task.evaluate(final_obs)` call in `Episode.run`'s `finally`
-  still fires unconditionally, exactly once, regardless of this flag.
-
 ### Optional `Task.primitive_toolbox()` method
 
 ```python
