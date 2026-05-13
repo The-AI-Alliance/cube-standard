@@ -431,7 +431,9 @@ class Toolbox(Tool):
 
     def execute_action(self, action: Action) -> Observation | StepError:
         if action.name not in self._action_name_to_tool:
-            raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
+            return StepError.from_exception(
+                ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
+            )
         tool = self._action_name_to_tool[action.name]
         assert isinstance(tool, AbstractTool)
         return tool.execute_action(action)
@@ -475,7 +477,9 @@ class AsyncToolbox(AsyncTool):
 
     async def execute_action(self, action: Action) -> Observation | StepError:
         if action.name not in self._action_name_to_tool:
-            raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
+            return StepError.from_exception(
+                ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
+            )
         return await self._action_name_to_tool[action.name].execute_action(action)
 
     async def close(self) -> None:
