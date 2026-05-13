@@ -13,8 +13,6 @@ import base64
 import json
 import logging
 import os
-import secrets
-import shlex
 import signal
 import socket
 import subprocess
@@ -23,7 +21,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Dict, Literal
+from typing import Dict
 
 from tenacity import (
     before_sleep_log,
@@ -44,10 +42,18 @@ _EXEC_RELAY_SERVER_PATH = Path(__file__).parent / "_exec_relay_server.py"
 _EXEC_RELAY_PORT = 8787
 _EXEC_RELAY_KICK_TIMEOUT = 15  # eai exec calls during bootstrap; short so CLOSE_WAIT fails fast
 _EXEC_RELAY_HEALTH_TIMEOUT = 15
+# Path inside the container where the sidecar binary is mounted via --data.
+_SIDECAR_MOUNT_PATH = "/opt/cube-sidecar/cube-sidecar"
 
 
-class _ExecRelayUnavailable(Exception):
-    """Raised when the exec relay is unreachable for a single call; triggers fallback to direct exec."""
+class ExecRelayUnavailable(RuntimeError):
+    """Raised when the exec relay cannot be reached.
+
+    Distinguishes "the relay never started" (image lacked both the cube-sidecar
+    mount and python3) from a transient network failure — both are unrecoverable
+    here since direct ``eai job exec`` is no longer a fallback.  Surface this
+    early with a clear message instead of hanging on health probes.
+    """
 
 
 logger = logging.getLogger(__name__)
@@ -155,31 +161,32 @@ def _find_free_port() -> int:
 def relay_startup_args(token: str) -> list[str]:
     """Return the ``['/bin/sh', '-c', <script>]`` args for a job launch command.
 
-    Embeds the exec relay script + token directly in the job's startup command so
-    the relay is running before the first port-forward — eliminating all bootstrap
-    ``eai job exec`` calls for images that already have python3.
+    Prefers the Go sidecar binary if mounted at ``_SIDECAR_MOUNT_PATH`` (works on
+    any image regardless of python3).  Falls back to the Python relay if python3 is
+    available.  Either way the relay is up before the first port-forward — zero
+    bootstrap ``eai job exec`` calls.
 
-    Security tradeoff: the base64-encoded token is embedded in the startup
-    script, so the ``eai job new`` submission and the brief ``/bin/sh -c`` process
-    that runs it have the token (base64) in argv. The ``/_exec_relay_server.py``
-    "token never on argv" invariant applies to the long-lived relay server
-    process itself — it reads the token from a file, never from its own argv —
-    not to the one-shot startup shell. Moving the token off startup argv would
-    require a second round-trip (generate token on container, fetch back via
-    ``eai job exec`` after RUNNING), defeating the zero-bootstrap optimization.
-    Slow-path ``_kick_relay_python`` does deliver its script via stdin.
+    Security note: the base64-encoded token appears in the one-shot startup shell's
+    argv.  The long-lived relay server reads the token from a file, never its argv.
     """
     script_b64 = base64.b64encode(_EXEC_RELAY_SERVER_PATH.read_bytes()).decode()
     token_b64 = base64.b64encode(token.encode()).decode()
-    startup = (
-        f"printf '%s' '{token_b64}' | base64 -d > /tmp/.cube_exec_relay_token && "
-        f"printf '%s' '{script_b64}' | base64 -d > /tmp/_cube_exec_relay.py && "
-        "chmod 600 /tmp/.cube_exec_relay_token /tmp/_cube_exec_relay.py && "
-        f"CUBE_EXEC_RELAY_PORT={_EXEC_RELAY_PORT} "
-        "CUBE_EXEC_RELAY_TOKEN_FILE=/tmp/.cube_exec_relay_token "
-        "nohup python3 /tmp/_cube_exec_relay.py "
-        "</dev/null >/tmp/_cube_exec_relay.log 2>&1 & "
-        "exec sleep infinity"
+    startup = "\n".join(
+        [
+            f"printf '%s' '{token_b64}' | base64 -d > /tmp/.cube_relay_token",
+            "chmod 600 /tmp/.cube_relay_token",
+            f"if [ -f {_SIDECAR_MOUNT_PATH} ]; then",
+            f"  cp {_SIDECAR_MOUNT_PATH} /tmp/cube-sidecar && chmod +x /tmp/cube-sidecar",
+            f"  CUBE_EXEC_RELAY_PORT={_EXEC_RELAY_PORT} CUBE_EXEC_RELAY_TOKEN_FILE=/tmp/.cube_relay_token"
+            " nohup /tmp/cube-sidecar </dev/null >/tmp/_cube_sidecar.log 2>&1 &",
+            "elif command -v python3 >/dev/null 2>&1; then",
+            f"  printf '%s' '{script_b64}' | base64 -d > /tmp/_cube_exec_relay.py",
+            "  chmod 600 /tmp/_cube_exec_relay.py",
+            f"  CUBE_EXEC_RELAY_PORT={_EXEC_RELAY_PORT} CUBE_EXEC_RELAY_TOKEN_FILE=/tmp/.cube_relay_token"
+            " nohup python3 /tmp/_cube_exec_relay.py </dev/null >/tmp/_cube_exec_relay.log 2>&1 &",
+            "fi",
+            "exec sleep infinity",
+        ]
     )
     return ["/bin/sh", "-c", startup]
 
@@ -187,18 +194,20 @@ def relay_startup_args(token: str) -> list[str]:
 class ToolkitContainer(Container):
     """Runtime handle backed by an EAI Toolkit job.
 
-    Exec routing: a small HTTP server (exec relay) runs inside the container,
+    Exec routing: a small HTTP server (the exec relay) runs inside the container,
     started as part of the job's launch command and tunneled via
     ``eai job port-forward``.  All ``.exec()`` calls go through the relay,
     bypassing the ``eai job exec`` CLOSE_WAIT hang bug entirely.
 
-    Fallback chain when the relay is unavailable:
-      1. Fast path: relay pre-started at job launch (relay_prestarted_token set).
-         Only a health check is needed — no eai exec for bootstrap.
-      2. Slow path: relay not pre-started or python3 was absent at launch.
-         Bootstrap via eai exec (install python3 if needed, kick the relay).
-      3. Direct exec: relay bootstrap failed entirely; fall back to eai job exec
-         with the CLOSE_WAIT sentinel + retry logic.
+    The relay starts in one of two ways at job launch (see ``relay_startup_args``):
+      1. Pre-built Go binary mounted at ``/opt/cube-sidecar/cube-sidecar`` via
+         ``ToolkitInfraConfig.sidecar_data``.  Works on any image (no python3).
+      2. Python relay script embedded in the startup command, if the image has
+         ``python3`` on PATH.
+
+    If neither path fires the relay never comes up; ``.exec()`` raises
+    ``ExecRelayUnavailable`` at first call.  There is no ``eai job exec``
+    fallback — that path was deleted along with its CLOSE_WAIT retry machinery.
     """
 
     def __init__(
@@ -206,7 +215,6 @@ class ToolkitContainer(Container):
         job_id: str,
         profile: str | None = None,
         account: str | None = None,
-        exec_mode: Literal["exec_relay", "direct"] = "exec_relay",
         eai_path: str = "eai",
         relay_prestarted_token: str | None = None,
     ) -> None:
@@ -214,12 +222,11 @@ class ToolkitContainer(Container):
         self._job_id = job_id
         self._profile = profile
         self._account = account
-        self._exec_mode = exec_mode
         self._eai_path = eai_path
         self._port_forwards: dict[int, subprocess.Popen] = {}
         self._port_map: dict[int, int] = {}
         self._port_forward_logs: dict[int, str] = {}
-        # Token is set either at construction (pre-started) or after bootstrap.
+        # Token is set by the launcher when it embeds the relay startup script.
         self._relay_token: str | None = relay_prestarted_token
         self._relay_local_port: int | None = None
         self._relay_ready = False
@@ -229,155 +236,44 @@ class ToolkitContainer(Container):
         return self._job_id
 
     def __repr__(self) -> str:
-        return (
-            f"ToolkitContainer(job_id={self._job_id!r}, "
-            f"profile={self._profile!r}, exec_mode={self._exec_mode!r}, run_id={self.run_id!r})"
-        )
+        return f"ToolkitContainer(job_id={self._job_id!r}, profile={self._profile!r}, run_id={self.run_id!r})"
 
     # ------------------------- exec relay bootstrap -------------------------
 
-    def _ensure_python3(self) -> None:
-        """Install python3 via apt if the image doesn't have it (slow path only)."""
-        check = _run_eai(
-            [
-                "job",
-                "exec",
-                self._job_id,
-                "--",
-                "bash",
-                "-c",
-                "python3 --version 2>/dev/null && echo HAS_PYTHON || echo NO_PYTHON",
-            ],
-            eai_path=self._eai_path,
-            profile=self._profile,
-            account=self._account,
-            timeout=15,
-            retries=1,
-        )
-        if "NO_PYTHON" not in check.stdout:
-            return
-        logger.info("python3 missing in job %s — installing via apt-get", self._job_id[:8])
-        _run_eai(
-            [
-                "job",
-                "exec",
-                self._job_id,
-                "--",
-                "bash",
-                "-c",
-                "apt-get update -qq && apt-get install -y --no-install-recommends python3 python3-pip 2>&1",
-            ],
-            eai_path=self._eai_path,
-            profile=self._profile,
-            account=self._account,
-            timeout=120,
-            retries=1,
-        )
-
-    def _kick_relay_python(self, token: str) -> None:
-        """Upload the Python relay script + token, kill any prior instance, start detached."""
-        server_src = _EXEC_RELAY_SERVER_PATH.read_text()
-        server_b64 = base64.b64encode(server_src.encode()).decode()
-        token_b64 = base64.b64encode(token.encode()).decode()
-        script = (
-            "umask 077\n"
-            "pgrep -f _cube_exec_relay.py 2>/dev/null "
-            '| grep -vw "$$" '
-            "| xargs -r kill 2>/dev/null || true\n"
-            "sleep 0.3\n"
-            f"printf '%s' '{server_b64}' | base64 -d > /tmp/_cube_exec_relay.py\n"
-            f"printf '%s' '{token_b64}' | base64 -d > /tmp/.cube_exec_relay_token\n"
-            "chmod 600 /tmp/.cube_exec_relay_token /tmp/_cube_exec_relay.py\n"
-            f"export CUBE_EXEC_RELAY_PORT={_EXEC_RELAY_PORT}\n"
-            "export CUBE_EXEC_RELAY_TOKEN_FILE=/tmp/.cube_exec_relay_token\n"
-            "PYTHON3=$(command -v python3 || command -v python)\n"
-            'echo "PYTHON3=$PYTHON3"\n'
-            "[ -z \"$PYTHON3\" ] && echo 'ERROR: no python3 found' && exit 1\n"
-            'nohup "$PYTHON3" /tmp/_cube_exec_relay.py '
-            "</dev/null >/tmp/_cube_exec_relay.log 2>&1 &\n"
-            "echo KICKED\n"
-        )
-        logger.info("Bootstrapping exec relay in job %s …", self._job_id[:8])
-        # Retry the kick: CLOSE_WAIT hangs ~6% of exec calls; short timeout + retries
-        # reduces P(all attempts hang) to near-zero without adding much latency.
-        # Deliver the script via stdin (`bash -s`) so the base64 token never appears
-        # in the bash process's argv / /proc/<pid>/cmdline.
-        script_bytes = script.encode()
-        for kick_attempt in range(4):
-            try:
-                result = _run_eai(
-                    ["job", "exec", self._job_id, "--", "bash", "-s"],
-                    eai_path=self._eai_path,
-                    profile=self._profile,
-                    account=self._account,
-                    timeout=_EXEC_RELAY_KICK_TIMEOUT,
-                    retries=0,
-                    input=script_bytes,
-                )
-                logger.info("Exec relay kick output for job %s: %s", self._job_id[:8], result.stdout.strip())
-                return  # kick sent; health probe decides if it worked
-            except ContainerExecError:
-                if kick_attempt < 3:
-                    logger.warning(
-                        "Exec relay kick timed out for job %s (CLOSE_WAIT, attempt %d/4); retrying",
-                        self._job_id[:8],
-                        kick_attempt + 1,
-                    )
-                else:
-                    logger.warning("Exec relay kick failed after 4 attempts for job %s", self._job_id[:8])
-
     def _bootstrap_exec_relay(self) -> None:
-        """Port-forward + health-check the exec relay; kick via eai exec if needed.
+        """Port-forward + health-check the exec relay started at job launch.
 
-        Fast path (relay_prestarted_token set): relay was started as part of the
-        job launch command — just open the tunnel and health-check.  Zero eai execs.
+        Single path: the relay was started by the job's startup command (either
+        the cube-sidecar Go binary mounted at ``/opt/cube-sidecar/cube-sidecar``
+        or, on images with python3, the embedded relay script — see
+        ``relay_startup_args``).  Open the tunnel, health-check, done.
 
-        Slow path (no token, or health check fails): install python3 if needed,
-        kick the relay via eai exec, health-check again.
+        If the health probe fails the relay never came up — the image lacked
+        both the sidecar mount and python3.  Raise so the caller sees a clean
+        configuration error instead of subsequent exec calls hanging.
         """
-        if self._relay_ready or self._exec_mode == "direct":
+        if self._relay_ready:
             return
+        if self._relay_token is None:
+            raise ExecRelayUnavailable(
+                f"Container for job {self._job_id[:8]} was launched without an exec-relay "
+                "prestart token. This indicates a programming error in the launcher — "
+                "see ToolkitInfraConfig.launch()."
+            )
 
         local_port = self.forward_port(_EXEC_RELAY_PORT)
+        if self._probe_health(local_port, timeout=_EXEC_RELAY_HEALTH_TIMEOUT):
+            self._relay_local_port = local_port
+            self._relay_ready = True
+            logger.info("Exec relay ready for job %s", self._job_id[:8])
+            return
 
-        # Fast path: relay was pre-started at job launch.
-        if self._relay_token is not None:
-            if self._probe_health(local_port, timeout=_EXEC_RELAY_HEALTH_TIMEOUT):
-                self._relay_local_port = local_port
-                self._relay_ready = True
-                logger.info("Exec relay ready (pre-started) for job %s", self._job_id[:8])
-                return
-            logger.info(
-                "Pre-started relay not healthy for job %s — python3 likely absent; bootstrapping via eai exec",
-                self._job_id[:8],
-            )
-
-        # Slow path: need to kick the relay manually via eai exec.
-        token = self._relay_token or secrets.token_urlsafe(32)
-        self._ensure_python3()
-        last_diag = ""
-        for attempt in range(2):
-            self._kick_relay_python(token)
-            if self._probe_health(local_port, timeout=_EXEC_RELAY_HEALTH_TIMEOUT):
-                self._relay_token = token
-                self._relay_local_port = local_port
-                self._relay_ready = True
-                logger.info("Exec relay ready (bootstrapped) for job %s (attempt %d)", self._job_id[:8], attempt + 1)
-                return
-            last_diag = self._fetch_relay_diagnostics()
-            logger.warning(
-                "Exec relay health failed on attempt %d/2 for job %s. Diag:\n%s",
-                attempt + 1,
-                self._job_id[:8],
-                last_diag,
-            )
-
-        logger.warning(
-            "Exec relay bootstrap failed for job %s — falling back to direct exec. Last diag:\n%s",
-            self._job_id[:8],
-            last_diag,
+        diag = self._fetch_relay_diagnostics()
+        raise ExecRelayUnavailable(
+            f"Exec relay never came up in job {self._job_id[:8]}. The image likely "
+            "lacks both /opt/cube-sidecar/cube-sidecar (set ToolkitInfraConfig."
+            "sidecar_data) and python3 on PATH. Diagnostics:\n" + diag
         )
-        self._exec_mode = "direct"
 
     def _probe_health(self, local_port: int, *, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
@@ -438,25 +334,9 @@ class ToolkitContainer(Container):
         env: Dict[str, str] | None = None,
     ) -> ExecResult:
         effective_timeout = timeout if timeout is not None else 120
-
-        if self._exec_mode == "exec_relay":
-            try:
-                if not self._relay_ready:
-                    self._bootstrap_exec_relay()
-                # _bootstrap_exec_relay may have silently fallen back to direct
-                # mode (e.g. image has no python3); re-check before dispatching.
-                if self._relay_ready:
-                    return self._exec_via_relay(command, effective_timeout, workdir, env)
-            except _ExecRelayUnavailable as exc:
-                logger.warning(
-                    "Exec relay failed for job %s, falling back to direct eai exec: %s",
-                    self._job_id[:8],
-                    exc,
-                )
-                self._relay_ready = False
-                self._exec_mode = "direct"
-
-        return self._exec_direct(command, effective_timeout, workdir, env)
+        if not self._relay_ready:
+            self._bootstrap_exec_relay()
+        return self._exec_via_relay(command, effective_timeout, workdir, env)
 
     def _exec_via_relay(
         self,
@@ -466,7 +346,9 @@ class ToolkitContainer(Container):
         env: Dict[str, str] | None,
     ) -> ExecResult:
         assert self._relay_ready and self._relay_token and self._relay_local_port
-        payload: dict = {"command": command, "timeout": timeout}
+        # Clamp to relay server's 24-hour hard limit (86400s) so we never get a
+        # bad_timeout 400. The real cap is enforced by the caller (e.g. bash tool).
+        payload: dict = {"command": command, "timeout": min(timeout, 86399)}
         if workdir:
             payload["workdir"] = workdir
         if env:
@@ -487,8 +369,21 @@ class ToolkitContainer(Container):
         try:
             with urllib.request.urlopen(req, timeout=timeout + 30) as r:
                 body = json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_body = ""
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            logger.warning(
+                "exec [%s] (relay): HTTP %d — body: %s",
+                self._job_id[:8],
+                exc.code,
+                error_body or "<empty>",
+            )
+            raise ExecRelayUnavailable(f"HTTP {exc.code}: {exc.reason} — {error_body}") from exc
         except (urllib.error.URLError, ConnectionError, OSError, json.JSONDecodeError) as exc:
-            raise _ExecRelayUnavailable(str(exc)) from exc
+            raise ExecRelayUnavailable(str(exc)) from exc
 
         duration = time.monotonic() - start
         logger.info(
@@ -502,85 +397,6 @@ class ToolkitContainer(Container):
             stderr=body.get("stderr", "").strip(),
             exit_code=int(body.get("exit_code", 1)),
             duration_seconds=round(float(body.get("duration_seconds", duration)), 3),
-        )
-
-    def _exec_direct(
-        self,
-        command: str,
-        effective_timeout: int,
-        workdir: str | None,
-        env: Dict[str, str] | None,
-    ) -> ExecResult:
-        parts: list[str] = []
-        if env:
-            for k, v in env.items():
-                parts.append(f"export {k}={shlex.quote(v)}")
-        if workdir:
-            parts.append(f"cd {shlex.quote(workdir)}")
-        parts.append(command)
-        full_command = " && ".join(parts)
-
-        _SENTINEL = "__CUBE_EXEC_OK__"
-        wrapped = (
-            f"timeout {effective_timeout}s bash -lc {shlex.quote(full_command)}; echo EXIT_CODE:$?; echo {_SENTINEL}"
-        )
-
-        logger.info("exec [%s] (direct): %s", self._job_id[:8], command)
-        result = None
-        duration = 0.0
-        for attempt in range(3):
-            start = time.monotonic()
-            result = _run_eai(
-                ["job", "exec", self._job_id, "--", "bash", "-c", wrapped],
-                eai_path=self._eai_path,
-                profile=self._profile,
-                account=self._account,
-                timeout=effective_timeout + 30,
-            )
-            duration = time.monotonic() - start
-            logger.info(
-                "exec [%s] (direct): done in %.1fs, exit_code=%s",
-                self._job_id[:8],
-                duration,
-                result.returncode,
-            )
-            # Phantom execution: sentinel missing + fast return + outer rc=0.
-            # Happens after CLOSE_WAIT recovery — the eai CLI returns immediately
-            # with empty stdout while the job-side bash never actually ran.
-            if _SENTINEL not in result.stdout and result.returncode == 0 and duration < 2.0:
-                logger.warning(
-                    "exec [%s] (direct): phantom execution detected (attempt %d/3), retrying in 5s",
-                    self._job_id[:8],
-                    attempt + 1,
-                )
-                time.sleep(5)
-                continue
-            break
-
-        stdout = result.stdout  # type: ignore[union-attr]
-        stderr = result.stderr  # type: ignore[union-attr]
-
-        exit_code = 1 if result.returncode != 0 else 0  # type: ignore[union-attr]
-        lines = stdout.rstrip().split("\n")
-        sentinel_removed = False
-        for i in range(len(lines) - 1, -1, -1):
-            if not sentinel_removed and lines[i] == _SENTINEL:
-                lines.pop(i)
-                sentinel_removed = True
-            elif lines[i].startswith("EXIT_CODE:"):
-                try:
-                    exit_code = int(lines[i].split(":", 1)[1])
-                except ValueError:
-                    pass
-                lines.pop(i)
-                break
-        stdout = "\n".join(lines)
-
-        return ExecResult(
-            stdout=stdout.strip(),
-            stderr=stderr.strip(),
-            exit_code=exit_code,
-            duration_seconds=round(duration, 3),
         )
 
     def forward_port(self, container_port: int) -> int:

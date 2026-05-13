@@ -50,9 +50,14 @@ Raises `TypeError` at class-definition time otherwise.
 `Tool.execute_action()` logic:
 1. Resolve the method via `get_action_method(action)` — raises `ValueError` if the
    method doesn't exist OR exists but isn't decorated with `@tool_action`.
-2. Call `method(**action.arguments)`. If result is falsy, substitute `"Success"`.
-3. Wrap result in `Observation(contents=[Content.from_data(result, tool_call_id=action.id)])`.
-4. On exception, log and return `StepError.from_exception(e)`.
+2. Validate `action.arguments` against the method's signature via
+   `inspect.signature(method).bind(**arguments)`. On `TypeError` (unknown or
+   missing kwargs), return an error `Observation` so the agent can correct
+   itself on the next step. This is *not* a `StepError` — argument typos
+   should not terminate the episode.
+3. Call `method(**action.arguments)`. If result is falsy, substitute `"Success"`.
+4. Wrap result in `Observation(contents=[Content.from_data(result, tool_call_id=action.id)])`.
+5. On exception during method execution, log and return `StepError.from_exception(e)`.
 
 ### `@tool_action` decorator
 Sets `func._is_action = True`. Action discovery walks the MRO — an override in a

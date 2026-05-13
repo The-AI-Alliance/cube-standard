@@ -17,7 +17,6 @@ import secrets
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Literal
 
 from cube.container import ContainerLaunchError
 from cube.resource import (
@@ -48,12 +47,27 @@ class ToolkitInfraConfig(InfraConfig):
     account: str | None = None
     preemptable: bool = False
     launch_timeout_seconds: int = 600
-    # "exec_relay" routes .exec() via an in-container HTTP server (bypasses the
-    # eai-exec CLOSE_WAIT hang bug); "direct" keeps every .exec() on the flaky
-    # eai job exec RPC.  exec_relay is strongly preferred; direct is a debug/fallback.
-    exec_mode: Literal["exec_relay", "direct"] = "exec_relay"
     # Override when eai is not on PATH (e.g. installed in ~/bin via .zshrc).
     eai_path: str = "eai"
+    # EAI data full name to mount as the exec-relay sidecar binary.  The data
+    # must contain a single file named ``cube-sidecar`` at its root; it is
+    # mounted read-only at ``/opt/cube-sidecar/``.  With the binary mounted,
+    # the relay works on any image — no ``python3`` required in the container.
+    #
+    # Default points at the maintainer's personal account (``snow.allac``);
+    # that's the only place we can publish today — ``snow.shared`` is admin-
+    # locked.  Tracking ticket to migrate to a world-readable shared location:
+    # TODO once admin approves the write grant.
+    #
+    # Republish with ``scripts/publish-cube-sidecar.sh`` after rebuilding the
+    # Go binary in ``sidecar-go/``.
+    sidecar_data: str | None = "snow.allac.cube_sidecar"
+    # Optional EAI data full name mounted read-only at ``/opt/cube-assets/``
+    # for cube-side helper binaries (e.g. ``uv``) that the harness can copy
+    # into the container at runtime when the image lacks them.  Cubes consult
+    # this path in their evaluator setup; unset → no asset mount.  Same
+    # account caveat as ``sidecar_data``.
+    assets_data: str | None = "snow.allac.cube_uv"
 
     # ── InfraConfig interface ─────────────────────────────────────────────────
 
@@ -99,9 +113,8 @@ class ToolkitInfraConfig(InfraConfig):
         cpu, mem_gb = 2, 4
 
         # Generate a relay token now so we can embed it in the job startup command.
-        # The relay server starts with the job — eliminating bootstrap eai execs
-        # for images that already have python3 (the common case).
-        relay_token = secrets.token_urlsafe(32) if self.exec_mode == "exec_relay" else None
+        # The relay server starts with the job — zero bootstrap eai execs.
+        relay_token = secrets.token_urlsafe(32)
 
         cmd: list[str] = ["job", "new"]
         if self.preemptable:
@@ -114,12 +127,13 @@ class ToolkitInfraConfig(InfraConfig):
         cmd += ["-i", image]
         cmd += ["--cpu", str(cpu)]
         cmd += ["--mem", str(mem_gb)]
-        if relay_token is not None:
-            # Embed relay startup + token into the job command; relay is up before
-            # port-forward is established — no bootstrap eai execs needed.
-            cmd += ["--"] + relay_startup_args(relay_token)
-        else:
-            cmd += ["--", "sleep", "infinity"]
+        if self.sidecar_data is not None:
+            cmd += ["--data", f"{self.sidecar_data}:/opt/cube-sidecar:ro"]
+        if self.assets_data is not None:
+            cmd += ["--data", f"{self.assets_data}:/opt/cube-assets:ro"]
+        # Embed relay startup + token into the job command; relay is up before
+        # port-forward is established — no bootstrap eai execs needed.
+        cmd += ["--"] + relay_startup_args(relay_token)
 
         logger.info("Submitting EAI job for %r (image=%s)…", resource.name, image)
         submit_started_at = datetime.now()
@@ -189,7 +203,6 @@ class ToolkitInfraConfig(InfraConfig):
                 job_id,
                 profile=profile,
                 account=self.account,
-                exec_mode=self.exec_mode,
                 eai_path=self.eai_path,
                 relay_prestarted_token=relay_token,
             )

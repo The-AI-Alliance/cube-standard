@@ -84,30 +84,6 @@ class Container(ResourceHandle, ABC):
     ) -> ExecResult:
         """Execute *command* inside the container."""
 
-    def exec_long_running(
-        self,
-        command: str,
-        *,
-        timeout: int,
-        poll_interval: int = 30,
-        workdir: str | None = None,
-        env: Dict[str, str] | None = None,
-    ) -> ExecResult:
-        """Execute a long-running *command*, decoupled from any RPC channel.
-
-        Default implementation is just ``exec(command, timeout=timeout)`` —
-        fine for backends with reliable exec streaming (LocalContainer,
-        DaytonaContainer, ModalContainer).  Backends whose exec primitive
-        has reliability issues on long-running commands (notably
-        ToolkitContainer — see `docs/toolkit-exec-relay-design.md`) override
-        this to kick off the command in the background inside the
-        container and poll a sentinel file for completion.  Each individual
-        RPC call under this override is short (< 1 s), so a transient CLI
-        hang can be retried cheaply instead of re-running a 30-minute
-        pytest.
-        """
-        return self.exec(command, timeout=timeout, workdir=workdir, env=env)
-
     @abstractmethod
     def forward_port(self, container_port: int) -> int:
         """Return the reachable port for *container_port* on this backend."""
