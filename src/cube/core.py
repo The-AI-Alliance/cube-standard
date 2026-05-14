@@ -20,7 +20,8 @@ import io
 import json
 import traceback
 from abc import ABC, abstractmethod
-from typing import Any, Callable, ClassVar, Self
+from pathlib import Path
+from typing import Annotated, Any, Callable, ClassVar, Literal, Self
 
 from PIL import Image as PILImage
 from pydantic import (
@@ -440,3 +441,35 @@ class EnvironmentOutput(TypedBaseModel):
     truncated: bool = False
     info: dict = Field(default_factory=dict)
     error: StepError | None = None
+
+
+class BinaryArtifactBlob(TypedBaseModel):
+    type: Literal["binary"] = "binary"
+    blob: bytes
+
+
+class FileArtifactBlob(TypedBaseModel):
+    type: Literal["file"] = "file"
+    path: Path
+
+
+class RemoteFileArtifactBlob(TypedBaseModel):
+    type: Literal["remote_file"] = "remote_file"
+    url: str
+
+
+class TextArtifactBlob(TypedBaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+
+ArtifactBlob = Annotated[
+    BinaryArtifactBlob | TextArtifactBlob | FileArtifactBlob | RemoteFileArtifactBlob,
+    Field(discriminator="type"),
+]
+
+
+class Artifact(TypedBaseModel):
+    mime: str
+    id: str
+    blob: ArtifactBlob

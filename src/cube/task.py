@@ -30,6 +30,7 @@ from cube.container import Container, ContainerBackend, ContainerConfig
 from cube.core import (
     Action,
     ActionSchema,
+    Artifact,
     Content,
     EnvironmentOutput,
     Observation,
@@ -401,6 +402,14 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         elif self._container is not None:
             self._container.stop()
             self._container = None
+
+    def task_artifacts(self) -> list[Artifact]:
+        """Override point for task-specific artifacts (e.g. container logs). Default: none."""
+        return []
+
+    def artifacts(self) -> list[Artifact]:
+        """Collect all artifacts from the task and its tool. Called after close()."""
+        return self.task_artifacts() + self.tool.artifacts()
 
 
 class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):

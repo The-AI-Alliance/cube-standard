@@ -64,7 +64,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, List
 
 from cube.container import Container
-from cube.core import Action, ActionSchema, Content, Observation, StepError, TypedBaseModel
+from cube.core import Action, ActionSchema, Artifact, Content, Observation, StepError, TypedBaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,14 @@ class AbstractTool(ABC):
         """
         pass
 
+    @abstractmethod
+    def artifacts(self) -> list[Artifact]:
+        """Return side-channel outputs produced during the episode (traces, logs, etc.).
+
+        Called after close(). Must not raise.
+        """
+        ...
+
 
 class AbstractAsyncTool(ABC):
     """
@@ -150,6 +158,14 @@ class AbstractAsyncTool(ABC):
     def action_set(self) -> List[ActionSchema]:
         """Returns list of actions supported by that tool (same format as AbstractTool)."""
         pass
+
+    @abstractmethod
+    def artifacts(self) -> list[Artifact]:
+        """Return side-channel outputs produced during the episode (traces, logs, etc.).
+
+        Called after close(). Must not raise.
+        """
+        ...
 
 
 class ToolConfig(TypedBaseModel, ABC):
@@ -346,6 +362,9 @@ class Tool(_ToolActionsMixin, AbstractTool):
             return StepError.from_exception(e)
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
+    def artifacts(self) -> list[Artifact]:
+        return []
+
 
 class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
     """
@@ -396,6 +415,9 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
             return StepError.from_exception(e)
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
+    def artifacts(self) -> list[Artifact]:
+        return []
+
 
 class Toolbox(Tool):
     """Composite sync tool that delegates to a list of AbstractTool instances."""
@@ -440,6 +462,12 @@ class Toolbox(Tool):
         for tool in self.tools:
             tool.close()
 
+    def artifacts(self) -> list[Artifact]:
+        result: list[Artifact] = []
+        for tool in self.tools:
+            result.extend(tool.artifacts())
+        return result
+
 
 class AsyncToolbox(AsyncTool):
     """Composite async tool that delegates to a list of AbstractAsyncTool instances."""
@@ -481,6 +509,12 @@ class AsyncToolbox(AsyncTool):
     async def close(self) -> None:
         for tool in self.tools:
             await tool.close()
+
+    def artifacts(self) -> list[Artifact]:
+        result: list[Artifact] = []
+        for tool in self.tools:
+            result.extend(tool.artifacts())
+        return result
 
 
 class ToolboxConfig(ToolConfig):
