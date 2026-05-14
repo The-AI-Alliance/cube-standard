@@ -9,10 +9,10 @@ import asyncio
 import logging
 import time
 from io import BytesIO
-from typing import Any, Literal
+from typing import Any, Literal, override
 
 from cube.container import Container
-from cube.core import Action, Content, Observation, StepError
+from cube.core import Action, Artifact, Content, FileArtifactBlob, Observation, StepError
 from cube.tool import AsyncToolConfig, ToolConfig
 from cube.tools.browser import AsyncBrowserTool, BrowserTool
 from cube_browser_playwright import (
@@ -90,6 +90,7 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
     def __init__(self, config: PlaywrightConfig, session: PlaywrightSession) -> None:
         self.config = config
         self._session = session
+        self._closed = False
 
     @property
     def session(self) -> PlaywrightSession:
@@ -117,6 +118,7 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
     def close(self) -> None:
         """Release all Playwright resources via the session."""
         self._session.stop()
+        self._closed = True
 
     # ------------------------------------------------------------------
     # Action dispatch override — appends page_obs() after every action
@@ -373,6 +375,18 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
     def noop(self) -> None:
         """No-op: take no action and return the current page state."""
         pass
+
+    @override
+    def artifacts(self) -> list[Artifact]:
+        if not self._closed:
+            raise ValueError("artifacts() invoked without closing the tool first.")
+        return [
+            Artifact(
+                id="playwright_trace",
+                blob=FileArtifactBlob(path=self._session.trace_path()),
+                mime="application/zip",
+            )
+        ]
 
 
 class AsyncPlaywrightConfig(AsyncToolConfig):
