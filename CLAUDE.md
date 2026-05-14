@@ -86,7 +86,6 @@ never live in cube-harness.** Full rule: [tool/spec.md § Packaging conventions]
 - **Config → Factory** pattern: `XyzConfig.make()` returns a live `Xyz`. Config is serialized across process boundaries; live object never is.
 - **`TaskConfig` is the serialization boundary** — workers get a `TaskConfig` and call `.make()` locally. Task objects never cross processes.
 - **Credentials** are resolved from env vars at runtime. Never fields on `InfraConfig` or `ContainerBackend` (would be serialized).
-- `Task` is generic over `[TMeta, TTool]` — `Task[FooMeta, FooTool]` narrows `self.tool` to the right type. See [task/spec.md](openspec/specs/task/spec.md).
 
 ## Design docs / RFCs
 
