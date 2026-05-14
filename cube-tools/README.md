@@ -6,6 +6,10 @@ Optional tool implementations for [cube-standard](../README.md).
 
 For instance, web browsing benchmarks (MiniWob, WorkArena, WebArena) can use the `cube-browser-tool` package, which provides `BrowsergymTool` and `PlaywrightTool` -- both satisfying the `AbstractBrowserTool` protocol defined in `cube-standard`.
 
+## When does a tool belong here?
+
+A concrete generalist tool gets its own `cube-tools/cube-<name>-tool/` sub-package **when it pulls a non-trivial runtime dependency** (Playwright, BrowserGym, PyAutoGUI, MCP SDK, …). If the implementation has no extra deps — like `TerminalTool` today — it stays in `cube-standard/src/cube/tools/` alongside the ABC. Tool implementations never live in `cube-harness`; cube-specific tools live in their own cube package, typically by subclassing a generalist tool from here. See [tool/spec.md § Packaging conventions](../openspec/specs/tool/spec.md#packaging-conventions) for the authoritative rule.
+
 ## Packages
 
 | Package | PyPI name | Description |

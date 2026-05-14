@@ -57,8 +57,13 @@ class MyCubeVMBackend(LocalDockerVMBackend):
         ...
 ```
 
+## Where new tool code lives (cube-developer rule)
+
+If you build a **cube-specific** tool (one whose only consumer is your benchmark), it lives in your cube package — typically by subclassing a generalist tool from `cube-tools/`. If you build something **generalist** (reusable across cubes), it belongs in `cube-standard` — either in `src/cube/tools/` (no extra deps) or as a new `cube-tools/cube-<name>-tool/` sub-package (heavy deps). **Never put tool code in `cube-harness`.** See [`openspec/specs/tool/spec.md` § Packaging conventions](../../../../openspec/specs/tool/spec.md#packaging-conventions) for the authoritative rule. When in doubt, raise it during the Reflect phase.
+
 ## Anti-patterns
 
 - Don't fork these packages into the user's cube. Use them as dependencies.
 - Don't reimplement `AbstractBrowserTool` — inherit from `SyncPlaywrightTool` or compose.
 - Don't build your own VM backend unless you truly need a different hypervisor.
+- Don't put generalist tool code in `cube-harness`. It belongs in `cube-standard`.

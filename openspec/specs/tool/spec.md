@@ -107,6 +107,24 @@ the one owning that action name.
 - Action parameter names and types must be JSON-Schema-expressible (primitive types,
   `list`, `dict`, Optional). Pydantic types work via `function_to_dict`.
 
+## Packaging conventions
+
+Where generalist tool code lives:
+
+- **Abstract bases** (e.g. `AbstractBrowserTool`) live in `cube-standard/src/cube/tools/`
+  alongside this spec.
+- **Concrete implementations** live in `cube-standard/cube-tools/cube-<name>-tool/` as
+  optional sub-packages **when they pull a non-trivial runtime dependency** (Playwright,
+  BrowserGym, PyAutoGUI, MCP SDK, …). Otherwise — like `TerminalTool` today — the
+  implementation can sit directly in `cube-standard/src/cube/tools/`.
+- **Tool implementations never live in `cube-harness`.** The harness consumes
+  contracts and concrete implementations from this repo; it does not own tool code.
+  Harness-internal infrastructure that wraps tools (e.g. telemetry decorators) is not
+  itself a tool and is not in scope of this rule.
+- **Cube-specific tools** (a tool whose only consumer is a single benchmark) live in
+  that cube's own package, typically by subclassing a generalist tool from
+  `cube-tools/`. They are not generalist tools and do not move here.
+
 ## Gotchas
 
 - Forgetting `@tool_action` is the most common mistake. `execute_action` will raise
