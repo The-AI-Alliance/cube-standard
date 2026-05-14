@@ -36,6 +36,8 @@ Cross-cutting:
 
 ## Code review
 
+**Default branch is `dev`** — base all PRs off it, not `main`.
+
 **Sign your commits.** Every commit needs a `Signed-off-by` line (`git commit -s`). DCO is enforced by CI — unsigned commits will be blocked.
 
 PRs are reviewed with `/code-review` ([plugin docs](https://github.com/anthropics/claude-code/blob/main/plugins/code-review/README.md)), which audits changes against these guidelines. Write PRs as if a reviewer will check each principle above against the diff.
@@ -60,16 +62,22 @@ src/cube/                       Core framework
 ├── resource.py                 L1/L2/L3 resource lifecycle
 ├── container.py                Single-container abstraction
 ├── backends/                   Docker, Modal, Daytona, Toolkit backends
-├── tools/                      Reference tool stubs (browser)
+├── tools/                      Generalist tool ABCs + dep-free concrete impls (browser ABC, terminal)
 ├── resources/                  BrowserSession, ChatSession protocols
 ├── integrations/nemogym.py     NemoGym interop
 └── _template/                  Scaffold used by `cube init`
 
 cube-resources/                 Optional resource packages (playwright, chat, infra-*)
-cube-tools/                     Optional tool packages (browser, computer, chat)
+cube-tools/                     Optional concrete tool packages — one per heavy dep (browser, computer, chat, web)
 examples/                       counter-cube (reference), toy_benchmark
 tests/                          Unit + integration + backends
 ```
+
+## Tools architecture
+
+ABCs live in `src/cube/tools/`. Concrete impls live in `cube-tools/cube-<name>-tool/`
+when they pull a non-trivial dep; otherwise alongside the ABC. **Tool implementations
+never live in cube-harness.** Full rule: [tool/spec.md § Packaging conventions](openspec/specs/tool/spec.md#packaging-conventions).
 
 ## Key conventions
 

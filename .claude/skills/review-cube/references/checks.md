@@ -47,6 +47,7 @@ Detect which the cube uses by grepping the benchmark module for the ClassVar ass
 - Heavy per-task data (problem statements, patches, archives, evaluator scripts, …) appears as fields on a `TaskMetadata` subclass instead of on a typed `TaskExecutionInfo` subclass surfaced via `Task.execution_info`. Heavy data must live on `TaskExecutionInfo`, not `TaskMetadata`.
 
 **Suggestions:**
+- S-75: Tool code in `tool.py` reimplements a surface that an existing `cube-tools/*` package already provides (browser navigation, mouse/keyboard, web search, …) instead of importing/subclassing it. Per [`openspec/specs/tool/spec.md` § Packaging conventions](../../../../openspec/specs/tool/spec.md#packaging-conventions), generalist tools live in `cube-standard`; cubes consume or subclass them. If the cube needs a new generalist primitive, raise it for upstream rather than embedding it here.
 - S-75: `Task.reset()` has no visible call to `self.tool.reset()`.
 - S-75: `Task.evaluate()` appears to mutate state (writes to `self.tool._env.*`, calls tool action methods, writes to `self._runtime_context`). `evaluate()` must be pure.
 - S-75: `_setup()` / `install()` / `close()` appear non-idempotent (no early-return guard, no `if self._already_setup: return`, destructive ops unconditionally).
