@@ -772,6 +772,7 @@ dependencies = [
     { name = "requests" },
     { name = "rich" },
     { name = "tqdm" },
+    { name = "typing-extensions" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -831,6 +832,7 @@ requires-dist = [
     { name = "tenacity", marker = "extra == 'modal'", specifier = ">=9.1.4" },
     { name = "tenacity", marker = "extra == 'toolkit'", specifier = ">=9.1.4" },
     { name = "tqdm", specifier = ">=4.60" },
+    { name = "typing-extensions", specifier = ">=4.12" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
 ]
 provides-extras = ["dev", "docker", "daytona", "modal", "toolkit"]

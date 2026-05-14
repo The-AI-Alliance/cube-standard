@@ -21,9 +21,10 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Literal, Tuple
+from typing import Any, ClassVar, Dict, Generic, List, Literal, Tuple
 
 from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
+from typing_extensions import TypeVar
 
 from cube import get_cache_dir
 from cube.container import Container, ContainerBackend, ContainerConfig
@@ -39,6 +40,16 @@ from cube.core import (
 )
 from cube.resource import ResourceHandle
 from cube.tool import AbstractTool, ToolConfig
+
+# Type parameters for ``Task``. ``TTMetadata`` narrows ``self.metadata``; ``TTool``
+# narrows ``self.tool`` so cubes that bind to a specific tool surface (e.g.
+# ``TerminalTool``, ``BrowserTool``) can drop ``isinstance`` asserts and
+# per-cube property overrides. Defaults keep ``Task[Meta]`` working as before
+# — ``TTool`` resolves to ``AbstractTool``. ``typing_extensions.TypeVar`` is
+# used (not the stdlib) because ``default=`` on a ``TypeVar`` is PEP 696,
+# which the stdlib added in Python 3.13; we still support 3.12.
+TTMetadata = TypeVar("TTMetadata", bound="TaskMetadata")
+TTool = TypeVar("TTool", bound=AbstractTool, default=AbstractTool)
 
 RuntimeContext = dict[str, Any]
 """
@@ -115,7 +126,7 @@ class TaskExecutionInfo(TypedBaseModel):
     """
 
 
-class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
+class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     """
     Represents a task that an agent must complete in an environment.
 
@@ -136,16 +147,27 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         - step(action) -> EnvironmentOutput        execute action via tool, evaluate if done
         - close()                                  optional resource cleanup
 
-    Type parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
-    statically narrow ``self.metadata`` to a ``TaskMetadata`` subclass without
-    re-annotating the field. Two equivalent forms at runtime:
+    Type parameters:
+        ``TTMetadata`` (bound ``TaskMetadata``) narrows ``self.metadata`` so
+        cubes don't have to re-annotate the field.
 
-        # Unparametrised — ``self.metadata`` typed as ``TaskMetadata``.
+        ``TTool`` (bound ``AbstractTool``, default ``AbstractTool``) narrows
+        ``self.tool`` to a specific tool surface (e.g. ``TerminalTool``).
+        Cubes that bind it drop the ``isinstance(self.tool, FooTool)`` asserts
+        and per-cube property overrides — ``self.tool`` is the right type by
+        construction. Omitting the parameter is equivalent to
+        ``Task[Meta, AbstractTool]``; existing cubes keep working unchanged.
+
+    Three equivalent forms at runtime:
+
+        # Bare — ``self.metadata: TaskMetadata``, ``self.tool: AbstractTool``.
         class FooTask(Task): ...
 
-        # Parametrised — ``self.metadata`` typed as ``FooTaskMetadata``,
-        # autocomplete and static checking work for subclass-specific fields.
+        # Metadata only — ``self.tool`` stays ``AbstractTool``.
         class FooTask(Task[FooTaskMetadata]): ...
+
+        # Both — ``self.tool: FooTool``, no property override needed.
+        class FooTask(Task[FooTaskMetadata, FooTool]): ...
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -178,7 +200,7 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     )
 
     # Non-serializable runtime state, set during model_post_init
-    _tool: AbstractTool | None = PrivateAttr(default=None)
+    _tool: TTool | None = PrivateAttr(default=None)
     _container: Container | None = PrivateAttr(default=None)
     _resource_handle: ResourceHandle | None = PrivateAttr(default=None)
 
@@ -208,10 +230,12 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         read-only working directory) before calling ``tool_config.make()``.
         ``self._container`` is already set when this is called.
         """
-        self._tool = self.tool_config.make(container=self._container)
+        # ToolConfig.make() returns AbstractTool; cubes that parameterize
+        # Task[Meta, TFooTool] vouch that their tool_config produces a TFooTool.
+        self._tool = self.tool_config.make(container=self._container)  # type: ignore[assignment]
 
     @property
-    def tool(self) -> AbstractTool:
+    def tool(self) -> TTool:
         return self._tool  # type: ignore[return-value]
 
     @property
