@@ -62,7 +62,7 @@ instantiable but carries no fields.
 
 ### `Task` (abstract, Pydantic)
 ```python
-class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
+class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     # Serializable fields — SerializeAsAny preserves subclass-specific fields
     # through JSON round-trip (Pydantic would otherwise strip them to the
     # declared base type). Required for every polymorphic field.
@@ -75,9 +75,27 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     accept_agent_stop: bool = True                     # accept STOP_ACTION from agent
 
     # Runtime (PrivateAttr, set in model_post_init)
-    _tool: AbstractTool | None
+    _tool: TTool | None
     _container: Container | None
+
+    @property
+    def tool(self) -> TTool: ...
 ```
+
+`Task` carries two type parameters:
+
+- `TTMetadata` (bound `TaskMetadata`) narrows `self.metadata` so cubes don't
+  re-annotate the field on every access.
+- `TTool` (bound `AbstractTool`, default `AbstractTool`) narrows `self.tool`
+  to a specific tool surface. Cubes that bind it (e.g.
+  `Task[FooMeta, TerminalTool]`) drop `isinstance(self.tool, FooTool)`
+  asserts and per-cube `tool` property overrides — `self.tool` is the right
+  type by construction.
+
+Defaults make `TTool` non-breaking: `Task[Meta]` resolves to
+`Task[Meta, AbstractTool]`. `typing_extensions.TypeVar` is used to back
+default-on-TypeVar (PEP 696) to Python 3.12; the stdlib `TypeVar` gained
+the feature in 3.13.
 
 `execution_info` is the typed surface for heavy per-task data. Cubes
 populate it inside `TaskConfig.make()`: validate
