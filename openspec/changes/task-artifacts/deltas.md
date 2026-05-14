@@ -76,7 +76,7 @@ overridden.
 returns `[]`).
 
 **Direct `AbstractTool` / `AbstractAsyncTool` subclasses** — must add
-`artifacts() -> list[Artifact]`. In cube-harness, `ToolWithTelemetry`
-and `AsyncToolWithTelemetry` should delegate to the wrapped tool.
+`artifacts() -> list[Artifact]`. No known cases in cube-harness today
+(`ToolWithTelemetry` subclasses `Tool`, not `AbstractTool`).
 
 **`Task` subclasses** — no change required (defaults return `[]`).

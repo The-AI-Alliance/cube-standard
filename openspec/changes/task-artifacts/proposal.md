@@ -53,9 +53,9 @@ The concrete bases provide a default `artifacts()` returning `[]`.
 
 **Breaking for direct `AbstractTool`/`AbstractAsyncTool` subclasses**
 that don't go through `Tool`/`AsyncTool`. These must add an
-`artifacts()` implementation. In cube-harness, `ToolWithTelemetry` and
-`AsyncToolWithTelemetry` are the known cases — they should delegate to
-the wrapped tool's `artifacts()`.
+`artifacts()` implementation. No known cases exist in cube-harness
+today — `ToolWithTelemetry` and `AsyncToolWithTelemetry` subclass the
+concrete `Tool`/`AsyncTool` bases and inherit the default.
 
 **Fully backwards compatible for existing Task subclasses.** Both
 `task_artifacts()` and `artifacts()` have default implementations.
