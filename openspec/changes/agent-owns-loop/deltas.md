@@ -41,10 +41,21 @@ Add at the end of the Public API section:
 > The JSON-RPC endpoints `tools/call` and `cube/step` are the canonical surface
 > for external agents that do not run in the same process as the task. A
 > harness driving an agent in-process is free to compose monitoring wrappers
-> around the task's `Toolbox` (see cube-harness `MonitoredToolbox`); those
+> around the task's `Toolbox` (see cube-harness `MonitoredTool`); those
 > wrappers are not part of this contract. Remote-agent monitoring, when added,
 > will attach on the harness side of the connection and is out of scope for
 > the server protocol itself.
+>
+> **CLI-agent connectors.** cube-harness's planned Phase-2 connectors for
+> CLI agents (Codex CLI, Goose, Pi, …) work by launching the binary inside
+> the cube's sandbox and pointing it at this JSON-RPC server (over its native
+> MCP-compatible wire format). The harness is responsible for: (a) starting
+> a per-task server instance scoped to the episode, (b) injecting its URL
+> into the subprocess (env var / config file / CLI flag — depending on the
+> agent), and (c) shutting the server down on episode finalization. The
+> server protocol itself requires no changes to support this — it is the
+> per-task `make_task_jsonrpc_app(task)` / `make_task_rpc_server` already
+> shipped in Phase 1.
 
 No code change.
 
