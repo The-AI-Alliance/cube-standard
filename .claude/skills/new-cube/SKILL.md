@@ -22,7 +22,7 @@ Infer register from vocabulary (ML jargon vs. product/infra jargon) and from wha
 - `task_metadata` is a `ClassVar` on **`BenchmarkConfig`**, not on `TaskConfig`. `get_task_configs()` stamps each emitted `TaskConfig` with the right `metadata` — workers are self-contained.
 - `Task.reset()` must call `self.tool.reset()`.
 - `Task.evaluate()` is pure — no state mutation.
-- **Parameterize `Task` on the tool type when the cube uses a specific tool surface.** `class FooTask(Task[FooMeta, TerminalTool])` gives `self.tool: TerminalTool` for free — no `isinstance` asserts, no `tool` property override. `Task[Meta]` (which defaults to `Task[Meta, AbstractTool]`) is fine only when the cube genuinely doesn't care which tool it gets. See `references/architecture.md`.
+- When the cube uses a specific tool surface, parameterize `Task[Meta, FooTool]` to skip `isinstance` narrowing. See `references/architecture.md`.
 - `BenchmarkConfig.install()`, `Benchmark._setup()`, and `Benchmark.close()` must all be idempotent. The compliance suite calls `close()` twice.
 - Debug agent must reach `reward == 1.0` on every debug task.
 - `get_debug_benchmark()` in `debug.py` takes **no arguments** and returns a `BenchmarkConfig`. Infra is injected at `config.make(infra)` time, not at config construction.
