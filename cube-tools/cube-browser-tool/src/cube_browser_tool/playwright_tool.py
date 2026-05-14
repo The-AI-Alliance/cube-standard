@@ -125,6 +125,9 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
     def execute_action(self, action: Action) -> Observation | StepError:
         result = super().execute_action(action)
         try:
+            # All browser actions return None, so super() always produces a
+            # spurious "Success" content item. Discard it and return the page
+            # observation directly — that is the real result for browser tools.
             obs = self.page_obs()
             if isinstance(result, StepError):
                 # Prepend the error as text so the agent can see what went wrong
@@ -134,6 +137,9 @@ class SyncPlaywrightTool(BrowserTool, BrowserActionSpace):
                     tool_call_id=action.id,
                 )
                 obs.contents.insert(0, error_content)
+            # Propagate tool_call_id so the observation maps back to the
+            # assistant's tool_call, keeping the message sequence valid for
+            # APIs that require tool responses after tool_calls.
             if action.id and obs.contents:
                 obs.contents[0].tool_call_id = action.id
             return obs
@@ -450,6 +456,9 @@ class AsyncPlaywrightTool(AsyncBrowserTool, AsyncBrowserActionSpace):
     async def execute_action(self, action: Action) -> Observation | StepError:
         result = await super().execute_action(action)
         try:
+            # All browser actions return None, so super() always produces a
+            # spurious "Success" content item. Discard it and return the page
+            # observation directly — that is the real result for browser tools.
             obs = await self.page_obs()
             if isinstance(result, StepError):
                 # Prepend the error as text so the agent can see what went wrong
@@ -459,6 +468,9 @@ class AsyncPlaywrightTool(AsyncBrowserTool, AsyncBrowserActionSpace):
                     tool_call_id=action.id,
                 )
                 obs.contents.insert(0, error_content)
+            # Propagate tool_call_id so the observation maps back to the
+            # assistant's tool_call, keeping the message sequence valid for
+            # APIs that require tool responses after tool_calls.
             if action.id and obs.contents:
                 obs.contents[0].tool_call_id = action.id
             return obs
