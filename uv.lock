@@ -759,7 +759,7 @@ dev = [{ name = "pytest", specifier = ">=9.0" }]
 
 [[package]]
 name = "cube-standard"
-version = "0.1.0rc8"
+version = "0.1.0rc9"
 source = { editable = "." }
 dependencies = [
     { name = "docstring-parser" },
