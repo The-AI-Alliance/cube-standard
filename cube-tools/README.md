@@ -35,22 +35,24 @@ pip install cube-miniwob[browser]
 
 ### Example usage for VM-based desktop benchmark cubes
 
-Desktop benchmark cubes (OSWorld, …) use `cube-computer-tool` with a live VM handle:
+Desktop benchmark cubes (OSWorld, …) use `cube-computer-tool`. The VM is
+provisioned through an `InfraConfig` (`VMResourceConfig` → `LocalInfraConfig` /
+`cube-infra-aws` / `cube-infra-azure`), which returns a `ResourceHandle`; the tool
+connects to the in-VM guest agent via `attach_endpoint(handle.endpoint)`:
 
 ```python
 from cube_computer_tool import ComputerConfig, ActionSpace
 
 # computer_13: 13 mouse/keyboard primitives
 config = ComputerConfig(action_space=ActionSpace.COMPUTER_13)
-tool = config.make(vm=vm)  # vm is a cube.vm.VM handle
 
 # pyautogui: execute Python/pyautogui code in the VM
-config = ComputerConfig(action_space=ActionSpace.PYAUTOGUI)
-tool = config.make(vm=vm)
+# config = ComputerConfig(action_space=ActionSpace.PYAUTOGUI)
 
-# Deferred VM attach (for deferred-launch patterns)
+# The tool is constructed without a live connection, then attached once the VM
+# is launched (deferred-launch pattern that fits the InfraConfig lifecycle).
 tool = config.make()
-tool.attach_vm(vm)
+tool.attach_endpoint(handle.endpoint)  # handle = infra.launch(vm_resource)
 ```
 
 ## Adding a new tool package
