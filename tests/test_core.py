@@ -4,7 +4,7 @@ import json
 
 import pytest
 from PIL import Image as PILImage
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from cube.core import (
     Action,
@@ -15,6 +15,7 @@ from cube.core import (
     StepError,
     StructuredContent,
     TextContent,
+    ValidatedConfig,
 )
 
 # --- TypedBaseModel (via Action) ---
@@ -214,3 +215,44 @@ def test_step_error_from_exception():
         err = StepError.from_exception(e)
     assert err.error_type == "ValueError"
     assert err.exception_str == "something went wrong"
+
+
+# --- ValidatedConfig ---
+
+
+class _Budget(ValidatedConfig):
+    cost_limit: float = 1.0
+
+
+class _AgentCfg(ValidatedConfig):
+    max_actions: int = 100
+    budget: _Budget = _Budget()
+
+
+def test_validated_config_rejects_bad_assignment():
+    cfg = _AgentCfg()
+    with pytest.raises(ValidationError):
+        cfg.max_actions = "not an int"  # type: ignore[assignment]
+
+
+def test_validated_config_allows_good_assignment():
+    cfg = _AgentCfg()
+    cfg.max_actions = 200
+    assert cfg.max_actions == 200
+
+
+def test_validated_config_validates_nested_assignment():
+    cfg = _AgentCfg()
+    with pytest.raises(ValidationError):
+        cfg.budget.cost_limit = "free"  # type: ignore[assignment]
+    cfg.budget.cost_limit = 2.0
+    assert cfg.budget.cost_limit == 2.0
+
+
+def test_validated_config_preserves_typed_round_trip():
+    """validate_assignment must not break TypedBaseModel's _type polymorphism."""
+    cfg = _AgentCfg(max_actions=42)
+    data = cfg.model_dump()
+    assert data["_type"] == f"{__name__}._AgentCfg"
+    restored = _AgentCfg.model_validate(data)
+    assert restored == cfg

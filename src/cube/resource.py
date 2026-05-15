@@ -76,7 +76,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
-from cube.core import TypedBaseModel
+from cube.core import TypedBaseModel, ValidatedConfig
 
 if TYPE_CHECKING:
     pass
@@ -396,7 +396,7 @@ class ResourceHandle(ABC):
 # ── InfraConfig ───────────────────────────────────────────────────────────────
 
 
-class InfraConfig(TypedBaseModel, ABC):
+class InfraConfig(ValidatedConfig, ABC):
     """Harness-owned config + executor for resource provisioning and lifecycle.
 
     Extends TypedBaseModel for serializability (polymorphic via _type field —
