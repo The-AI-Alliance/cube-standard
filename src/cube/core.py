@@ -25,6 +25,7 @@ from typing import Any, Callable, ClassVar, Self
 from PIL import Image as PILImage
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     SerializeAsAny,
     field_serializer,
@@ -74,6 +75,23 @@ class TypedBaseModel(BaseModel):
                 "Ensure the data was serialized from a concrete subclass (contains '_type' field)."
             )
         return handler(value)
+
+
+class ValidatedConfig(TypedBaseModel):
+    """A ``TypedBaseModel`` that validates attribute assignment.
+
+    Plain Pydantic models only validate at construction; assigning a wrongly
+    typed value afterwards silently succeeds and fails much later (often deep
+    in a worker process). Config objects are routinely tweaked by attribute
+    assignment in recipes (``agent.budget.cost_limit = 2.0``), so the failure
+    must surface at the point of assignment instead.
+
+    Subclass this instead of ``TypedBaseModel`` for any config a user mutates
+    after construction. For validation to reach nested writes
+    (``cfg.sub.field = ...``) every model in the tree must subclass this.
+    """
+
+    model_config = ConfigDict(validate_assignment=True)
 
 
 class ActionSchema(TypedBaseModel):

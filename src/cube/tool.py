@@ -64,7 +64,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, List
 
 from cube.container import Container
-from cube.core import Action, ActionSchema, Content, Observation, StepError, TypedBaseModel
+from cube.core import Action, ActionSchema, Content, Observation, StepError, ValidatedConfig
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +152,7 @@ class AbstractAsyncTool(ABC):
         pass
 
 
-class ToolConfig(TypedBaseModel, ABC):
+class ToolConfig(ValidatedConfig, ABC):
     """
     Configuration for creating task-specific tools.
 
@@ -178,7 +178,7 @@ class ToolConfig(TypedBaseModel, ABC):
         pass
 
 
-class AsyncToolConfig(TypedBaseModel, ABC):
+class AsyncToolConfig(ValidatedConfig, ABC):
     """Configuration for creating async task-specific tools.
 
     Mirrors ToolConfig but make() is a coroutine, allowing async resource

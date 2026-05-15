@@ -63,7 +63,7 @@ from pydantic import Field, SerializeAsAny
 
 from cube import get_cache_dir
 from cube.container import ContainerBackend
-from cube.core import TypedBaseModel
+from cube.core import TypedBaseModel, ValidatedConfig
 from cube.resource import InfraConfig, ResourceConfig
 from cube.seed import AbstractSeedGenerator
 from cube.task import RuntimeContext, Task, TaskConfig, TaskMetadata
@@ -130,7 +130,7 @@ class BenchmarkMetadata(TypedBaseModel):
     )
 
 
-class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
+class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
     """Serializable description of a benchmark. Safe to copy, serialize, and ship.
 
     Subclasses declare four class-level attributes:
