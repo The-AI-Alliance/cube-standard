@@ -19,23 +19,11 @@ base class that holds a concrete subclass value (e.g., `tool_config: ToolConfig`
 a `BrowserToolConfig`).
 
 ### `ValidatedConfig`
-```python
-class ValidatedConfig(TypedBaseModel):
-    model_config = ConfigDict(validate_assignment=True)
-```
-A `TypedBaseModel` that also validates attribute assignment, not just construction.
-Subclass this (instead of `TypedBaseModel`) for any config a user mutates after
-construction — `agent.budget.cost_limit = 2.0` raises `ValidationError` at the
-assignment site instead of failing later in a worker. For validation to reach nested
-writes (`cfg.sub.field = ...`), every model in the tree must subclass it.
-
-`model_copy(update=...)` bypasses assignment validation (standard Pydantic behaviour),
-so `BenchmarkConfig` subsetting helpers are unaffected. The polymorphic `_type`
-round-trip is preserved.
-
-The user-facing mutable config ABCs subclass this: `ToolConfig`, `AsyncToolConfig`
-(`cube.tool`), `InfraConfig` (`cube.resource`), `BenchmarkConfig` (`cube.benchmark`).
-Non-config `TypedBaseModel` types keep construction-only validation.
+`TypedBaseModel` + `ConfigDict(validate_assignment=True)`: bad attribute assignment
+raises at the assignment site, not later in a worker. Subclassed by the user-mutable
+config ABCs (`ToolConfig`, `AsyncToolConfig`, `InfraConfig`, `BenchmarkConfig`); other
+`TypedBaseModel` types keep construction-only validation. `model_copy(update=...)`
+bypasses it (so subsetting helpers are unaffected); `_type` round-trip preserved.
 
 ### `Action`
 ```python
