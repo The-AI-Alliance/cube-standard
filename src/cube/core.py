@@ -20,6 +20,7 @@ import io
 import json
 import traceback
 from abc import ABC, abstractmethod
+from collections.abc import Iterator, Mapping
 from typing import Any, Callable, ClassVar, Self
 
 from PIL import Image as PILImage
@@ -92,6 +93,42 @@ class ValidatedConfig(TypedBaseModel):
     """
 
     model_config = ConfigDict(validate_assignment=True)
+
+
+class ConfigRegistry[T: BaseModel](Mapping[str, T]):
+    """Maps a name to a canonical config; every lookup returns a deep copy.
+
+    Used for the named-config catalogs that recipes pick from — canonical
+    agent configs, per-cube benchmark configs, infra profiles:
+
+        agent = GENNY_CONFIGS["swe"]
+        agent.budget.cost_limit = 2.0
+
+    Every lookup returns a fresh ``model_copy(deep=True)``, so a caller can
+    never mutate the shared canonical instance and corrupt other recipes in
+    the process. Trade-off: bind to a variable before mutating —
+    ``REG["x"].field = y`` mutates a throwaway and no-ops.
+
+    A ``Mapping`` (not a ``dict`` subclass) on purpose: ``dict.get`` /
+    ``.values`` / ``.items`` / ``**unpack`` would bypass ``__getitem__`` and
+    hand out the shared instance. ``Mapping`` routes every read through
+    ``__getitem__``, so copy-on-access actually holds.
+    """
+
+    def __init__(self, configs: dict[str, T]) -> None:
+        self._configs = configs
+
+    def __getitem__(self, name: str) -> T:
+        try:
+            return self._configs[name].model_copy(deep=True)
+        except KeyError:
+            raise KeyError(f"Unknown config {name!r}. Available: {sorted(self._configs)}") from None
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._configs)
+
+    def __len__(self) -> int:
+        return len(self._configs)
 
 
 class ActionSchema(TypedBaseModel):

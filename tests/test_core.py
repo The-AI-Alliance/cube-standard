@@ -9,6 +9,7 @@ from pydantic import BaseModel, ValidationError
 from cube.core import (
     Action,
     ActionSchema,
+    ConfigRegistry,
     Content,
     ImageContent,
     Observation,
@@ -256,3 +257,29 @@ def test_validated_config_preserves_typed_round_trip():
     assert data["_type"] == f"{__name__}._AgentCfg"
     restored = _AgentCfg.model_validate(data)
     assert restored == cfg
+
+
+# --- ConfigRegistry ---
+
+
+def test_config_registry_lookup_returns_independent_deep_copy():
+    reg = ConfigRegistry({"x": _AgentCfg(max_actions=10)})
+    a = reg["x"]
+    b = reg["x"]
+    assert a is not b
+    a.budget.cost_limit = 99.0
+    assert reg["x"].budget.cost_limit != 99.0  # shared instance untouched
+
+
+def test_config_registry_unknown_name_lists_available():
+    reg = ConfigRegistry({"x": _AgentCfg()})
+    with pytest.raises(KeyError, match=r"Unknown config 'y'. Available: \['x'\]"):
+        reg["y"]
+
+
+def test_config_registry_is_a_readonly_mapping():
+    reg = ConfigRegistry({"a": _AgentCfg(), "b": _AgentCfg()})
+    assert len(reg) == 2
+    assert sorted(reg) == ["a", "b"]
+    assert "a" in reg
+    assert not hasattr(reg, "__setitem__")
