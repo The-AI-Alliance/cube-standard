@@ -47,7 +47,7 @@ class _Task(Task):
 class _TaskConfig(TaskConfig):
     """Base TaskConfig; each BenchmarkConfig binds to its own subclass below."""
 
-    def make(self, runtime_context=None, container_backend=None):
+    def make(self, runtime_context=None):
         return _Task(
             metadata=self.metadata,
             tool_config=self.tool_config or _ToolConfig(),

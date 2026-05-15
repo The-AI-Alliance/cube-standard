@@ -24,6 +24,11 @@ graph TD
     TaskConfig -->|"make(runtime_context)"| Task
     TaskConfig -->|"has"| ToolConfig
 
+    %% Container provisioning via injected InfraConfig
+    InfraConfig[InfraConfig<br/>Provisions containers/VMs<br/>via runtime_context['infra']]
+    Task -->|"model_post_init: launch_task_container()"| InfraConfig
+    InfraConfig -->|"launch(ContainerConfig)"| Container
+
     %% ToolConfig creates Tool
     ToolConfig -->|"make(container)"| Tool
 
@@ -59,7 +64,7 @@ graph TD
     class Task,Tool core
     class TaskConfig,ToolConfig config
     class Server factory
-    class RuntimeContext,Container infra
+    class RuntimeContext,Container,InfraConfig infra
 ```
 
 ## Flow Diagram: From Benchmark to Task Execution
@@ -88,11 +93,11 @@ sequenceDiagram
 
     %% Spawning a Task Server
     User->>Benchmark: spawn(task_config)
-    Benchmark->>TaskConfig: make(runtime_context, container_backend)
+    Benchmark->>TaskConfig: make(runtime_context)
 
     %% Create Tool & Container
     TaskConfig->>Task: Construct Task(metadata, tool_config, ...)
-    Note over Task: model_post_init creates tool from tool_config<br/>and launches container if backend provided
+    Note over Task: model_post_init: if metadata.container_config is set<br/>and runtime_context['infra'] is present, launch the<br/>container via the injected InfraConfig, then build the tool
 
     %% Create Server
     Benchmark->>Task: setup() [not called by spawn]
@@ -165,7 +170,6 @@ classDiagram
         +ClassVar~dict~ task_metadata
         +ClassVar~type~ task_config_class
         -RuntimeContext _runtime_context
-        +ContainerBackend container_backend
         +ToolConfig tool_config
         +AbstractSeedGenerator seed_generator
         +setup() void
@@ -184,14 +188,13 @@ classDiagram
         <<abstract>>
         +str task_id
         +ToolConfig tool_config
-        +make(runtime_context, container_backend) Task
+        +make(runtime_context) Task
     }
 
     class Task {
         <<abstract>>
         +TaskMetadata metadata
         +ToolConfig tool_config
-        +ContainerBackend container_backend
         +RuntimeContext runtime_context
         +bool validate_per_step
         +bool accept_agent_stop
@@ -228,10 +231,19 @@ classDiagram
         +action_set List~ActionSchema~
     }
 
-    class ContainerBackend {
+    class InfraConfig {
         <<abstract>>
-        +launch(config) Container
+        +provision(resource) None
+        +launch(resource) ResourceHandle
     }
+    note for InfraConfig "Injected via runtime_context['infra'].\nLocalInfraConfig is the default/local infra."
+
+    class ContainerConfig {
+        +str image
+        +float ram_gb
+        +float cpu_cores
+    }
+    note for ContainerConfig "TaskMetadata.container_config — declares\nWHAT container the task needs."
 
     class Container {
         <<abstract>>
@@ -245,7 +257,9 @@ classDiagram
     Task "1" --> "1" AbstractTool : uses (via _tool)
     Task "1" --> "0..1" RuntimeContext : references
     Task "1" --> "0..1" Container : references (via _container)
-    ContainerBackend --> Container : launches
+    Task ..> ContainerConfig : metadata.container_config declares
+    Task ..> InfraConfig : reads from runtime_context['infra']
+    InfraConfig --> Container : launches (launch_task_container)
     Tool --|> AbstractTool : implements
 ```
 
@@ -257,7 +271,7 @@ classDiagram
 | **Benchmark** | TaskMetadata | Contains multiple | `task_metadata` ClassVar holds `dict[str, TaskMetadata]` |
 | **Benchmark** | TaskConfig | Yields on demand | `get_task_configs()` yields `TaskConfig` |
 | **Benchmark** | Task | Spawns via server | `spawn(task_config)` creates task and server |
-| **TaskConfig** | Task | Factory | `make(runtime_context, container_backend)` returns `Task` |
+| **TaskConfig** | Task | Factory | `make(runtime_context)` returns `Task` |
 | **TaskConfig** | ToolConfig | Has one (optional) | `tool_config` field |
 | **ToolConfig** | Tool | Factory | `make()` returns `AbstractTool` |
 | **Task** | Tool | Uses | `tool` field, `step()` calls `tool.execute_action()` |
@@ -267,15 +281,16 @@ classDiagram
 | **Tool** | Action | Executes | `execute_action(action)` returns `Observation` |
 | **Task** | Tool | Filters actions | `action_set` calls `filter_actions(tool.action_set)` |
 | **Server** | Task | Wraps | FastAPI endpoints delegate to task methods |
-| **ContainerBackend** | Container | Launches | `launch(config)` returns `Container` |
+| **Task** | InfraConfig | Reads injected infra | `runtime_context["infra"]` provisions the container in `model_post_init` |
+| **InfraConfig** | Container | Launches | `launch_task_container()` provisions from `metadata.container_config` |
 
 ## Lifecycle Flow
 
 1. **Benchmark Setup**:
-   - User creates Benchmark instance (passing `container_backend`, `tool_config`, `seed_generator` as constructor params)
-   - User calls `benchmark.setup()`
+   - User builds `BenchmarkConfig` and calls `config.make(infra)`; `infra` is forwarded as `Benchmark._infra`
+   - `make()` calls `benchmark.setup()`
    - Benchmark implementation (`_setup()`) sets:
-     - `_runtime_context`: Shared infrastructure references (containers, VMs, etc.)
+     - `_runtime_context`: Shared infrastructure references; cubes that need per-task containers publish the injected infra as `_runtime_context["infra"] = self._infra`
    - Note: `benchmark_metadata`, `task_metadata`, `task_config_class` are **class-level attributes** defined on the subclass, not set in `_setup()`
 
 2. **Task Config Creation**:
@@ -288,10 +303,10 @@ classDiagram
 3. **Task Spawning**:
    - User calls `benchmark.spawn(task_config)`
    - **Creates Task**:
-     - Calls `task_config.make(runtime_context=benchmark._runtime_context, container_backend=benchmark.container_backend)`
-     - Inside `make()`: constructs `Task(metadata, tool_config, runtime_context, container_backend, ...)`
+     - Calls `task_config.make(runtime_context=benchmark._runtime_context)`
+     - Inside `make()`: constructs `Task(metadata, tool_config, runtime_context, ...)`
      - Inside `Task.model_post_init()`:
-       - Launches container: `_container = container_backend.launch(metadata.container_config)`
+       - If `metadata.container_config` is set and `runtime_context["infra"]` is present, provisions the container via the injected `InfraConfig` (`cube.task_infra.launch_task_container`)
        - Creates tool: `_tool = tool_config.make(container=_container)`
    - **Creates Server**:
      - Calls `make_task_rpc_server(task)`

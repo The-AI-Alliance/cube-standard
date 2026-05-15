@@ -202,11 +202,8 @@ def _spawn_task_subprocess(
     endpoint and future Ray / storage dispatch already rely on) and catches
     non-portable state at development time instead of silently corrupting it at
     scale.  The task is created *inside* the subprocess so live resources
-    (tool instances, containers, …) are owned by the worker.
-
-    ``container_backend`` is intentionally not forwarded — it is a legacy
-    parameter being replaced by the ``infra`` / ``resource`` pattern.  Infra
-    state is passed via ``runtime_context`` instead (see TaskConfig.make()).
+    (tool instances, containers, …) are owned by the worker.  Infra state is
+    passed via ``runtime_context`` (see ``TaskConfig.make()``).
     """
     task_config = TaskConfig.model_validate_json(task_config_json)
     runtime_ctx = _load_runtime_context(runtime_ctx_json)

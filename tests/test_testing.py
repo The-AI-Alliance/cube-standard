@@ -71,12 +71,12 @@ class FailOnResetTask(Task):
 
 
 class DoneTaskConfig(TaskConfig):
-    def make(self, runtime_context=None, container_backend=None) -> DoneTask:
+    def make(self, runtime_context=None) -> DoneTask:
         return DoneTask(metadata=self.metadata, tool_config=NoopToolConfig())
 
 
 class FailTaskConfig(TaskConfig):
-    def make(self, runtime_context=None, container_backend=None) -> FailOnResetTask:
+    def make(self, runtime_context=None) -> FailOnResetTask:
         return FailOnResetTask(metadata=self.metadata, tool_config=NoopToolConfig())
 
 
@@ -236,7 +236,7 @@ def test_suite_parallel_workers_collects_all_episode_results_when_first_task_rai
     """Every future must get .result() so a failure in an earlier task does not swallow later ones."""
 
     class FirstFailsTaskConfig(TaskConfig):
-        def make(self, runtime_context=None, container_backend=None):
+        def make(self, runtime_context=None):
             if self.task_id == "t1":
                 raise RuntimeError("t1 make failed")
             return DoneTask(metadata=self.metadata, tool_config=NoopToolConfig())
@@ -466,7 +466,6 @@ class _FakeBenchmark:
 class _FakeBenchmarkConfig:
     def __init__(self):
         self._tc = _FakeTaskConfig()
-        self.container_backend = None
 
     def install(self):
         pass
@@ -504,7 +503,7 @@ def test_check_reset_reproducibility_ok_and_empty_diff_when_matching():
 
     class _SameBenchmarkConfig:
         def __init__(self):
-            self.container_backend = None
+            pass
 
         def install(self):
             pass

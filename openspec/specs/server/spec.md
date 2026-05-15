@@ -119,8 +119,10 @@ through at scale.
    module-level functions (macOS/spawn-compat requirement — local closures can't
    be used as subprocess targets). Both receive JSON-dumped strings, never
    live Pydantic objects.
-2. `container_backend` is NOT forwarded to task subprocesses — legacy parameter being
-   replaced by the `infra` / `resource` pattern. Infra state goes via `runtime_context`.
+2. Container provisioning crosses the subprocess boundary via `runtime_context`,
+   not a dedicated parameter: the `InfraConfig` is published into
+   `_runtime_context["infra"]`, JSON-serialized by `_dump_runtime_context`, and
+   rehydrated on the worker (by `_type`) before `task_config.make(runtime_context=...)`.
 3. All benchmark methods are synchronous; `async def dispatch` is only for
    `await request.json()`. Long-running sync work must use `asyncio.to_thread()`.
 4. Results are serialized with `model.model_dump(mode="json")`. Non-JSON-serializable

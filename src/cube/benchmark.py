@@ -62,7 +62,6 @@ from typing import Any, ClassVar, Generator, Mapping, Self, Sequence, cast
 from pydantic import Field, SerializeAsAny
 
 from cube import get_cache_dir
-from cube.container import ContainerBackend
 from cube.core import TypedBaseModel, ValidatedConfig
 from cube.resource import InfraConfig, ResourceConfig
 from cube.seed import AbstractSeedGenerator
@@ -197,11 +196,6 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
             "Declared resource dependencies. ``make(infra)`` calls ``infra.provision(r)`` "
             "for each entry whose ``provision_status`` is not ``ready`` before setup runs."
         ),
-    )
-    container_backend: SerializeAsAny[ContainerBackend] | None = Field(
-        default=None,
-        description="Optional container backend passed through to every spawned task.",
-        deprecated=True,
     )
     tool_config: SerializeAsAny[ToolConfig] | None = Field(
         default=None,
@@ -729,8 +723,6 @@ class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
         missing: list[str] = []
         if not self._runtime_context:
             missing.append("_runtime_context")
-        if self.config.container_backend is None:
-            missing.append("container_backend")
         if self.config.tool_config is None:
             missing.append("tool_config")
         if self.config.seed_generator is None:
@@ -755,10 +747,7 @@ class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
                 f"Task '{task_config.task_id}' not found in benchmark "
                 f"{self.config.name!r} (current view has {self.config.num_tasks} tasks)"
             )
-        return task_config.make(
-            runtime_context=self._runtime_context,
-            container_backend=self.config.container_backend,
-        )
+        return task_config.make(runtime_context=self._runtime_context)
 
     # ── Context-manager sugar ─────────────────────────────────────────────────
 
@@ -852,10 +841,7 @@ class CompositeBenchmark(Benchmark["CompositeBenchmarkConfig"]):
             # CompositeBenchmark can continue routing.
             return sub_bench.spawn(task_config.model_copy(update={"sub_bench_name": remaining_path}))
         # Leaf: call make() directly to bypass sub_bench.spawn() validation.
-        return task_config.make(
-            runtime_context=sub_bench._runtime_context,
-            container_backend=sub_bench.config.container_backend,
-        )
+        return task_config.make(runtime_context=sub_bench._runtime_context)
 
 
 class CompositeBenchmarkConfig(BenchmarkConfig):

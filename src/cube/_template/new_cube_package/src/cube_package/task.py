@@ -22,7 +22,6 @@ self.load_task_execution_info() when your cube ships heavy data.
 from typing import Any
 
 from cube.benchmark import RuntimeContext
-from cube.container import ContainerBackend
 from cube.core import Observation
 from cube.task import Task, TaskConfig, TaskExecutionInfo  # noqa: F401  (TaskExecutionInfo used in commented CubeExecutionInfo example below)
 from cube_package.tool import CubeToolConfig
@@ -100,7 +99,6 @@ class CubeTaskConfig(TaskConfig):
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
     ) -> CubeTask:
         # By convention, fail fast if this worker is misconfigured.
         self.verify_installed()
@@ -113,5 +111,4 @@ class CubeTaskConfig(TaskConfig):
             execution_info=None,  # set to ``exec_info`` if you populate it above
             tool_config=self.tool_config or CubeToolConfig(),
             runtime_context=runtime_context,
-            container_backend=container_backend,
         )

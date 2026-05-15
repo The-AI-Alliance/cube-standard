@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
-from cube.container import Container, ContainerBackend
+from cube.container import Container
 from cube.core import Observation
 from cube.server import make_benchmark_jsonrpc_app, make_task_jsonrpc_app
 from cube.task import Task, TaskConfig, TaskMetadata
@@ -66,13 +66,11 @@ class _CounterTaskConfig(TaskConfig):
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
     ) -> _CounterTask:
         return _CounterTask(
             metadata=self.metadata,
             tool_config=self.tool_config or _CounterToolConfig(),
             runtime_context=runtime_context,
-            container_backend=container_backend,
         )
 
 

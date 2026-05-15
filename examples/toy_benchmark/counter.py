@@ -7,13 +7,14 @@ This example demonstrates:
 """
 
 import argparse
-import os
 from collections.abc import Generator
 from typing import Any, ClassVar, Dict, Literal, Tuple
 
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
-from cube.container import Container, ContainerBackend, ContainerConfig
+from cube.container import Container, ContainerConfig
 from cube.core import Action, ActionSchema, Observation
+from cube.infra_local import LocalInfraConfig
+from cube.resource import InfraConfig
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
 
@@ -181,23 +182,30 @@ class CounterTaskConfig(TaskConfig):
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
     ) -> ReachTargetTask:
         tool_cfg = self.tool_config or CounterToolConfig()
         return ReachTargetTask(
             metadata=self.metadata,
             tool_config=tool_cfg,
             runtime_context=runtime_context,
-            container_backend=container_backend,
         )
 
 
-# Benchmark runtime pair — no shared infrastructure needed for this simple benchmark.
+# Benchmark runtime pair — publishes the injected infra so that tasks whose
+# ``metadata.container_config`` is set get a per-task container provisioned by
+# ``Task.model_post_init`` via ``cube.task_infra.launch_task_container``.
 class CounterBenchmark(Benchmark):
-    """Minimal runtime Benchmark — _setup/close are no-ops."""
+    """Minimal runtime Benchmark.
+
+    ``_setup`` threads the infra received by ``BenchmarkConfig.make(infra=...)``
+    into ``runtime_context["infra"]`` — the convention every cube that uses
+    per-task containers follows. When ``make()`` is called without an infra,
+    ``self._infra`` is None and containerized tasks simply skip provisioning.
+    """
 
     def _setup(self) -> None:
-        pass
+        if self._infra is not None:
+            self._runtime_context["infra"] = self._infra
 
     def close(self) -> None:
         pass
@@ -254,40 +262,20 @@ class CounterBenchmarkConfig(BenchmarkConfig):
 
 
 # Test Function
-def _make_backend(name: str) -> ContainerBackend | None:
+def _make_infra(name: str) -> InfraConfig | None:
+    """Select the infra used to provision per-task containers.
+
+    ``none`` → no infra: containerized tasks skip provisioning entirely.
+    ``local`` → ``LocalInfraConfig``, the default reference infra (Docker, no
+    cloud credentials). Other infras (Daytona, Modal, …) ship as optional
+    ``cube-infra-*`` resource packages and are out of scope for this toy.
+    """
     normalized = name.lower()
     if normalized in {"none", "off"}:
         return None
-    if normalized in {"docker", "local"}:
-        from cube.backends.local import LocalContainerBackend
-
-        return LocalContainerBackend(timeout_seconds=120)
-    if normalized == "daytona":
-        from cube.backends.daytona import DaytonaContainerBackend
-
-        api_key = os.getenv("DAYTONA_API_KEY")
-        if not api_key:
-            try:
-                from dotenv import load_dotenv
-
-                load_dotenv()
-                api_key = os.getenv("DAYTONA_API_KEY")
-            except Exception:
-                pass
-        if not api_key:
-            raise RuntimeError("DAYTONA_API_KEY must be set to use --backend daytona")
-        return DaytonaContainerBackend(
-            api_key=api_key,
-            timeout_seconds=300,
-            ephemeral=True,
-            auto_stop_minutes=5,
-            auto_delete_minutes=3,
-        )
-    if normalized == "modal":
-        from cube.backends.modal import ModalContainerBackend
-
-        return ModalContainerBackend(timeout_seconds=600, app_name="cube-toy-benchmark")
-    raise ValueError(f"Unknown backend '{name}'. Expected one of: none, docker, daytona, modal")
+    if normalized in {"local", "docker"}:
+        return LocalInfraConfig()
+    raise ValueError(f"Unknown infra '{name}'. Expected one of: none, local")
 
 
 def _make_task(
@@ -296,13 +284,13 @@ def _make_task(
     task_id: str,
 ) -> ReachTargetTask:
     cfg = task_configs[task_id]
-    return cfg.make(runtime_context=benchmark._runtime_context, container_backend=benchmark.config.container_backend)
+    return cfg.make(runtime_context=benchmark._runtime_context)
 
 
-def run_backend_smoke(backend_name: str, container_backend: ContainerBackend | None) -> None:
-    print(f"Running toy benchmark smoke test with backend={backend_name}")
-    config = CounterBenchmarkConfig(container_backend=container_backend)
-    with config.make() as benchmark:
+def run_backend_smoke(infra_name: str, infra: InfraConfig | None) -> None:
+    print(f"Running toy benchmark smoke test with infra={infra_name}")
+    config = CounterBenchmarkConfig()
+    with config.make(infra=infra) as benchmark:
         task_configs = {c.task_id: c for c in config.get_task_configs()}
         task = _make_task(benchmark, task_configs, "count-to-3")
         try:
@@ -316,19 +304,19 @@ def run_backend_smoke(backend_name: str, container_backend: ContainerBackend | N
             task.close()
 
 
-def test_counter_benchmark(container_backend: ContainerBackend | None = None, backend_name: str = "none"):
+def test_counter_benchmark(infra: InfraConfig | None = None, infra_name: str = "none"):
     """Comprehensive test demonstrating task-tool interaction and ToolConfig flexibility."""
-    print(f"Starting counter benchmark tests (backend={backend_name})...")
+    print(f"Starting counter benchmark tests (infra={infra_name})...")
     print("=" * 60)
 
-    config = CounterBenchmarkConfig(container_backend=container_backend)
+    config = CounterBenchmarkConfig()
     tasks: list[Task] = []
 
     def _track(task: Task) -> Task:
         tasks.append(task)
         return task
 
-    with config.make() as benchmark:
+    with config.make(infra=infra) as benchmark:
         try:
             task_configs = {c.task_id: c for c in config.get_task_configs()}
 
@@ -481,20 +469,20 @@ def test_counter_benchmark(container_backend: ContainerBackend | None = None, ba
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run toy counter benchmark")
     parser.add_argument(
-        "--backend",
+        "--infra",
         default="none",
-        choices=["none", "docker", "daytona", "modal"],
-        help="Container backend for task execution",
+        choices=["none", "local"],
+        help="Infra used to provision per-task containers (local = LocalInfraConfig)",
     )
     parser.add_argument(
         "--smoke",
         action="store_true",
-        help="Run a quick single-task backend smoke test",
+        help="Run a quick single-task infra smoke test",
     )
     args = parser.parse_args()
-    backend = _make_backend(args.backend)
+    infra = _make_infra(args.infra)
 
     if args.smoke:
-        run_backend_smoke(args.backend, backend)
+        run_backend_smoke(args.infra, infra)
     else:
-        test_counter_benchmark(container_backend=backend, backend_name=args.backend)
+        test_counter_benchmark(infra=infra, infra_name=args.infra)

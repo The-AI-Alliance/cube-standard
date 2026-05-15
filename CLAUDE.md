@@ -61,7 +61,7 @@ src/cube/                       Core framework
 ├── cli.py                      `cube` command
 ├── resource.py                 L1/L2/L3 resource lifecycle
 ├── container.py                Single-container abstraction
-├── backends/                   Docker, Modal, Daytona, Toolkit backends
+├── local_container.py          Local Docker Container driver
 ├── tools/                      Generalist tool ABCs + dep-free concrete impls (browser ABC, terminal)
 ├── resources/                  BrowserSession, ChatSession protocols
 ├── integrations/nemogym.py     NemoGym interop
@@ -85,7 +85,7 @@ never live in cube-harness.** Full rule: [tool/spec.md § Packaging conventions]
 - **ClassVar registries** on `BenchmarkConfig`: `benchmark_metadata`, `task_metadata`, `task_config_class`, `benchmark_class` are class-level, not constructor params. Auto-loaded from files next to the module (metadata only).
 - **Config → Factory** pattern: `XyzConfig.make()` returns a live `Xyz`. Config is serialized across process boundaries; live object never is.
 - **`TaskConfig` is the serialization boundary** — workers get a `TaskConfig` and call `.make()` locally. Task objects never cross processes.
-- **Credentials** are resolved from env vars at runtime. Never fields on `InfraConfig` or `ContainerBackend` (would be serialized).
+- **Credentials** are resolved from env vars at runtime. Never fields on `InfraConfig` (would be serialized).
 
 ## Design docs / RFCs
 
