@@ -1,6 +1,6 @@
 [project]
 name = "cube-standard"
-version = "0.1.0rc8"
+version = "0.1.0rc9"
 description = "Common Unified Benchmark Environments"
 readme = "README.md"
 urls = { Repository = "https://github.com/The-AI-Alliance/cube-standard" }

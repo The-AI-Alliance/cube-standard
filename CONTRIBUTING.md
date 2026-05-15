@@ -124,6 +124,28 @@ Large changes to the core protocol — new abstract methods, breaking type chang
 
 Active proposals live in [`openspec/changes/`](openspec/changes/).
 
+## Releases & dev versioning
+
+Releases are tag-driven and per-package: pushing a `cube-standard/v*`,
+`cube-tools/*/v*`, or `cube-resources/*/v*` tag triggers
+[`release.yml`](.github/workflows/release.yml), which builds and publishes
+that package to PyPI.
+
+**The `dev` branch always carries the *next* unreleased version**, never the
+last published one. Concretely: immediately after a release, bump the `dev`
+`version` to the next pre-release (e.g. publish `0.1.0rc8` → bump `dev` to
+`0.1.0rc9`).
+
+Why this matters: cube-harness and the cubes pin `cube-standard>=<rcN>`. If
+`dev` keeps the *published* version string while diverging (e.g. `dev` adds
+`ConfigRegistry` but stays `0.1.0rc8`), `uv` treats the dev build and the
+PyPI wheel as the same version and silently swaps the dev install for the
+PyPI one during cross-repo CI — producing confusing `ImportError`s for
+symbols that "exist on dev." A distinct dev version makes the two artifacts
+unambiguous and lets cross-repo installs resolve correctly without
+`--force-reinstall` workarounds. See cube-standard #167 for the full
+rationale and the companion ordered-release-pipeline work.
+
 ## Known gaps / TODOs
 
 Tracked inline in source:
