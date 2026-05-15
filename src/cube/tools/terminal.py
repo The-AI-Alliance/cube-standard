@@ -1,8 +1,17 @@
-"""Terminal tool for container-backed sandbox execution.
+"""Terminal tool — abstract task-side contract + container-backed reference impl.
 
-``TerminalTool`` exposes a ``bash()`` action and, optionally, ``read_file()`` and
-``write_file()`` when ``enable_file_actions=True``.  All execution is delegated
-to a ``cube.container.Container``.
+``TerminalTool`` is the abstract base for terminal-style tools. It extends
+``cube.tool.Tool`` and declares only what *tasks* need from any terminal
+implementation — a single task-side primitive, ``bash_unlimited()``, used by
+``Task.reset()`` / ``Task.evaluate()`` / ``Task._build_tool()`` for setup and
+validation. The abstract intentionally does NOT enumerate ``@tool_action``
+methods: the agent-facing action space is the concrete implementation's
+choice.
+
+``ContainerTerminalTool`` is the reference implementation — talks to a
+``cube.container.Container`` via ``container.exec()``, and exposes
+``bash``, ``read_file``, ``write_file`` as ``@tool_action``s (the latter two
+gated by ``TerminalToolConfig.enable_file_actions``).
 
 Typical usage::
 
@@ -24,7 +33,8 @@ Typical usage::
     )
 
 The tool is created via ``config.make(container)`` and registered with a task
-through ``task.tool_config = config``.
+through ``task.tool_config = config``. ``make()`` returns a ``TerminalTool``
+backed by a ``ContainerTerminalTool``.
 """
 
 from __future__ import annotations
@@ -32,6 +42,7 @@ from __future__ import annotations
 import logging
 import re
 import shlex
+from abc import abstractmethod
 from pathlib import Path
 from typing import Any, Literal
 
@@ -116,8 +127,30 @@ def _parse_line_range(line_start: Any, line_end: Any) -> tuple[int | None, int |
     return _parse_line_arg(line_start), _parse_line_arg(line_end)
 
 
+class TerminalTool(Tool):
+    """Abstract base for terminal-style tools.
+
+    Captures only the task-side contract — methods that ``Task.reset()``,
+    ``Task.evaluate()``, and ``Task._build_tool()`` need from any terminal
+    implementation regardless of which concrete impl they got. Concrete
+    implementations choose their own ``@tool_action`` surface; the abstract
+    intentionally does NOT enumerate agent-facing actions.
+    """
+
+    @abstractmethod
+    def bash_unlimited(self, command: str, timeout: int = 120) -> str:
+        """Execute a shell command without output truncation.
+
+        Not exposed as an agent action — used by tasks where the caller
+        needs the full output (test runs, patch application, validation
+        checks). Concrete implementations route this through their
+        underlying transport.
+        """
+        ...
+
+
 class TerminalToolConfig(ToolConfig):
-    """Configuration for ``TerminalTool``.
+    """Configuration for ``ContainerTerminalTool``.
 
     Args:
         working_dir: Default working directory inside the container.
@@ -144,14 +177,14 @@ class TerminalToolConfig(ToolConfig):
     enable_file_actions: bool = False
     max_timeout: int | None = None
 
-    def make(self, container: Container | None = None) -> "TerminalTool":
+    def make(self, container: Container | None = None) -> TerminalTool:
         if container is None:
-            raise ValueError("TerminalTool requires a container")
-        return TerminalTool(config=self, container=container)
+            raise ValueError("ContainerTerminalTool requires a container")
+        return ContainerTerminalTool(config=self, container=container)
 
 
-class TerminalTool(Tool):
-    """Container-backed terminal tool.
+class ContainerTerminalTool(TerminalTool):
+    """Container-backed reference implementation of ``TerminalTool``.
 
     Always exposes ``bash()``.  Opt in to ``read_file()`` / ``write_file()``
     via ``TerminalToolConfig(enable_file_actions=True)``.

@@ -8,7 +8,7 @@ For instance, web browsing benchmarks (MiniWob, WorkArena, WebArena) can use the
 
 ## When does a tool belong here?
 
-A concrete generalist tool gets its own `cube-tools/cube-<name>-tool/` sub-package **when it pulls a non-trivial runtime dependency** (Playwright, BrowserGym, PyAutoGUI, MCP SDK, …). If the implementation has no extra deps — like `TerminalTool` today — it stays in `cube-standard/src/cube/tools/` alongside the ABC. Tool implementations never live in `cube-harness`; cube-specific tools live in their own cube package, typically by subclassing a generalist tool from here. See [tool/spec.md § Packaging conventions](../openspec/specs/tool/spec.md#packaging-conventions) for the authoritative rule.
+A generalist tool gets its own `cube-tools/cube-<name>-tool/` sub-package when it pulls a non-trivial runtime dep (Playwright, BrowserGym, PyAutoGUI, MCP SDK, …); otherwise it stays in `cube-standard/src/cube/tools/`. Cube-specific tools live in their own cube package. See [tool/spec.md § Packaging conventions](../openspec/specs/tool/spec.md#packaging-conventions).
 
 ## Packages
 
@@ -59,3 +59,5 @@ tool.attach_vm(vm)
 2. Add a `pyproject.toml` with `cube-standard` as a dependency.
 3. Implement the relevant protocol from `cube-standard` (`AbstractBrowserTool` for web benchmarks) in your package.
 4. Add a row to the table above.
+
+If you're authoring a brand-new abstract tool base (the next `BrowserTool` / `TerminalTool`), the abstract carries the task-side contract only — no `@tool_action` methods, no enumerated action space. See [tool/spec.md § Contracts for implementers](../openspec/specs/tool/spec.md).
