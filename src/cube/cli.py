@@ -37,6 +37,7 @@ import base64
 import importlib
 import importlib.metadata
 import json
+import logging
 import os
 import re
 import shutil
@@ -483,6 +484,22 @@ def _resolve_debug_module(name: str) -> str:
     return f"{package_root}.debug"
 
 
+def _enable_verbose_logging() -> None:
+    """Surface INFO-level logs from cube internals during ``cube test``.
+
+    ``cube test`` does not configure logging, so only WARNING+ is shown and the
+    many ``logger.info(...)`` calls around infra launch / provisioning / task
+    lifecycle are swallowed. This installs a basic stderr handler at INFO and
+    raises the ``cube`` logger to INFO so those messages become visible even if
+    the root logger was already configured at a higher level elsewhere.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    logging.getLogger("cube").setLevel(logging.INFO)
+
+
 def cmd_test(
     module_name: str,
     *,
@@ -492,6 +509,7 @@ def cmd_test(
     demo_reset_repro: bool = False,
     stress_test: bool = False,
     reset_check: bool = True,
+    verbose: bool = False,
 ) -> None:
     """Import *module_name* (or resolve an entry-point name) and run the debug compliance suite.
 
@@ -507,7 +525,12 @@ def cmd_test(
     When *demo_reset_repro* is True (or ``CUBE_DEMO_RESET_REPRO=1``), after a successful run the
     non-CI dashboard shows sample reset-reproducibility failure output (plain-text block + compliance)
     for UI review; the process still exits 0 if all tasks passed. Ignored when *ci_mode* is True.
+
+    When *verbose* is True (``-v`` / ``--verbose``), INFO-level logs from cube
+    internals are surfaced to stderr (otherwise only WARNING+ is shown).
     """
+    if verbose:
+        _enable_verbose_logging()
     ci_mode = ci_mode or bool(os.environ.get("CUBE_CI"))
     demo_reset_repro = demo_reset_repro or (os.environ.get("CUBE_DEMO_RESET_REPRO") == "1")
     from cube.testing import (
@@ -1385,6 +1408,7 @@ def _print_help() -> None:
         "[cmd]--no-reset-check[/cmd] (skip reset-reproducibility check — saves ~1 extra reset in CI), "
         "[cmd]--ci[/cmd] (plain-text CI output, also set via CUBE_CI=1), "
         "[cmd]--output=PATH[/cmd] (save JSON report), [cmd]--max-steps=N[/cmd], "
+        "[cmd]-v/--verbose[/cmd] (surface INFO logs from cube internals), "
         "[cmd]--demo-reset-repro[/cmd] (preview reset-repro output, non-CI; also [cmd]CUBE_DEMO_RESET_REPRO=1[/cmd])",
         "cube test counter-cube --stress",
     )
@@ -1457,6 +1481,7 @@ def main() -> None:
         demo_reset_repro = False
         stress_test = False
         reset_check = True
+        verbose = False
         remaining = args[2:]
         for opt in remaining:
             if opt.startswith("--max-steps="):
@@ -1473,6 +1498,8 @@ def main() -> None:
                 reset_check = False
             elif opt == "--demo-reset-repro":
                 demo_reset_repro = True
+            elif opt in ("-v", "--verbose"):
+                verbose = True
         cmd_test(
             args[1],
             max_steps=max_steps,
@@ -1481,6 +1508,7 @@ def main() -> None:
             demo_reset_repro=demo_reset_repro,
             stress_test=stress_test,
             reset_check=reset_check,
+            verbose=verbose,
         )
     elif command == "registry":
         subcmd = args[1] if len(args) > 1 else ""
