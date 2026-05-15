@@ -1,5 +1,5 @@
-"""Tests for cube.tools.terminal — TerminalTool, TerminalToolConfig, _format_exec_result,
-_truncate_output, and _parse_line_range."""
+"""Tests for cube.tools.terminal — TerminalTool (Protocol), ContainerTerminalTool,
+TerminalToolConfig, _format_exec_result, _truncate_output, and _parse_line_range."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import pytest
 
 from cube.container import ExecResult
 from cube.tools.terminal import (
+    ContainerTerminalTool,
     TerminalTool,
     TerminalToolConfig,
     _format_exec_result,
@@ -28,12 +29,12 @@ def _make_tool(
     stderr: str = "",
     exit_code: int = 0,
     **cfg_kwargs: Any,
-) -> TerminalTool:
-    """Build a TerminalTool backed by a mock container that always returns the given result."""
+) -> ContainerTerminalTool:
+    """Build a ContainerTerminalTool backed by a mock container that always returns the given result."""
     container = MagicMock()
     container.exec.return_value = ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
     cfg = TerminalToolConfig(**cfg_kwargs)
-    return TerminalTool(config=cfg, container=container)
+    return ContainerTerminalTool(config=cfg, container=container)
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +204,7 @@ class TestTerminalToolPlain:
     def test_timeout_forwarded(self) -> None:
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
-        tool = TerminalTool(config=TerminalToolConfig(), container=container)
+        tool = ContainerTerminalTool(config=TerminalToolConfig(), container=container)
         tool.bash("sleep 5", timeout=300)
         _, kwargs = container.exec.call_args
         assert kwargs["timeout"] == 300
@@ -261,7 +262,7 @@ class TestTerminalToolReadFile:
     def test_line_range_uses_sed(self) -> None:
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="lines", stderr="", exit_code=0)
-        tool = TerminalTool(config=TerminalToolConfig(enable_file_actions=True), container=container)
+        tool = ContainerTerminalTool(config=TerminalToolConfig(enable_file_actions=True), container=container)
         tool.read_file("/tmp/f.txt", line_start=10, line_end=20)
         cmd = container.exec.call_args[0][0]
         assert "sed" in cmd
@@ -271,7 +272,7 @@ class TestTerminalToolReadFile:
         # A range read of a "big" file should return content, not a size error.
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="x" * 200, stderr="", exit_code=0)
-        tool = TerminalTool(
+        tool = ContainerTerminalTool(
             config=TerminalToolConfig(enable_file_actions=True, max_output_bytes=50),
             container=container,
         )
@@ -288,7 +289,7 @@ class TestTerminalToolWriteFile:
     def test_success_message(self) -> None:
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="", stderr="", exit_code=0)
-        tool = TerminalTool(config=TerminalToolConfig(enable_file_actions=True), container=container)
+        tool = ContainerTerminalTool(config=TerminalToolConfig(enable_file_actions=True), container=container)
         result = tool.write_file("/tmp/out.txt", "hello")
         assert "Wrote" in result
         assert "5" in result  # len("hello")
@@ -306,7 +307,7 @@ class TestTerminalToolWriteFile:
 
         container = MagicMock()
         container.exec.side_effect = fake_exec
-        tool = TerminalTool(config=TerminalToolConfig(enable_file_actions=True), container=container)
+        tool = ContainerTerminalTool(config=TerminalToolConfig(enable_file_actions=True), container=container)
         result = tool.write_file("/tmp/out.txt", "hello")
         assert "Error writing" in result
 
@@ -339,7 +340,7 @@ class TestParseLineRange:
     def test_read_file_range_string(self) -> None:
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="lines", stderr="", exit_code=0)
-        tool = TerminalTool(config=TerminalToolConfig(enable_file_actions=True), container=container)
+        tool = ContainerTerminalTool(config=TerminalToolConfig(enable_file_actions=True), container=container)
         tool.read_file("/tmp/f.txt", line_start="[200, 210]")
         cmd = container.exec.call_args[0][0]
         assert "200,210" in cmd
@@ -376,7 +377,7 @@ class TestMaxTimeout:
     def test_timeout_capped(self) -> None:
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
-        tool = TerminalTool(config=TerminalToolConfig(max_timeout=600), container=container)
+        tool = ContainerTerminalTool(config=TerminalToolConfig(max_timeout=600), container=container)
         tool.bash("sleep 9999", timeout=9999)
         _, kwargs = container.exec.call_args
         assert kwargs["timeout"] == 600
@@ -384,7 +385,7 @@ class TestMaxTimeout:
     def test_timeout_below_cap_unchanged(self) -> None:
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
-        tool = TerminalTool(config=TerminalToolConfig(max_timeout=600), container=container)
+        tool = ContainerTerminalTool(config=TerminalToolConfig(max_timeout=600), container=container)
         tool.bash("sleep 1", timeout=30)
         _, kwargs = container.exec.call_args
         assert kwargs["timeout"] == 30
@@ -392,7 +393,7 @@ class TestMaxTimeout:
     def test_no_cap_by_default(self) -> None:
         container = MagicMock()
         container.exec.return_value = ExecResult(stdout="ok", stderr="", exit_code=0)
-        tool = TerminalTool(config=TerminalToolConfig(), container=container)
+        tool = ContainerTerminalTool(config=TerminalToolConfig(), container=container)
         tool.bash("sleep 1", timeout=1800)
         _, kwargs = container.exec.call_args
         assert kwargs["timeout"] == 1800

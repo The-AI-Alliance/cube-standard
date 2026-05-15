@@ -112,6 +112,18 @@ the one owning that action name.
 - Action parameter names and types must be JSON-Schema-expressible (primitive types,
   `list`, `dict`, Optional). Pydantic types work via `function_to_dict`.
 
+### New abstract tool bases capture the task-side contract only
+
+When introducing a new abstract base for a tool family (`BrowserTool`,
+`TerminalTool`, a future `ComputerTool`, …), declare only the methods that
+*tasks* call for setup, validation, or observation. Do **not** decorate any
+method with `@tool_action`, and do **not** enumerate an agent-facing action
+surface in the abstract. The action space is a concrete-implementation
+choice so a future variant (a restricted impl, an alternate transport, a
+different action vocabulary) can satisfy the same abstract while exposing a
+different action set to the agent. See `cube.tools.browser.BrowserTool`
+and `cube.tools.terminal.TerminalTool` for worked examples.
+
 ## Packaging conventions
 
 Where generalist tool code lives:
@@ -120,8 +132,10 @@ Where generalist tool code lives:
   alongside this spec.
 - **Concrete implementations** live in `cube-standard/cube-tools/cube-<name>-tool/` as
   optional sub-packages **when they pull a non-trivial runtime dependency** (Playwright,
-  BrowserGym, PyAutoGUI, MCP SDK, …). Otherwise — like `TerminalTool` today — the
-  implementation can sit directly in `cube-standard/src/cube/tools/`.
+  BrowserGym, PyAutoGUI, MCP SDK, …). Otherwise — like the `TerminalTool` abstract base
+  and its `ContainerTerminalTool` reference implementation — the concrete implementation
+  can sit directly in `cube-standard/src/cube/tools/`, in the same module as the
+  contract.
 - **Tool implementations never live in `cube-harness`.** The harness consumes
   contracts and concrete implementations from this repo; it does not own tool code.
   Harness-internal infrastructure that wraps tools (e.g. telemetry decorators) is not
