@@ -5,11 +5,12 @@ directly — no wrapper indirection.  Subclasses carry the handle bookkeeping
 (run_id / resource / infra / created_at / expires_at) alongside their driver-
 specific state.
 
-``ContainerBackend`` and ``ContainerConfig`` below are the pre-``InfraConfig``
-factory + config.  They are **deprecated** — use ``InfraConfig.launch()`` with
-``DockerImageConfig`` or ``DockerServiceConfig`` (in ``cube.resource``) instead.
-Kept here only so existing ``Task.container_backend`` / ``Benchmark.container_backend``
-fields continue to type-check during the migration.
+``ContainerConfig`` below is the serializable description of *what* container a
+task needs (``TaskMetadata.container_config``).  It is consumed by the
+``InfraConfig`` path in ``Task.model_post_init`` (via
+``cube.task_infra.launch_task_container``) — it is **not** deprecated.  The old
+``ContainerBackend`` factory has been removed; provisioning is now done
+exclusively through ``InfraConfig`` (see ``cube.resource``).
 """
 
 from __future__ import annotations
@@ -18,8 +19,6 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict
-
-from pydantic import Field
 
 from cube.core import TypedBaseModel
 from cube.resource import ResourceHandle
@@ -169,15 +168,16 @@ def port_from_url(url: str) -> int:
     raise ContainerError(f"Could not determine port from URL: {url}")
 
 
-# ── Deprecated pre-InfraConfig API ───────────────────────────────────────────
+# ── Task container requirements ──────────────────────────────────────────────
 
 
 class ContainerConfig(TypedBaseModel):
-    """DEPRECATED.  Use ``cube.resource.DockerImageConfig`` instead.
+    """Serializable description of *what* container a task needs.
 
-    Kept only so existing ``TaskMetadata.container_config`` fields continue to
-    type-check during the infra migration.  No per-instance warning — would be
-    noisy across CSV task-metadata loads.
+    Declared on ``TaskMetadata.container_config`` and consumed by the
+    ``InfraConfig`` path in ``Task.model_post_init`` (via
+    ``cube.task_infra.launch_task_container``).  *How* the container is
+    provisioned is owned by the injected ``InfraConfig`` (see ``cube.resource``).
     """
 
     image: str
@@ -186,37 +186,3 @@ class ContainerConfig(TypedBaseModel):
     gpu: bool = False
     disk_gb: float = 10.0
     ports: list[int] | None = None
-
-
-class ContainerBackend(TypedBaseModel, ABC):
-    """DEPRECATED.  Use ``cube.resource.InfraConfig`` + ``InfraConfig.launch(resource)`` instead.
-
-    Kept only so existing ``Task.container_backend`` / ``Benchmark.container_backend``
-    fields continue to type-check during the infra migration.  Subclasses emit a
-    one-shot ``DeprecationWarning`` at *import* time (see ``cube.backends.*``),
-    not per instantiation.
-    """
-
-    timeout_seconds: int = 1800
-    backend_config: Dict[str, Any] = Field(default_factory=dict)
-
-    @abstractmethod
-    def launch(self, config: ContainerConfig) -> Container:
-        """Launch a container described by *config*. Blocks until ready."""
-
-    def health_check(self, container: Container) -> bool:
-        """Override to perform custom health checks. Return True if healthy."""
-        return True
-
-    def _run_health_check(self, container: Container) -> None:
-        """Run the health check, cleaning up on failure."""
-        try:
-            ok = self.health_check(container)
-            if not ok:
-                container.stop()
-                raise HealthCheckError("Health check returned False")
-        except HealthCheckError:
-            raise
-        except Exception as exc:
-            container.stop()
-            raise HealthCheckError(f"Health check raised an exception: {exc}") from exc

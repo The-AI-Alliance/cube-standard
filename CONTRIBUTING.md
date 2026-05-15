@@ -13,7 +13,8 @@ src/cube/
   testing.py     # run_debug_suite(), assert_debug_tasks_reward_one()
   cli.py         # `cube init` / `cube test` entry points
   server.py      # FastAPI wrapper around a Task (REST ↔ cube protocol)
-  containers.py  # ContainerBackend / Container abstractions
+  resource.py    # InfraConfig / ResourceConfig / ResourceHandle — provisioning
+  container.py   # ContainerConfig (task requirement) / Container (live handle)
   _template/     # Scaffolded by `cube init` — keep in sync with core
 examples/counter-cube/   # Canonical reference implementation — read this first
 ```

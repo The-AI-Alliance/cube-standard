@@ -61,20 +61,6 @@ unit test in `tests/`.
 
 ## Legacy parameters / migration debt
 
-### `container_backend` is being replaced by the infra/resource pattern
-- Forwarded through [src/cube/task.py:116-118](src/cube/task.py#L116-L118) (constructor field)
-- Passed in [src/cube/benchmark.py:570-597](src/cube/benchmark.py#L570-L597) (`spawn()`)
-- Explicitly dropped by [src/cube/server.py:133-151](src/cube/server.py#L133-L151) (`_spawn_task_subprocess`, with comment)
-
-`server.py` already comments *"container_backend is intentionally not forwarded —
-it is a legacy parameter being replaced by the infra / resource pattern."*
-
-**Action:** remove the parameter from `Task`, `TaskConfig.make`, and `Benchmark`
-in a single breaking change. Downstream callers in cube-harness
-([episode.py:48,113](https://github.com/The-AI-Alliance/cube-harness/blob/main/src/cube_harness/episode.py#L48-L113)
-and [experiment.py:87](https://github.com/The-AI-Alliance/cube-harness/blob/main/src/cube_harness/experiment.py#L87))
-must be updated in the same PR.
-
 ### `Task.step` never sets `truncated=True`
 [src/cube/task.py:256-257](src/cube/task.py#L256-L257)
 

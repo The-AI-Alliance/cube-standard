@@ -139,10 +139,7 @@ class CubeResourcesServer:
             )
 
         task_config = self._task_configs[body.task_idx]
-        task = task_config.make(
-            runtime_context=self.benchmark._runtime_context,
-            container_backend=self.config.container_backend,
-        )
+        task = task_config.make(runtime_context=self.benchmark._runtime_context)
         try:
             obs, _info = task.reset()
         except Exception:

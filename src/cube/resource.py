@@ -359,9 +359,9 @@ class ResourceHandle(ABC):
     itself is not serializable and must not be passed to workers.
     """
 
-    # All fields default so subclasses (notably ``cube.container.Container``
-    # living in deprecated-ContainerBackend paths) can construct without
-    # bookkeeping — the new ``InfraConfig.launch()`` path still populates them.
+    # All fields default so ``cube.container.Container`` subclasses (e.g.
+    # ``LocalContainer``) can construct without bookkeeping — the
+    # ``InfraConfig.launch()`` path still populates them.
     run_id: str = ""
     resource: ResourceConfig | None = None
     infra: InfraConfig | None = None

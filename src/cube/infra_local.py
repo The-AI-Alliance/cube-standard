@@ -51,6 +51,40 @@ _IMAGE_DIR = Path(os.environ.get("CUBE_LOCAL_IMAGE_DIR", str(Path.home() / ".cub
 _ACTIVE_JSON = Path(os.environ.get("CUBE_CACHE_DIR", str(Path.home() / ".cube"))) / "active.json"
 
 
+_RATE_LIMIT_MARKERS = ("toomanyrequests", "rate limit", "429")
+# Docker Hub rate-limits anonymous pulls (100/6 h per IP; 200/6 h authenticated).
+# Workers that share an IP back off (6 attempts, 30 s → 5 min capped) so a burst
+# clears instead of every worker failing at once.
+_PULL_MAX_ATTEMPTS = 6
+_PULL_BACKOFF_BASE = 30.0
+_PULL_BACKOFF_CAP = 300.0
+
+
+def _docker_pull(image: str) -> None:
+    """``docker pull`` with exponential backoff on registry rate limits.
+
+    Non-rate-limit failures are raised immediately (no retry); the worker
+    should not spin on a genuinely missing or unauthorized image.
+    """
+    for attempt in range(1, _PULL_MAX_ATTEMPTS + 1):
+        proc = subprocess.run(["docker", "pull", image], capture_output=True, text=True)
+        if proc.returncode == 0:
+            return
+        combined = f"{proc.stdout}\n{proc.stderr}".lower()
+        rate_limited = any(marker in combined for marker in _RATE_LIMIT_MARKERS)
+        if not rate_limited or attempt == _PULL_MAX_ATTEMPTS:
+            raise RuntimeError(f"docker pull {image!r} failed (exit {proc.returncode}): {proc.stderr.strip()}")
+        delay = min(_PULL_BACKOFF_BASE * 2 ** (attempt - 1), _PULL_BACKOFF_CAP)
+        logger.warning(
+            "docker pull %r rate-limited (attempt %d/%d); retrying in %.0fs",
+            image,
+            attempt,
+            _PULL_MAX_ATTEMPTS,
+            delay,
+        )
+        time.sleep(delay)
+
+
 # ── Active resource store (PID-based, file-backed) ────────────────────────────
 
 
@@ -345,10 +379,10 @@ class LocalDockerServiceHandle(ResourceHandle):
                 f"LocalDockerServiceHandle.container is only defined for single-container "
                 f"resources (got {len(self._container_ids)} containers)."
             )
-        # Import lazily to avoid circular import (backends.local imports resource).
+        # Import lazily to avoid a hard ``docker`` dependency for VM-only usage.
         import docker  # type: ignore
 
-        from cube.backends.local import LocalContainer
+        from cube.local_container import LocalContainer
 
         # Podman advertises DOCKER_HOST with http+unix:// but the Docker SDK
         # only accepts unix://. Normalize locally rather than mutating os.environ
@@ -611,7 +645,7 @@ class LocalInfraConfig(InfraConfig):
 
         for image in resource.docker_images:
             logger.info("Pulling Docker image %r…", image)
-            subprocess.run(["docker", "pull", image], check=True)
+            _docker_pull(image)
 
         volume_script = build_volume_setup_script(resource.volumes)
         if volume_script:

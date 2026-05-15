@@ -27,7 +27,7 @@ from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
 from typing_extensions import TypeVar
 
 from cube import get_cache_dir
-from cube.container import Container, ContainerBackend, ContainerConfig
+from cube.container import Container, ContainerConfig
 from cube.core import (
     Action,
     ActionSchema,
@@ -185,9 +185,6 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         ),
     )
     tool_config: SerializeAsAny[ToolConfig] = Field(description="Tool configuration used to instantiate the tool.")
-    container_backend: ContainerBackend | None = Field(
-        default=None, description="Optional backend used to launch a container during model_post_init."
-    )
     runtime_context: RuntimeContext | None = Field(
         default=None, description="Optional shared infrastructure references from Benchmark._setup()."
     )
@@ -207,19 +204,16 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     def model_post_init(self, __context: Any) -> None:
         """Called after Pydantic __init__. Launches container if configured, then creates tool."""
         cc = self.metadata.container_config
-        if self.runtime_context is not None and "infra" in self.runtime_context:
-            if cc is not None:
-                from cube.task_infra import launch_task_container  # local import avoids circular dep
+        if cc is not None and self.runtime_context is not None and "infra" in self.runtime_context:
+            from cube.task_infra import launch_task_container  # local import avoids circular dep
 
-                self._resource_handle, self._container = launch_task_container(
-                    self.runtime_context,
-                    name=self.metadata.id,
-                    image=cc.image,
-                    ram_gb=cc.ram_gb,
-                    cpu_cores=cc.cpu_cores,
-                )
-        elif self.container_backend is not None and cc is not None:
-            self._container = self.container_backend.launch(cc)
+            self._resource_handle, self._container = launch_task_container(
+                self.runtime_context,
+                name=self.metadata.id,
+                image=cc.image,
+                ram_gb=cc.ram_gb,
+                cpu_cores=cc.cpu_cores,
+            )
 
         self._build_tool()
 
@@ -507,23 +501,20 @@ class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
     ) -> Task:
         """Instantiate a Task from this config. Called on a worker after deserialization.
 
         Args:
             runtime_context: Shared infrastructure references created by
-                Benchmark._setup() (e.g. server URLs, database connections).
+                Benchmark._setup() (e.g. server URLs, database connections,
+                the injected ``InfraConfig`` under the ``"infra"`` key).
                 Passed from Benchmark.spawn().
-            container_backend: HOW to run containers (local, Modal, ...) —
-                read from the owning BenchmarkConfig by Benchmark.spawn().
 
         Example:
         >>> return MyTask(
         ...     metadata=self.metadata,
         ...     tool_config=self.tool_config or MyDefaultToolConfig(),
         ...     runtime_context=runtime_context,
-        ...     container_backend=container_backend,
         ... )
 
         Cubes with heavy execution data (problem statements, patches, …)

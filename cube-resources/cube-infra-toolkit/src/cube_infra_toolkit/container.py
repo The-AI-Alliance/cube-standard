@@ -1,8 +1,7 @@
 """ToolkitContainer — ``cube.container.Container`` implementation backed by an EAI Toolkit job.
 
-Canonical home for the Toolkit driver.  ``cube.backends.toolkit`` re-exports
-this class for back-compat with the deprecated ``ToolkitContainerBackend``
-factory; new code should use ``ToolkitInfraConfig`` from this package.
+Canonical home for the Toolkit driver.  ``ToolkitInfraConfig`` (this package)
+produces these via ``launch()``.
 
 Upstream EAI Toolkit documentation: https://docs.console.elementai.com/
 """

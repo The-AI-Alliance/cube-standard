@@ -69,7 +69,6 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     metadata: SerializeAsAny[TTMetadata]
     execution_info: SerializeAsAny[TaskExecutionInfo] | None = None  # heavy lazy data; populated on the worker
     tool_config: SerializeAsAny[ToolConfig]
-    container_backend: ContainerBackend | None = None
     runtime_context: RuntimeContext | None = None      # from Benchmark._setup()
     validate_per_step: bool = False                    # eval on every step, not just done
     accept_agent_stop: bool = True                     # accept STOP_ACTION from agent
@@ -77,6 +76,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     # Runtime (PrivateAttr, set in model_post_init)
     _tool: TTool | None
     _container: Container | None
+    _resource_handle: ResourceHandle | None    # handle from InfraConfig.launch(); torn down by close()
 
     @property
     def tool(self) -> TTool: ...
@@ -106,8 +106,12 @@ Tasks read typed fields directly: `self.execution_info.problem_statement`,
 `self.execution_info.patch`, …
 
 `model_post_init` (runs after Pydantic `__init__`):
-1. If `container_backend` and `metadata.container_config` are both set, launch the container.
-2. Call `tool_config.make(container=self._container)` to build the tool.
+1. If `metadata.container_config` is set and `runtime_context["infra"]` is
+   present, the container is provisioned via the injected `InfraConfig`
+   (`cube.task_infra.launch_task_container`); the live `Container` and its
+   `ResourceHandle` are stored in `_container` / `_resource_handle`.
+2. Call `_build_tool()` (default: `tool_config.make(container=self._container)`)
+   to build the tool.
 
 **Abstract methods (implementers MUST provide):**
 - `reset() -> (Observation, dict)` — set up initial state; also call `self.tool.reset()`
@@ -202,7 +206,6 @@ class TaskConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
     ) -> Task
 
     # ClassVar back-stamped by BenchmarkConfig.__init_subclass__ to
@@ -332,6 +335,8 @@ always retains the native un-prefixed id.
   work (dedup by name) but are redundant and should be removed.
 - `runtime_context` is a dict, not a Pydantic model — no type safety. Document keys
   in your `Benchmark._setup()` docstring.
-- `model_post_init` launches the container. If your ToolConfig `make()` fails and
-  you set `container_backend`, the container is already running — may leak unless the
-  caller handles construction errors.
+- `model_post_init` launches the container (via the injected `InfraConfig`)
+  before building the tool. If your `ToolConfig.make()` / `_build_tool()` fails,
+  the container is already running — it may leak unless the caller handles
+  construction errors (e.g. wraps `spawn()`/`make()` and calls
+  `_resource_handle.close()` on failure).

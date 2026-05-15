@@ -166,7 +166,7 @@ def test_task_execution_info_field_round_trips_via_task():
 
 
 class _CacheTaskConfig(TaskConfig):
-    def make(self, runtime_context=None, container_backend=None):
+    def make(self, runtime_context=None):
         return SimpleTask(metadata=self.metadata, tool_config=GreetToolConfig())
 
 

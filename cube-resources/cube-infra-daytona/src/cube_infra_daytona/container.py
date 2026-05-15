@@ -1,9 +1,7 @@
 """DaytonaContainer — ``cube.container.Container`` implementation backed by a Daytona sandbox.
 
-Canonical home for the Daytona driver.  ``cube.backends.daytona`` re-exports
-this class for back-compat with the deprecated ``DaytonaContainerBackend``
-factory; new code should import ``DaytonaInfraConfig`` from this package and
-let it produce containers via ``launch()``.
+Canonical home for the Daytona driver.  ``DaytonaInfraConfig`` (this package)
+produces these via ``launch()``.
 """
 
 from __future__ import annotations

@@ -80,14 +80,15 @@ time — `install()` MUST NOT mutate it.
 ```python
 task_ids: list[str] | None = None          # None = all; populated by subset_from_*
 resources: list[ResourceConfig] = []       # resource dependencies (L2/L3)
-container_backend: ContainerBackend | None # forwarded to each Task; DEPRECATED
 tool_config: ToolConfig | None             # applied to every task by the default get_task_configs(); override get_task_configs() for per-task variation
 seed_generator: AbstractSeedGenerator | None # yields seeds per TaskMetadata
 ```
 
-`container_backend` is deprecated (`Field(deprecated=True)`) and slated for
-removal once all in-tree benchmarks migrate to declaring container needs via
-`resources`. Setting it still works and is forwarded to every spawned task.
+Per-task container needs are declared via `TaskMetadata.container_config`
+(`ContainerConfig`) and provisioned through the injected `InfraConfig` — see
+[resource/spec.md](../resource/spec.md) and
+[container/spec.md](../container/spec.md). The legacy `container_backend` field
+has been removed.
 
 `seed_generator` accepts any `AbstractSeedGenerator` subclass. Note that
 `AbstractSeedGenerator` is itself a `TypedBaseModel` (changed from a plain
@@ -201,7 +202,7 @@ per-task container launches can do so from `_setup()` without overriding
   unset optional config fields. Called exactly once by `make()`.
 - `spawn(task_config)` — validate `task_config.task_id` against
   `self.config.tasks()`, then call
-  `task_config.make(runtime_context=self._runtime_context, container_backend=self.config.container_backend)`.
+  `task_config.make(runtime_context=self._runtime_context)`.
 - `__enter__` / `__exit__` — context-manager wrappers. Use
   `with config.make(infra) as bench:` to guarantee cleanup.
 
@@ -339,7 +340,7 @@ routes via `task_config.sub_bench_name`, which is a `"/"`-joined path for
 nested composites (e.g. `"inner-suite/bench-a"`). Each level peels the first
 component, looks it up in `sub_benchmarks`, and either delegates to the
 inner `CompositeBenchmark.spawn()` (nested case) or calls
-`task_config.make(runtime_context=sub_bench._runtime_context, container_backend=sub_bench.config.container_backend)`
+`task_config.make(runtime_context=sub_bench._runtime_context)`
 directly at the leaf — bypassing the leaf's own `spawn()` validation, which
 would reject the composite-prefixed `task_id`. A TaskConfig with
 `sub_bench_name=None` or an unknown first component raises `ValueError`.
@@ -374,10 +375,6 @@ with suite.make(infra) as bench:
   silently does nothing. Declare ClassVars explicitly in those cases.
 - `named_subsets` values are `(glob_key, glob_pattern)` tuples. JSON-from-file
   loads them as lists — the `TypedBaseModel` will coerce to tuple.
-- `BenchmarkConfig` carries `arbitrary_types_allowed=True` because
-  `ContainerBackend` may hold non-roundtrippable handles. In practice the
-  config is JSON-serializable when `container_backend` is either None or a
-  concrete `TypedBaseModel` subclass with serializable fields.
 - `install()` never populates `task_metadata`. That registry is declared at
   class-definition time (directly or via file auto-load). `install()` writes
   heavy execution-time data to the per-task cache under

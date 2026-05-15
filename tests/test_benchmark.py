@@ -37,7 +37,7 @@ class _Task(Task):
 
 
 class _TaskConfig(TaskConfig):
-    def make(self, runtime_context=None, container_backend=None):
+    def make(self, runtime_context=None):
         return _Task(
             metadata=self.metadata,
             tool_config=self.tool_config or _ToolConfig(),
@@ -175,7 +175,7 @@ def test_init_subclass_back_stamps_benchmark_cache_dir():
     directly under ``BenchmarkConfig.cache_dir()``."""
 
     class _StampTaskConfig(TaskConfig):
-        def make(self, runtime_context=None, container_backend=None):
+        def make(self, runtime_context=None):
             return _Task(metadata=self.metadata, tool_config=_ToolConfig())
 
     class _StampBenchmarkConfig(BenchmarkConfig):
@@ -200,7 +200,7 @@ def test_init_subclass_rejects_shared_task_config_class():
     would silently overwrite each other's stamp. Class definition must fail loudly."""
 
     class _SharedTaskConfig(TaskConfig):
-        def make(self, runtime_context=None, container_backend=None):
+        def make(self, runtime_context=None):
             return _Task(metadata=self.metadata, tool_config=_ToolConfig())
 
     class _OwnerOne(BenchmarkConfig):
@@ -224,7 +224,7 @@ def test_task_execution_cache_dir_does_not_inherit_via_mro():
     stamp through the MRO."""
 
     class _OwnedTaskConfig(TaskConfig):
-        def make(self, runtime_context=None, container_backend=None):
+        def make(self, runtime_context=None):
             return _Task(metadata=self.metadata, tool_config=_ToolConfig())
 
     class _OwningBenchmarkConfig(BenchmarkConfig):  # noqa: F841

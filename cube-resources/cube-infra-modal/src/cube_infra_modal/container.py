@@ -1,3 +1,10 @@
+"""ModalContainer — ``cube.container.Container`` implementation backed by a Modal Sandbox.
+
+Canonical home for the Modal driver.  ``ModalInfraConfig`` produces these via
+``launch()``; the live handle IS a ``ResourceHandle`` and exposes the container
+capability surface (exec / port-forward / status).
+"""
+
 from __future__ import annotations
 
 import logging
@@ -9,33 +16,20 @@ import modal
 from tenacity import (
     before_sleep_log,
     retry,
-    retry_if_not_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
 
 from cube.container import (
     Container,
-    ContainerBackend,
-    ContainerConfig,
     ContainerError,
     ContainerExecError,
-    ContainerLaunchError,
     ContainerStatus,
     ExecResult,
-    HealthCheckError,
     port_from_url,
 )
 
 logger = logging.getLogger(__name__)
-
-_retry_sandbox = retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=30),
-    reraise=True,
-    retry=retry_if_not_exception_type(HealthCheckError),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
-)
 
 _retry_io = retry(
     stop=stop_after_attempt(2),
@@ -138,49 +132,3 @@ class ModalContainer(Container):
                 healthy=False,
                 backend_info={"id": self.id},
             )
-
-
-class ModalContainerBackend(ContainerBackend):
-    """Launch containers as Modal Sandboxes."""
-
-    app_name: str = "cube-container"
-
-    def launch(self, config: ContainerConfig) -> ModalContainer:
-        return self._launch_with_retry(config)
-
-    @_retry_sandbox
-    def _launch_with_retry(self, config: ContainerConfig) -> ModalContainer:
-        try:
-            app = modal.App.lookup(self.app_name, create_if_missing=True)
-        except Exception as exc:
-            raise ContainerLaunchError(f"Failed to look up Modal app '{self.app_name}': {exc}") from exc
-
-        image = modal.Image.from_registry(config.image)
-
-        kwargs: dict[str, Any] = {
-            "app": app,
-            "image": image,
-            "timeout": self.timeout_seconds,
-        }
-
-        if config.cpu_cores:
-            kwargs["cpu"] = config.cpu_cores
-        if config.ram_gb:
-            kwargs["memory"] = int(config.ram_gb * 1024)
-        if config.gpu:
-            kwargs["gpu"] = "any"
-
-        if config.ports:
-            kwargs["encrypted_ports"] = config.ports
-
-        logger.info("Creating Modal sandbox with image %s …", config.image)
-        try:
-            sandbox = modal.Sandbox.create(**kwargs)
-        except Exception as exc:
-            raise ContainerLaunchError(f"Failed to create Modal sandbox from '{config.image}': {exc}") from exc
-
-        container = ModalContainer(sandbox)
-        logger.info("Modal sandbox created: %s", container.id)
-
-        self._run_health_check(container)
-        return container
