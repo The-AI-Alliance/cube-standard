@@ -16,7 +16,6 @@ members = [
     "cube-infra-modal",
     "cube-infra-toolkit",
     "cube-standard",
-    "cube-vm-backend",
 ]
 
 [[package]]
@@ -839,36 +838,6 @@ provides-extras = ["dev", "docker", "daytona", "modal", "toolkit"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pre-commit", specifier = ">=4.5.1" }]
-
-[[package]]
-name = "cube-vm-backend"
-version = "0.2.1"
-source = { editable = "cube-resources/cube-vm-backend" }
-dependencies = [
-    { name = "cube-standard" },
-    { name = "requests" },
-    { name = "tqdm" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-]
-docker = [
-    { name = "docker" },
-    { name = "tenacity" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "cube-standard", editable = "." },
-    { name = "docker", marker = "extra == 'docker'", specifier = ">=7.1.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "requests", specifier = ">=2.28" },
-    { name = "tenacity", marker = "extra == 'docker'", specifier = ">=8.0" },
-    { name = "tqdm", specifier = ">=4.60" },
-]
-provides-extras = ["docker", "dev"]
 
 [[package]]
 name = "daytona"

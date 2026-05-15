@@ -401,8 +401,8 @@ class InfraConfig(ValidatedConfig, ABC):
 
     Extends TypedBaseModel for serializability (polymorphic via _type field —
     subclasses declare no _type field, it is injected automatically).
-    Also carries launch/cleanup methods — instantiating the config IS the backend,
-    following the existing VMBackend pattern in vm.py.
+    Also carries launch/cleanup methods — instantiating the config IS the
+    provisioner (config + executor unified in one serializable object).
 
     Credentials are never stored in fields; resolved from env vars at runtime.
 
