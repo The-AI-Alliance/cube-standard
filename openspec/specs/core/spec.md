@@ -25,6 +25,12 @@ config ABCs (`ToolConfig`, `AsyncToolConfig`, `InfraConfig`, `BenchmarkConfig`);
 `TypedBaseModel` types keep construction-only validation. `model_copy(update=...)`
 bypasses it (so subsetting helpers are unaffected); `_type` round-trip preserved.
 
+### `ConfigRegistry[T: BaseModel]`
+Read-only `Mapping[str, T]` for named-config catalogs (canonical agent/benchmark/infra
+configs). Every `reg[name]` returns a fresh `model_copy(deep=True)` so callers can't
+mutate the shared instance; unknown name → `KeyError` listing available names. A
+`Mapping`, not a `dict` subclass, so no accessor bypasses the copy.
+
 ### `Action`
 ```python
 class Action(TypedBaseModel):
