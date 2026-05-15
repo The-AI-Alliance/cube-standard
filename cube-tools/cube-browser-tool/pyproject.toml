@@ -1,6 +1,6 @@
 [project]
 name = "cube-browser-tool"
-version = "0.2.0"
+version = "0.3.0"
 description = "Concrete browser tool implementations for cube-standard benchmarks"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-bgym = ["browsergym-core"]
+bgym = ["browsergym-core", "numpy"]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",

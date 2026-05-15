@@ -4,7 +4,7 @@ Optional tool implementations for [cube-standard](../README.md).
 
 `cube-standard` defines some `Protocol` for each benchmark domain but ships no concrete tool implementation. This folder contains packages that implement these protocols and can be installed independently.
 
-For instance, web browsing benchmarks (MiniWob, WorkArena, WebArena) can use the `cube-browser-tool` package, which provides `BrowsergymTool` and `PlaywrightTool` -- both satisfying the `AbstractBrowserTool` protocol defined in `cube-standard`.
+For instance, web browsing benchmarks (MiniWob, WorkArena, WebArena) can use the `cube-browser-tool` package, which provides `SyncPlaywrightTool` and (with the `[bgym]` extra) `BgymTool` — both satisfying the `BrowserTool` abstract base defined in `cube-standard`.
 
 ## When does a tool belong here?
 
