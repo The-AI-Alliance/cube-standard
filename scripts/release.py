@@ -1,5 +1,17 @@
 """Cross-repo release driver for cube-standard + cube-harness.
 
+============================================================================
+STATUS: NOT FULLY TESTED. The dry-run / planning path (preflight, manifest,
+version-vs-tag, BLOCKED detection) is validated against the live repos. The
+``--execute`` path (tag push → PyPI wait → tier gating) has NEVER run for
+real — it is covered only by a mocked simulation test
+(``tests/test_release_driver.py``); no real tag has been pushed and nothing
+has been published through it. First real use: run the default dry-run,
+eyeball the plan, then ``--execute --only <one package>`` supervised, tier
+by tier. It is idempotent — re-running after a partial release skips
+completed packages and resumes at the next tier.
+============================================================================
+
 Releases are tag-driven and per-package: pushing ``<prefix>/v<version>`` makes
 each repo's ``release.yml`` build + publish that package to PyPI. The packages
 form a dependency graph spanning two repos, so they must be published in
@@ -284,42 +296,84 @@ def plan_package(pkg: Package, repo_path: Path) -> Plan:
 # --------------------------------------------------------------------------- #
 
 
-def do_release(plan: Plan, repo_path: Path, pypi_timeout_s: int) -> None:
-    """Tag + push one package, then block until it appears on PyPI. Idempotent."""
+def do_release(plan: Plan, repo_path: Path, pypi_timeout_s: int) -> str:
+    """Tag + push one package, block until it's on PyPI. Idempotent.
+
+    Returns ``"released"`` (tag pushed this run) or ``"skipped"`` (already
+    published / tagged at HEAD before this run). Raises ``SystemExit`` with a
+    ``[BLOCKED]`` message on any anomaly. All progress lines are prefixed with
+    a greppable ``[token]`` so a supervising agent can read the outcome.
+    """
     pkg, version = plan.pkg, plan.current
     tag = f"{pkg.tag_prefix}/v{version}"
     head = _git(repo_path, "rev-parse", "HEAD")
+    label = f"{pkg.dist}=={version}"
 
+    tag_existed = False
     if _git_ok(repo_path, "rev-parse", "--verify", f"{tag}^{{commit}}"):
         tagged = _git(repo_path, "rev-list", "-n", "1", tag)
         if tagged != head:
             raise SystemExit(
-                f"BLOCKED: tag {tag} already exists at {tagged[:9]} but HEAD is {head[:9]}. "
-                f"Either the release was cut from a different commit (investigate) or the version "
-                f"needs bumping. Refusing to move the tag."
+                f"[BLOCKED] {label}: tag {tag} already exists at {tagged[:9]} but HEAD is "
+                f"{head[:9]}. Release was cut from a different commit, or the version needs "
+                f"bumping. Refusing to move the tag — resolve manually, then re-run (idempotent)."
             )
-        print(f"  · {tag} already exists at HEAD — skipping tag push")
+        tag_existed = True
+        print(f"[tag] {tag} already at HEAD — skipping push")
     else:
-        print(f"  · tagging {tag} @ {head[:9]}")
+        print(f"[tag] pushing {tag} @ {head[:9]}")
         _git(repo_path, "tag", tag, head)
         _git(repo_path, "push", "origin", tag)
 
     if _pypi_has(pkg.dist, version):
-        print(f"  · {pkg.dist}=={version} already on PyPI ✓")
-        return
+        print(f"[skip] {label} already on PyPI")
+        return "skipped"
 
-    print(f"  · waiting for {pkg.dist}=={version} on PyPI (release.yml is building)…")
+    print(f"[wait] {label} — polling PyPI (release.yml building; timeout {pypi_timeout_s}s)")
     deadline = time() + pypi_timeout_s
     while time() < deadline:
         sleep(PYPI_POLL_INTERVAL_S)
         if _pypi_has(pkg.dist, version):
-            print(f"  · {pkg.dist}=={version} published ✓")
-            return
+            print(f"[done] {label} published")
+            return "skipped" if tag_existed else "released"
     raise SystemExit(
-        f"BLOCKED: timed out after {pypi_timeout_s}s waiting for {pkg.dist}=={version} on PyPI. "
-        f"The tag {tag} was pushed — check the release.yml run. Re-run this script once it's up "
-        f"to continue with the remaining tiers (it is idempotent)."
+        f"[BLOCKED] {label}: timed out after {pypi_timeout_s}s waiting on PyPI. The tag {tag} "
+        f"WAS pushed — check the release.yml run for {pkg.repo}. Re-run this script once it's up; "
+        f"it is idempotent and will resume at the remaining tiers."
     )
+
+
+def execute(to_release: list[Plan], repo_paths: dict[str, Path], pypi_timeout_s: int) -> None:
+    """Release every plan tier by tier; a tier must be fully on PyPI before the next.
+
+    The SUMMARY prints in ``finally`` so an aborted partial run is still legible
+    (``do_release`` raises ``SystemExit`` on any block/timeout, which propagates
+    after the summary).
+    """
+    released: list[str] = []
+    skipped: list[str] = []
+    try:
+        for tier in sorted({pl.pkg.tier for pl in to_release}):
+            tier_plans = [pl for pl in to_release if pl.pkg.tier == tier]
+            print(f"\n== tier {tier}: {len(tier_plans)} package(s) ==")
+            for pl in tier_plans:
+                print(f"[release] {pl.pkg.dist}=={pl.current} ({pl.latest_tag or 'first'} -> {pl.current}) tier={tier}")
+                status = do_release(pl, repo_paths[pl.pkg.repo], pypi_timeout_s)
+                (released if status == "released" else skipped).append(f"{pl.pkg.dist}=={pl.current}")
+    finally:
+        _print_summary(to_release, released, skipped)
+
+
+def _print_summary(to_release: list[Plan], released: list[str], skipped: list[str]) -> None:
+    """Final, greppable post-condition — printed even on abort, so a partial run is legible."""
+    done = set(released) | set(skipped)
+    remaining = [f"{pl.pkg.dist}=={pl.current}" for pl in to_release if f"{pl.pkg.dist}=={pl.current}" not in done]
+    print("\nSUMMARY")
+    print(f"  [summary] released  : {', '.join(released) or '(none)'}")
+    print(f"  [summary] skipped   : {', '.join(skipped) or '(none)'}  (already tagged/published)")
+    print(f"  [summary] remaining : {', '.join(remaining) or '(none)'}")
+    if remaining:
+        print("  [summary] re-run is safe: idempotent — completed packages are skipped, resumes at the next tier")
 
 
 # --------------------------------------------------------------------------- #
@@ -359,9 +413,8 @@ def main() -> None:
     # Preflight both repos.
     problems = preflight(cube_standard, args.ref) + preflight(cube_harness, args.ref)
     if problems:
-        print("PREFLIGHT BLOCKED:")
         for p in problems:
-            print(f"  ✗ {p}")
+            print(f"[BLOCKED] preflight: {p}")
         raise SystemExit(1)
 
     manifest = build_manifest(cube_standard, cube_harness)
@@ -387,33 +440,27 @@ def main() -> None:
     if blocked:
         print("Resolve these before releasing:")
         for pl in blocked:
-            print(f"  ✗ {pl.pkg.dist}: {pl.reason}")
+            print(f"[BLOCKED] {pl.pkg.dist}: {pl.reason}")
         raise SystemExit(1)
 
     if not to_release:
-        print("Nothing to release — every package is up to date.")
+        print("[done] nothing to release — every package is up to date")
         return
 
     if not args.execute:
-        print(f"Dry run. {len(to_release)} package(s) would be released, tier by tier.")
-        print("Re-run with --execute to push tags and wait for PyPI between tiers.")
+        print(f"[dry-run] {len(to_release)} package(s) would be released, tier by tier.")
+        print("[dry-run] re-run with --execute to push tags and wait for PyPI between tiers.")
         return
 
-    # Execute tier by tier; a tier must be fully on PyPI before the next starts.
-    for tier in sorted({pl.pkg.tier for pl in to_release}):
-        tier_plans = [pl for pl in to_release if pl.pkg.tier == tier]
-        print(f"\n══ Releasing tier {tier} ({len(tier_plans)} package(s)) ══")
-        for pl in tier_plans:
-            print(f"▶ {pl.pkg.dist} {pl.latest_tag or '(none)'} → {pl.current}")
-            do_release(pl, repo_paths[pl.pkg.repo], args.pypi_timeout)
+    execute(to_release, repo_paths, args.pypi_timeout)
 
-    print("\n✓ All tiers published.")
+    print("\n[done] all tiers published")
     print(
-        "\nNEXT (post-release dev bump — recommendation A, cube-standard #167):\n"
-        "  For every package just released, bump its `dev` pyproject version to the next\n"
-        "  pre-release so dev never impersonates the published version. For cube-standard\n"
-        "  that's the rcN → rc(N+1) bump. Open a small `chore: bump dev versions` PR.\n"
-        "  (Left manual on purpose — touching dev needs a signed-off PR, not a tag push.)"
+        "[next] post-release dev bump (recommendation A): for every package just released, "
+        "bump its `dev` pyproject version to the next pre-release so dev never impersonates "
+        "the published version (cube-standard: rcN -> rc(N+1)). Open a small "
+        "`chore: bump dev versions` PR. Left manual on purpose — touching dev needs a "
+        "signed-off PR, not a tag push."
     )
 
 
