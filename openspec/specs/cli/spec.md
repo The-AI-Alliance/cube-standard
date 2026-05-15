@@ -60,6 +60,7 @@ Options:
 - `--no-reset-check` — skip reset reproducibility check (useful in CI where the check is slow)
 - `--output PATH` — save report JSON
 - `--ci` — suppress Rich dashboard, plain-text output (also enabled by `CUBE_CI=1`)
+- `-v`, `--verbose` — surface INFO-level logs from cube internals (infra launch, provisioning, task lifecycle); default shows WARNING+ only
 
 ### `cube registry add [PATH]`
 Generates `cube-registry-entry.yaml` from `pyproject.toml` at `PATH` (default cwd).
