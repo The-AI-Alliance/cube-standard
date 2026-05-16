@@ -312,6 +312,42 @@ class TestTerminalToolWriteFile:
         assert "Error writing" in result
 
 
+class TestTerminalToolResolvedPath:
+    """A relative path resolves against the static working_dir, never a prior
+    `cd` (shell state does not persist). The reported path must be absolute so
+    that mismatch is visible instead of silently corrupting the wrong file."""
+
+    def test_relative_write_reports_absolute_resolved_path(self) -> None:
+        container = MagicMock()
+        container.exec.return_value = ExecResult(stdout="", stderr="", exit_code=0)
+        tool = ContainerTerminalTool(
+            config=TerminalToolConfig(enable_file_actions=True, working_dir="/repo"),
+            container=container,
+        )
+        result = tool.write_file("src/app.py", "x")
+        assert "/repo/src/app.py" in result
+
+    def test_absolute_write_path_passes_through(self) -> None:
+        container = MagicMock()
+        container.exec.return_value = ExecResult(stdout="", stderr="", exit_code=0)
+        tool = ContainerTerminalTool(
+            config=TerminalToolConfig(enable_file_actions=True, working_dir="/repo"),
+            container=container,
+        )
+        result = tool.write_file("/etc/hosts", "x")
+        assert "/etc/hosts" in result and "/repo/etc" not in result
+
+    def test_relative_read_error_reports_absolute_resolved_path(self) -> None:
+        container = MagicMock()
+        container.exec.return_value = ExecResult(stdout="", stderr="No such file", exit_code=1)
+        tool = ContainerTerminalTool(
+            config=TerminalToolConfig(enable_file_actions=True, working_dir="/repo"),
+            container=container,
+        )
+        result = tool.read_file("missing.txt")
+        assert "Error reading /repo/missing.txt" in result
+
+
 # ---------------------------------------------------------------------------
 # _parse_line_range
 # ---------------------------------------------------------------------------
