@@ -107,7 +107,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from cube.benchmark import Benchmark, BenchmarkConfig
+from cube.benchmark import AbstractBenchmarkConfig, Benchmark
 from cube.core import Action, Observation, TypedBaseModel
 from cube.resource import InfraConfig
 from cube.task import Task, TaskConfig
@@ -232,7 +232,7 @@ def _spawn_benchmark_subprocess(
     torn down when the process exits.  ``benchmark.close()`` runs in a
     ``finally`` so resources are released even on uvicorn signal / error.
     """
-    config = BenchmarkConfig.model_validate_json(config_json)
+    config = AbstractBenchmarkConfig.model_validate_json(config_json)
     infra = InfraConfig.model_validate_json(infra_json) if infra_json is not None else None
     benchmark = config.make(infra)
     try:
@@ -468,7 +468,7 @@ def make_task_jsonrpc_app(task: Task) -> FastAPI:
 
 
 def make_benchmark_rpc_server(
-    config: BenchmarkConfig,
+    config: AbstractBenchmarkConfig,
     *,
     infra: InfraConfig | None = None,
     host: str = "127.0.0.1",
@@ -476,7 +476,8 @@ def make_benchmark_rpc_server(
 ) -> tuple[multiprocessing.Process, str]:
     """Spawn a benchmark JSON-RPC server in a subprocess.
 
-    Accepts a ``BenchmarkConfig`` (the serialisation boundary for benchmarks)
+    Accepts an ``AbstractBenchmarkConfig`` — leaf ``BenchmarkConfig`` or
+    ``CompositeBenchmarkConfig`` (the serialisation boundary for benchmarks)
     and an optional ``InfraConfig``.  Both are JSON-dumped on the caller side
     and rehydrated inside the subprocess via ``TypedBaseModel``'s ``_type``
     polymorphic dispatch.  The worker then calls ``config.make(infra)`` to

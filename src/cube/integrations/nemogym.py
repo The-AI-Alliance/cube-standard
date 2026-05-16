@@ -30,7 +30,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from cube.benchmark import Benchmark, BenchmarkConfig
+from cube.benchmark import AbstractBenchmarkConfig, Benchmark
 from cube.core import Action
 from cube.resource import InfraConfig
 from cube.task import Task, TaskConfig
@@ -101,9 +101,9 @@ class CubeResourcesServer:
                 resource provisioning. None for benchmarks that don't need it.
     """
 
-    def __init__(self, config: BenchmarkConfig, infra: InfraConfig | None = None) -> None:
+    def __init__(self, config: AbstractBenchmarkConfig, infra: InfraConfig | None = None) -> None:
         self.config = config
-        config.install()  # populates task execution cache; CompositeBenchmarkConfig overrides as instance method
+        config.install()  # leaf BenchmarkConfig: populates task execution cache; composite: fans out to sub-configs
         self.benchmark: Benchmark = config.make(infra)
         self._task_configs: list[TaskConfig] = list(config.get_task_configs())
         self._sessions: dict[str, Task] = {}

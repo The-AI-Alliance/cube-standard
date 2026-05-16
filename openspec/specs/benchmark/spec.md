@@ -45,12 +45,38 @@ the framework-defined fields above.
 - `APP_LEVEL` — scripts reset app state, VM stays alive (~5s; unsafe with workers on same VM)
 - `NEW_INSTANCE` — fresh VM per task (~2–4 min)
 
-### `BenchmarkConfig` (abstract, Pydantic — serializable)
+### Config hierarchy
+
+```python
+class AbstractBenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC): ...
+  ├── class BenchmarkConfig[TTMetadata](AbstractBenchmarkConfig[TTMetadata])         # static-registry leaf
+  └── class CompositeBenchmarkConfig(AbstractBenchmarkConfig)                         # composition node (sibling)
+```
+
+`AbstractBenchmarkConfig` is the thin parent carrying only the
+harness-facing contract both kinds share: `tasks()`, `name`, `num_tasks`,
+the subsetting helpers, `install()`/`uninstall()` (concrete no-op default),
+and **abstract** `get_task_configs()` / `make()`. `benchmark_metadata` and
+`task_metadata` are declared on it as plain `ClassVar` annotations — *not*
+`@abstractmethod`. This is deliberate: `BenchmarkConfig.__init_subclass__`
+already enforces their presence on concrete leaf cubes with a precise
+error, and `ABCMeta` freezes `__abstractmethods__` *before*
+`__init_subclass__` runs — so an abstract declaration would leave any
+file-autoloaded leaf cube permanently abstract. Each child supplies the
+registry its own way (leaf: ClassVar / file-autoload; composite: computed
+`@property`).
+
+`CompositeBenchmarkConfig` is a **sibling**, not a subclass, of
+`BenchmarkConfig`: it has no static task registry, never triggers
+`BenchmarkConfig.__init_subclass__`, and needs no `task_config_class` /
+`benchmark_class` placeholders. The two evolve independently.
+
+#### `BenchmarkConfig` (static-registry leaf, Pydantic — serializable)
 
 `BenchmarkConfig` is generic over the task-metadata type:
 
 ```python
-class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC): ...
+class BenchmarkConfig[TTMetadata: TaskMetadata](AbstractBenchmarkConfig[TTMetadata]): ...
 ```
 
 The narrowing is method-level only — `task_metadata: ClassVar` stays at
@@ -68,8 +94,11 @@ class MyBenchmarkConfig(BenchmarkConfig):
     benchmark_class: ClassVar[type[Benchmark]]
 ```
 
-`__init_subclass__` validates every concrete subclass has all four. The first
-two are auto-loaded from files next to the module if not declared:
+`__init_subclass__` validates every concrete subclass has all four.
+`task_config_class` and `benchmark_class` must be **concrete** (not abstract)
+— they are instantiated by `get_task_configs()` / `make()`, so an abstract
+class is rejected at class-definition time rather than failing later. The
+first two are auto-loaded from files next to the module if not declared:
 - `benchmark_metadata.{json,csv}` → `benchmark_metadata_from_{json,csv}`
 - `task_metadata.{json,csv}` → `task_metadata_from_{json,csv}`
 
@@ -216,7 +245,10 @@ passed to every Task spawned from that benchmark.
 ## Invariants
 
 1. Every concrete `BenchmarkConfig` subclass declares all four ClassVars (or
-   has matching files for metadata) — enforced at class definition.
+   has matching files for metadata), and `task_config_class` /
+   `benchmark_class` are concrete — enforced at class definition.
+   `CompositeBenchmarkConfig` is a sibling (not a `BenchmarkConfig`) and is
+   exempt: it has no static registry.
 2. `BenchmarkConfig` instances never change class-level `task_metadata`.
    Subsets narrow via `task_ids` only.
 3. A `Benchmark` returned from `make()` is always in a ready state:
@@ -292,19 +324,21 @@ with config.make(infra) as bench:   # resources provisioned + setup() run
 ## Composition
 
 ### `CompositeBenchmarkConfig` (in `cube.benchmark`)
-Combines multiple `BenchmarkConfig`s into one serializable suite. Any
-sub-config may itself be another `CompositeBenchmarkConfig` — composites nest
-freely.
+Combines multiple benchmark configs into one serializable suite. A
+**sibling** of `BenchmarkConfig` under `AbstractBenchmarkConfig` — not a
+subclass. Any sub-config is any `AbstractBenchmarkConfig` (leaf
+`BenchmarkConfig` or another `CompositeBenchmarkConfig` — composites nest
+freely).
 
 ```python
-class CompositeBenchmarkConfig(BenchmarkConfig):
+class CompositeBenchmarkConfig(AbstractBenchmarkConfig):
     # benchmark_metadata and task_metadata are @property (computed from
-    # sub_bench_configs at access time).  BenchmarkConfig.__init_subclass__
-    # detects property descriptors in the MRO via _is_dynamic() and skips
-    # file auto-load for those names — no ClassVar guard flag needed.
-    benchmark_class: ClassVar = CompositeBenchmark
+    # sub_bench_configs at access time), overriding the non-abstract ClassVar
+    # annotations on AbstractBenchmarkConfig — a legitimate sibling override,
+    # not a leaf masquerade. No task_config_class / benchmark_class
+    # placeholders: composite never goes through BenchmarkConfig.__init_subclass__.
 
-    sub_bench_configs: list[SerializeAsAny[BenchmarkConfig]]
+    sub_bench_configs: list[SerializeAsAny[AbstractBenchmarkConfig]]
     composite_name: str = "composite"
     composite_version: str = "0.0.0"
     composite_description: str = ""
