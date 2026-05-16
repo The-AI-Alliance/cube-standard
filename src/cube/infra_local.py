@@ -33,6 +33,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from cube.infra_utils import build_volume_setup_script
 from cube.resource import (
@@ -58,6 +59,59 @@ _RATE_LIMIT_MARKERS = ("toomanyrequests", "rate limit", "429")
 _PULL_MAX_ATTEMPTS = 6
 _PULL_BACKOFF_BASE = 30.0
 _PULL_BACKOFF_CAP = 300.0
+
+
+def _active_docker_context_host() -> str | None:
+    """Best-effort daemon endpoint of the active ``docker context``, or ``None``.
+
+    The Docker SDK honours ``DOCKER_HOST`` but NOT ``docker context``; shelling
+    out to the CLI is the only reliable way to recover the endpoint on
+    Colima / Docker-Desktop, whose socket is not ``/var/run/docker.sock``.
+    """
+    try:
+        out = subprocess.run(
+            ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    host = out.stdout.strip()
+    return host or None
+
+
+def _make_docker_client(docker: Any) -> Any:
+    """Construct a Docker SDK client robustly across Podman / Colima / Docker Desktop.
+
+    Resolution order:
+
+    1. ``DOCKER_HOST`` if it names a real socket — normalising Podman's
+       ``http+unix://<path>`` to the ``unix://<path>`` the SDK accepts. A bare
+       ``http+unix://`` / ``unix://`` (no path) is malformed and treated as unset.
+    2. The active ``docker context`` endpoint (covers Colima / Docker-Desktop).
+    3. ``docker.from_env()``.
+
+    Raises an actionable ``RuntimeError`` if the client cannot reach the daemon,
+    instead of the SDK's opaque ``FileNotFoundError``.
+    """
+    host = os.environ.get("DOCKER_HOST", "").strip()
+    if host.startswith("http+unix://"):
+        host = host[len("http+") :]  # podman advertises http+unix://; SDK wants unix://
+    if host in ("", "unix://", "tcp://"):  # unset or malformed (scheme without a path)
+        host = _active_docker_context_host() or ""
+
+    try:
+        client = docker.DockerClient(base_url=host) if host else docker.from_env()
+        client.ping()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Cannot reach the Docker daemon (tried base_url="
+            f"{host or '(docker.from_env)'!r}). Set DOCKER_HOST to a valid socket "
+            "or check `docker context ls` — Colima / Docker-Desktop use a "
+            "non-default socket the Docker SDK does not auto-discover."
+        ) from exc
+    return client
 
 
 def _docker_pull(image: str) -> None:
@@ -384,14 +438,7 @@ class LocalDockerServiceHandle(ResourceHandle):
 
         from cube.local_container import LocalContainer
 
-        # Podman advertises DOCKER_HOST with http+unix:// but the Docker SDK
-        # only accepts unix://. Normalize locally rather than mutating os.environ
-        # (which would be a process-global side effect visible to other workers).
-        _host = os.environ.get("DOCKER_HOST", "")
-        if _host.startswith("http+unix://"):
-            client = docker.DockerClient(base_url=_host[len("http+") :])
-        else:
-            client = docker.from_env()
+        client = _make_docker_client(docker)
         docker_container = client.containers.get(self._container_ids[0])
         # remove_on_close=False — this handle, not the wrapper, owns the lifecycle.
         self._container_cache = LocalContainer(docker_container, client, remove_on_close=False)

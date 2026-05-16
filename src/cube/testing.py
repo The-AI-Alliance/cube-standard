@@ -484,9 +484,18 @@ def run_debug_suite(
             for tc in task_configs:
                 if on_episode_start is not None:
                     on_episode_start(tc.task_id)
-                results.append(_episode_for_config(tc))
+                try:
+                    report = _episode_for_config(tc)
+                except Exception as exc:
+                    logger.exception(
+                        "[run_debug_suite] benchmark=%r serial episode failed task_id=%r",
+                        benchmark_name,
+                        tc.task_id,
+                    )
+                    report = _make_error_report(tc, exc)
+                results.append(report)
                 if on_episode_done is not None:
-                    on_episode_done(results[-1])
+                    on_episode_done(report)
         else:
             # Snapshot _runtime_context key→value-identity before parallel run.
             # Any mutation (new key, deleted key, or reassigned value) during
