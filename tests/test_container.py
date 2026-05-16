@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from cube.container import ExecResult, relocate_if_readonly
+from cube.container import ContainerExecError, ExecResult, relocate_if_readonly
 
 
 def _container(probe: ExecResult, copy: ExecResult) -> MagicMock:
@@ -31,5 +31,5 @@ def test_relocate_raises_when_copy_fails_instead_of_returning_phantom_dir() -> N
         ExecResult(stdout="R", exit_code=0),
         ExecResult(exit_code=1, stderr="cp: cannot stat '/app': No such file or directory"),
     )
-    with pytest.raises(RuntimeError, match=r"relocate_if_readonly.*failed.*was not created"):
+    with pytest.raises(ContainerExecError, match=r"relocate_if_readonly.*failed.*was not created"):
         relocate_if_readonly(c, "/app", "/tmp/app")

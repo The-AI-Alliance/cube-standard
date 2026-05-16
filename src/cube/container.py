@@ -152,7 +152,7 @@ def relocate_if_readonly(
         cmd += f" && {extra_setup}"
     result = container.exec(cmd, timeout=300)
     if result.exit_code != 0:
-        raise RuntimeError(
+        raise ContainerExecError(
             f"relocate_if_readonly: '{cmd}' failed (exit {result.exit_code}); "
             f"working dir {new_wd!r} was not created. stderr: {result.stderr.strip()}"
         )
