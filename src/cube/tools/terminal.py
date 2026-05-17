@@ -43,7 +43,7 @@ import logging
 import re
 import shlex
 from abc import abstractmethod
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from cube.container import Container, ExecResult
@@ -214,6 +214,17 @@ class ContainerTerminalTool(TerminalTool):
             ]
         return actions
 
+    def _resolved_path(self, path: str) -> str:
+        """Absolute in-container path a relative *path* actually lands at.
+
+        Every action ``exec``s with ``workdir=self._config.working_dir`` and
+        shell state does not persist between calls, so a relative path always
+        resolves against the static working dir — never the directory a prior
+        ``bash`` ``cd``'d into. Reporting the resolved absolute path makes that
+        (otherwise silent) mismatch immediately visible to the caller.
+        """
+        return str(PurePosixPath(self._config.working_dir) / path)
+
     def bash_unlimited(self, command: str, timeout: int = 120) -> str:
         """Like ``bash()`` but without output truncation — for internal harness use only.
 
@@ -271,11 +282,11 @@ class ContainerTerminalTool(TerminalTool):
             cmd = f"sed -n '{start},{end}p' {shlex.quote(path)}"
             result = self._container.exec(cmd, workdir=self._config.working_dir)
             if result.exit_code != 0:
-                return f"Error reading {path}: {result.stderr or result.stdout}"
+                return f"Error reading {self._resolved_path(path)}: {result.stderr or result.stdout}"
             return result.stdout
         result = self._container.exec(f"cat {shlex.quote(path)}", workdir=self._config.working_dir)
         if result.exit_code != 0:
-            return f"Error reading {path}: {result.stderr or result.stdout}"
+            return f"Error reading {self._resolved_path(path)}: {result.stderr or result.stdout}"
         encoded = result.stdout.encode("utf-8")
         if len(encoded) > self._config.max_output_bytes:
             size_kb = len(encoded) // 1024
@@ -288,7 +299,9 @@ class ContainerTerminalTool(TerminalTool):
 
         Args:
             path: Destination path. Parent directories are created as needed.
-                Relative paths resolve against the working directory.
+                Relative paths resolve against the working directory (NOT any
+                directory a prior ``bash`` ``cd``'d into — shell state does not
+                persist). The result echoes the absolute path written.
             content: Full file contents to write. This is not a patch tool —
                 pass the entire new file body.
         """
@@ -301,6 +314,7 @@ class ContainerTerminalTool(TerminalTool):
             f"printf '%s' '{escaped}' > {shlex.quote(path)}",
             workdir=self._config.working_dir,
         )
+        resolved = self._resolved_path(path)
         if result.exit_code != 0:
-            return f"Error writing {path}: {result.stderr or result.stdout}"
-        return f"Wrote {len(content)} bytes to {path}"
+            return f"Error writing {resolved}: {result.stderr or result.stdout}"
+        return f"Wrote {len(content)} bytes to {resolved}"
