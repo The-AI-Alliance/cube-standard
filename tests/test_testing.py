@@ -257,6 +257,33 @@ def test_suite_parallel_workers_collects_all_episode_results_when_first_task_rai
     assert results[1].get("error") in (None, "")
 
 
+def test_suite_serial_collects_all_episode_results_when_first_task_raises():
+    """Serial path must mirror the parallel one: a crash in an earlier task
+    becomes a structured error report so later tasks still run (no false-green
+    from an exception escaping run_debug_suite with zero results)."""
+
+    class FirstFailsTaskConfig(TaskConfig):
+        def make(self, runtime_context=None):
+            if self.task_id == "t1":
+                raise RuntimeError("t1 make failed")
+            return DoneTask(metadata=self.metadata, tool_config=NoopToolConfig())
+
+    class FirstFailsBenchmarkConfig(DoneBenchmarkConfig):
+        task_config_class: ClassVar = FirstFailsTaskConfig
+
+    mod = ModuleType("fake_debug")
+    config = FirstFailsBenchmarkConfig().subset_from_list(["t1", "t2"])
+    mod.get_debug_benchmark = lambda: config  # type: ignore[attr-defined]
+    mod.make_debug_agent = lambda tid: stop_agent  # type: ignore[attr-defined]
+
+    results = run_debug_suite("bench", mod, print_json=False, workers=1)
+    assert len(results) == 2
+    assert results[0]["task_id"] == "t1"
+    assert results[0]["error"] is not None and "t1 make failed" in results[0]["error"]
+    assert results[1]["task_id"] == "t2"
+    assert results[1].get("error") in (None, "")
+
+
 # ── run_debug_suite — benchmark lifecycle ────────────────────────────────────
 
 
