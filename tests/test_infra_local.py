@@ -456,3 +456,44 @@ class TestDockerPull:
                 _mod._docker_pull("python:3.12-slim")
         assert run.call_count == _mod._PULL_MAX_ATTEMPTS
         assert sleep.call_count == _mod._PULL_MAX_ATTEMPTS - 1
+
+
+# ── _make_docker_client — robust client construction (#1/#3) ──────────────────
+
+
+class TestMakeDockerClient:
+    def test_malformed_bare_http_unix_falls_back_to_from_env(self, monkeypatch) -> None:
+        """A bare ``http+unix://`` (no socket path) is malformed — must be
+        treated as unset, not turned into a broken ``unix://`` client."""
+        monkeypatch.setenv("DOCKER_HOST", "http+unix://")
+        docker = MagicMock()
+        with patch.object(_mod, "_active_docker_context_host", return_value=None):
+            client = _mod._make_docker_client(docker)
+        docker.from_env.assert_called_once()
+        docker.DockerClient.assert_not_called()
+        assert client is docker.from_env.return_value
+
+    def test_podman_http_unix_with_path_is_normalised(self, monkeypatch) -> None:
+        monkeypatch.setenv("DOCKER_HOST", "http+unix:///run/user/1000/podman/podman.sock")
+        docker = MagicMock()
+        _mod._make_docker_client(docker)
+        docker.DockerClient.assert_called_once_with(base_url="unix:///run/user/1000/podman/podman.sock")
+
+    def test_unset_host_uses_docker_context_endpoint(self, monkeypatch) -> None:
+        monkeypatch.delenv("DOCKER_HOST", raising=False)
+        docker = MagicMock()
+        with patch.object(_mod, "_active_docker_context_host", return_value="unix:///x/colima.sock"):
+            _mod._make_docker_client(docker)
+        docker.DockerClient.assert_called_once_with(base_url="unix:///x/colima.sock")
+
+    def test_unreachable_daemon_raises_actionable_error(self, monkeypatch) -> None:
+        monkeypatch.delenv("DOCKER_HOST", raising=False)
+        docker = MagicMock()
+        docker.from_env.return_value.ping.side_effect = OSError("No such file or directory")
+        with patch.object(_mod, "_active_docker_context_host", return_value=None):
+            with pytest.raises(RuntimeError, match=r"Cannot reach the Docker daemon.*docker context ls"):
+                _mod._make_docker_client(docker)
+
+    def test_active_docker_context_host_swallows_missing_cli(self) -> None:
+        with patch.object(_mod.subprocess, "run", side_effect=FileNotFoundError("docker")):
+            assert _mod._active_docker_context_host() is None

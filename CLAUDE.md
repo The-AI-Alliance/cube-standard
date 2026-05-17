@@ -42,6 +42,15 @@ Cross-cutting:
 
 PRs are reviewed with `/code-review` ([plugin docs](https://github.com/anthropics/claude-code/blob/main/plugins/code-review/README.md)), which audits changes against these guidelines. Write PRs as if a reviewer will check each principle above against the diff.
 
+**Auto-fix provenance.** PI-produced fixes carry `# auto-fix(N)↓ … # /auto-fix(N)`
+markers + a context-stamped footnote at module bottom (`N` = GitHub issue).
+Reviewers: when a diff touches an `auto-fix` region/footnote, treat it as
+**possibly rotten** — pull issue `N`, re-check the stated invariant still
+holds, re-stamp `hash=` on benign drift (acknowledge, never silently leave
+it), and if the band-aid is now subsumed recommend promoting it + closing
+the issue. Flag, don't hard-block. Methodology (Dossier, L0–L3, lint):
+[`openspec/specs/auto-fix/spec.md`](openspec/specs/auto-fix/spec.md).
+
 ## Workflow for code changes
 
 1. **Find the relevant spec** — which layer? Start there.
