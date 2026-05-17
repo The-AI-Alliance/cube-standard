@@ -214,6 +214,7 @@ class ContainerTerminalTool(TerminalTool):
             ]
         return actions
 
+    # auto-fix(177)↓
     def _resolved_path(self, path: str) -> str:
         """Absolute in-container path a relative *path* actually lands at.
 
@@ -224,6 +225,8 @@ class ContainerTerminalTool(TerminalTool):
         (otherwise silent) mismatch immediately visible to the caller.
         """
         return str(PurePosixPath(self._config.working_dir) / path)
+
+    # /auto-fix(177)
 
     def bash_unlimited(self, command: str, timeout: int = 120) -> str:
         """Like ``bash()`` but without output truncation — for internal harness use only.
@@ -318,3 +321,18 @@ class ContainerTerminalTool(TerminalTool):
         if result.exit_code != 0:
             return f"Error writing {resolved}: {result.stderr or result.stdout}"
         return f"Wrote {len(content)} bytes to {resolved}"
+
+
+# === auto-fix notes ===  (spec: openspec/specs/auto-fix/spec.md)
+# auto-fix-note(177) {class=L1 issue=177 hash=PENDING ctx=any-infra/tbench2:fix-git/cube-standard@0e91ae1}
+#   symptoms:  tbench2 fix-git; Genny did a relative write_file after a bash
+#              `cd`. Every action execs at the static working_dir (shell
+#              state never persists), so the file landed elsewhere and a
+#              commit was corrupted -- silently. Tool-level; infra-agnostic.
+#   invariant: a relative path reported by read_file/write_file is the
+#              absolute path it actually resolved to (the static working_dir).
+#   why:       lean anti-footgun (visible resolved path). The real fix -- a
+#              stateful session working dir -- is a deferred contract change
+#              (needs a cube-standard openspec proposal).
+#   tested:    tests/ terminal resolved-path cases.
+#   hash=PENDING: stamped by scripts/auto_fix_lint.py (Tier-1) on first run.

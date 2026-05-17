@@ -484,6 +484,7 @@ def run_debug_suite(
             for tc in task_configs:
                 if on_episode_start is not None:
                     on_episode_start(tc.task_id)
+                # auto-fix(175)↓
                 try:
                     report = _episode_for_config(tc)
                 except Exception as exc:
@@ -494,6 +495,7 @@ def run_debug_suite(
                     )
                     report = _make_error_report(tc, exc)
                 results.append(report)
+                # /auto-fix(175)
                 if on_episode_done is not None:
                     on_episode_done(report)
         else:
@@ -675,3 +677,17 @@ def assert_debug_tasks_reward_one(
         assert not report["error"], f"[{task_id}] Episode error: {report['error']}"
         assert report["done"], f"[{task_id}] Episode did not complete: {report}"
         assert report["reward"] == 1.0, f"[{task_id}] Expected reward=1.0, got {report['reward']}: {report}"
+
+
+# === auto-fix notes ===  (spec: openspec/specs/auto-fix/spec.md)
+# auto-fix-note(175) {class=L0 issue=175 hash=PENDING ctx=logic/cube-standard@0e91ae1}
+#   symptoms:  tbench2 shakeout; a DockerException in task 1 of the SERIAL
+#              branch (effective_workers<=1, what `cube test` uses) escaped,
+#              tasks 2..N never ran, empty results -> success reported on a
+#              crash. Pure control-flow; benchmark-/OS-/infra-agnostic.
+#   invariant: a per-task crash becomes a structured error report so later
+#              tasks still run -- it never escapes run_debug_suite.
+#   why:       serial branch now mirrors the parallel branch's existing
+#              try/except -> _make_error_report (restores symmetry).
+#   tested:    tests/test_testing.py::test_suite_serial_collects_all_episode_results_when_first_task_raises
+#   hash=PENDING: stamped by scripts/auto_fix_lint.py (Tier-1) on first run.

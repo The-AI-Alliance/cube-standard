@@ -61,6 +61,7 @@ _PULL_BACKOFF_BASE = 30.0
 _PULL_BACKOFF_CAP = 300.0
 
 
+# auto-fix(174)↓
 def _active_docker_context_host() -> str | None:
     """Best-effort daemon endpoint of the active ``docker context``, or ``None``.
 
@@ -112,6 +113,9 @@ def _make_docker_client(docker: Any) -> Any:
             "non-default socket the Docker SDK does not auto-discover."
         ) from exc
     return client
+
+
+# /auto-fix(174)
 
 
 def _docker_pull(image: str) -> None:
@@ -967,3 +971,17 @@ def _kill_entry(entry: dict) -> None:
         if p.exists():
             p.unlink()
             logger.debug("Removed overlay %s", p)
+
+
+# === auto-fix notes ===  (spec: openspec/specs/auto-fix/spec.md)
+# auto-fix-note(174) {class=L1 issue=174 hash=PENDING ctx=colima/macos-arm64/n-a/cube-standard@0e91ae1}
+#   symptoms:  tbench2 PI shakeout on a macOS/arm64 Colima box; malformed
+#              DOCKER_HOST=http+unix:// (no socket path) -> broken unix:// client,
+#              and from_env() missed Colima's non-default socket. Infra-specific:
+#              docker backend + OS + DOCKER_HOST are the load-bearing context.
+#   invariant: a Docker SDK client is built that reaches the daemon across
+#              Podman/Colima/Docker-Desktop, or fails with an actionable error.
+#   why:       single construction site; normalize http+unix only with a real
+#              path -> docker context endpoint -> from_env -> actionable error.
+#   tested:    tests/test_infra_local.py docker-client cases.
+#   hash=PENDING: stamped by scripts/auto_fix_lint.py (Tier-1) on first run.

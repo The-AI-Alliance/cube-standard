@@ -150,12 +150,14 @@ def relocate_if_readonly(
     cmd = f"cp -a {working_dir} {new_wd}"
     if extra_setup:
         cmd += f" && {extra_setup}"
+    # auto-fix(176)↓
     result = container.exec(cmd, timeout=300)
     if result.exit_code != 0:
         raise ContainerExecError(
             f"relocate_if_readonly: '{cmd}' failed (exit {result.exit_code}); "
             f"working dir {new_wd!r} was not created. stderr: {result.stderr.strip()}"
         )
+    # /auto-fix(176)
     return new_wd
 
 
@@ -191,3 +193,17 @@ class ContainerConfig(TypedBaseModel):
     gpu: bool = False
     disk_gb: float = 10.0
     ports: list[int] | None = None
+
+
+# === auto-fix notes ===  (spec: openspec/specs/auto-fix/spec.md)
+# auto-fix-note(176) {class=L1 issue=176 hash=PENDING ctx=docker/tbench2:prove-plus-comm/cube-standard@0e91ae1}
+#   symptoms:  tbench2 task prove-plus-comm -- image has a read-only/absent
+#              /app; `cp -a` failed but the exit code was discarded and the
+#              never-created new_wd returned, so callers chdir'd into a
+#              phantom dir. Trigger = image shape; infra-agnostic.
+#   invariant: relocate_if_readonly returns a dir that exists, or raises
+#              ContainerExecError -- never a path that was never created.
+#   why:       check result.exit_code; raise the module's domain exception
+#              (ContainerExecError), consistent with its error hierarchy.
+#   tested:    tests/test_container.py relocate cases.
+#   hash=PENDING: stamped by scripts/auto_fix_lint.py (Tier-1) on first run.
