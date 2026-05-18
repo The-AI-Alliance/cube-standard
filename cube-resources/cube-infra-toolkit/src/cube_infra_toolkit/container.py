@@ -427,11 +427,17 @@ class ToolkitContainer(Container):
         stderr_file = tempfile.NamedTemporaryFile(
             prefix=f"eai-pf-{container_port}-", suffix=".log", delete=False, mode="w"
         )
+        # auto-fix(182)↓ own session/group so stop() can killpg the
+        # `eai port-forward` *and* its tunnel children. Without this,
+        # proc.kill() left the forwarding child orphaned (ppid=1) — the
+        # dominant local-proc leak in cube-standard #182.
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=stderr_file,
+            start_new_session=True,
         )
+        # /auto-fix(182)
 
         time.sleep(2)
         if proc.poll() is not None:
@@ -459,15 +465,23 @@ class ToolkitContainer(Container):
     @_retry_io
     def stop(self, timeout: int = 10) -> None:
         for port, proc in self._port_forwards.items():
+            # auto-fix(182)↓ kill the whole port-forward process group, not
+            # just the `eai` parent — its tunnel child must die too or it
+            # orphans to ppid=1 (cube-standard #182). Pairs with the
+            # start_new_session=True in forward_port().
             try:
-                proc.terminate()
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
                 proc.wait(timeout=5)
+            except (ProcessLookupError, PermissionError):
+                pass
             except Exception:
                 try:
-                    proc.kill()
-                except Exception:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
                     pass
-                logger.debug("Force-killed port-forward for port %d", port)
+                logger.debug("Force-killed port-forward group for port %d", port)
+            # /auto-fix(182)
         self._port_forwards.clear()
         self._port_map.clear()
 
@@ -506,3 +520,18 @@ class ToolkitContainer(Container):
                 healthy=False,
                 backend_info={"eai_state": "unknown", "id": self._job_id},
             )
+
+
+# === auto-fix notes ===
+# auto-fix-note(182) {class=L1 issue=182 hash=PENDING ctx=eai-toolkit/yul101/darwin-arm64/cube@2dad0562}
+#   symptoms:  `eai job port-forward` children orphaned to ppid=1 on every
+#              interrupted run (~50 found hung 11-13 days on a dev box);
+#              stress harness N=8 -> +8 leaked procs survived stop()/cleanup.
+#   invariant: a Container.stop() must release ALL OS resources it spawned —
+#              proc.kill() on the `eai` parent left the tunnel child alive.
+#   why:       start_new_session=True isolates the port-forward into its own
+#              process group so stop() can killpg the whole tree; right layer
+#              (the container driver that spawned it). No contract change ->
+#              L1. Pairs with toolkit.py cleanup_* (same issue 182).
+#   tested:    round_4 stress.py exec-path run asserts eai-proc delta == 0
+#              after stop()/cleanup(); + tests/test_toolkit_cleanup.py.
