@@ -13,8 +13,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
+import signal
 import subprocess
 import tarfile
 import tempfile
@@ -375,6 +377,10 @@ class ToolkitInfraConfig(InfraConfig):
         """Startup GC: kill managed jobs past their ``cube_expires_at`` tag
         (or older than ``max_age_seconds`` if given). Reads cloud tags only —
         works after total local state loss (resource/spec.md invariant 4).
+
+        Also sweeps **local** ``eai job port-forward`` processes whose target
+        job is no longer alive — the SIGKILL residue a dead client cannot
+        reap itself (these were the 11-13-day zombies in #182).
         """
         now = int(time.time())
         killed: list[str] = []
@@ -392,7 +398,67 @@ class ToolkitInfraConfig(InfraConfig):
                     stale = True
             if stale and self._kill_job(j["id"]):
                 killed.append(j["id"])
+        self._reap_orphan_port_forwards(self._alive_job_ids())
         return killed
+
+    def _alive_job_ids(self) -> set[str]:
+        """All of the caller's still-alive job ids (any state, any tag)."""
+        try:
+            r = _run_eai(
+                ["job", "ls", "--me", "--state", "alive", "--fields", "id", "--format", "json"],
+                eai_path=self.eai_path,
+                profile=self.profile or os.environ.get("EAI_PROFILE"),
+                account=self.account,
+                timeout=60,
+                retries=1,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ToolkitInfraConfig: alive-job query failed: %s", exc)
+            return set()
+        ids: set[str] = set()
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                jid = (json.loads(line).get("id") or "").strip()
+            except json.JSONDecodeError:
+                continue
+            if len(jid) == 36:
+                ids.add(jid)
+        return ids
+
+    def _reap_orphan_port_forwards(self, alive_ids: set[str]) -> list[int]:
+        """SIGKILL the process group of every local ``eai job port-forward``
+        whose target job is not in ``alive_ids`` (dead-end tunnel — the local
+        zombie a hard-killed client can't reap). Best-effort; never raises.
+        """
+        try:
+            ps = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=15)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("port-forward reap: ps failed: %s", exc)
+            return []
+        reaped: list[int] = []
+        for line in ps.stdout.splitlines():
+            line = line.strip()
+            if "job port-forward" not in line or "eai" not in line:
+                continue
+            try:
+                pid_str, _, cmd = line.partition(" ")
+                pid = int(pid_str)
+            except ValueError:
+                continue
+            m = re.search(r"port-forward\s+([0-9a-f-]{36})\b", cmd)
+            if not m or m.group(1) in alive_ids:
+                continue
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+                reaped.append(pid)
+            except (ProcessLookupError, PermissionError):
+                pass
+        if reaped:
+            logger.info("Reaped %d orphaned eai port-forward proc(s): %s", len(reaped), reaped)
+        return reaped
 
     # /auto-fix(182)
 
@@ -602,7 +668,11 @@ def _publish_cube_bundle(full_name: str, eai_path: str, profile: str | None) -> 
 #   why:       right layer (the toolkit InfraConfig driver). Tag at submit
 #              (run_id known pre-launch) + server --max-run-time bounds even
 #              a SIGKILL'd client; real cleanup_* implements the existing
-#              (previously stubbed) contract. No contract change -> L1.
-#   tested:    round_4 stress.py — clean mode asserts 0 leaked jobs/procs
-#              after cleanup(); crash mode asserts cleanup_stale() reaps a
-#              dropped-handle run. + tests/test_toolkit_cleanup.py.
+#              (previously stubbed) contract. cleanup_stale also sweeps the
+#              local SIGKILL residue (orphan port-forward procs whose job is
+#              dead) — the part a hard-killed client can't reap itself. No
+#              contract change -> L1.
+#   tested:    round_4 stress.py — close mode asserts 0 leaked jobs/procs;
+#              stale mode asserts cleanup_stale() reaps a dropped-handle
+#              run by tag + sweeps orphan port-forward procs.
+#              + tests/test_toolkit_cleanup.py (incl. reaper unit tests).

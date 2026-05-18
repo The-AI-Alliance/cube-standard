@@ -184,3 +184,65 @@ def test_launch_tags_job_and_sets_max_run_time(monkeypatch: pytest.MonkeyPatch, 
     # server-side hard TTL == effective_ttl (infra.default_ttl_seconds=3600)
     assert "--max-run-time" in argv
     assert argv[argv.index("--max-run-time") + 1] == "3600"
+
+
+# ── orphan port-forward reaper (SIGKILL residue) ──────────────────────────────
+
+_ALIVE = "11111111-1111-1111-1111-111111111111"
+_DEAD = "22222222-2222-2222-2222-222222222222"
+_PS = (
+    f"4242 /Users/x/bin/eai --profile p job port-forward {_ALIVE} 5001:8787\n"
+    f"4343 /Users/x/bin/eai --profile p job port-forward {_DEAD} 5002:8787\n"
+    "4444 /usr/bin/python something unrelated\n"
+)
+
+
+def test_reap_orphan_port_forwards_kills_only_dead_target() -> None:
+    killed_groups: list[int] = []
+    with (
+        patch(
+            "cube_infra_toolkit.toolkit.subprocess.run",
+            return_value=subprocess.CompletedProcess(["ps"], 0, _PS, ""),
+        ),
+        patch("cube_infra_toolkit.toolkit.os.getpgid", side_effect=lambda pid: pid),
+        patch(
+            "cube_infra_toolkit.toolkit.os.killpg",
+            side_effect=lambda pgid, _sig: killed_groups.append(pgid),
+        ),
+    ):
+        reaped = _infra()._reap_orphan_port_forwards({_ALIVE})  # noqa: SLF001
+    assert reaped == [4343]  # only the port-forward to the dead job
+    assert killed_groups == [4343]
+
+
+def test_reap_orphan_port_forwards_noop_when_all_alive() -> None:
+    with (
+        patch(
+            "cube_infra_toolkit.toolkit.subprocess.run",
+            return_value=subprocess.CompletedProcess(["ps"], 0, _PS, ""),
+        ),
+        patch("cube_infra_toolkit.toolkit.os.getpgid", side_effect=lambda pid: pid),
+        patch("cube_infra_toolkit.toolkit.os.killpg", side_effect=AssertionError("must not kill")),
+    ):
+        reaped = _infra()._reap_orphan_port_forwards({_ALIVE, _DEAD})  # noqa: SLF001
+    assert reaped == []
+
+
+def test_cleanup_stale_invokes_port_forward_reaper() -> None:
+    """cleanup_stale must sweep the local SIGKILL residue, not just jobs."""
+    seen: dict[str, bool] = {"reaped": False}
+
+    def se(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return _cp("")  # no managed jobs, no alive jobs
+
+    infra = _infra()
+    with (
+        patch("cube_infra_toolkit.toolkit._run_eai", side_effect=se),
+        patch.object(
+            infra,
+            "_reap_orphan_port_forwards",
+            side_effect=lambda _alive: seen.__setitem__("reaped", True) or [],
+        ),
+    ):
+        infra.cleanup_stale()
+    assert seen["reaped"] is True
