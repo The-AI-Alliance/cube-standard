@@ -13,8 +13,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
+import signal
 import subprocess
 import tarfile
 import tempfile
@@ -44,6 +46,26 @@ _BUNDLED_SIDECAR_BINARY = Path(__file__).parent / "_bin" / "linux-amd64" / "cube
 _BUNDLE_CACHE_DIR = Path.home() / ".cache" / "cube_infra_toolkit"
 
 logger = logging.getLogger(__name__)
+
+# auto-fix(182)↓ cloud-tag keys so cleanup()/cleanup_stale() can reap
+# orphaned EAI jobs by reading tags (resource/spec.md inv. 3-4) — works
+# even after total local state loss.
+_MANAGED_TAG = "cube_managed"
+_RUN_ID_TAG = "cube_run_id"
+_EXPIRES_AT_TAG = "cube_expires_at"
+
+
+def _parse_epoch(ts: str | None) -> int | None:
+    """EAI ``created`` is ISO-8601 (e.g. ``2026-05-18T12:36:49Z``)."""
+    if not ts:
+        return None
+    try:
+        return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+    except (ValueError, TypeError):
+        return None
+
+
+# /auto-fix(182)
 
 
 class ToolkitInfraConfig(InfraConfig):
@@ -132,6 +154,16 @@ class ToolkitInfraConfig(InfraConfig):
         # The relay server starts with the job — zero bootstrap eai execs.
         relay_token = secrets.token_urlsafe(32)
 
+        # auto-fix(182)↓ run_id + TTL must be known *before* submit so they
+        # can be baked into job tags — a job whose client is hard-killed
+        # mid-launch is then still reapable (by tag) and cluster-bounded
+        # (by --max-run-time), instead of orphaning to the 48h default.
+        run_id = str(uuid.uuid4())
+        effective_ttl = (
+            self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
+        )
+        # /auto-fix(182)
+
         cmd: list[str] = ["job", "new"]
         if self.preemptable:
             cmd.append("--preemptable")
@@ -143,6 +175,12 @@ class ToolkitInfraConfig(InfraConfig):
         cmd += ["-i", image]
         cmd += ["--cpu", str(cpu)]
         cmd += ["--mem", str(mem_gb)]
+        # auto-fix(182)↓ tag for reaping + hard server-side TTL
+        cmd += ["--tag", _MANAGED_TAG, "--tag", f"{_RUN_ID_TAG}={run_id}"]
+        if effective_ttl and effective_ttl > 0:
+            cmd += ["--tag", f"{_EXPIRES_AT_TAG}={int(time.time()) + int(effective_ttl)}"]
+            cmd += ["--max-run-time", str(int(effective_ttl))]
+        # /auto-fix(182)
         cube_data = self._resolve_cube_data(profile)
         if cube_data is not None:
             cmd += ["--data", f"{cube_data}:/opt/cube:ro"]
@@ -224,10 +262,10 @@ class ToolkitInfraConfig(InfraConfig):
             logger.info("EAI job %s RUNNING", job_id)
 
             # Populate ResourceHandle bookkeeping on the container itself.
-            effective_ttl = (
-                self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
-            )
-            container.run_id = str(uuid.uuid4())
+            # auto-fix(182)↓ same run_id we tagged the job with (was a
+            # fresh uuid4 here — untraceable back to the cloud job).
+            container.run_id = run_id
+            # /auto-fix(182)
             container.resource = resource
             container.infra = self
             container.endpoint = None
@@ -251,17 +289,178 @@ class ToolkitInfraConfig(InfraConfig):
                 logger.warning("Failed to kill EAI job %s during cleanup: %s", job_id, kill_exc)
             raise
 
+    # auto-fix(182)↓ real reaping via cloud tags (was: no-op stubs that
+    # silently leaked every job + port-forward when a run was interrupted —
+    # violated resource/spec.md inv. 3-4 and its own "cost leaks" gotcha).
+    def _list_managed_jobs(self) -> list[dict]:
+        """Alive cube-managed jobs with parsed tags (``eai`` emits JSON Lines)."""
+        profile = self.profile or os.environ.get("EAI_PROFILE")
+        try:
+            result = _run_eai(
+                [
+                    "job",
+                    "ls",
+                    "--me",
+                    "--state",
+                    "alive",
+                    "--tag",
+                    _MANAGED_TAG,
+                    "--fields",
+                    "id,tags,created",
+                    "--format",
+                    "json",
+                ],
+                eai_path=self.eai_path,
+                profile=profile,
+                account=self.account,
+                timeout=60,
+                retries=1,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ToolkitInfraConfig: list managed jobs failed: %s", exc)
+            return []
+        jobs: list[dict] = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            tags = {t.get("key"): t.get("value") for t in (obj.get("tags") or []) if isinstance(t, dict)}
+            jid = obj.get("id")
+            if jid:
+                jobs.append({"id": jid, "tags": tags, "created": obj.get("created")})
+        return jobs
+
+    def _kill_job(self, job_id: str) -> bool:
+        try:
+            _run_eai(
+                ["job", "kill", job_id],
+                eai_path=self.eai_path,
+                profile=self.profile or os.environ.get("EAI_PROFILE"),
+                account=self.account,
+                timeout=30,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ToolkitInfraConfig: failed to kill job %s: %s", job_id, exc)
+            return False
+
     def list_active(self, run_id: str | None = None) -> list[ToolkitContainer]:
-        """Not implemented — EAI jobs aren't tagged with our run_id today."""
-        return []
+        out: list[ToolkitContainer] = []
+        for j in self._list_managed_jobs():
+            if run_id is not None and j["tags"].get(_RUN_ID_TAG) != run_id:
+                continue
+            c = ToolkitContainer(
+                j["id"],
+                profile=self.profile or os.environ.get("EAI_PROFILE"),
+                account=self.account,
+                eai_path=self.eai_path,
+            )
+            c.run_id = j["tags"].get(_RUN_ID_TAG, "")
+            out.append(c)
+        return out
 
     def cleanup(self, run_id: str) -> None:
-        """No-op — see ``list_active``."""
-        logger.debug("ToolkitInfraConfig.cleanup(%s): no-op (labels not wired yet)", run_id)
+        """L2/L3 catch-all: kill every managed job tagged with ``run_id``.
+
+        Safe on already-deleted jobs (``eai job kill`` no-ops) per
+        resource/spec.md invariant 3.
+        """
+        for j in self._list_managed_jobs():
+            if j["tags"].get(_RUN_ID_TAG) == run_id:
+                self._kill_job(j["id"])
 
     def cleanup_stale(self, max_age_seconds: int | None = None) -> list[str]:
-        """No-op — EAI job TTLs are managed cluster-side."""
-        return []
+        """Startup GC: kill managed jobs past their ``cube_expires_at`` tag
+        (or older than ``max_age_seconds`` if given). Reads cloud tags only —
+        works after total local state loss (resource/spec.md invariant 4).
+
+        Also sweeps **local** ``eai job port-forward`` processes whose target
+        job is no longer alive — the SIGKILL residue a dead client cannot
+        reap itself (these were the 11-13-day zombies in #182).
+        """
+        now = int(time.time())
+        killed: list[str] = []
+        for j in self._list_managed_jobs():
+            exp = j["tags"].get(_EXPIRES_AT_TAG)
+            stale = False
+            if exp:
+                try:
+                    stale = int(exp) < now
+                except (TypeError, ValueError):
+                    stale = False
+            if not stale and max_age_seconds is not None:
+                created = _parse_epoch(j.get("created"))
+                if created is not None and (now - created) > max_age_seconds:
+                    stale = True
+            if stale and self._kill_job(j["id"]):
+                killed.append(j["id"])
+        self._reap_orphan_port_forwards(self._alive_job_ids())
+        return killed
+
+    def _alive_job_ids(self) -> set[str]:
+        """All of the caller's still-alive job ids (any state, any tag)."""
+        try:
+            r = _run_eai(
+                ["job", "ls", "--me", "--state", "alive", "--fields", "id", "--format", "json"],
+                eai_path=self.eai_path,
+                profile=self.profile or os.environ.get("EAI_PROFILE"),
+                account=self.account,
+                timeout=60,
+                retries=1,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ToolkitInfraConfig: alive-job query failed: %s", exc)
+            return set()
+        ids: set[str] = set()
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                jid = (json.loads(line).get("id") or "").strip()
+            except json.JSONDecodeError:
+                continue
+            if len(jid) == 36:
+                ids.add(jid)
+        return ids
+
+    def _reap_orphan_port_forwards(self, alive_ids: set[str]) -> list[int]:
+        """SIGKILL the process group of every local ``eai job port-forward``
+        whose target job is not in ``alive_ids`` (dead-end tunnel — the local
+        zombie a hard-killed client can't reap). Best-effort; never raises.
+        """
+        try:
+            ps = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=15)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("port-forward reap: ps failed: %s", exc)
+            return []
+        reaped: list[int] = []
+        for line in ps.stdout.splitlines():
+            line = line.strip()
+            if "job port-forward" not in line or "eai" not in line:
+                continue
+            try:
+                pid_str, _, cmd = line.partition(" ")
+                pid = int(pid_str)
+            except ValueError:
+                continue
+            m = re.search(r"port-forward\s+([0-9a-f-]{36})\b", cmd)
+            if not m or m.group(1) in alive_ids:
+                continue
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+                reaped.append(pid)
+            except (ProcessLookupError, PermissionError):
+                pass
+        if reaped:
+            logger.info("Reaped %d orphaned eai port-forward proc(s): %s", len(reaped), reaped)
+        return reaped
+
+    # /auto-fix(182)
 
     # ── cube_data auto-provision ─────────────────────────────────────────────
 
@@ -457,3 +656,23 @@ def _publish_cube_bundle(full_name: str, eai_path: str, profile: str | None) -> 
 #   tested:    tests/ — shutil.which monkeypatched to None → ContainerLaunchError
 #              whose message names eai + remediation (invariant, not repro).
 #   hash=PENDING: stamped by scripts/auto_fix_lint.py (Tier-1) on first run.
+# auto-fix-note(182) {class=L1 issue=182 hash=PENDING ctx=eai-toolkit/yul101/darwin-arm64/cube@2dad0562}
+#   symptoms:  PI infra-robustness session (terminalbench2, toolkit infra,
+#              yul101): every interrupted run leaked 1 EAI job + 1 local
+#              `eai job port-forward` proc; ~50 such procs found orphaned
+#              11-13 days on a dev box. Stress harness: N=8 -> +8 leaked
+#              procs survived infra.cleanup().
+#   invariant: resource/spec.md inv. 3-4 + Gotcha — L2/L3 resources MUST
+#              carry cloud tags so cleanup(run_id)/cleanup_stale() can reap
+#              orphans without local state; cleanup must no-op gracefully.
+#   why:       right layer (the toolkit InfraConfig driver). Tag at submit
+#              (run_id known pre-launch) + server --max-run-time bounds even
+#              a SIGKILL'd client; real cleanup_* implements the existing
+#              (previously stubbed) contract. cleanup_stale also sweeps the
+#              local SIGKILL residue (orphan port-forward procs whose job is
+#              dead) — the part a hard-killed client can't reap itself. No
+#              contract change -> L1.
+#   tested:    round_4 stress.py — close mode asserts 0 leaked jobs/procs;
+#              stale mode asserts cleanup_stale() reaps a dropped-handle
+#              run by tag + sweeps orphan port-forward procs.
+#              + tests/test_toolkit_cleanup.py (incl. reaper unit tests).
