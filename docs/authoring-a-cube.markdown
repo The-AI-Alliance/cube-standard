@@ -106,7 +106,7 @@ Every debug task must hit `reward == 1.0`. If one doesn't, either the debug acti
 
 `/auto-cube` lives in [cube-harness](https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/skills/auto-cube/README.md). It runs an iterative experiment loop: sweep models × tool configs across a task subset, dispatch the **Investigator** sub-agent on every trajectory, classify failures (infra / scaffold / model / **benchmark**), and ship fixes via the [auto-fix methodology](https://github.com/The-AI-Alliance/cube-harness/blob/dev/openspec/specs/auto-fix/spec.md). You get back a `REPORT.md` session rollup, one Fix Report PR per issue, and `design-debt` issues for systemic signals.
 
-Recommended once before registry submission, even if `cube test` and `/review-cube` are green — at least one real-LLM session against a fresh cube usually surfaces something. See the [auto-cube skill README](https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/skills/auto-cube/README.md) for the prompt template and setup.
+Recommended once before registry submission, even if `cube test` and `/review-cube` are green — at least one real-LLM session against a fresh cube usually surfaces something. See the [Auto-CUBE skill README](https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/skills/auto-cube/README.md) for the prompt template and setup.
 
 ## Publish
 
@@ -141,6 +141,6 @@ Ways to reach us:
 - [cube-registry](https://github.com/The-AI-Alliance/cube-registry) — submission YAML template and compliance tiers
 - [cube-tools/](https://github.com/The-AI-Alliance/cube-standard/tree/main/cube-tools) — reusable tool packages (browser, computer, chat)
 - [cube-resources/](https://github.com/The-AI-Alliance/cube-standard/tree/main/cube-resources) — reusable resource packages (playwright browser, chat sessions, AWS/Azure infra, VM backend)
-- [auto-cube skill (cube-harness)](https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/skills/auto-cube/README.md) — iterate-and-fix loop for hardening a cube against real LLMs
+- [Auto-CUBE skill (cube-harness)](https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/skills/auto-cube/README.md) — iterate-and-fix loop for hardening a cube against real LLMs
 - [auto-fix methodology (cube-harness)](https://github.com/The-AI-Alliance/cube-harness/blob/dev/openspec/specs/auto-fix/spec.md) — what a Fix Report PR looks like and why
 - [DeepWiki](https://deepwiki.com/The-AI-Alliance/cube-standard) — full API reference
