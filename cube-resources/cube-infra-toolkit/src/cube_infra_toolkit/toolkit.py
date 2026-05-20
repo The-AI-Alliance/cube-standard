@@ -642,7 +642,7 @@ def _publish_cube_bundle(full_name: str, eai_path: str, profile: str | None) -> 
 
 # === auto-fix notes ===  (spec: openspec/specs/auto-fix/spec.md)
 # auto-fix-note(180) {class=L1 issue=180 hash=PENDING ctx=macos-arm64/no-eai-cli/cube-standard@2dad056}
-#   symptoms:  PI infra-robustness session, Round 0 toolkit smoke on a box
+#   symptoms:  auto-cube infra-robustness session, Round 0 toolkit smoke on a box
 #              without the EAI CLI: ToolkitInfraConfig launch raised a raw
 #              FileNotFoundError: 'eai' (8-line traceback). eai is NOT a pip
 #              dep (toolkit deps = cube-standard+tenacity) — external CLI.
@@ -657,7 +657,7 @@ def _publish_cube_bundle(full_name: str, eai_path: str, profile: str | None) -> 
 #              whose message names eai + remediation (invariant, not repro).
 #   hash=PENDING: stamped by scripts/auto_fix_lint.py (Tier-1) on first run.
 # auto-fix-note(182) {class=L1 issue=182 hash=PENDING ctx=eai-toolkit/yul101/darwin-arm64/cube@2dad0562}
-#   symptoms:  PI infra-robustness session (terminalbench2, toolkit infra,
+#   symptoms:  auto-cube infra-robustness session (terminalbench2, toolkit infra,
 #              yul101): every interrupted run leaked 1 EAI job + 1 local
 #              `eai job port-forward` proc; ~50 such procs found orphaned
 #              11-13 days on a dev box. Stress harness: N=8 -> +8 leaked
