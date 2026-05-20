@@ -42,7 +42,7 @@ Cross-cutting:
 
 PRs are reviewed with `/code-review` ([plugin docs](https://github.com/anthropics/claude-code/blob/main/plugins/code-review/README.md)), which audits changes against these guidelines. Write PRs as if a reviewer will check each principle above against the diff.
 
-**Auto-fix provenance.** auto-cube-produced fixes carry `# auto-fix(N)↓ … # /auto-fix(N)`
+**Auto-fix provenance.** Auto-CUBE-produced fixes carry `# auto-fix(N)↓ … # /auto-fix(N)`
 markers + a one-line machine-readable footnote at module bottom (`N` = PR
 number for L0/L1, design-debt issue number for L2/L3). Reviewers: when a
 diff touches an `auto-fix` region/footnote, treat it as **possibly rotten**

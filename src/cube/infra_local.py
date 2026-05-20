@@ -975,7 +975,7 @@ def _kill_entry(entry: dict) -> None:
 
 # === auto-fix notes ===  (spec: openspec/specs/auto-fix/spec.md)
 # auto-fix-note(174) {class=L1 issue=174 hash=PENDING ctx=colima/macos-arm64/n-a/cube-standard@0e91ae1}
-#   symptoms:  tbench2 auto-cube shakeout on a macOS/arm64 Colima box; malformed
+#   symptoms:  tbench2 Auto-CUBE shakeout on a macOS/arm64 Colima box; malformed
 #              DOCKER_HOST=http+unix:// (no socket path) -> broken unix:// client,
 #              and from_env() missed Colima's non-default socket. Infra-specific:
 #              docker backend + OS + DOCKER_HOST are the load-bearing context.
