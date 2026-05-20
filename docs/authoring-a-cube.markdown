@@ -15,9 +15,9 @@ The short version: you implement four Python classes (tool, task, benchmark, deb
 
 | Skill | Phase | What it does |
 |---|---|---|
-| [`/new-cube`](https://github.com/The-AI-Alliance/cube-standard/tree/main/.claude/skills/new-cube) | Scaffold | Interviews you and writes the four classes + registry entry |
-| [`/review-cube`](https://github.com/The-AI-Alliance/cube-standard/tree/main/.claude/skills/review-cube) | Audit | Installs the package, runs `cube test`, audits against invariants, produces a Blocking/Suggestions report |
-| [`/auto-cube`](https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/skills/auto-cube/README.md) | Iterate | Runs real LLMs against the cube, classifies failures (infra / scaffold / model / **benchmark**), ships fixes — the deep-debug pass `cube test` cannot do |
+| <a href="https://github.com/The-AI-Alliance/cube-standard/tree/main/.claude/skills/new-cube"><code>/new-cube</code></a> | Scaffold | Interviews you and writes the four classes + registry entry |
+| <a href="https://github.com/The-AI-Alliance/cube-standard/tree/main/.claude/skills/review-cube"><code>/review-cube</code></a> | Audit | Installs the package, runs `cube test`, audits against invariants, produces a Blocking/Suggestions report |
+| <a href="https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/skills/auto-cube/README.md"><code>/auto-cube</code></a> | Iterate | Runs real LLMs against the cube, classifies failures (infra / scaffold / model / **benchmark**), ships fixes — the deep-debug pass `cube test` cannot do |
 
 `/auto-cube` lives in [cube-harness](https://github.com/The-AI-Alliance/cube-harness) (the runtime); the other two live here. Each phase has its own section below.
 
