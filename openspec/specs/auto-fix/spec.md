@@ -54,11 +54,10 @@ exists to prevent, turned on itself.
 
 ## 2. The Fix Report (every fix PR carries its own proof)
 
-Was "Fix Dossier" — renamed for plain-language reach. Template lives in
-cube-harness at `.claude/skills/auto-cube/templates/fix_report.md`
-(cube-standard has no auto-cube authoring skill; auto-cube authors from
-cube-harness regardless of which repo the fix lands in). It is the PR
-body.
+Template lives in cube-harness at
+`.claude/skills/auto-cube/templates/fix_report.md` (cube-standard has
+no auto-cube authoring skill; auto-cube authors from cube-harness
+regardless of which repo the fix lands in). It is the PR body.
 
 **Structure: named subsections + bullets within.** A skimmer reads
 section headers + the invariant + the empirical witness in ~30 s and
