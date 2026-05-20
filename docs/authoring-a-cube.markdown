@@ -106,6 +106,8 @@ Every debug task must hit `reward == 1.0`. If one doesn't, either the debug acti
 
 `/auto-cube` lives in [cube-harness](https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/skills/auto-cube/README.md). It runs an iterative experiment loop: sweep models × tool configs across a task subset, dispatch the **Investigator** sub-agent on every trajectory, classify failures (infra / scaffold / model / **benchmark**), and ship fixes via the [auto-fix methodology](https://github.com/The-AI-Alliance/cube-harness/blob/dev/openspec/specs/auto-fix/spec.md). You get back a `REPORT.md` session rollup, one Fix Report PR per issue, and `design-debt` issues for systemic signals.
 
+![Auto-CUBE outer loop: dispatch → per-experiment Investigator on each trajectory → analysis → interventions](https://raw.githubusercontent.com/The-AI-Alliance/cube-harness/dev/.claude/skills/auto-cube/diagram.png)
+
 Recommended once before registry submission, even if `cube test` and `/review-cube` are green — at least one real-LLM session against a fresh cube usually surfaces something. See the [Auto-CUBE skill README](https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/skills/auto-cube/README.md) for the prompt template and setup.
 
 ## Publish
