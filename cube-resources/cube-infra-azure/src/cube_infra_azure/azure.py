@@ -109,6 +109,17 @@ _AZURE_VM_SIZES: list[tuple[int, int, str]] = [
 ]
 
 
+def _iso_utc(dt: datetime) -> str:
+    """Format a UTC datetime as ``YYYY-MM-DDTHH:MM:SSZ``.
+
+    Matches the org-standard ``expireOn`` / ``ttl`` convention consumed by the
+    central budget automation (which scans for tags in this exact ISO-8601
+    shape). Drops microseconds — second precision is plenty for TTL — and
+    uses ``Z`` rather than ``+00:00`` because the budget tooling expects it.
+    """
+    return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def _select_vm_size(default: str, min_cpu: int | None, min_ram: int | None) -> str:
     """Return the smallest Standard_D*s_v3 size satisfying min_cpu and min_ram.
 
@@ -1176,14 +1187,20 @@ class AzureInfraConfig(InfraConfig):
         expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
 
         # Spec-required tags applied to every launched resource (VM, NIC, IP).
+        # Timestamps use _iso_utc (Z suffix, second precision) — matches the
+        # org-standard expireOn/ttl convention so external budget automation
+        # can sweep cube resources without learning the cube: prefix.
         cube_tags: dict[str, str] = {
             "cube:infra": self.fingerprint(),
             "cube:run_id": run_id,
             "cube:resource": resource.name,
-            "cube:created_at": created_at.isoformat(),
+            "cube:created_at": _iso_utc(created_at),
         }
         if expires_at:
-            cube_tags["cube:expires_at"] = expires_at.isoformat()
+            cube_tags["cube:expires_at"] = _iso_utc(expires_at)
+            # Mirror onto the org-standard tag name so cross-team budget
+            # automation (which scans for ``expireOn``) can also sweep us.
+            cube_tags["expireOn"] = _iso_utc(expires_at)
 
         compute = self._compute()
 

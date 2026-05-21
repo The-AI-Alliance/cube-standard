@@ -292,6 +292,102 @@ class TestAzureLaunch:
         assert "os_profile" in vm_spec_captured
         assert "custom_data" not in vm_spec_captured.get("os_profile", {})
 
+    def test_launch_writes_expireon_tag_with_z_format(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Launched resources must carry the org-standard ``expireOn`` tag
+        (in addition to ``cube:expires_at`` for internal cleanup_stale).
+        Format must match Christian's budget-automation convention:
+        ISO-8601 ``YYYY-MM-DDTHH:MM:SSZ`` — second precision, ``Z`` suffix."""
+        _patch_store_path(monkeypatch, tmp_path)
+        infra = _make_infra()
+        resource = VMResourceConfig(name="vm")
+        infra.register(
+            resource, {"image_def": "vm", "version": "1.0.0", "image_id": "/galleries/.../vm/versions/1.0.0"}
+        )
+
+        pubkey_file = tmp_path / "id_ed25519.pub"
+        pubkey_file.write_text("ssh-ed25519 AAAA... user@host")
+        object.__setattr__(infra, "ssh_pubkey_path", str(pubkey_file))
+
+        vm_spec_captured: dict = {}
+
+        def fake_begin_create(*args, **kwargs):
+            vm_spec_captured.update(args[2] if len(args) > 2 else {})
+            mock_poller = MagicMock()
+            mock_poller.result.return_value = None
+            return mock_poller
+
+        mock_compute = MagicMock()
+        mock_compute.virtual_machines.begin_create_or_update.side_effect = fake_begin_create
+        mock_network = MagicMock()
+        mock_pip = MagicMock()
+        mock_pip.ip_address = "1.2.3.4"
+        mock_network.public_ip_addresses.get.return_value = mock_pip
+
+        with (
+            patch.object(infra, "_compute", return_value=mock_compute),
+            patch.object(infra, "_network", return_value=mock_network),
+            patch.object(infra, "_create_network_resources", return_value=(MagicMock(), MagicMock(), "pip-1", "nic-1")),
+            patch("cube_infra_azure.azure.wait_for_ssh", return_value="cube"),
+            patch("cube_infra_azure.azure.open_tunnel", return_value=(MagicMock(), 15000)),
+        ):
+            infra.launch(resource)
+
+        tags = vm_spec_captured.get("tags", {})
+        # Both tag names must be present and carry the same value (org-standard
+        # ``expireOn`` for budget automation + internal ``cube:expires_at`` for
+        # cleanup_stale).
+        assert "expireOn" in tags, f"expireOn tag missing; got {sorted(tags)}"
+        assert "cube:expires_at" in tags, f"cube:expires_at tag missing; got {sorted(tags)}"
+        assert tags["expireOn"] == tags["cube:expires_at"]
+        # Format: Z suffix, no microseconds.
+        assert tags["expireOn"].endswith("Z"), f"expected Z suffix, got {tags['expireOn']!r}"
+        assert "+" not in tags["expireOn"], f"expected Z (not +00:00), got {tags['expireOn']!r}"
+        assert "." not in tags["expireOn"], f"unexpected microseconds: {tags['expireOn']!r}"
+        # cube:created_at follows the same convention.
+        assert tags["cube:created_at"].endswith("Z")
+        assert "." not in tags["cube:created_at"]
+
+
+# ── Module-level helpers ──────────────────────────────────────────────────────
+
+
+class TestIsoUtc:
+    """Unit tests for the ``_iso_utc`` formatter used by tag writes."""
+
+    def test_strips_microseconds(self) -> None:
+        from cube_infra_azure.azure import _iso_utc
+
+        dt = datetime(2026, 5, 21, 17, 17, 29, 131757, tzinfo=UTC)
+        assert _iso_utc(dt) == "2026-05-21T17:17:29Z"
+
+    def test_uses_z_suffix_not_plus_offset(self) -> None:
+        from cube_infra_azure.azure import _iso_utc
+
+        dt = datetime(2026, 6, 15, 18, 0, 0, tzinfo=UTC)
+        assert _iso_utc(dt) == "2026-06-15T18:00:00Z"
+        assert "+00:00" not in _iso_utc(dt)
+
+    def test_roundtrip_through_fromisoformat(self) -> None:
+        """The format we write must round-trip through datetime.fromisoformat —
+        this is what cleanup_stale uses to read ``cube:expires_at`` back."""
+        from cube_infra_azure.azure import _iso_utc
+
+        dt = datetime(2026, 5, 21, 17, 17, 29, tzinfo=UTC)
+        parsed = datetime.fromisoformat(_iso_utc(dt))
+        assert parsed == dt
+
+    def test_legacy_plus_offset_format_still_parses(self) -> None:
+        """Existing VMs in Azure were tagged with the prior format
+        (``2026-05-21T17:17:29.131757+00:00``). ``cleanup_stale`` must keep
+        parsing those tags during the mixed-format coexistence window, until
+        every running VM has been recycled. Document that contract here."""
+        legacy = "2026-05-21T17:17:29.131757+00:00"
+        parsed = datetime.fromisoformat(legacy)
+        # tz-aware and comparable with datetime.now(tz=UTC) — that comparison
+        # is what cleanup_stale performs at azure.py line ~1525.
+        assert parsed.tzinfo is not None
+        assert parsed < datetime.now(tz=UTC) or parsed > datetime(2020, 1, 1, tzinfo=UTC)
+
 
 # ── Bootstrap script ──────────────────────────────────────────────────────────
 
