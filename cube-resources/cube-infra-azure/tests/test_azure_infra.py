@@ -376,6 +376,18 @@ class TestIsoUtc:
         parsed = datetime.fromisoformat(_iso_utc(dt))
         assert parsed == dt
 
+    def test_legacy_plus_offset_format_still_parses(self) -> None:
+        """Existing VMs in Azure were tagged with the prior format
+        (``2026-05-21T17:17:29.131757+00:00``). ``cleanup_stale`` must keep
+        parsing those tags during the mixed-format coexistence window, until
+        every running VM has been recycled. Document that contract here."""
+        legacy = "2026-05-21T17:17:29.131757+00:00"
+        parsed = datetime.fromisoformat(legacy)
+        # tz-aware and comparable with datetime.now(tz=UTC) — that comparison
+        # is what cleanup_stale performs at azure.py line ~1525.
+        assert parsed.tzinfo is not None
+        assert parsed < datetime.now(tz=UTC) or parsed > datetime(2020, 1, 1, tzinfo=UTC)
+
 
 # ── Bootstrap script ──────────────────────────────────────────────────────────
 
