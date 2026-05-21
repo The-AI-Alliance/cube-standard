@@ -60,6 +60,9 @@ class TypedBaseModel(BaseModel):
     def _deserialize_with_type(cls, value, handler):
         if isinstance(value, dict):
             if "_type" in value:
+                # Copy before popping: the caller's dict may be reused (e.g. re-validated
+                # under validate_assignment=True), and losing _type silently downgrades
+                # polymorphism on the second pass.
                 value = value.copy()
                 type_path = value.pop("_type")
                 module_path, class_name = type_path.rsplit(".", 1)
@@ -67,6 +70,9 @@ class TypedBaseModel(BaseModel):
                 actual_cls = getattr(module, class_name)
                 if not isinstance(actual_cls, type) or not issubclass(actual_cls, cls):
                     raise ValueError(f"Cannot deserialize '{type_path}': class must be a subclass of '{cls.__name__}'.")
+                # When actual_cls is cls, fall through to handler(value) instead of
+                # recursing: Pydantic v2 warns about "returning non-self from __init__"
+                # if a wrap-validator returns the result of model_validate on the same class.
                 if actual_cls is not cls:
                     return actual_cls.model_validate(value)
             elif inspect.isabstract(cls):

@@ -31,6 +31,45 @@ def test_typed_base_model_round_trip():
     assert restored == original
 
 
+def test_typed_base_model_does_not_mutate_input_dict():
+    """The validator must not pop '_type' from the caller's dict; mutating it
+    silently downgrades polymorphism on the next round-trip."""
+    payload = {"_type": "cube.core.Action", "id": None, "name": "click", "arguments": {}}
+    snapshot = dict(payload)
+    Action.model_validate(payload)
+    assert payload == snapshot
+
+
+def test_typed_base_model_same_dict_validates_twice_preserving_subclass():
+    """Re-validating the same dict twice must keep returning the concrete
+    subclass — regression guard for the in-place `_type` pop."""
+    payload = {"_type": "cube.core.TextContent", "data": "hi", "tool_call_id": None, "name": None}
+    a = Content.model_validate(payload)
+    b = Content.model_validate(payload)
+    assert type(a) is TextContent
+    assert type(b) is TextContent
+
+
+def test_typed_base_model_list_field_round_trips_twice():
+    """Realistic scenario: an Observation with polymorphic contents, dumped
+    once and re-validated twice — both must yield TextContent instances."""
+    obs = Observation(contents=[TextContent(data="hi")])
+    data = obs.model_dump()
+    once = Observation.model_validate(data)
+    twice = Observation.model_validate(data)
+    assert [type(c) for c in once.contents] == [TextContent]
+    assert [type(c) for c in twice.contents] == [TextContent]
+
+
+def test_typed_base_model_rejects_type_outside_target_hierarchy():
+    """`_type` must name a subclass of the class being validated. The previous
+    check only required a TypedBaseModel subclass, so an Action payload would
+    silently coerce into any TypedBaseModel field."""
+    payload = {"_type": "cube.core.Action", "name": "click"}
+    with pytest.raises(ValidationError):
+        TextContent.model_validate(payload)
+
+
 # --- ActionSchema ---
 
 
