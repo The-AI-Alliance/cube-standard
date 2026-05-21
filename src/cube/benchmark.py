@@ -127,6 +127,17 @@ class BenchmarkMetadata(TypedBaseModel):
             "Example: {'train_only': ('split', 'train')}"
         ),
     )
+    benchmark_hint_prompt: str | None = Field(
+        default=None,
+        description=(
+            "Optional concise hint a harness may prepend to the agent's prompt to "
+            "orient it on this benchmark — e.g. a one-paragraph workflow or a "
+            "clarification of conventions that apply to every task. Keep it short "
+            "and as generic as possible: a generalist agent should remain "
+            "competitive without it. The framework does not deliver this string "
+            "to the agent itself; harnesses decide whether and how to surface it."
+        ),
+    )
 
 
 class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
@@ -204,6 +215,17 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
     seed_generator: SerializeAsAny[AbstractSeedGenerator] | None = Field(
         default=None,
         description="Optional seed generator yielding per-task seeds during get_task_configs().",
+    )
+    add_task_clarification: bool = Field(
+        default=False,
+        description=(
+            "When True, harnesses should surface ``TaskMetadata.task_clarification`` "
+            "(when populated) alongside the task objective so the agent sees the "
+            "added wording. Defaults to False so a run reproduces the original "
+            "benchmark wording untouched; flip on to evaluate with curated "
+            "per-task clarifications applied. The framework only declares the "
+            "intent — actual prompt assembly happens in the harness."
+        ),
     )
 
     # ──────────────────────────────────────────────────────────────────────────

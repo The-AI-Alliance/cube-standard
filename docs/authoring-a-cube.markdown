@@ -96,6 +96,51 @@ Every debug task must hit `reward == 1.0`. If one doesn't, either the debug acti
 
 `/review-cube` installs your package, runs pytest, runs `cube test`, audits against cube-standard invariants, and produces a Blocking / Suggestions report. Resolve everything in the Blocking section before submitting. Registry CI catches the same issues later, but locally is faster and less public.
 
+## Prompt hints and per-task clarifications
+
+Two optional metadata fields let benchmark authors steer how harnesses
+present tasks to the agent without rewriting the benchmark itself. Both
+are framework slots: `cube-standard` only declares them and ships them
+across the serialization boundary. Whether and how to surface them is the
+harness's call.
+
+**`BenchmarkMetadata.benchmark_hint_prompt`** — one concise paragraph the
+harness may prepend to every task in this benchmark. Use it when the
+benchmark has conventions a first-time reader would miss but that aren't
+specific to any single task: a high-level workflow, the shape of a
+verifier, a recurring ambiguity in the wording. Keep it short and
+generic. A generalist agent should remain competitive without it; the
+field exists so evaluations that opt in can report a number on a level
+playing field, not so authors can engineer prompts for any one model.
+Default: `None`.
+
+**`TaskMetadata.task_clarification`** — an optional short string a
+harness may append to the task objective, gated by
+`BenchmarkConfig.add_task_clarification`. Use it for individual brittle
+tasks whose original wording omits a step a reasonable LLM would not
+infer. Canonical example: a miniwob task whose objective reads "set
+slider to 32 and string value to 'foo'" but whose verifier only rewards
+if the agent then clicks submit — a competent LLM would not click submit
+unprompted, and that is not really the LLM's fault. Adding
+`task_clarification="After setting the values, click submit."` keeps the
+original benchmark wording intact while letting evaluations toggle the
+fix on. Populated over time by the `/auto-cube` workflow as it detects
+brittle tasks; left `None` for tasks whose wording is unambiguous.
+
+**`BenchmarkConfig.add_task_clarification`** — instance-level switch on
+the config. Default `False` so a run reproduces the original benchmark
+wording untouched and stays comparable with baselines that ignored these
+clarifications. Set `True` on the config when you want the run to apply
+all populated `task_clarification` strings.
+
+```python
+cfg = MyBenchmarkConfig(add_task_clarification=True)
+```
+
+Because both fields are metadata, third-party harnesses see them through
+the same serialization the rest of `TaskMetadata` / `BenchmarkMetadata`
+uses — no extra plumbing on the cube side.
+
 ## Iterate (real LLMs find what the debug suite can't)
 
 `cube test` validates with the **Debug** agent — deterministic action sequences, no LLM. Real LLMs find a different class of issue: infra flakes, scaffold bugs, tasks that are *technically* solvable but practically impossible, scoring that's too strict or too lenient, hidden environmental assumptions, and sometimes problems in the benchmark itself (ambiguous prompts, broken ground truth, contaminated training data leaking into the task description).

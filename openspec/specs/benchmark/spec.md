@@ -33,11 +33,21 @@ class BenchmarkMetadata(TypedBaseModel):
     tags: list[str] = []
     reset_isolation: ResetIsolation | None = None  # snapshot/restart/app_level/new_instance
     named_subsets: dict[str, tuple[str, str]] = {} # name → (glob_key, glob_pattern)
+    benchmark_hint_prompt: str | None = None       # optional benchmark-wide prompt hint
 ```
 
 Cube authors needing additional benchmark-level fields subclass
 `BenchmarkMetadata` with named typed fields. The base class accepts only
 the framework-defined fields above.
+
+`benchmark_hint_prompt` is a concise, generic hint a harness may prepend
+to the agent's prompt for any task in this benchmark — e.g. a short
+workflow summary or a clarification of conventions shared across tasks.
+Keep it short and generic: a generalist agent should remain competitive
+without it; the field exists so benchmarks with unusual conventions can
+opt into a level playing field for evaluations that report numbers with
+the hint applied. The framework only declares the slot — actual prompt
+assembly happens in the harness.
 
 `reset_isolation` is informational for harness users to reason about parallelism:
 - `SNAPSHOT` — VM reverts to savestate (~5s)
@@ -82,7 +92,15 @@ task_ids: list[str] | None = None          # None = all; populated by subset_fro
 resources: list[ResourceConfig] = []       # resource dependencies (L2/L3)
 tool_config: ToolConfig | None             # applied to every task by the default get_task_configs(); override get_task_configs() for per-task variation
 seed_generator: AbstractSeedGenerator | None # yields seeds per TaskMetadata
+add_task_clarification: bool = False       # surface TaskMetadata.task_clarification to the agent
 ```
+
+`add_task_clarification` opts a run into the per-task clarifications
+declared on `TaskMetadata.task_clarification` (see
+[task/spec.md](../task/spec.md)). Default `False` so a run reproduces the
+original benchmark wording untouched and stays comparable with baselines
+that ignored these clarifications. Harnesses interpret the flag during
+prompt assembly; the framework only carries the intent.
 
 Per-task container needs are declared via `TaskMetadata.container_config`
 (`ContainerConfig`) and provisioned through the injected `InfraConfig` — see

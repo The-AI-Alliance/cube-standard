@@ -93,6 +93,7 @@ class TaskMetadata(TypedBaseModel):
         abstract_description (str): Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.reset(). (default: "")
         recommended_max_steps (int | None): Recommended maximum number of steps to help harness prevent infinite running agents. Not a hard limit, the task can still run longer if needed. (default: None)
         container_config (ContainerConfig | None): Optional container configuration for this task (default: None, meaning no container needed).
+        task_clarification (str | None): Optional short clarification a harness may append to the task objective when ``BenchmarkConfig.add_task_clarification`` is True (default: None).
     """
 
     id: str = Field(..., description="Unique task identifier")
@@ -108,6 +109,19 @@ class TaskMetadata(TypedBaseModel):
     container_config: ContainerConfig | None = Field(
         default=None,
         description="Optional container configuration for this task (defaults to None, meaning no container needed).",
+    )
+    task_clarification: str | None = Field(
+        default=None,
+        description=(
+            "Optional short clarification a harness may append to the task "
+            "objective when the owning ``BenchmarkConfig.add_task_clarification`` "
+            "is True. Intended for brittle tasks whose original wording omits a "
+            "step a reasonable LLM would not infer (e.g. an instruction that does "
+            "not say to click submit when the verifier requires submit to be "
+            "clicked). Populated over time as auto-cube agents detect these "
+            "cases; left None for tasks whose wording is unambiguous. Stored as "
+            "metadata so the original benchmark wording stays untouched."
+        ),
     )
 
 
