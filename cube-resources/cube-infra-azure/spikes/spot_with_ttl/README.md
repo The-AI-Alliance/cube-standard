@@ -41,7 +41,7 @@ This is the "Option A" path from the architecture discussion — minimum-IAM, sh
 
 ## What this spike measures
 
-Run the script (`spike_spot_vm_ttl.py`) and capture:
+Run the smoke at [`../../scripts/smoke/spot_ttl_lifecycle.py`](../../scripts/smoke/spot_ttl_lifecycle.py) and capture:
 
 | Measurement | How to read it | Decision impact |
 |---|---|---|
@@ -73,11 +73,14 @@ Capture results in `findings.md` (template in this directory).
 **Cost estimate:** ~$0.01 per run (a single Spot D4s_v3 for 5-10 minutes, evicted or self-shutdown).
 
 ```bash
-cd cube-resources/cube-infra-azure
-uv run python spikes/spot_with_ttl/spike_spot_vm_ttl.py \
-    --resource-group ui_assist \
-    --ttl-minutes 5
+# From cube-standard repo root:
+uv run cube-resources/cube-infra-azure/scripts/smoke/spot_ttl_lifecycle.py \
+    --resource-group ui_assist --ttl-minutes 5
 ```
+
+Exit codes follow the cube-standard smoke convention: 0 = SMOKE OK, 1 = SMOKE FAIL,
+2 = SMOKE SKIP. The banner line is the only signal a CI runner or another
+agent needs; the verbose log is for humans diagnosing failures.
 
 Then in a second terminal, watch the VM lifecycle:
 
