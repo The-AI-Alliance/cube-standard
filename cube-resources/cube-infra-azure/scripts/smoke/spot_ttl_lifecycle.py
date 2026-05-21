@@ -85,7 +85,13 @@ def banner(status: str, reason: str = "") -> int:
 
 
 class SpotAzureInfraConfig(AzureInfraConfig):
-    """Spike-only: inject Spot priority + eviction policy into vm_spec."""
+    """Spike-only: inject Spot priority + eviction policy into vm_spec.
+
+    Patches at the ``_compute()`` level rather than ``launch()`` because the
+    parent's ``_compute()`` returns a fresh ``ComputeManagementClient`` on
+    every call — patching a local var inside an overridden ``launch()`` would
+    only affect the first call, not the one inside ``super().launch()``.
+    """
 
     use_spot: bool = True
     max_spot_price: float = -1.0  # -1 = pay up to standard rate
@@ -98,9 +104,11 @@ class SpotAzureInfraConfig(AzureInfraConfig):
         vm_spec["billing_profile"] = {"max_price": self.max_spot_price}
         return vm_spec
 
-    def launch(self, resource):  # type: ignore[no-untyped-def]
-        compute = self._compute()
-        original = compute.virtual_machines.begin_create_or_update
+    def _compute(self) -> Any:  # type: ignore[no-untyped-def]
+        client = super()._compute()
+        if not self.use_spot:
+            return client
+        original = client.virtual_machines.begin_create_or_update
 
         def patched(rg, name, parameters, *args, **kwargs):  # type: ignore[no-untyped-def]
             patched_spec = self._patch_vm_spec_for_spot(parameters)
@@ -112,11 +120,8 @@ class SpotAzureInfraConfig(AzureInfraConfig):
             )
             return original(rg, name, patched_spec, *args, **kwargs)
 
-        compute.virtual_machines.begin_create_or_update = patched
-        try:
-            return super().launch(resource)
-        finally:
-            compute.virtual_machines.begin_create_or_update = original
+        client.virtual_machines.begin_create_or_update = patched
+        return client
 
 
 # ── VM-side TTL install ──────────────────────────────────────────────────────
@@ -125,27 +130,36 @@ class SpotAzureInfraConfig(AzureInfraConfig):
 _TTL_INSTALL_SCRIPT = """\
 set -euo pipefail
 
-EXPIRES_AT=$(curl -sf -H Metadata:true \\
-    'http://169.254.169.254/metadata/instance/compute/tags?api-version=2021-02-01&format=text' \\
-    | tr ';' '\\n' | awk -F: '/^cube:expires_at:/ {print $2}')
+# IMDS tags endpoint returns "key1:value1;key2:value2" — but values may contain
+# colons (ISO-8601 timestamps do). Split on ';' into lines, then use sed to
+# strip only the leading "cube:expires_at:" prefix without splitting the value.
+RAW_TAGS=$(curl -sf -H Metadata:true \\
+    'http://169.254.169.254/metadata/instance/compute/tags?api-version=2021-02-01&format=text')
+EXPIRES_AT=$(printf '%s' "$RAW_TAGS" | tr ';' '\\n' | sed -n 's/^cube:expires_at://p')
 
 if [ -z "$EXPIRES_AT" ]; then
     echo "ERROR: cube:expires_at tag not found on VM" >&2
+    echo "Raw IMDS tags: $RAW_TAGS" >&2
     exit 1
 fi
 
 echo "TTL agent: cube:expires_at=$EXPIRES_AT"
 
-AT_TIME=$(date -d "$EXPIRES_AT" '+%H:%M %Y-%m-%d')
-echo "TTL agent: scheduling sudo shutdown -h at $AT_TIME"
+# systemd-run --on-calendar accepts ISO-8601 with seconds, but normalize to
+# "YYYY-MM-DD HH:MM:SS" (no T, no timezone) for safety across systemd versions.
+WHEN=$(date -d "$EXPIRES_AT" '+%Y-%m-%d %H:%M:%S')
+echo "TTL agent: scheduling shutdown -h at $WHEN (systemd-run transient timer)"
 
-which at >/dev/null 2>&1 || sudo apt-get install -y -qq at
-sudo systemctl is-active atd >/dev/null 2>&1 || sudo systemctl start atd
+# systemd-run --on-calendar creates a transient .timer + .service unit pair.
+# Runs as root by default when invoked via sudo. No apt install needed —
+# systemd-run is part of systemd which is mandatory on Ubuntu 22.04+.
+sudo systemd-run --unit=cube-ttl-shutdown \\
+    --on-calendar="$WHEN" \\
+    --description="cube TTL self-shutdown" \\
+    /sbin/shutdown -h now "cube TTL expired"
 
-echo "sudo shutdown -h now 'cube TTL expired'" | at $AT_TIME
-
-echo "TTL agent: scheduled jobs:"
-atq
+echo "TTL agent: scheduled units:"
+sudo systemctl list-timers cube-ttl-shutdown.timer --all --no-pager
 """
 
 
@@ -210,8 +224,21 @@ def main(
     resource_group: Annotated[str, typer.Option(help="Azure resource group with the provisioned image")],
     ttl_minutes: Annotated[int, typer.Option(help="VM self-shutdown time from launch")] = 5,
     image_def: Annotated[str, typer.Option(help="Compute Gallery image definition name")] = "cube-ubuntu-22-04",
+    image_version: Annotated[str, typer.Option(help="Compute Gallery image version")] = "1.0.0",
     vm_size: Annotated[str, typer.Option(help="Azure VM SKU")] = "Standard_D4s_v3",
     wait_for_delete_minutes: Annotated[int, typer.Option(help="Wait window after TTL for cascade delete")] = 8,
+    storage_account: Annotated[
+        str | None, typer.Option(help="Override storage account (required if RG has multiple)")
+    ] = None,
+    vnet_name: Annotated[
+        str | None, typer.Option(help="Override vnet name (required if RG has multiple)")
+    ] = None,
+    nsg_name: Annotated[
+        str | None, typer.Option(help="Override NSG name (required if RG has multiple)")
+    ] = None,
+    gallery_name: Annotated[
+        str | None, typer.Option(help="Override compute gallery name")
+    ] = None,
 ) -> int:
     """End-to-end smoke of the Spot + VM-side TTL mechanism."""
     log.info("=" * 70)
@@ -219,8 +246,18 @@ def main(
     log.info("  resource_group=%s ttl=%dm image=%s size=%s", resource_group, ttl_minutes, image_def, vm_size)
     log.info("=" * 70)
 
+    kwargs: dict[str, Any] = {"resource_group": resource_group}
+    if storage_account:
+        kwargs["storage_account"] = storage_account
+    if vnet_name:
+        kwargs["vnet_name"] = vnet_name
+    if nsg_name:
+        kwargs["nsg_name"] = nsg_name
+    if gallery_name:
+        kwargs["gallery_name"] = gallery_name
+
     try:
-        infra = SpotAzureInfraConfig(resource_group=resource_group)
+        infra = SpotAzureInfraConfig(**kwargs)
     except Exception as exc:
         return banner("SKIP", f"infra init failed (auth or rg lookup): {exc}")
     log.info(
@@ -237,6 +274,13 @@ def main(
         requires_kvm=False,
         default_ttl_seconds=ttl_minutes * 60,
     )
+
+    # Map the resource onto a pre-provisioned gallery image so launch() can find it.
+    # In production this would be a permanent registration after the first provision().
+    try:
+        infra.register(resource, {"image_def": image_def, "version": image_version})
+    except Exception as exc:
+        return banner("SKIP", f"register failed (image missing in gallery?): {exc}")
 
     log.info("Launching Spot VM (expected TTL kick: %s UTC)", expires_at.strftime("%H:%M:%S"))
     t_launch = time.time()
@@ -262,8 +306,10 @@ def main(
             pip = infra._network().public_ip_addresses.get(infra.resource_group, handle._pip_name)
             public_ip = pip.ip_address
 
+        # cube-infra-azure pins SSH user to "cube" for Linux (see launch() in azure.py)
+        ssh_user = "cube"
         try:
-            install_vm_side_ttl(public_ip, infra.user, infra.ssh_privkey_path)
+            install_vm_side_ttl(public_ip, ssh_user, infra.ssh_privkey_path)
         except Exception as exc:
             return banner("FAIL", f"TTL agent install failed: {exc}")
         log.info("VM-side TTL agent installed")
