@@ -125,14 +125,14 @@ class ResourceHandle(ABC):
 |--------|--------|--------------|--------------|
 | `handle.close()` | L2/L3 | After each task (L3) or at run end (L2) | Tears down this specific resource |
 | `infra.cleanup(run_id)` | L2/L3 | Harness shutdown (catch-all) | Deletes everything tagged with `run_id` |
-| `infra.cleanup_stale(max_age)` | L2/L3 | Harness startup | GCs TTL-expired resources across all runs |
+| `infra.cleanup_stale(max_age)` | L2/L3 | Called automatically by `Benchmark.setup()` (the "harness startup" hook); harnesses may also call it explicitly on lifecycle exit as a defense-in-depth sweep | GCs TTL-expired resources across all runs |
 | `infra.unprovision(resource)` | L1 | Manual (retire / switch region) | Removes provisioned image + store entry |
 
 ## Recommended Harness Lifecycle
 
 ```python
-infra.cleanup_stale()                       # startup: GC orphans from prior crashes
-benchmark.setup()                           # creates L2 resource if needed
+benchmark.setup()                           # base setup() auto-calls infra.cleanup_stale()
+                                            # to GC orphans from prior crashes, then runs _setup()
 for task in tasks:
     handle = infra.launch(resource)         # creates L3 resource
     try:

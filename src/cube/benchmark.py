@@ -716,9 +716,37 @@ class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
     def setup(self) -> None:
         """Public wrapper around ``_setup``. Called automatically by ``BenchmarkConfig.make``.
 
+        Before dispatching to the subclass's ``_setup()``, sweeps TTL-expired
+        cloud resources via ``self._infra.cleanup_stale()`` so prior-run
+        orphans (from crashes, SIGKILLs, machine reboots, etc.) are reclaimed
+        before this run launches new work. This is the "harness startup"
+        hook documented in ``resource/spec.md``. Concurrent benchmarks in
+        the same resource group are unaffected because ``cleanup_stale``
+        only deletes resources whose ``cube:expires_at`` tag is in the past.
+
+        Safe on any failure path: ``cleanup_stale`` exceptions are logged at
+        WARNING and not propagated — a transient cloud error must not block
+        benchmark setup.
+
         Emits a debug line listing optional config fields left unset — useful
         sanity signal for minimal benchmarks.
         """
+        if self._infra is not None:
+            try:
+                deleted = self._infra.cleanup_stale()
+                if deleted:
+                    logger.info(
+                        "%s.setup: cleanup_stale reclaimed %d expired resource(s) from prior runs",
+                        type(self).__name__,
+                        len(deleted),
+                    )
+            except Exception:
+                logger.warning(
+                    "%s.setup: cleanup_stale failed — continuing with setup",
+                    type(self).__name__,
+                    exc_info=True,
+                )
+
         self._setup()
         missing: list[str] = []
         if not self._runtime_context:

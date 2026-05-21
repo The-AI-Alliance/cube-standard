@@ -615,3 +615,83 @@ class _BenchWithRichDefaults(BenchmarkConfig):
     task_metadata = {"t1": TaskMetadata(id="t1")}
     task_config_class = _RichTaskConfig
     benchmark_class = MyBenchmark
+
+
+# ── Benchmark.setup() owns the cleanup_stale hook ─────────────────────────────
+
+
+def test_setup_calls_cleanup_stale_when_infra_set() -> None:
+    """Base ``Benchmark.setup()`` must call ``infra.cleanup_stale()`` before
+    dispatching to the subclass's ``_setup()``. Owns the "harness startup"
+    hook so cube authors don't have to remember it in every cube."""
+    from unittest.mock import MagicMock
+
+    from cube.resource import InfraConfig
+
+    infra = MagicMock(spec=InfraConfig)
+    infra.cleanup_stale.return_value = []
+
+    bench = MyBenchmarkConfig().make(infra=infra)
+    try:
+        infra.cleanup_stale.assert_called_once_with()
+    finally:
+        bench.close()
+
+
+def test_setup_skips_cleanup_stale_when_infra_none() -> None:
+    """No infra → no sweep. Local-only / Docker benchmarks must not require a
+    cloud API roundtrip at setup."""
+    bench = MyBenchmarkConfig().make()
+    bench.close()
+    # No assertion needed beyond "did not raise" — there is no infra to inspect.
+
+
+def test_setup_cleanup_stale_failure_does_not_block_setup() -> None:
+    """A transient cloud error from ``cleanup_stale`` must not block the
+    benchmark setup. The base logs at WARNING and proceeds to ``_setup()``."""
+    from unittest.mock import MagicMock
+
+    from cube.resource import InfraConfig
+
+    infra = MagicMock(spec=InfraConfig)
+    infra.cleanup_stale.side_effect = RuntimeError("transient cloud 503")
+
+    # Must not raise — failure is swallowed and logged.
+    bench = MyBenchmarkConfig().make(infra=infra)
+    bench.close()
+    infra.cleanup_stale.assert_called_once_with()
+
+
+def test_setup_cleanup_stale_called_before_subclass_setup() -> None:
+    """Ordering invariant: ``cleanup_stale()`` runs *before* ``_setup()``,
+    not after. New work must not be launched until prior orphans are reaped."""
+    from unittest.mock import MagicMock
+
+    from cube.resource import InfraConfig
+
+    call_order: list[str] = []
+    infra = MagicMock(spec=InfraConfig)
+    infra.cleanup_stale.side_effect = lambda: call_order.append("cleanup_stale") or []
+
+    class _OrderingTaskConfig(_TaskConfig):
+        """Per-benchmark TaskConfig (cube-standard requires each
+        BenchmarkConfig to declare its own subclass)."""
+
+    class _OrderingBench(Benchmark):
+        def _setup(self) -> None:
+            call_order.append("_setup")
+
+        def close(self) -> None:
+            pass
+
+    class _OrderingBenchConfig(BenchmarkConfig):
+        benchmark_metadata = BenchmarkMetadata(name="ordering", version="1", description="x")
+        task_metadata = {"t": TaskMetadata(id="t")}
+        task_config_class = _OrderingTaskConfig
+        benchmark_class = _OrderingBench
+
+    bench = _OrderingBenchConfig().make(infra=infra)
+    try:
+        assert call_order == ["cleanup_stale", "_setup"]
+    finally:
+        bench.close()
