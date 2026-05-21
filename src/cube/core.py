@@ -51,30 +51,33 @@ class TypedBaseModel(BaseModel):
 
     @model_serializer(mode="wrap")
     def _serialize_with_type(self, handler):
-        data = handler(self)
-        data["_type"] = f"{self.__class__.__module__}.{self.__class__.__name__}"
-        return data
+        value = handler(self)
+        value["_type"] = f"{self.__class__.__module__}.{self.__class__.__name__}"
+        return value
 
     @model_validator(mode="wrap")
     @classmethod
     def _deserialize_with_type(cls, value, handler):
-        if isinstance(value, dict) and "_type" in value:
-            type_path = value.pop("_type")
-            module_name, class_name = type_path.rsplit(".", 1)
-            module = importlib.import_module(module_name)  # nosemgrep: non-literal-import
-            actual_cls = getattr(module, class_name)
-            if not (isinstance(actual_cls, type) and issubclass(actual_cls, TypedBaseModel)):
-                raise ValueError(f"Refusing to deserialize '{type_path}': class must be a TypedBaseModel subclass.")
-            # If _type matches the current class, proceed normally via handler to avoid
-            # Pydantic v2's "returning non-self from __init__" warning and broken __init__ path.
-            if actual_cls is cls:
-                return handler(value)
-            return actual_cls.model_validate(value)
-        if isinstance(value, dict) and inspect.isabstract(cls):
-            raise ValueError(
-                f"Cannot deserialize abstract class '{cls.__name__}' directly. "
-                "Ensure the data was serialized from a concrete subclass (contains '_type' field)."
-            )
+        if isinstance(value, dict):
+            if "_type" in value:
+                value = value.copy()
+                type_path = value.pop("_type")
+                module_path, class_name = type_path.rsplit(".", 1)
+                module = importlib.import_module(
+                    module_path
+                )  # nosemgrep: non-literal-import
+                actual_cls = getattr(module, class_name)
+                if not isinstance(actual_cls, type) or not issubclass(actual_cls, cls):
+                    raise ValueError(
+                        f"Cannot deserialize '{type_path}': class must be a subclass of '{cls.__name__}'."
+                    )
+                if actual_cls is not cls:
+                    return actual_cls.model_validate(value)
+            elif inspect.isabstract(cls):
+                raise ValueError(
+                    f"Cannot deserialize abstract class '{cls.__name__}' directly. "
+                    "Ensure the input dict includes a '_type' field naming a concrete subclass."
+                )
         return handler(value)
 
 
