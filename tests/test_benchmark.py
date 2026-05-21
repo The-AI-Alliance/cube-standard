@@ -92,7 +92,28 @@ def test_benchmark_metadata_defaults():
         requirements={},
         named_subsets={},
         reset_isolation=None,
+        benchmark_hint_prompt=None,
     )
+
+
+def test_benchmark_metadata_hint_prompt_round_trips():
+    bm = BenchmarkMetadata(
+        name="foo",
+        version="1.0",
+        description="bar",
+        benchmark_hint_prompt="Submit your final answer with final_step.",
+    )
+    reloaded = BenchmarkMetadata.model_validate_json(bm.model_dump_json())
+    assert reloaded.benchmark_hint_prompt == "Submit your final answer with final_step."
+
+
+def test_benchmark_config_add_task_clarification_defaults_false():
+    cfg = MyBenchmarkConfig()
+    assert cfg.add_task_clarification is False
+    enabled = MyBenchmarkConfig(add_task_clarification=True)
+    assert enabled.add_task_clarification is True
+    reloaded = MyBenchmarkConfig.model_validate_json(enabled.model_dump_json())
+    assert reloaded.add_task_clarification is True
 
 
 # ── __init_subclass__ validation ──────────────────────────────────────────────
