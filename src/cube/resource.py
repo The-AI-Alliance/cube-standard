@@ -182,6 +182,23 @@ class VMResourceConfig(ResourceConfig):
     ``"vm_port_{port}"`` (e.g. ``"vm_port_9222"`` → ``"http://localhost:54321"``).
     Use a freeport indirection — never assume host port == VM port — so multiple
     parallel workers can share a host without colliding on a fixed local port."""
+    use_spot: bool = False
+    """Request the cloud's Spot / Preemptible / interruptible pricing tier for
+    the VM. Saves ~50-70% on compute but the cloud may evict the VM at any time.
+
+    Suitable for short-lived task VMs (L3): the harness retry logic
+    (``RETRIABLE_STATUSES`` in cube-harness) re-runs preempted tasks. NOT
+    suitable for L1 bootstrap VMs — a mid-provision eviction destroys
+    30-90 minutes of image-building work.
+
+    Default ``False`` (regular priority) for safety. Infras that don't
+    implement Spot ignore the flag rather than erroring."""
+    max_spot_price: float | None = None
+    """Maximum hourly USD price to pay when ``use_spot=True``. ``None``
+    means "pay up to standard rate" (uncapped — the cloud will evict only
+    on capacity events, not price). Set explicitly for cost-cap protection
+    (the VM gets evicted if Spot price rises above this). Ignored when
+    ``use_spot=False``."""
 
     def requirements(self) -> set[str]:
         return {"kvm"} if self.requires_kvm else set()

@@ -1296,6 +1296,16 @@ class AzureInfraConfig(InfraConfig):
                     "v_tpm_enabled": tpm,
                 },
             }
+        if isinstance(resource, VMResourceConfig) and resource.use_spot:
+            # Azure Spot: 50-70% discount, evictable any time. eviction_policy=Delete
+            # ensures the existing delete_option=Delete cascade fires on eviction,
+            # so disk/NIC/IP cascade-clean automatically. max_price=-1 means "pay up
+            # to standard rate" (the cloud only evicts on capacity events).
+            vm_spec["priority"] = "Spot"
+            vm_spec["eviction_policy"] = "Delete"
+            vm_spec["billing_profile"] = {
+                "max_price": resource.max_spot_price if resource.max_spot_price is not None else -1.0,
+            }
 
         poller = compute.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
             self.resource_group,

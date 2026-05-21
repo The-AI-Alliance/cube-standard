@@ -45,7 +45,12 @@ class ResourceConfig(TypedBaseModel):
 Standard capability tokens: `"kvm"`, `"docker"`, `"gpu:nvidia"`, `"network:egress"`.
 
 **Subclasses:**
-- `VMResourceConfig(requires_kvm: bool = True)` — VM-based (OSWorld, WindowsAgentArena, AndroidWorld…)
+- `VMResourceConfig(requires_kvm: bool = True, use_spot: bool = False, max_spot_price: float | None = None)`
+  — VM-based (OSWorld, WindowsAgentArena, AndroidWorld…). `use_spot=True` requests the
+  cloud's Spot/Preemptible tier (50-70% cheaper, evictable at any time — relies on
+  the harness retry logic). Suitable for L3 task VMs; not for L1 bootstrap.
+  `max_spot_price=None` pays up to standard rate. Infras that don't implement
+  Spot pricing ignore both fields.
 - `DockerServiceConfig(docker_images, services, launch_script, endpoint_to_site, volumes)` —
   multi-container stack (WebArena, WorkArena)
 - `DockerImageConfig(image, ram_gb, cpu_cores, disk_gb, gpu, ports)` — single image per

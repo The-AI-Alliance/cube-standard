@@ -292,6 +292,133 @@ class TestAzureLaunch:
         assert "os_profile" in vm_spec_captured
         assert "custom_data" not in vm_spec_captured.get("os_profile", {})
 
+    def test_launch_without_spot_omits_spot_fields(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With ``use_spot=False`` (default), the vm_spec must NOT carry
+        Spot-pricing fields. Backwards compat — existing VMResourceConfig
+        users see no behaviour change."""
+        _patch_store_path(monkeypatch, tmp_path)
+        infra = _make_infra()
+        resource = VMResourceConfig(name="vm")  # use_spot defaults to False
+        infra.register(
+            resource, {"image_def": "vm", "version": "1.0.0", "image_id": "/galleries/.../vm/versions/1.0.0"}
+        )
+
+        pubkey_file = tmp_path / "id_ed25519.pub"
+        pubkey_file.write_text("ssh-ed25519 AAAA... user@host")
+        object.__setattr__(infra, "ssh_pubkey_path", str(pubkey_file))
+
+        vm_spec_captured: dict = {}
+
+        def fake_begin_create(*args, **kwargs):
+            vm_spec_captured.update(args[2] if len(args) > 2 else {})
+            mock_poller = MagicMock()
+            mock_poller.result.return_value = None
+            return mock_poller
+
+        mock_compute = MagicMock()
+        mock_compute.virtual_machines.begin_create_or_update.side_effect = fake_begin_create
+        mock_network = MagicMock()
+        mock_pip = MagicMock()
+        mock_pip.ip_address = "1.2.3.4"
+        mock_network.public_ip_addresses.get.return_value = mock_pip
+
+        with (
+            patch.object(infra, "_compute", return_value=mock_compute),
+            patch.object(infra, "_network", return_value=mock_network),
+            patch.object(infra, "_create_network_resources", return_value=(MagicMock(), MagicMock(), "pip-1", "nic-1")),
+            patch("cube_infra_azure.azure.wait_for_ssh", return_value="cube"),
+            patch("cube_infra_azure.azure.open_tunnel", return_value=(MagicMock(), 15000)),
+        ):
+            infra.launch(resource)
+
+        assert "priority" not in vm_spec_captured, f"unexpected priority field: {vm_spec_captured.get('priority')}"
+        assert "eviction_policy" not in vm_spec_captured
+        assert "billing_profile" not in vm_spec_captured
+
+    def test_launch_with_spot_sets_vm_spec_fields(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With ``use_spot=True``, the vm_spec must carry priority=Spot,
+        eviction_policy=Delete (to trigger the disk/NIC/IP cascade), and
+        billing_profile.max_price=-1 (pay up to standard rate)."""
+        _patch_store_path(monkeypatch, tmp_path)
+        infra = _make_infra()
+        resource = VMResourceConfig(name="vm", use_spot=True)
+        infra.register(
+            resource, {"image_def": "vm", "version": "1.0.0", "image_id": "/galleries/.../vm/versions/1.0.0"}
+        )
+
+        pubkey_file = tmp_path / "id_ed25519.pub"
+        pubkey_file.write_text("ssh-ed25519 AAAA... user@host")
+        object.__setattr__(infra, "ssh_pubkey_path", str(pubkey_file))
+
+        vm_spec_captured: dict = {}
+
+        def fake_begin_create(*args, **kwargs):
+            vm_spec_captured.update(args[2] if len(args) > 2 else {})
+            mock_poller = MagicMock()
+            mock_poller.result.return_value = None
+            return mock_poller
+
+        mock_compute = MagicMock()
+        mock_compute.virtual_machines.begin_create_or_update.side_effect = fake_begin_create
+        mock_network = MagicMock()
+        mock_pip = MagicMock()
+        mock_pip.ip_address = "1.2.3.4"
+        mock_network.public_ip_addresses.get.return_value = mock_pip
+
+        with (
+            patch.object(infra, "_compute", return_value=mock_compute),
+            patch.object(infra, "_network", return_value=mock_network),
+            patch.object(infra, "_create_network_resources", return_value=(MagicMock(), MagicMock(), "pip-1", "nic-1")),
+            patch("cube_infra_azure.azure.wait_for_ssh", return_value="cube"),
+            patch("cube_infra_azure.azure.open_tunnel", return_value=(MagicMock(), 15000)),
+        ):
+            infra.launch(resource)
+
+        assert vm_spec_captured.get("priority") == "Spot"
+        assert vm_spec_captured.get("eviction_policy") == "Delete"
+        assert vm_spec_captured.get("billing_profile") == {"max_price": -1.0}
+
+    def test_launch_with_spot_honours_max_spot_price(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``max_spot_price`` is passed through to ``billing_profile.max_price``
+        so callers can cap their hourly cost — VM gets evicted if the spot
+        market price rises above the cap."""
+        _patch_store_path(monkeypatch, tmp_path)
+        infra = _make_infra()
+        resource = VMResourceConfig(name="vm", use_spot=True, max_spot_price=0.05)
+        infra.register(
+            resource, {"image_def": "vm", "version": "1.0.0", "image_id": "/galleries/.../vm/versions/1.0.0"}
+        )
+
+        pubkey_file = tmp_path / "id_ed25519.pub"
+        pubkey_file.write_text("ssh-ed25519 AAAA... user@host")
+        object.__setattr__(infra, "ssh_pubkey_path", str(pubkey_file))
+
+        vm_spec_captured: dict = {}
+
+        def fake_begin_create(*args, **kwargs):
+            vm_spec_captured.update(args[2] if len(args) > 2 else {})
+            mock_poller = MagicMock()
+            mock_poller.result.return_value = None
+            return mock_poller
+
+        mock_compute = MagicMock()
+        mock_compute.virtual_machines.begin_create_or_update.side_effect = fake_begin_create
+        mock_network = MagicMock()
+        mock_pip = MagicMock()
+        mock_pip.ip_address = "1.2.3.4"
+        mock_network.public_ip_addresses.get.return_value = mock_pip
+
+        with (
+            patch.object(infra, "_compute", return_value=mock_compute),
+            patch.object(infra, "_network", return_value=mock_network),
+            patch.object(infra, "_create_network_resources", return_value=(MagicMock(), MagicMock(), "pip-1", "nic-1")),
+            patch("cube_infra_azure.azure.wait_for_ssh", return_value="cube"),
+            patch("cube_infra_azure.azure.open_tunnel", return_value=(MagicMock(), 15000)),
+        ):
+            infra.launch(resource)
+
+        assert vm_spec_captured.get("billing_profile") == {"max_price": 0.05}
+
     def test_launch_writes_expireon_tag_with_z_format(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Launched resources must carry the org-standard ``expireOn`` tag
         (in addition to ``cube:expires_at`` for internal cleanup_stale).
