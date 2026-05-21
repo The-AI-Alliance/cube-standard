@@ -856,6 +856,25 @@ class AzureInfraConfig(InfraConfig):
     ssh_privkey_path: str | None = Field(default=None, repr=False, exclude=True)
     ssh_pubkey_path: str | None = Field(default=None, repr=False, exclude=True)
     tags: dict[str, str] = Field(default_factory=lambda: {"project": "cube"})
+    use_spot: bool = True
+    """Launch task VMs (L3, created by ``launch()``) on Azure Spot — 50-70%
+    cheaper, evictable at any time. Eviction is handled by the harness retry
+    logic (``RETRIABLE_STATUSES`` in cube-harness), and ``max_price`` below
+    caps cost. Bootstrap VMs (L1, created by ``provision()``/``_bootstrap()``)
+    are NEVER Spot regardless of this flag — a mid-build eviction would
+    destroy 30-90 min of image work.
+
+    Spot-vs-regular is an operator/cost decision, so it lives on the infra
+    config, not on the benchmark's ``VMResourceConfig``. Default ``True`` so
+    the savings apply automatically; set ``False`` for workloads with long,
+    non-retryable single-VM tasks where accumulated eviction risk is a
+    concern."""
+    max_spot_price: float | None = None
+    """Max hourly USD price when ``use_spot=True``. ``None`` → Azure
+    ``max_price=-1`` (pay up to the standard pay-as-you-go rate; evicted only
+    on capacity events, never on price — so you never pay *more* than
+    regular). Set a number to cap cost (VM is evicted if the Spot market price
+    rises above it). Ignored when ``use_spot=False``."""
 
     # ── Bootstrap pipeline ────────────────────────────────────────────────────
     bootstrap_vm_size: str = "Standard_D4s_v3"
@@ -1296,15 +1315,18 @@ class AzureInfraConfig(InfraConfig):
                     "v_tpm_enabled": tpm,
                 },
             }
-        if isinstance(resource, VMResourceConfig) and resource.use_spot:
+        if self.use_spot:
             # Azure Spot: 50-70% discount, evictable any time. eviction_policy=Delete
             # ensures the existing delete_option=Delete cascade fires on eviction,
             # so disk/NIC/IP cascade-clean automatically. max_price=-1 means "pay up
             # to standard rate" (the cloud only evicts on capacity events).
+            # NOTE: only reached from launch() (L3 task VMs). The bootstrap path
+            # (_bootstrap → _create_bootstrap_vm, L1) builds its own vm_spec and
+            # never sets these — bootstrap VMs are always regular priority.
             vm_spec["priority"] = "Spot"
             vm_spec["eviction_policy"] = "Delete"
             vm_spec["billing_profile"] = {
-                "max_price": resource.max_spot_price if resource.max_spot_price is not None else -1.0,
+                "max_price": self.max_spot_price if self.max_spot_price is not None else -1.0,
             }
 
         poller = compute.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]

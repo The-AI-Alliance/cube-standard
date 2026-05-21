@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Smoke: launch an Azure VM with or without Spot pricing, end-to-end.
 
-Exercises the production ``VMResourceConfig.use_spot`` field added in
-this PR. Launches a real Azure VM via cube-infra-azure, then reads back
-the VM record from the Azure ARM API to assert the ``priority`` field
-matches the requested mode:
+Exercises the production ``AzureInfraConfig.use_spot`` field added in
+this PR (spot-vs-regular is an operator/infra decision, so the flag lives
+on the infra config, not the benchmark's VMResourceConfig). Launches a
+real Azure VM via cube-infra-azure, then reads back the VM record from
+the Azure ARM API to assert the ``priority`` field matches the requested
+mode:
 
   --use-spot      → expect ``priority == "Spot"`` + ``eviction_policy == "Delete"``
                     + ``billing_profile.max_price`` set
@@ -130,6 +132,8 @@ def main(
     kwargs: dict[str, Any] = {
         "resource_group": resource_group,
         "default_ttl_seconds": 600,  # 10-min TTL — generous for the smoke
+        "use_spot": use_spot,
+        "max_spot_price": max_spot_price,
     }
     if storage_account:
         kwargs["storage_account"] = storage_account
@@ -155,8 +159,6 @@ def main(
         name=f"smoke-spot-vm-{uuid.uuid4().hex[:6]}",
         os_type="linux",
         requires_kvm=False,
-        use_spot=use_spot,
-        max_spot_price=max_spot_price,
     )
 
     # Register the resource against the pre-existing L1 image (so launch() can find it
