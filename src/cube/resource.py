@@ -76,7 +76,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
-from cube.core import TypedBaseModel
+from cube.core import TypedBaseModel, ValidatedConfig
 
 if TYPE_CHECKING:
     pass
@@ -359,9 +359,9 @@ class ResourceHandle(ABC):
     itself is not serializable and must not be passed to workers.
     """
 
-    # All fields default so subclasses (notably ``cube.container.Container``
-    # living in deprecated-ContainerBackend paths) can construct without
-    # bookkeeping — the new ``InfraConfig.launch()`` path still populates them.
+    # All fields default so ``cube.container.Container`` subclasses (e.g.
+    # ``LocalContainer``) can construct without bookkeeping — the
+    # ``InfraConfig.launch()`` path still populates them.
     run_id: str = ""
     resource: ResourceConfig | None = None
     infra: InfraConfig | None = None
@@ -396,13 +396,13 @@ class ResourceHandle(ABC):
 # ── InfraConfig ───────────────────────────────────────────────────────────────
 
 
-class InfraConfig(TypedBaseModel, ABC):
+class InfraConfig(ValidatedConfig, ABC):
     """Harness-owned config + executor for resource provisioning and lifecycle.
 
     Extends TypedBaseModel for serializability (polymorphic via _type field —
     subclasses declare no _type field, it is injected automatically).
-    Also carries launch/cleanup methods — instantiating the config IS the backend,
-    following the existing VMBackend pattern in vm.py.
+    Also carries launch/cleanup methods — instantiating the config IS the
+    provisioner (config + executor unified in one serializable object).
 
     Credentials are never stored in fields; resolved from env vars at runtime.
 

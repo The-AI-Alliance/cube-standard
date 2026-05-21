@@ -54,7 +54,14 @@ def test_task_metadata_defaults():
         abstract_description="",
         recommended_max_steps=None,
         container_config=None,
+        task_clarification=None,
     )
+
+
+def test_task_metadata_clarification_round_trips():
+    tm = TaskMetadata(id="my-task", task_clarification="After setting values, click submit.")
+    reloaded = TaskMetadata.model_validate_json(tm.model_dump_json())
+    assert reloaded.task_clarification == "After setting values, click submit."
 
 
 # --- Task.reset ---
@@ -99,7 +106,37 @@ def test_task_validate_per_step_triggers_evaluate():
 
 def test_task_action_set_comes_from_tool():
     names = {a.name for a in make_task().action_set}
-    assert names == {"greet", "fail"}
+    assert names == {"greet", "fail", STOP_ACTION.name}
+
+
+def test_task_action_set_includes_stop_action_by_default() -> None:
+    task = make_task()
+    stop_schemas = [a for a in task.action_set if a.name == STOP_ACTION.name]
+    assert len(stop_schemas) == 1
+    assert stop_schemas[0].parameters == {"type": "object", "properties": {}}
+
+
+def test_task_action_set_excludes_stop_action_when_disabled() -> None:
+    task = make_task(accept_agent_stop=False)
+    names = {a.name for a in task.action_set}
+    assert STOP_ACTION.name not in names
+
+
+def test_task_action_set_stop_action_not_duplicated_if_filter_adds_it() -> None:
+    class TaskWithFilterStop(SimpleTask):
+        def filter_actions(self, actions):
+            return [*actions, STOP_ACTION]
+
+    task = TaskWithFilterStop(
+        metadata=TaskMetadata(id="t"),
+        tool_config=GreetToolConfig(),
+    )
+    stop_count = sum(1 for a in task.action_set if a.name == STOP_ACTION.name)
+    assert stop_count == 1
+
+
+def test_stop_action_parameters_valid_empty_schema() -> None:
+    assert STOP_ACTION.parameters == {"type": "object", "properties": {}}
 
 
 # --- TaskExecutionInfo ---
@@ -136,7 +173,7 @@ def test_task_execution_info_field_round_trips_via_task():
 
 
 class _CacheTaskConfig(TaskConfig):
-    def make(self, runtime_context=None, container_backend=None):
+    def make(self, runtime_context=None):
         return SimpleTask(metadata=self.metadata, tool_config=GreetToolConfig())
 
 

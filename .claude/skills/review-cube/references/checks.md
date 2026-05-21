@@ -47,11 +47,13 @@ Detect which the cube uses by grepping the benchmark module for the ClassVar ass
 - Heavy per-task data (problem statements, patches, archives, evaluator scripts, …) appears as fields on a `TaskMetadata` subclass instead of on a typed `TaskExecutionInfo` subclass surfaced via `Task.execution_info`. Heavy data must live on `TaskExecutionInfo`, not `TaskMetadata`.
 
 **Suggestions:**
+- S-75: `tool.py` reimplements a surface an existing `cube-tools/*` package already provides — import/subclass it instead. See [tool/spec.md § Packaging conventions](../../../../openspec/specs/tool/spec.md#packaging-conventions).
 - S-75: `Task.reset()` has no visible call to `self.tool.reset()`.
 - S-75: `Task.evaluate()` appears to mutate state (writes to `self.tool._env.*`, calls tool action methods, writes to `self._runtime_context`). `evaluate()` must be pure.
 - S-75: `_setup()` / `install()` / `close()` appear non-idempotent (no early-return guard, no `if self._already_setup: return`, destructive ops unconditionally).
 - S-75: Option B with `task_metadata.json` committed but no metadata generator script at the repo root (`scripts/create_task_metadata.py` or `scripts/generate_task_metadata.py`). Without one, the metadata can't be regenerated if the upstream source changes.
 - S-75: Bulk data files committed inside the package source (e.g. `src/<pkg>/data/`, `src/<pkg>/assets/`). Heavy data should be auto-downloaded by the generator script into `benchmark.cache_dir()` (typically `~/.cube/<benchmark-id>/`), not shipped in-tree — committing bloats wheels and makes the regeneration path opaque.
+- S-50: `tool` property override or `isinstance(self.tool, FooTool)` asserts — drop via `class FooTask(Task[FooMeta, FooTool])`. See [task/spec.md](../../../../openspec/specs/task/spec.md).
 - S-50: If Option B, the generator script (`scripts/create_task_metadata.py` or `scripts/generate_task_metadata.py`) exists but has no `--force` flag or no idempotency guard.
 - S-50: Metadata-generation logic is inlined in `benchmark.py` (or another package module) rather than living in `scripts/*.py` at the repo root. Move it to the script so regeneration is explicit and reproducible.
 - S-50: Multiple "split"-like fields or values appear in `TaskMetadata` but `BenchmarkMetadata.named_subsets` isn't declared.

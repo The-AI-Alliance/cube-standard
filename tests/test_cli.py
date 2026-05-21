@@ -1,5 +1,6 @@
 """Tests for cube.cli — covers cmd_init, cmd_list, cmd_test, _resolve_debug_module, main(), and registry helpers."""
 
+import logging
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -550,6 +551,7 @@ def test_main_test_dispatches_with_default_max_steps():
         demo_reset_repro=False,
         stress_test=False,
         reset_check=True,
+        verbose=False,
     )
 
 
@@ -565,6 +567,7 @@ def test_main_test_dispatches_with_custom_max_steps():
         demo_reset_repro=False,
         stress_test=False,
         reset_check=True,
+        verbose=False,
     )
 
 
@@ -580,7 +583,50 @@ def test_main_test_dispatches_demo_reset_repro():
         demo_reset_repro=True,
         stress_test=False,
         reset_check=True,
+        verbose=False,
     )
+
+
+def test_main_test_dispatches_verbose_short_flag():
+    with patch("cube.cli.cmd_test") as mock_test:
+        with patch.object(sys, "argv", ["cube", "test", "counter-cube", "-v"]):
+            main()
+    mock_test.assert_called_once_with(
+        "counter-cube",
+        max_steps=20,
+        output_path=None,
+        ci_mode=False,
+        demo_reset_repro=False,
+        stress_test=False,
+        reset_check=True,
+        verbose=True,
+    )
+
+
+def test_main_test_dispatches_verbose_long_flag():
+    with patch("cube.cli.cmd_test") as mock_test:
+        with patch.object(sys, "argv", ["cube", "test", "counter-cube", "--verbose"]):
+            main()
+    assert mock_test.call_args.kwargs["verbose"] is True
+
+
+def test_enable_verbose_logging_raises_cube_logger_to_info():
+    cube_logger = logging.getLogger("cube")
+    root = logging.getLogger()
+    saved_level = cube_logger.level
+    saved_root_level = root.level
+    saved_root_handlers = root.handlers[:]
+    try:
+        cube_logger.setLevel(logging.WARNING)
+        cli._enable_verbose_logging()
+        assert cube_logger.level == logging.INFO
+        # An INFO record from a cube-namespaced logger is now emittable
+        # (not filtered out by the logger's effective level).
+        assert cube_logger.isEnabledFor(logging.INFO)
+    finally:
+        cube_logger.setLevel(saved_level)
+        root.setLevel(saved_root_level)
+        root.handlers[:] = saved_root_handlers
 
 
 def test_cmd_test_demo_reset_repro_shows_reset_error_panel(fake_debug_in_sys_modules):

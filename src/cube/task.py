@@ -21,12 +21,13 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Literal, Tuple
+from typing import Any, ClassVar, Dict, Generic, List, Literal, Tuple
 
 from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
+from typing_extensions import TypeVar
 
 from cube import get_cache_dir
-from cube.container import Container, ContainerBackend, ContainerConfig
+from cube.container import Container, ContainerConfig
 from cube.core import (
     Action,
     ActionSchema,
@@ -40,6 +41,16 @@ from cube.core import (
 from cube.resource import ResourceHandle
 from cube.tool import AbstractTool, ToolConfig
 
+# Type parameters for ``Task``. ``TTMetadata`` narrows ``self.metadata``; ``TTool``
+# narrows ``self.tool`` so cubes that bind to a specific tool surface (e.g.
+# ``TerminalTool``, ``BrowserTool``) can drop ``isinstance`` asserts and
+# per-cube property overrides. Defaults keep ``Task[Meta]`` working as before
+# — ``TTool`` resolves to ``AbstractTool``. ``typing_extensions.TypeVar`` is
+# used (not the stdlib) because ``default=`` on a ``TypeVar`` is PEP 696,
+# which the stdlib added in Python 3.13; we still support 3.12.
+TTMetadata = TypeVar("TTMetadata", bound="TaskMetadata")
+TTool = TypeVar("TTool", bound=AbstractTool, default=AbstractTool)
+
 RuntimeContext = dict[str, Any]
 """
 Type alias for shared infrastructure references created during benchmark.setup().
@@ -51,7 +62,11 @@ example:
 logger = logging.getLogger(__name__)
 
 
-STOP_ACTION = ActionSchema(name="final_step", description="Stop the task execution.")
+STOP_ACTION = ActionSchema(
+    name="final_step",
+    description="Stop the task execution.",
+    parameters={"type": "object", "properties": {}},
+)
 
 
 class TaskMetadata(TypedBaseModel):
@@ -78,6 +93,7 @@ class TaskMetadata(TypedBaseModel):
         abstract_description (str): Broad description of the task for searching and filtering only. The task objective is part of the first Observation returned by task.reset(). (default: "")
         recommended_max_steps (int | None): Recommended maximum number of steps to help harness prevent infinite running agents. Not a hard limit, the task can still run longer if needed. (default: None)
         container_config (ContainerConfig | None): Optional container configuration for this task (default: None, meaning no container needed).
+        task_clarification (str | None): Optional short clarification a harness may append to the task objective when ``BenchmarkConfig.add_task_clarification`` is True (default: None).
     """
 
     id: str = Field(..., description="Unique task identifier")
@@ -93,6 +109,19 @@ class TaskMetadata(TypedBaseModel):
     container_config: ContainerConfig | None = Field(
         default=None,
         description="Optional container configuration for this task (defaults to None, meaning no container needed).",
+    )
+    task_clarification: str | None = Field(
+        default=None,
+        description=(
+            "Optional short clarification a harness may append to the task "
+            "objective when the owning ``BenchmarkConfig.add_task_clarification`` "
+            "is True. Intended for brittle tasks whose original wording omits a "
+            "step a reasonable LLM would not infer (e.g. an instruction that does "
+            "not say to click submit when the verifier requires submit to be "
+            "clicked). Populated over time as auto-cube agents detect these "
+            "cases; left None for tasks whose wording is unambiguous. Stored as "
+            "metadata so the original benchmark wording stays untouched."
+        ),
     )
 
 
@@ -111,7 +140,7 @@ class TaskExecutionInfo(TypedBaseModel):
     """
 
 
-class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
+class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     """
     Represents a task that an agent must complete in an environment.
 
@@ -132,16 +161,27 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         - step(action) -> EnvironmentOutput        execute action via tool, evaluate if done
         - close()                                  optional resource cleanup
 
-    Type parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
-    statically narrow ``self.metadata`` to a ``TaskMetadata`` subclass without
-    re-annotating the field. Two equivalent forms at runtime:
+    Type parameters:
+        ``TTMetadata`` (bound ``TaskMetadata``) narrows ``self.metadata`` so
+        cubes don't have to re-annotate the field.
 
-        # Unparametrised — ``self.metadata`` typed as ``TaskMetadata``.
+        ``TTool`` (bound ``AbstractTool``, default ``AbstractTool``) narrows
+        ``self.tool`` to a specific tool surface (e.g. ``TerminalTool``).
+        Cubes that bind it drop the ``isinstance(self.tool, FooTool)`` asserts
+        and per-cube property overrides — ``self.tool`` is the right type by
+        construction. Omitting the parameter is equivalent to
+        ``Task[Meta, AbstractTool]``; existing cubes keep working unchanged.
+
+    Three equivalent forms at runtime:
+
+        # Bare — ``self.metadata: TaskMetadata``, ``self.tool: AbstractTool``.
         class FooTask(Task): ...
 
-        # Parametrised — ``self.metadata`` typed as ``FooTaskMetadata``,
-        # autocomplete and static checking work for subclass-specific fields.
+        # Metadata only — ``self.tool`` stays ``AbstractTool``.
         class FooTask(Task[FooTaskMetadata]): ...
+
+        # Both — ``self.tool: FooTool``, no property override needed.
+        class FooTask(Task[FooTaskMetadata, FooTool]): ...
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -159,9 +199,6 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         ),
     )
     tool_config: SerializeAsAny[ToolConfig] = Field(description="Tool configuration used to instantiate the tool.")
-    container_backend: ContainerBackend | None = Field(
-        default=None, description="Optional backend used to launch a container during model_post_init."
-    )
     runtime_context: RuntimeContext | None = Field(
         default=None, description="Optional shared infrastructure references from Benchmark._setup()."
     )
@@ -174,26 +211,23 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     )
 
     # Non-serializable runtime state, set during model_post_init
-    _tool: AbstractTool | None = PrivateAttr(default=None)
+    _tool: TTool | None = PrivateAttr(default=None)
     _container: Container | None = PrivateAttr(default=None)
     _resource_handle: ResourceHandle | None = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
         """Called after Pydantic __init__. Launches container if configured, then creates tool."""
         cc = self.metadata.container_config
-        if self.runtime_context is not None and "infra" in self.runtime_context:
-            if cc is not None:
-                from cube.task_infra import launch_task_container  # local import avoids circular dep
+        if cc is not None and self.runtime_context is not None and "infra" in self.runtime_context:
+            from cube.task_infra import launch_task_container  # local import avoids circular dep
 
-                self._resource_handle, self._container = launch_task_container(
-                    self.runtime_context,
-                    name=self.metadata.id,
-                    image=cc.image,
-                    ram_gb=cc.ram_gb,
-                    cpu_cores=cc.cpu_cores,
-                )
-        elif self.container_backend is not None and cc is not None:
-            self._container = self.container_backend.launch(cc)
+            self._resource_handle, self._container = launch_task_container(
+                self.runtime_context,
+                name=self.metadata.id,
+                image=cc.image,
+                ram_gb=cc.ram_gb,
+                cpu_cores=cc.cpu_cores,
+            )
 
         self._build_tool()
 
@@ -204,10 +238,12 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         read-only working directory) before calling ``tool_config.make()``.
         ``self._container`` is already set when this is called.
         """
-        self._tool = self.tool_config.make(container=self._container)
+        # ToolConfig.make() returns AbstractTool; cubes that parameterize
+        # Task[Meta, TFooTool] vouch that their tool_config produces a TFooTool.
+        self._tool = self.tool_config.make(container=self._container)  # type: ignore[assignment]
 
     @property
-    def tool(self) -> AbstractTool:
+    def tool(self) -> TTool:
         return self._tool  # type: ignore[return-value]
 
     @property
@@ -221,7 +257,10 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     @property
     def action_set(self) -> List[ActionSchema]:
         """
-        Returns tool.action_set filtered if self.filter_actions() is implemented.
+        Returns tool.action_set filtered through self.filter_actions(), then with
+        STOP_ACTION appended when self.accept_agent_stop is True (dedup by name).
+        Cube authors should NOT add STOP_ACTION in filter_actions.
+
         Tool definitions in litellm-compatible format.
 
         Returns a JSON-serializable list of tool descriptors, each with:
@@ -250,12 +289,16 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
             }
         ]
         """
-        return self.filter_actions(self.tool.action_set)
+        actions = self.filter_actions(self.tool.action_set)
+        if self.accept_agent_stop and not any(a.name == STOP_ACTION.name for a in actions):
+            actions = [*actions, STOP_ACTION]
+        return actions
 
     def filter_actions(self, actions: list[ActionSchema]) -> list[ActionSchema]:
         """
-        (Optional) Allows the task to whitelist subset of all the actions provided by the tool.
-        By default filters nothing, keep all tool actions.
+        (Optional) Allows the task to whitelist a subset of the actions provided by the tool.
+        By default keeps all tool actions. STOP_ACTION is appended automatically by
+        action_set when accept_agent_stop=True — do not add it here.
         """
         return actions
 
@@ -472,23 +515,20 @@ class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
     ) -> Task:
         """Instantiate a Task from this config. Called on a worker after deserialization.
 
         Args:
             runtime_context: Shared infrastructure references created by
-                Benchmark._setup() (e.g. server URLs, database connections).
+                Benchmark._setup() (e.g. server URLs, database connections,
+                the injected ``InfraConfig`` under the ``"infra"`` key).
                 Passed from Benchmark.spawn().
-            container_backend: HOW to run containers (local, Modal, ...) —
-                read from the owning BenchmarkConfig by Benchmark.spawn().
 
         Example:
         >>> return MyTask(
         ...     metadata=self.metadata,
         ...     tool_config=self.tool_config or MyDefaultToolConfig(),
         ...     runtime_context=runtime_context,
-        ...     container_backend=container_backend,
         ... )
 
         Cubes with heavy execution data (problem statements, patches, …)

@@ -78,6 +78,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from azure.identity import AzureCliCredential
+from azure.identity._exceptions import CredentialUnavailableError as _CredUnavail
 from pydantic import Field, model_validator
 
 from cube.infra_utils import build_volume_setup_script
@@ -106,6 +107,17 @@ _AZURE_VM_SIZES: list[tuple[int, int, str]] = [
     (16, 64, "Standard_D16s_v3"),
     (32, 128, "Standard_D32s_v3"),
 ]
+
+
+def _iso_utc(dt: datetime) -> str:
+    """Format a UTC datetime as ``YYYY-MM-DDTHH:MM:SSZ``.
+
+    Matches the org-standard ``expireOn`` / ``ttl`` convention consumed by the
+    central budget automation (which scans for tags in this exact ISO-8601
+    shape). Drops microseconds — second precision is plenty for TTL — and
+    uses ``Z`` rather than ``+00:00`` because the budget tooling expects it.
+    """
+    return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _select_vm_size(default: str, min_cpu: int | None, min_ram: int | None) -> str:
@@ -607,9 +619,27 @@ class _CachedCliCredential:
             tok = self._cache.get(key)
             if tok is not None and tok.expires_on - time.time() > 300:
                 return tok
-        # Fetch outside the lock so concurrent get_token calls for *different*
-        # scopes don't serialise on each other.
-        fresh = self._inner.get_token(*scopes, **kwargs)
+        # Retry around the cold cache miss. With ~150 Ray workers spawning
+        # concurrently, all hitting `az account get-access-token` at the same
+        # moment, the Azure CLI's MSAL token cache file lock contends and a
+        # subset get CredentialUnavailableError. Exponential backoff with
+        # jitter spreads them out so each gets its turn.
+        last_exc: Exception | None = None
+        for attempt in range(6):  # 6 tries total: 0,1,2,4,8,16s + jitter
+            try:
+                fresh = self._inner.get_token(*scopes, **kwargs)
+                break
+            except _CredUnavail as e:
+                last_exc = e
+                if attempt == 5:
+                    raise
+                # Backoff: 2^attempt seconds + 0-1s jitter to break thundering herd.
+                import random
+
+                time.sleep((2**attempt) + random.random())
+        else:
+            assert last_exc is not None
+            raise last_exc
         with self._lock:
             self._cache[key] = fresh
         return fresh
@@ -619,9 +649,24 @@ class _CachedCliCredential:
         # older versions. We don't try to cache the AccessTokenInfo wrapper —
         # the inner SDK does its own caching for that path.
         inner_get_token_info = getattr(self._inner, "get_token_info", None)
-        if inner_get_token_info is not None:
-            return inner_get_token_info(*scopes, **kwargs)
-        return self.get_token(*scopes, **kwargs)
+        if inner_get_token_info is None:
+            return self.get_token(*scopes, **kwargs)
+        # Mirror get_token's retry+backoff: the SDK's auth pipeline calls this
+        # path (not get_token), so without retries here a transient
+        # CredentialUnavailableError from the az CLI tears down the whole task.
+        last_exc: Exception | None = None
+        for attempt in range(6):  # 6 tries total: 0,1,2,4,8,16s + jitter
+            try:
+                return inner_get_token_info(*scopes, **kwargs)
+            except _CredUnavail as e:
+                last_exc = e
+                if attempt == 5:
+                    raise
+                import random
+
+                time.sleep((2**attempt) + random.random())
+        assert last_exc is not None
+        raise last_exc
 
 
 # EX-002 documented exception: _CACHED_CLI_CREDENTIAL is an intentional
@@ -1142,14 +1187,20 @@ class AzureInfraConfig(InfraConfig):
         expires_at = created_at + timedelta(seconds=effective_ttl) if effective_ttl else None
 
         # Spec-required tags applied to every launched resource (VM, NIC, IP).
+        # Timestamps use _iso_utc (Z suffix, second precision) — matches the
+        # org-standard expireOn/ttl convention so external budget automation
+        # can sweep cube resources without learning the cube: prefix.
         cube_tags: dict[str, str] = {
             "cube:infra": self.fingerprint(),
             "cube:run_id": run_id,
             "cube:resource": resource.name,
-            "cube:created_at": created_at.isoformat(),
+            "cube:created_at": _iso_utc(created_at),
         }
         if expires_at:
-            cube_tags["cube:expires_at"] = expires_at.isoformat()
+            cube_tags["cube:expires_at"] = _iso_utc(expires_at)
+            # Mirror onto the org-standard tag name so cross-team budget
+            # automation (which scans for ``expireOn``) can also sweep us.
+            cube_tags["expireOn"] = _iso_utc(expires_at)
 
         compute = self._compute()
 

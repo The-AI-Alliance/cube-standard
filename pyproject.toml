@@ -1,6 +1,6 @@
 [project]
 name = "cube-standard"
-version = "0.1.0rc8"
+version = "0.1.0rc9"
 description = "Common Unified Benchmark Environments"
 readme = "README.md"
 urls = { Repository = "https://github.com/The-AI-Alliance/cube-standard" }
@@ -20,6 +20,7 @@ dependencies = [
     "requests>=2.28",
     "rich>=13.0",
     "tqdm>=4.60",
+    "typing-extensions>=4.12",
     "uvicorn[standard]>=0.34.0",
 ]
 
@@ -86,8 +87,6 @@ extend-select = ["I"] # sort imports
 "tests/test_modal.py" = ["E402"]
 "tests/test_daytona.py" = ["E402"]
 "tests/test_toolkit.py" = ["E402"]
-"tests/backends/test_local.py" = ["E402"]
-"tests/backends/test_toolkit.py" = ["E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "cube-resources"]

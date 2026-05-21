@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
-from cube.container import Container, ContainerBackend
+from cube.container import Container
 from cube.core import Observation
 from cube.server import make_benchmark_jsonrpc_app, make_task_jsonrpc_app
 from cube.task import Task, TaskConfig, TaskMetadata
@@ -66,13 +66,11 @@ class _CounterTaskConfig(TaskConfig):
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
     ) -> _CounterTask:
         return _CounterTask(
             metadata=self.metadata,
             tool_config=self.tool_config or _CounterToolConfig(),
             runtime_context=runtime_context,
-            container_backend=container_backend,
         )
 
 
@@ -103,6 +101,7 @@ _TASK_META_1 = {
     "abstract_description": "",
     "recommended_max_steps": None,
     "container_config": None,
+    "task_clarification": None,
 }
 
 _TASK_META_2 = {**_TASK_META_1, "id": "task-2"}
@@ -178,6 +177,7 @@ def test_benchmark_info(bench_client):
         "tags": [],
         "reset_isolation": None,
         "named_subsets": {},
+        "benchmark_hint_prompt": None,
     }
 
 
@@ -224,7 +224,9 @@ def test_tools_list(task_client):
     resp = _rpc(task_client, "tools/list")
     assert resp.status_code == 200
     names = {t["name"] for t in resp.json()["result"]}
-    assert names == {"increment", "get_value"}
+    # `final_step` is STOP_ACTION, auto-appended by Task.action_set when
+    # accept_agent_stop=True (the default).
+    assert names == {"increment", "get_value", "final_step"}
 
 
 def test_reset(task_client):

@@ -18,7 +18,6 @@ When the code and a design doc disagree, trust the code and update the doc (or t
 | [resource_lifecycle.md](resource_lifecycle.md) | Full design of L1/L2/L3 resource lifecycle | [resource](../openspec/specs/resource/spec.md) |
 | [stress_test_specs.md](stress_test_specs.md) | CUBE compliance/latency suite | [testing](../openspec/specs/testing/spec.md) |
 | [user_experience.md](user_experience.md) | CLI design and debugging workflow | [cli](../openspec/specs/cli/spec.md) |
-| [vm_backend.md](vm_backend.md) | Unified VM abstraction (in flight) | [resource](../openspec/specs/resource/spec.md) |
 
 ## What was removed
 
@@ -30,3 +29,4 @@ The following docs were deleted (content preserved in git history):
 - `json-rpc.md` — conversation transcript, not a spec
 - `rfc_core_extensions.md` → moved to [`../openspec/changes/core-extensions/`](../openspec/changes/core-extensions/)
 - `json-rpc-plan.md` → moved to [`../openspec/changes/json-rpc-streaming/`](../openspec/changes/json-rpc-streaming/)
+- `vm_backend.md` — the standalone `VMBackend` / `VM` abstraction it described was removed; VM provisioning converged on `InfraConfig` + `VMResourceConfig` (see [`../openspec/specs/resource/spec.md`](../openspec/specs/resource/spec.md) and [`../openspec/changes/remove-vm-backend/`](../openspec/changes/remove-vm-backend/))

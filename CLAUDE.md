@@ -36,9 +36,21 @@ Cross-cutting:
 
 ## Code review
 
+**Default branch is `dev`** — base all PRs off it, not `main`.
+
 **Sign your commits.** Every commit needs a `Signed-off-by` line (`git commit -s`). DCO is enforced by CI — unsigned commits will be blocked.
 
 PRs are reviewed with `/code-review` ([plugin docs](https://github.com/anthropics/claude-code/blob/main/plugins/code-review/README.md)), which audits changes against these guidelines. Write PRs as if a reviewer will check each principle above against the diff.
+
+**Auto-fix provenance.** Auto-CUBE-produced fixes carry `# auto-fix(N)↓ … # /auto-fix(N)`
+markers + a one-line machine-readable footnote at module bottom (`N` = PR
+number for L0/L1, design-debt issue number for L2/L3). Reviewers: when a
+diff touches an `auto-fix` region/footnote, treat it as **possibly rotten**
+— pull the PR or issue at `N`, re-check the stated invariant still holds,
+re-stamp `hash=` on benign drift (acknowledge, never silently leave it),
+and if the band-aid is now subsumed recommend promoting it + closing the
+issue. Flag, don't hard-block. Methodology (Fix Report, L0–L3, lint):
+[`openspec/specs/auto-fix/spec.md`](openspec/specs/auto-fix/spec.md).
 
 ## Workflow for code changes
 
@@ -59,17 +71,23 @@ src/cube/                       Core framework
 ├── cli.py                      `cube` command
 ├── resource.py                 L1/L2/L3 resource lifecycle
 ├── container.py                Single-container abstraction
-├── backends/                   Docker, Modal, Daytona, Toolkit backends
-├── tools/                      Reference tool stubs (browser)
+├── local_container.py          Local Docker Container driver
+├── tools/                      Generalist tool ABCs + dep-free concrete impls (browser ABC, terminal)
 ├── resources/                  BrowserSession, ChatSession protocols
 ├── integrations/nemogym.py     NemoGym interop
 └── _template/                  Scaffold used by `cube init`
 
 cube-resources/                 Optional resource packages (playwright, chat, infra-*)
-cube-tools/                     Optional tool packages (browser, computer, chat)
+cube-tools/                     Optional concrete tool packages — one per heavy dep (browser, computer, chat, web)
 examples/                       counter-cube (reference), toy_benchmark
 tests/                          Unit + integration + backends
 ```
+
+## Tools architecture
+
+ABCs live in `src/cube/tools/`. Concrete impls live in `cube-tools/cube-<name>-tool/`
+when they pull a non-trivial dep; otherwise alongside the ABC. **Tool implementations
+never live in cube-harness.** Full rule: [tool/spec.md § Packaging conventions](openspec/specs/tool/spec.md#packaging-conventions).
 
 ## Key conventions
 
@@ -77,7 +95,7 @@ tests/                          Unit + integration + backends
 - **ClassVar registries** on `BenchmarkConfig`: `benchmark_metadata`, `task_metadata`, `task_config_class`, `benchmark_class` are class-level, not constructor params. Auto-loaded from files next to the module (metadata only).
 - **Config → Factory** pattern: `XyzConfig.make()` returns a live `Xyz`. Config is serialized across process boundaries; live object never is.
 - **`TaskConfig` is the serialization boundary** — workers get a `TaskConfig` and call `.make()` locally. Task objects never cross processes.
-- **Credentials** are resolved from env vars at runtime. Never fields on `InfraConfig` or `ContainerBackend` (would be serialized).
+- **Credentials** are resolved from env vars at runtime. Never fields on `InfraConfig` (would be serialized).
 
 ## Design docs / RFCs
 
@@ -86,6 +104,16 @@ Active proposals: `openspec/changes/`. Archived: `openspec/changes/archive/`.
 ## Testing
 
 `make lint` and `make test`. For benchmark debug suite: `cube test <benchmark-name>`.
+
+### Test categories
+
+| Type | When | Where |
+|---|---|---|
+| Unit (`pytest tests/`) | every iteration | `tests/` — fast, no external deps. CI default. |
+| Integration (`pytest -m integration`) | when touching the marked area | `tests/` with `@pytest.mark.integration`. Setup details live in the marker's docstring in `pyproject.toml`. |
+| Smoke (`scripts/smoke/*.py`) | when a PR touches plumbing unit tests can't reach | Standalone scripts a coding agent runs to verify end-to-end behavior. Never CI. May stand up real infrastructure or call external APIs; minutes-long runs are fine. Each prints `SMOKE OK/FAIL/SKIP: <name>` (exit 0/1/2). Discover with `find . -path '*/scripts/smoke/*.py'`. |
+
+Smokes are the coding agent's judgment call — for a PR that touches a marked area, pick the relevant smokes, adapt the environment (auth, credentials, profiles), and iterate until green. **Reflex:** when adding complex new code, drop a smoke alongside it; a green end-to-end run is the strongest signal the change actually works as intended.
 
 ## What lives elsewhere
 

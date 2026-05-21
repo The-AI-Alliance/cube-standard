@@ -19,6 +19,7 @@ class TaskMetadata(TypedBaseModel):
     abstract_description: str = ""             # for search/filtering only — NOT the objective
     recommended_max_steps: int | None = None   # harness hint, not enforced
     container_config: ContainerConfig | None = None
+    task_clarification: str | None = None      # optional opt-in clarification (see below)
 ```
 
 `TaskMetadata` is the lightweight, eager-loaded view of a task: it ships in
@@ -34,6 +35,19 @@ scripts, …) lives on a `TaskExecutionInfo` subclass surfaced via
 
 The actual task objective is surfaced in the first `Observation` returned by `reset()`.
 `abstract_description` is for tooling (search, subsetting), never to be shown to the agent.
+
+`task_clarification` is an optional short string a harness may append to
+the task objective **only when** the owning
+`BenchmarkConfig.add_task_clarification` is `True` (see
+[benchmark/spec.md](../benchmark/spec.md)). Populated over time for
+brittle tasks whose original wording omits a step a reasonable LLM would
+not infer — for instance a miniwob task whose objective reads "set slider
+to 32 and string value to 'foo'" but whose verifier only rewards if the
+agent then clicks submit. Storing the fix as metadata keeps the original
+benchmark wording intact and lets evaluations toggle the clarifications
+on or off without forking the benchmark. Leave `None` for tasks whose
+wording is unambiguous. The framework only declares the slot — actual
+prompt assembly happens in the harness.
 
 ### `TaskExecutionInfo` (serializable)
 ```python
@@ -62,22 +76,40 @@ instantiable but carries no fields.
 
 ### `Task` (abstract, Pydantic)
 ```python
-class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
+class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     # Serializable fields — SerializeAsAny preserves subclass-specific fields
     # through JSON round-trip (Pydantic would otherwise strip them to the
     # declared base type). Required for every polymorphic field.
     metadata: SerializeAsAny[TTMetadata]
     execution_info: SerializeAsAny[TaskExecutionInfo] | None = None  # heavy lazy data; populated on the worker
     tool_config: SerializeAsAny[ToolConfig]
-    container_backend: ContainerBackend | None = None
     runtime_context: RuntimeContext | None = None      # from Benchmark._setup()
     validate_per_step: bool = False                    # eval on every step, not just done
     accept_agent_stop: bool = True                     # accept STOP_ACTION from agent
 
     # Runtime (PrivateAttr, set in model_post_init)
-    _tool: AbstractTool | None
+    _tool: TTool | None
     _container: Container | None
+    _resource_handle: ResourceHandle | None    # handle from InfraConfig.launch(); torn down by close()
+
+    @property
+    def tool(self) -> TTool: ...
 ```
+
+`Task` carries two type parameters:
+
+- `TTMetadata` (bound `TaskMetadata`) narrows `self.metadata` so cubes don't
+  re-annotate the field on every access.
+- `TTool` (bound `AbstractTool`, default `AbstractTool`) narrows `self.tool`
+  to a specific tool surface. Cubes that bind it (e.g.
+  `Task[FooMeta, TerminalTool]`) drop `isinstance(self.tool, FooTool)`
+  asserts and per-cube `tool` property overrides — `self.tool` is the right
+  type by construction.
+
+Defaults make `TTool` non-breaking: `Task[Meta]` resolves to
+`Task[Meta, AbstractTool]`. `typing_extensions.TypeVar` is used to back
+default-on-TypeVar (PEP 696) to Python 3.12; the stdlib `TypeVar` gained
+the feature in 3.13.
 
 `execution_info` is the typed surface for heavy per-task data. Cubes
 populate it inside `TaskConfig.make()`: validate
@@ -88,8 +120,12 @@ Tasks read typed fields directly: `self.execution_info.problem_statement`,
 `self.execution_info.patch`, …
 
 `model_post_init` (runs after Pydantic `__init__`):
-1. If `container_backend` and `metadata.container_config` are both set, launch the container.
-2. Call `tool_config.make(container=self._container)` to build the tool.
+1. If `metadata.container_config` is set and `runtime_context["infra"]` is
+   present, the container is provisioned via the injected `InfraConfig`
+   (`cube.task_infra.launch_task_container`); the live `Container` and its
+   `ResourceHandle` are stored in `_container` / `_resource_handle`.
+2. Call `_build_tool()` (default: `tool_config.make(container=self._container)`)
+   to build the tool.
 
 **Abstract methods (implementers MUST provide):**
 - `reset() -> (Observation, dict)` — set up initial state; also call `self.tool.reset()`
@@ -126,11 +162,36 @@ Returns `EnvironmentOutput(obs, reward, done, info, error)`. `truncated` is alwa
 
 ### `STOP_ACTION` (module-level constant)
 ```python
-STOP_ACTION = ActionSchema(name="final_step", description="Stop the task execution.")
+STOP_ACTION = ActionSchema(
+    name="final_step",
+    description="Stop the task execution.",
+    parameters={"type": "object", "properties": {}},
+)
 ```
 Protocol for agent-initiated termination. Tasks that reject it must set
 `accept_agent_stop = False` (e.g., tasks that require the agent to reach a terminal
 state via environment interaction, not a self-declaration).
+
+`Task.action_set` auto-appends `STOP_ACTION` whenever `accept_agent_stop=True`
+(deduping by name), so cube authors do not re-add it in `filter_actions`. The
+non-empty `parameters` schema is the minimal payload Anthropic accepts for
+`input_schema`; LiteLLM passes it through verbatim.
+
+### `Task.action_set` (concrete property)
+
+```python
+@property
+def action_set(self) -> list[ActionSchema]:
+    actions = self.filter_actions(self.tool.action_set)
+    if self.accept_agent_stop and not any(a.name == STOP_ACTION.name for a in actions):
+        actions = [*actions, STOP_ACTION]
+    return actions
+```
+
+Returns the action schemas the agent should see. Runs `filter_actions()`
+first, then appends `STOP_ACTION` when `accept_agent_stop=True` unless an
+action with that name is already present. The dedup branch keeps legacy
+`filter_actions` overrides that still append `STOP_ACTION` working.
 
 ### `RuntimeContext`
 ```python
@@ -159,7 +220,6 @@ class TaskConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
     ) -> Task
 
     # ClassVar back-stamped by BenchmarkConfig.__init_subclass__ to
@@ -246,7 +306,9 @@ always retains the native un-prefixed id.
    `evaluate`, `filter_actions`, `obs_postprocess`, `finished`.
 3. Tool is built eagerly in `model_post_init` — once a Task is constructed, its tool is live.
 4. `accept_agent_stop=True` (default) means the agent can self-terminate via
-   `Action(name="final_step")`. Evaluate is called on termination.
+   `Action(name="final_step")`. `Task.action_set` auto-appends `STOP_ACTION`
+   in this case (dedup by name); `step()` recognises it and calls
+   `evaluate()` on termination.
 5. `info["profiling"]` is always populated after `step()` unless no actions ran (empty list).
 
 ## Contracts for implementers
@@ -282,10 +344,13 @@ always retains the native un-prefixed id.
   instantiation).
 - `validate_per_step=True` means `evaluate()` runs every step — expensive. Default is
   only on termination.
-- STOP_ACTION is not automatically in the tool's action set — the harness / agent
-  framework is responsible for including it in the action list shown to the LLM.
+- `filter_actions` overrides MUST NOT append `STOP_ACTION` — `Task.action_set`
+  does it automatically when `accept_agent_stop=True`. Manual appends still
+  work (dedup by name) but are redundant and should be removed.
 - `runtime_context` is a dict, not a Pydantic model — no type safety. Document keys
   in your `Benchmark._setup()` docstring.
-- `model_post_init` launches the container. If your ToolConfig `make()` fails and
-  you set `container_backend`, the container is already running — may leak unless the
-  caller handles construction errors.
+- `model_post_init` launches the container (via the injected `InfraConfig`)
+  before building the tool. If your `ToolConfig.make()` / `_build_tool()` fails,
+  the container is already running — it may leak unless the caller handles
+  construction errors (e.g. wraps `spawn()`/`make()` and calls
+  `_resource_handle.close()` on failure).

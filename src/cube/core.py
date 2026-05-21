@@ -20,11 +20,13 @@ import io
 import json
 import traceback
 from abc import ABC, abstractmethod
+from collections.abc import Iterator, Mapping
 from typing import Any, Callable, ClassVar, Self
 
 from PIL import Image as PILImage
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     SerializeAsAny,
     field_serializer,
@@ -49,31 +51,89 @@ class TypedBaseModel(BaseModel):
 
     @model_serializer(mode="wrap")
     def _serialize_with_type(self, handler):
-        data = handler(self)
-        data["_type"] = f"{self.__class__.__module__}.{self.__class__.__name__}"
-        return data
+        value = handler(self)
+        value["_type"] = f"{self.__class__.__module__}.{self.__class__.__name__}"
+        return value
 
     @model_validator(mode="wrap")
     @classmethod
     def _deserialize_with_type(cls, value, handler):
-        if isinstance(value, dict) and "_type" in value:
-            type_path = value.pop("_type")
-            module_name, class_name = type_path.rsplit(".", 1)
-            module = importlib.import_module(module_name)  # nosemgrep: non-literal-import
-            actual_cls = getattr(module, class_name)
-            if not (isinstance(actual_cls, type) and issubclass(actual_cls, TypedBaseModel)):
-                raise ValueError(f"Refusing to deserialize '{type_path}': class must be a TypedBaseModel subclass.")
-            # If _type matches the current class, proceed normally via handler to avoid
-            # Pydantic v2's "returning non-self from __init__" warning and broken __init__ path.
-            if actual_cls is cls:
-                return handler(value)
-            return actual_cls.model_validate(value)
-        if isinstance(value, dict) and inspect.isabstract(cls):
-            raise ValueError(
-                f"Cannot deserialize abstract class '{cls.__name__}' directly. "
-                "Ensure the data was serialized from a concrete subclass (contains '_type' field)."
-            )
+        if isinstance(value, dict):
+            if "_type" in value:
+                # Copy before popping: the caller's dict may be reused (e.g. re-validated
+                # under validate_assignment=True), and losing _type silently downgrades
+                # polymorphism on the second pass.
+                value = value.copy()
+                type_path = value.pop("_type")
+                module_path, class_name = type_path.rsplit(".", 1)
+                module = importlib.import_module(module_path)  # nosemgrep: non-literal-import
+                actual_cls = getattr(module, class_name)
+                if not isinstance(actual_cls, type) or not issubclass(actual_cls, cls):
+                    raise ValueError(f"Cannot deserialize '{type_path}': class must be a subclass of '{cls.__name__}'.")
+                # When actual_cls is cls, fall through to handler(value) instead of
+                # recursing: Pydantic v2 warns about "returning non-self from __init__"
+                # if a wrap-validator returns the result of model_validate on the same class.
+                if actual_cls is not cls:
+                    return actual_cls.model_validate(value)
+            elif inspect.isabstract(cls):
+                raise ValueError(
+                    f"Cannot deserialize abstract class '{cls.__name__}' directly. "
+                    "Ensure the input dict includes a '_type' field naming a concrete subclass."
+                )
         return handler(value)
+
+
+class ValidatedConfig(TypedBaseModel):
+    """A ``TypedBaseModel`` that validates attribute assignment.
+
+    Plain Pydantic models only validate at construction; assigning a wrongly
+    typed value afterwards silently succeeds and fails much later (often deep
+    in a worker process). Config objects are routinely tweaked by attribute
+    assignment in recipes (``agent.budget.cost_limit = 2.0``), so the failure
+    must surface at the point of assignment instead.
+
+    Subclass this instead of ``TypedBaseModel`` for any config a user mutates
+    after construction. For validation to reach nested writes
+    (``cfg.sub.field = ...``) every model in the tree must subclass this.
+    """
+
+    model_config = ConfigDict(validate_assignment=True)
+
+
+class ConfigRegistry[T: BaseModel](Mapping[str, T]):
+    """Maps a name to a canonical config; every lookup returns a deep copy.
+
+    Used for the named-config catalogs that recipes pick from — canonical
+    agent configs, per-cube benchmark configs, infra profiles:
+
+        agent = GENNY_CONFIGS["swe"]
+        agent.budget.cost_limit = 2.0
+
+    Every lookup returns a fresh ``model_copy(deep=True)``, so a caller can
+    never mutate the shared canonical instance and corrupt other recipes in
+    the process. Trade-off: bind to a variable before mutating —
+    ``REG["x"].field = y`` mutates a throwaway and no-ops.
+
+    A ``Mapping`` (not a ``dict`` subclass) on purpose: ``dict.get`` /
+    ``.values`` / ``.items`` / ``**unpack`` would bypass ``__getitem__`` and
+    hand out the shared instance. ``Mapping`` routes every read through
+    ``__getitem__``, so copy-on-access actually holds.
+    """
+
+    def __init__(self, configs: dict[str, T]) -> None:
+        self._configs = configs
+
+    def __getitem__(self, name: str) -> T:
+        try:
+            return self._configs[name].model_copy(deep=True)
+        except KeyError:
+            raise KeyError(f"Unknown config {name!r}. Available: {sorted(self._configs)}") from None
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._configs)
+
+    def __len__(self) -> int:
+        return len(self._configs)
 
 
 class ActionSchema(TypedBaseModel):

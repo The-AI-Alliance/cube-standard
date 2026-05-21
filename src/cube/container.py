@@ -5,11 +5,12 @@ directly — no wrapper indirection.  Subclasses carry the handle bookkeeping
 (run_id / resource / infra / created_at / expires_at) alongside their driver-
 specific state.
 
-``ContainerBackend`` and ``ContainerConfig`` below are the pre-``InfraConfig``
-factory + config.  They are **deprecated** — use ``InfraConfig.launch()`` with
-``DockerImageConfig`` or ``DockerServiceConfig`` (in ``cube.resource``) instead.
-Kept here only so existing ``Task.container_backend`` / ``Benchmark.container_backend``
-fields continue to type-check during the migration.
+``ContainerConfig`` below is the serializable description of *what* container a
+task needs (``TaskMetadata.container_config``).  It is consumed by the
+``InfraConfig`` path in ``Task.model_post_init`` (via
+``cube.task_infra.launch_task_container``) — it is **not** deprecated.  The old
+``ContainerBackend`` factory has been removed; provisioning is now done
+exclusively through ``InfraConfig`` (see ``cube.resource``).
 """
 
 from __future__ import annotations
@@ -18,8 +19,6 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict
-
-from pydantic import Field
 
 from cube.core import TypedBaseModel
 from cube.resource import ResourceHandle
@@ -83,30 +82,6 @@ class Container(ResourceHandle, ABC):
         env: Dict[str, str] | None = None,
     ) -> ExecResult:
         """Execute *command* inside the container."""
-
-    def exec_long_running(
-        self,
-        command: str,
-        *,
-        timeout: int,
-        poll_interval: int = 30,
-        workdir: str | None = None,
-        env: Dict[str, str] | None = None,
-    ) -> ExecResult:
-        """Execute a long-running *command*, decoupled from any RPC channel.
-
-        Default implementation is just ``exec(command, timeout=timeout)`` —
-        fine for backends with reliable exec streaming (LocalContainer,
-        DaytonaContainer, ModalContainer).  Backends whose exec primitive
-        has reliability issues on long-running commands (notably
-        ToolkitContainer — see `docs/toolkit-exec-relay-design.md`) override
-        this to kick off the command in the background inside the
-        container and poll a sentinel file for completion.  Each individual
-        RPC call under this override is short (< 1 s), so a transient CLI
-        hang can be retried cheaply instead of re-running a 30-minute
-        pytest.
-        """
-        return self.exec(command, timeout=timeout, workdir=workdir, env=env)
 
     @abstractmethod
     def forward_port(self, container_port: int) -> int:
@@ -175,7 +150,14 @@ def relocate_if_readonly(
     cmd = f"cp -a {working_dir} {new_wd}"
     if extra_setup:
         cmd += f" && {extra_setup}"
-    container.exec(cmd, timeout=300)
+    # auto-fix(176)↓
+    result = container.exec(cmd, timeout=300)
+    if result.exit_code != 0:
+        raise ContainerExecError(
+            f"relocate_if_readonly: '{cmd}' failed (exit {result.exit_code}); "
+            f"working dir {new_wd!r} was not created. stderr: {result.stderr.strip()}"
+        )
+    # /auto-fix(176)
     return new_wd
 
 
@@ -193,15 +175,16 @@ def port_from_url(url: str) -> int:
     raise ContainerError(f"Could not determine port from URL: {url}")
 
 
-# ── Deprecated pre-InfraConfig API ───────────────────────────────────────────
+# ── Task container requirements ──────────────────────────────────────────────
 
 
 class ContainerConfig(TypedBaseModel):
-    """DEPRECATED.  Use ``cube.resource.DockerImageConfig`` instead.
+    """Serializable description of *what* container a task needs.
 
-    Kept only so existing ``TaskMetadata.container_config`` fields continue to
-    type-check during the infra migration.  No per-instance warning — would be
-    noisy across CSV task-metadata loads.
+    Declared on ``TaskMetadata.container_config`` and consumed by the
+    ``InfraConfig`` path in ``Task.model_post_init`` (via
+    ``cube.task_infra.launch_task_container``).  *How* the container is
+    provisioned is owned by the injected ``InfraConfig`` (see ``cube.resource``).
     """
 
     image: str
@@ -212,35 +195,15 @@ class ContainerConfig(TypedBaseModel):
     ports: list[int] | None = None
 
 
-class ContainerBackend(TypedBaseModel, ABC):
-    """DEPRECATED.  Use ``cube.resource.InfraConfig`` + ``InfraConfig.launch(resource)`` instead.
-
-    Kept only so existing ``Task.container_backend`` / ``Benchmark.container_backend``
-    fields continue to type-check during the infra migration.  Subclasses emit a
-    one-shot ``DeprecationWarning`` at *import* time (see ``cube.backends.*``),
-    not per instantiation.
-    """
-
-    timeout_seconds: int = 1800
-    backend_config: Dict[str, Any] = Field(default_factory=dict)
-
-    @abstractmethod
-    def launch(self, config: ContainerConfig) -> Container:
-        """Launch a container described by *config*. Blocks until ready."""
-
-    def health_check(self, container: Container) -> bool:
-        """Override to perform custom health checks. Return True if healthy."""
-        return True
-
-    def _run_health_check(self, container: Container) -> None:
-        """Run the health check, cleaning up on failure."""
-        try:
-            ok = self.health_check(container)
-            if not ok:
-                container.stop()
-                raise HealthCheckError("Health check returned False")
-        except HealthCheckError:
-            raise
-        except Exception as exc:
-            container.stop()
-            raise HealthCheckError(f"Health check raised an exception: {exc}") from exc
+# === auto-fix notes ===  (spec: openspec/specs/auto-fix/spec.md)
+# auto-fix-note(176) {class=L1 issue=176 hash=PENDING ctx=docker/tbench2:prove-plus-comm/cube-standard@0e91ae1}
+#   symptoms:  tbench2 task prove-plus-comm -- image has a read-only/absent
+#              /app; `cp -a` failed but the exit code was discarded and the
+#              never-created new_wd returned, so callers chdir'd into a
+#              phantom dir. Trigger = image shape; infra-agnostic.
+#   invariant: relocate_if_readonly returns a dir that exists, or raises
+#              ContainerExecError -- never a path that was never created.
+#   why:       check result.exit_code; raise the module's domain exception
+#              (ContainerExecError), consistent with its error hierarchy.
+#   tested:    tests/test_container.py relocate cases.
+#   hash=PENDING: stamped by scripts/auto_fix_lint.py (Tier-1) on first run.

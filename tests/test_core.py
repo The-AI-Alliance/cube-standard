@@ -4,17 +4,19 @@ import json
 
 import pytest
 from PIL import Image as PILImage
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from cube.core import (
     Action,
     ActionSchema,
+    ConfigRegistry,
     Content,
     ImageContent,
     Observation,
     StepError,
     StructuredContent,
     TextContent,
+    ValidatedConfig,
 )
 
 # --- TypedBaseModel (via Action) ---
@@ -27,6 +29,45 @@ def test_typed_base_model_round_trip():
     assert data == {"_type": "cube.core.Action", "id": None, "name": "click", "arguments": {"selector": "#btn"}}
     restored = Action.model_validate(data)
     assert restored == original
+
+
+def test_typed_base_model_does_not_mutate_input_dict():
+    """The validator must not pop '_type' from the caller's dict; mutating it
+    silently downgrades polymorphism on the next round-trip."""
+    payload = {"_type": "cube.core.Action", "id": None, "name": "click", "arguments": {}}
+    snapshot = dict(payload)
+    Action.model_validate(payload)
+    assert payload == snapshot
+
+
+def test_typed_base_model_same_dict_validates_twice_preserving_subclass():
+    """Re-validating the same dict twice must keep returning the concrete
+    subclass — regression guard for the in-place `_type` pop."""
+    payload = {"_type": "cube.core.TextContent", "data": "hi", "tool_call_id": None, "name": None}
+    a = Content.model_validate(payload)
+    b = Content.model_validate(payload)
+    assert type(a) is TextContent
+    assert type(b) is TextContent
+
+
+def test_typed_base_model_list_field_round_trips_twice():
+    """Realistic scenario: an Observation with polymorphic contents, dumped
+    once and re-validated twice — both must yield TextContent instances."""
+    obs = Observation(contents=[TextContent(data="hi")])
+    data = obs.model_dump()
+    once = Observation.model_validate(data)
+    twice = Observation.model_validate(data)
+    assert [type(c) for c in once.contents] == [TextContent]
+    assert [type(c) for c in twice.contents] == [TextContent]
+
+
+def test_typed_base_model_rejects_type_outside_target_hierarchy():
+    """`_type` must name a subclass of the class being validated. The previous
+    check only required a TypedBaseModel subclass, so an Action payload would
+    silently coerce into any TypedBaseModel field."""
+    payload = {"_type": "cube.core.Action", "name": "click"}
+    with pytest.raises(ValidationError):
+        TextContent.model_validate(payload)
 
 
 # --- ActionSchema ---
@@ -214,3 +255,70 @@ def test_step_error_from_exception():
         err = StepError.from_exception(e)
     assert err.error_type == "ValueError"
     assert err.exception_str == "something went wrong"
+
+
+# --- ValidatedConfig ---
+
+
+class _Budget(ValidatedConfig):
+    cost_limit: float = 1.0
+
+
+class _AgentCfg(ValidatedConfig):
+    max_actions: int = 100
+    budget: _Budget = _Budget()
+
+
+def test_validated_config_rejects_bad_assignment():
+    cfg = _AgentCfg()
+    with pytest.raises(ValidationError):
+        cfg.max_actions = "not an int"  # type: ignore[assignment]
+
+
+def test_validated_config_allows_good_assignment():
+    cfg = _AgentCfg()
+    cfg.max_actions = 200
+    assert cfg.max_actions == 200
+
+
+def test_validated_config_validates_nested_assignment():
+    cfg = _AgentCfg()
+    with pytest.raises(ValidationError):
+        cfg.budget.cost_limit = "free"  # type: ignore[assignment]
+    cfg.budget.cost_limit = 2.0
+    assert cfg.budget.cost_limit == 2.0
+
+
+def test_validated_config_preserves_typed_round_trip():
+    """validate_assignment must not break TypedBaseModel's _type polymorphism."""
+    cfg = _AgentCfg(max_actions=42)
+    data = cfg.model_dump()
+    assert data["_type"] == f"{__name__}._AgentCfg"
+    restored = _AgentCfg.model_validate(data)
+    assert restored == cfg
+
+
+# --- ConfigRegistry ---
+
+
+def test_config_registry_lookup_returns_independent_deep_copy():
+    reg = ConfigRegistry({"x": _AgentCfg(max_actions=10)})
+    a = reg["x"]
+    b = reg["x"]
+    assert a is not b
+    a.budget.cost_limit = 99.0
+    assert reg["x"].budget.cost_limit != 99.0  # shared instance untouched
+
+
+def test_config_registry_unknown_name_lists_available():
+    reg = ConfigRegistry({"x": _AgentCfg()})
+    with pytest.raises(KeyError, match=r"Unknown config 'y'. Available: \['x'\]"):
+        reg["y"]
+
+
+def test_config_registry_is_a_readonly_mapping():
+    reg = ConfigRegistry({"a": _AgentCfg(), "b": _AgentCfg()})
+    assert len(reg) == 2
+    assert sorted(reg) == ["a", "b"]
+    assert "a" in reg
+    assert not hasattr(reg, "__setitem__")

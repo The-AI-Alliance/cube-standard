@@ -32,6 +32,7 @@ Cross-cutting:
 - `step()` is concrete on the base class. Do not override.
 - Tool launches in `model_post_init` — construction failures can leak containers; clean up in `close()`.
 - `TaskConfig` carries `metadata: TaskMetadata` stamped by `get_task_configs()`. Workers are self-contained — the config carries everything needed to build the task.
+- `Task` is generic over `[TMeta, TTool]`. Bind both when the tool surface is known: `class FooTask(Task[FooMeta, TerminalTool])` types `self.tool` directly. Second param defaults to `AbstractTool` — `Task[Meta]` keeps working.
 
 ### Benchmark layer
 - Two classes: `BenchmarkConfig(TypedBaseModel, ABC)` is serializable; `Benchmark(ABC)` is the runtime pair (plain class, not Pydantic). Never serialize a `Benchmark`.

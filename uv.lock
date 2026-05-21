@@ -16,7 +16,6 @@ members = [
     "cube-infra-modal",
     "cube-infra-toolkit",
     "cube-standard",
-    "cube-vm-backend",
 ]
 
 [[package]]
@@ -673,7 +672,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "azure-identity", specifier = ">=1.15" },
-    { name = "azure-mgmt-compute", specifier = ">=31.0,<38" },
+    { name = "azure-mgmt-compute", specifier = ">=31.0,<38.0" },
     { name = "azure-mgmt-network", specifier = ">=25.0" },
     { name = "azure-mgmt-storage", specifier = ">=21.0" },
     { name = "azure-storage-blob", specifier = ">=12.28.0" },
@@ -760,7 +759,7 @@ dev = [{ name = "pytest", specifier = ">=9.0" }]
 
 [[package]]
 name = "cube-standard"
-version = "0.1.0rc7"
+version = "0.1.0rc9"
 source = { editable = "." }
 dependencies = [
     { name = "docstring-parser" },
@@ -772,6 +771,7 @@ dependencies = [
     { name = "requests" },
     { name = "rich" },
     { name = "tqdm" },
+    { name = "typing-extensions" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -831,42 +831,13 @@ requires-dist = [
     { name = "tenacity", marker = "extra == 'modal'", specifier = ">=9.1.4" },
     { name = "tenacity", marker = "extra == 'toolkit'", specifier = ">=9.1.4" },
     { name = "tqdm", specifier = ">=4.60" },
+    { name = "typing-extensions", specifier = ">=4.12" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
 ]
 provides-extras = ["dev", "docker", "daytona", "modal", "toolkit"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pre-commit", specifier = ">=4.5.1" }]
-
-[[package]]
-name = "cube-vm-backend"
-version = "0.2.1"
-source = { editable = "cube-resources/cube-vm-backend" }
-dependencies = [
-    { name = "cube-standard" },
-    { name = "requests" },
-    { name = "tqdm" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-]
-docker = [
-    { name = "docker" },
-    { name = "tenacity" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "cube-standard", editable = "." },
-    { name = "docker", marker = "extra == 'docker'", specifier = ">=7.1.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "requests", specifier = ">=2.28" },
-    { name = "tenacity", marker = "extra == 'docker'", specifier = ">=8.0" },
-    { name = "tqdm", specifier = ">=4.60" },
-]
-provides-extras = ["docker", "dev"]
 
 [[package]]
 name = "daytona"

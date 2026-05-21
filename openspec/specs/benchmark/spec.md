@@ -33,11 +33,21 @@ class BenchmarkMetadata(TypedBaseModel):
     tags: list[str] = []
     reset_isolation: ResetIsolation | None = None  # snapshot/restart/app_level/new_instance
     named_subsets: dict[str, tuple[str, str]] = {} # name → (glob_key, glob_pattern)
+    benchmark_hint_prompt: str | None = None       # optional benchmark-wide prompt hint
 ```
 
 Cube authors needing additional benchmark-level fields subclass
 `BenchmarkMetadata` with named typed fields. The base class accepts only
 the framework-defined fields above.
+
+`benchmark_hint_prompt` is a concise, generic hint a harness may prepend
+to the agent's prompt for any task in this benchmark — e.g. a short
+workflow summary or a clarification of conventions shared across tasks.
+Keep it short and generic: a generalist agent should remain competitive
+without it; the field exists so benchmarks with unusual conventions can
+opt into a level playing field for evaluations that report numbers with
+the hint applied. The framework only declares the slot — actual prompt
+assembly happens in the harness.
 
 `reset_isolation` is informational for harness users to reason about parallelism:
 - `SNAPSHOT` — VM reverts to savestate (~5s)
@@ -80,14 +90,23 @@ time — `install()` MUST NOT mutate it.
 ```python
 task_ids: list[str] | None = None          # None = all; populated by subset_from_*
 resources: list[ResourceConfig] = []       # resource dependencies (L2/L3)
-container_backend: ContainerBackend | None # forwarded to each Task; DEPRECATED
 tool_config: ToolConfig | None             # applied to every task by the default get_task_configs(); override get_task_configs() for per-task variation
 seed_generator: AbstractSeedGenerator | None # yields seeds per TaskMetadata
+add_task_clarification: bool = False       # surface TaskMetadata.task_clarification to the agent
 ```
 
-`container_backend` is deprecated (`Field(deprecated=True)`) and slated for
-removal once all in-tree benchmarks migrate to declaring container needs via
-`resources`. Setting it still works and is forwarded to every spawned task.
+`add_task_clarification` opts a run into the per-task clarifications
+declared on `TaskMetadata.task_clarification` (see
+[task/spec.md](../task/spec.md)). Default `False` so a run reproduces the
+original benchmark wording untouched and stays comparable with baselines
+that ignored these clarifications. Harnesses interpret the flag during
+prompt assembly; the framework only carries the intent.
+
+Per-task container needs are declared via `TaskMetadata.container_config`
+(`ContainerConfig`) and provisioned through the injected `InfraConfig` — see
+[resource/spec.md](../resource/spec.md) and
+[container/spec.md](../container/spec.md). The legacy `container_backend` field
+has been removed.
 
 `seed_generator` accepts any `AbstractSeedGenerator` subclass. Note that
 `AbstractSeedGenerator` is itself a `TypedBaseModel` (changed from a plain
@@ -197,11 +216,18 @@ per-task container launches can do so from `_setup()` without overriding
 - `close()` — tear down what `_setup()` created.
 
 **Concrete methods:**
-- `setup()` — public wrapper. Calls `_setup()`. Emits a debug log listing
-  unset optional config fields. Called exactly once by `make()`.
+- `setup()` — public wrapper. Owns the "harness startup" hook: if `self._infra`
+  is set, calls `self._infra.cleanup_stale()` to reclaim TTL-expired resources
+  from prior crashed runs *before* dispatching to `_setup()`. Cube authors do
+  not call `cleanup_stale()` themselves — the base handles it for every
+  benchmark. `cleanup_stale` failures are logged at WARNING and never block
+  setup. Concurrent benchmarks in the same resource group are unaffected
+  because only resources with `cube:expires_at` in the past are deleted.
+  Then calls `_setup()`. Emits a debug log listing unset optional config
+  fields. Called exactly once by `make()`.
 - `spawn(task_config)` — validate `task_config.task_id` against
   `self.config.tasks()`, then call
-  `task_config.make(runtime_context=self._runtime_context, container_backend=self.config.container_backend)`.
+  `task_config.make(runtime_context=self._runtime_context)`.
 - `__enter__` / `__exit__` — context-manager wrappers. Use
   `with config.make(infra) as bench:` to guarantee cleanup.
 
@@ -339,7 +365,7 @@ routes via `task_config.sub_bench_name`, which is a `"/"`-joined path for
 nested composites (e.g. `"inner-suite/bench-a"`). Each level peels the first
 component, looks it up in `sub_benchmarks`, and either delegates to the
 inner `CompositeBenchmark.spawn()` (nested case) or calls
-`task_config.make(runtime_context=sub_bench._runtime_context, container_backend=sub_bench.config.container_backend)`
+`task_config.make(runtime_context=sub_bench._runtime_context)`
 directly at the leaf — bypassing the leaf's own `spawn()` validation, which
 would reject the composite-prefixed `task_id`. A TaskConfig with
 `sub_bench_name=None` or an unknown first component raises `ValueError`.
@@ -374,10 +400,6 @@ with suite.make(infra) as bench:
   silently does nothing. Declare ClassVars explicitly in those cases.
 - `named_subsets` values are `(glob_key, glob_pattern)` tuples. JSON-from-file
   loads them as lists — the `TypedBaseModel` will coerce to tuple.
-- `BenchmarkConfig` carries `arbitrary_types_allowed=True` because
-  `ContainerBackend` may hold non-roundtrippable handles. In practice the
-  config is JSON-serializable when `container_backend` is either None or a
-  concrete `TypedBaseModel` subclass with serializable fields.
 - `install()` never populates `task_metadata`. That registry is declared at
   class-definition time (directly or via file auto-load). `install()` writes
   heavy execution-time data to the per-task cache under

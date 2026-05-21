@@ -64,7 +64,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, List
 
 from cube.container import Container
-from cube.core import Action, ActionSchema, Content, Observation, StepError, TypedBaseModel
+from cube.core import Action, ActionSchema, Content, Observation, StepError, ValidatedConfig
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +152,7 @@ class AbstractAsyncTool(ABC):
         pass
 
 
-class ToolConfig(TypedBaseModel, ABC):
+class ToolConfig(ValidatedConfig, ABC):
     """
     Configuration for creating task-specific tools.
 
@@ -178,7 +178,7 @@ class ToolConfig(TypedBaseModel, ABC):
         pass
 
 
-class AsyncToolConfig(TypedBaseModel, ABC):
+class AsyncToolConfig(ValidatedConfig, ABC):
     """Configuration for creating async task-specific tools.
 
     Mirrors ToolConfig but make() is a coroutine, allowing async resource
@@ -250,6 +250,26 @@ class _ToolActionsMixin:
                 f"Action {action.name} exists in {self.__class__.__name__} but is not decorated with @tool_action. Add @tool_action to expose it as an action."
             )
         return method
+
+    def _validate_action_args(self, action: Action, method: Callable) -> Observation | None:
+        """Pre-validate action.arguments against the bound method's signature.
+
+        Returns an error Observation when the agent passed unknown / mismatched
+        kwargs (so the agent can correct itself on the next step), or None when
+        the args bind cleanly.
+
+        This is necessary because raising would surface as a fatal StepError
+        upstream (Task.step terminates the episode), and a single LLM-side typo
+        like ``write_file(path=…, content=…, timeout=120)`` shouldn't end an
+        episode — the agent should see the mistake and retry.
+        """
+        try:
+            inspect.signature(method).bind(**action.arguments)
+            return None
+        except TypeError as e:
+            params = list(inspect.signature(method).parameters)
+            msg = f"Invalid arguments for {action.name}: {e}. Expected parameters: {params}."
+            return Observation(contents=[Content.from_data(msg, tool_call_id=action.id)])
 
     @property
     def action_set(self) -> List[ActionSchema]:
@@ -338,6 +358,9 @@ class Tool(_ToolActionsMixin, AbstractTool):
     def execute_action(self, action: Action) -> Observation | StepError:
         """Execute an action by name."""
         method = self.get_action_method(action)
+        invalid = self._validate_action_args(action, method)
+        if invalid is not None:
+            return invalid
         try:
             action_result = method(**action.arguments) or "Success"
         except Exception as e:
@@ -388,6 +411,9 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
     async def execute_action(self, action: Action) -> Observation | StepError:
         """Execute an async action by name."""
         method = self.get_action_method(action)
+        invalid = self._validate_action_args(action, method)
+        if invalid is not None:
+            return invalid
         try:
             action_result = (await method(**action.arguments)) or "Success"
         except Exception as e:

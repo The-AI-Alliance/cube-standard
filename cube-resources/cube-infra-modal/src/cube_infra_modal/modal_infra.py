@@ -18,7 +18,6 @@ from typing import Any
 
 import modal
 
-from cube.backends.modal import ModalContainer
 from cube.container import ContainerLaunchError
 from cube.resource import (
     DockerServiceConfig,
@@ -26,6 +25,7 @@ from cube.resource import (
     ResourceConfig,
     UnsupportedResourceType,
 )
+from cube_infra_modal.container import ModalContainer
 
 logger = logging.getLogger(__name__)
 
