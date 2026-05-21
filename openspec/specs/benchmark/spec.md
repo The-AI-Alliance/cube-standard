@@ -198,8 +198,15 @@ per-task container launches can do so from `_setup()` without overriding
 - `close()` — tear down what `_setup()` created.
 
 **Concrete methods:**
-- `setup()` — public wrapper. Calls `_setup()`. Emits a debug log listing
-  unset optional config fields. Called exactly once by `make()`.
+- `setup()` — public wrapper. Owns the "harness startup" hook: if `self._infra`
+  is set, calls `self._infra.cleanup_stale()` to reclaim TTL-expired resources
+  from prior crashed runs *before* dispatching to `_setup()`. Cube authors do
+  not call `cleanup_stale()` themselves — the base handles it for every
+  benchmark. `cleanup_stale` failures are logged at WARNING and never block
+  setup. Concurrent benchmarks in the same resource group are unaffected
+  because only resources with `cube:expires_at` in the past are deleted.
+  Then calls `_setup()`. Emits a debug log listing unset optional config
+  fields. Called exactly once by `make()`.
 - `spawn(task_config)` — validate `task_config.task_id` against
   `self.config.tasks()`, then call
   `task_config.make(runtime_context=self._runtime_context)`.
