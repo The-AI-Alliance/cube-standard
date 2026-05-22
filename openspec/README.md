@@ -47,7 +47,7 @@ removes a method — create a delta spec in `openspec/changes/<name>/`:
 
 ```
 openspec/changes/my-change/
-├── proposal.md    # one-page: problem, proposed change, alternatives
+├── proposal.md    # problem, change, alternatives — see "Writing a proposal" below
 └── deltas.md      # structured diff against the current spec
 ```
 
@@ -56,6 +56,30 @@ before code lands. Post a link in the team channel when you open the PR.
 
 When the change merges, move the folder to `openspec/changes/archive/YYYY-MM-DD-<name>/`
 and apply the deltas to the main spec.
+
+---
+
+## Writing a proposal
+
+`proposal.md` is point-in-time — written before the change, not maintained afterward.
+No version header, no "aligned with implementation" changelog; once merged, the spec
+carries the contract.
+
+Length scales with complexity — there is no fixed cap. Favor skimmable structure over prose:
+
+- **Keep** schemas, signatures, and code blocks. A signature or a JSON schema skims
+  faster than the paragraph that would describe it.
+- **Show each thing once.** Don't pair a state diagram *and* a prose table of the same
+  transitions, or a coverage matrix *and* a paragraph per test — keep the representation
+  that reads best, delete the other.
+- **Rationale is the decision plus one line of why,** not an essay defending it.
+- **Leave working scaffolding out of the commit** — "resolved questions" logs and
+  exhaustive test matrices belong in the PR thread or the test files; a short *Testing*
+  note is enough.
+
+Sections: **Problem** (what breaks today) · **Proposed solution** (the contract, via
+schemas/signatures) · **Alternatives** (bullets). Add *Scope* / *Testing* only when they
+carry real weight.
 
 ---
 

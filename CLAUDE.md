@@ -57,7 +57,7 @@ issue. Flag, don't hard-block. Methodology (Fix Report, L0–L3, lint):
 1. **Find the relevant spec** — which layer? Start there.
 2. **Read the spec's "Invariants" and "Gotchas" sections** — these are the traps.
 3. **Check for an active change** in `openspec/changes/` — someone may already be working on this.
-4. **For substantive changes to a spec's contract**, write a delta spec in `openspec/changes/<name>/deltas.md` first (ADDED / MODIFIED / REMOVED requirements) before coding.
+4. **For breaking or multi-invariant contract changes**, open `openspec/changes/<name>/` (`proposal.md` + `deltas.md`) before coding; additive changes just edit the spec. Keep proposals concise — see [openspec/README.md](openspec/README.md) § "Writing a proposal".
 5. **For completed changes**, move the folder to `openspec/changes/archive/YYYY-MM-DD-<name>/` and apply deltas to the main spec.
 
 ## Package layout
