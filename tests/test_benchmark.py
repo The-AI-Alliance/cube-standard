@@ -735,7 +735,7 @@ def test_setup_cleanup_stale_called_before_subclass_setup() -> None:
         bench.close()
 
 
-# ── make() capability gate: on_incompatible raise / skip / force (RFC #191) ────
+# ── make() capability gate: on_incompatible raise / force ─────────────────────
 
 
 class _GateInfra(InfraConfig):
@@ -792,15 +792,6 @@ def test_make_raise_aborts_when_a_task_is_incompatible() -> None:
     infra = _GateInfra(caps=["docker"], on_incompatible="raise")  # no container:root
     with pytest.raises(IncompatibleInfraError, match="cannot serve"):
         _GateBenchConfig().make(infra=infra)
-
-
-def test_make_skip_drops_only_the_incompatible_tasks() -> None:
-    infra = _GateInfra(caps=["docker"], on_incompatible="skip")
-    bench = _GateBenchConfig().make(infra=infra)
-    try:
-        assert set(bench.config.tasks()) == {"plain"}
-    finally:
-        bench.close()
 
 
 def test_make_force_keeps_every_task() -> None:
