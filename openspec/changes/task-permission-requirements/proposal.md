@@ -1,210 +1,235 @@
-# Task permission requirements + infra capability handshake (extension)
+# Benchmark/task permission requirements + infra capability handshake
 
-**Status:** Proposed
+**Status:** Proposed (rev 2 — incorporates review feedback on status reuse,
+benchmark-level requirements, and the three-mode policy)
 **Date:** 2026-05-21
-**Scope:** `cube.container.ContainerConfig`, `cube.resource.InfraConfig`,
-`cube.benchmark.Benchmark._setup` (filter behaviour)
+**Scope:** `cube.container.ContainerConfig`, `cube.benchmark.BenchmarkConfig`,
+`cube.resource.InfraConfig`, `cube.benchmark.Benchmark.setup` (gate behaviour)
 **Targets:** `dev`
 **Related:** Surfaced by cube-harness session `2026-05-20_tbench2-infra-model-matrix`
-([REPORT](https://github.com/The-AI-Alliance/cube-harness/blob/dev/...))
 finding F7 ("toolkit's non-root user vs tbench2's apt-installing tasks").
+cube-harness consumes via `Benchmark.setup` + the episode-status taxonomy.
 
 ---
 
 ## Problem
 
-Some cube tasks need infra permissions that not every `InfraConfig`
+Some cube benchmarks need infra permissions that not every `InfraConfig`
 provides:
 
-- `terminalbench2-cube/nginx-request-logging` and `install-windows-3.11`
-  ask the agent to `apt-get install` packages and write to `/etc/`,
-  `/var/log/` — only achievable inside a container running as **root**.
+- `terminalbench2-cube` tasks ask the agent to `apt-get install` packages
+  and write to `/etc/`, `/var/log/` — achievable only inside a container
+  running as **root**.
 - `cube-infra-toolkit` (EAI Toolkit) hard-enforces **uid 13011** in every
   container by cluster policy; `apt-get` is unreachable.
 
-Today this mismatch surfaces as **silent low scores**: the agent runs,
+Today this mismatch surfaces as **silent low scores**. The agent runs,
 tries `apt-get`, gets `Permission denied`, eventually emits `final_step`
-with a wrong solution, the evaluator scores reward=0. The cube/infra
-combination is *partially incompatible* but the contract has no way to
-say so. A user looking at `tbench2 on toolkit ⇒ 0.17` cannot tell
-whether the gap is a model-quality issue, a cube-installation issue, or
-a fundamental infra mismatch.
+with a wrong solution, the evaluator scores reward=0. A user looking at
+`tbench2 on toolkit ⇒ 0.17` cannot tell whether that's a model-quality
+issue, a cube-installation issue, or a fundamental infra mismatch. Worse,
+under cube-harness's auto-retry loop these episodes can be classified
+`FAILED` (retriable) and **burn the retry budget re-running an episode
+that will fail identically every time**.
 
-Empirical evidence from the surfacing session:
+Empirical evidence (haiku × 25 tasks): daytona 0.39 vs toolkit 0.17; the
+gap is mostly silent partial failure, not model capability — stronger
+models (sonnet) lift daytona but not toolkit.
 
-| | daytona (root) | toolkit (uid 13011) |
-|---|---|---|
-| haiku × 25 tasks | 9/23 = **0.39** | 4/23 = **0.17** |
-| sonnet × 12 tasks | 3/6 = **0.50** | 1/9 = **0.11** |
+The framework **already has** the matching mechanism. `InfraConfig` exposes
+`capabilities() -> set[str]`; `ResourceConfig` exposes
+`requirements() -> set[str]`; `InfraConfig.can_serve(resource)` does
+`requirements.issubset(capabilities)`. The token vocabulary in use today is
+hardware-shaped (`kvm`, `docker`, `gpu:nvidia`, `network:egress`). This
+proposal (a) extends the vocabulary with permission tokens, (b) lets a
+**benchmark** (not just a per-task container) declare requirements, and (c)
+gates at `Benchmark.setup` time with a clear three-mode policy.
 
-Stronger model lifts daytona but does not lift toolkit — because the
-toolkit-impossible subset is impossible regardless of reasoning.
+## Design
 
-Heuristic classification of all 89 tbench2 tasks against root-needing
-operations (apt, `/etc/*`, `/var/*`, ports <1024, `systemctl`): only
-**~5–7 tasks** truly require root; the remaining 82+ would run fine on
-non-root infras if the framework gated only the incompatible tasks
-instead of silently mis-scoring them.
+### 1. Permission token vocabulary (additive)
 
-The framework **already has** the right mechanism. `InfraConfig` exposes
-`capabilities() -> set[str]`. `ResourceConfig` exposes
-`requirements() -> set[str]`. `InfraConfig.can_serve(resource)` does
-`requirements.issubset(capabilities)`. The pattern is in place for
-hardware-level requirements (`"kvm"`, `"docker"`, `"gpu:nvidia"`,
-`"network:egress"`). This proposal extends it to **permission-shaped
-tokens** and wires the check into `Benchmark._setup` at task-selection
-time, so incompatible tasks are **declined fast** with a clear reason
-instead of failing silently.
-
-## Proposal
-
-Three small additions, all on top of existing types:
-
-### 1. Standard permission token vocabulary
-
-Add to `cube.resource.InfraConfig.capabilities` docstring (the
-authoritative token list):
+Add to the `InfraConfig.capabilities()` documented vocabulary:
 
 | Token | Meaning |
 |---|---|
-| `"container:root"` | Container processes run as uid 0 |
-| `"container:apt"` | `apt-get install` works (implies root + Debian-mirror egress) |
-| `"container:privileged-ports"` | Process can `bind()` ports <1024 |
-| `"container:systemd"` | `systemctl` / `service` work |
+| `container:root` | Container processes run as uid 0 |
+| `container:apt` | `apt-get install` works (implies root + Debian-mirror egress) |
+| `container:privileged-ports` | A process may `bind()` ports <1024 |
+| `container:systemd` | `systemctl` / `service` work |
 
-These are *additional* to the existing vocabulary (`"kvm"`, `"docker"`,
-`"gpu:nvidia"`, `"network:egress"`). Adding a token is non-breaking:
-infras default to absence; only infras that explicitly claim a token
-satisfy a task that requires it.
+Adding a token is non-breaking: infras default to *not* publishing it;
+benchmarks/tasks default to *not* requiring it.
 
-### 2. `ContainerConfig.requirements()`
+### 2. Requirements at the benchmark level (primary) and task level (optional)
 
-Add a typed `requires` field to `ContainerConfig`, mirroring how
-`VMResourceConfig.requires_kvm: bool` projects into `requirements() ->
-{"kvm"}`:
+The **main expected use case** is blanket: "all of tbench2 needs root".
+Investigating which individual tasks truly need root is too costly and
+fragile, so a benchmark declares its requirement once:
+
+```python
+class BenchmarkConfig(TypedBaseModel, ABC):
+    ...
+    def requirements(self) -> set[str]:
+        """Permission tokens EVERY task in this benchmark needs from its
+        infra. Default empty = runs anywhere. Cubes with heterogeneous
+        needs may instead declare per-task via ContainerConfig.requires
+        and leave this empty; the effective requirement for a task is the
+        union of the two."""
+        return set()
+```
+
+```python
+# cubes/terminalbench2-cube
+class TerminalBench2BenchmarkConfig(BenchmarkConfig):
+    def requirements(self) -> set[str]:
+        return {"container:root", "container:apt"}
+```
+
+A per-task override stays available for genuinely heterogeneous
+benchmarks (kept from rev 1):
 
 ```python
 class ContainerConfig(TypedBaseModel):
-    image: str
-    ram_gb: float = 4.0
-    cpu_cores: float = 2.0
-    gpu: bool = False
-    disk_gb: float = 10.0
-    ports: list[int] | None = None
-    requires: set[str] = Field(default_factory=set)   # NEW
-
+    ...
+    requires: set[str] = Field(default_factory=set)
     def requirements(self) -> set[str]:
-        """Permission tokens this container needs. Composes with the gpu/kvm
-        booleans already on this class; cubes can also set free-form tokens
-        via `requires`."""
         out = set(self.requires)
         if self.gpu:
             out.add("gpu:nvidia")
         return out
 ```
 
-This is the *task-level* projection: `TaskMetadata.container_config.requirements()`
-becomes the canonical answer to "what does this task need from its infra".
+Effective requirement for a task = `benchmark.requirements() ∪
+task.container_config.requirements()`.
 
-### 3. Benchmark `_setup` task filter
-
-The base `Benchmark._setup(infra)` iterates declared tasks and partitions
-them:
+### 3. The gate: `Benchmark.setup(infra, on_incompatible=...)` — three modes
 
 ```python
-for task_id, task_meta in self.tasks.items():
-    cc = task_meta.container_config
-    if cc is None:
-        runnable.append(task_id)
-        continue
-    missing = cc.requirements() - infra.capabilities()
-    if missing:
-        skipped.append((task_id, sorted(missing)))
-    else:
-        runnable.append(task_id)
+OnIncompatible = Literal["raise", "skip", "force"]
 ```
 
-Two modes (controlled by `BenchmarkConfig.on_incompatible_task: Literal["skip", "raise"] = "skip"`):
+Resolved at experiment-setup time (default `"raise"`):
 
-- **`"skip"`** (default) — incompatible tasks are recorded in
-  `BenchmarkSummary.skipped_tasks: list[SkippedTask]`. Accuracy is
-  reported over `len(runnable)` tasks, not over `len(all_tasks)`, with
-  `n_skipped` and the reason set surfaced in summary output. The
-  experiment continues; cross-infra comparisons of the *attempted*
-  task overlap remain meaningful.
-- **`"raise"`** — first incompatibility raises `IncompatibleTaskError`
-  at setup, before any episode runs. For users who want strict
-  same-task comparisons.
+- **`"raise"`** (default — the main use case). At `setup`, compute the
+  benchmark-level `missing = benchmark.requirements() - infra.capabilities()`.
+  If non-empty, **raise `IncompatibleInfraError` immediately, before any
+  episode is created**. tbench2 on toolkit stops at setup with:
+  `"ToolkitInfraConfig cannot run terminalbench2-cube: missing
+  {container:apt, container:root}."` No episodes, no retries, no spend.
 
-`BenchmarkConfig` may opt to expose a compatibility preview without
-launching anything:
+- **`"skip"`**. Run the compatible subset. A task whose effective
+  requirement isn't met is **not launched**; its episode is recorded with
+  a terminal, **non-retriable** status (see §4) and excluded from the
+  accuracy denominator. Reported as `n_skipped` in the summary. Useful
+  when a benchmark is heterogeneous (per-task requirements) and you want
+  the runnable overlap.
+
+- **`"force"`** (try-anyway override). Ignore the check entirely; launch
+  every task regardless. The escape hatch for probing whether a new image
+  policy / infra change has obviated a stale requirement — e.g. "did
+  toolkit start allowing root? run tbench2 with `force` and see." Logs a
+  warning per forced task so the override is visible in the trace.
+
+Where the mode lives: a field on the experiment-run path (cube-harness
+`Experiment` / `run_*`), forwarded into `Benchmark.setup`. cube-standard
+defines the enum + the `setup` parameter; cube-harness wires the CLI/recipe
+knob. A given infra MAY also pin a default (e.g. `ToolkitInfraConfig` could
+default callers to `"raise"`), but the per-run setting wins.
+
+### 4. Status mapping — reuse the existing non-retriable terminal bucket
+
+**No new episode status is required.** cube-harness already has
+`INVALID_CONFIG`: a terminal, non-retriable status whose documented meaning
+is *"a permanent error… the identical request will fail identically on
+retry, so replaying only burns the retry budget."* `RETRIABLE_STATUSES =
+{FAILED, CANCELLED, STALE}` deliberately excludes it.
+
+An incompatible task is exactly that shape: it will fail identically every
+retry. So:
+
+- **`"raise"` mode**: the failure happens at `Benchmark.setup`, before
+  episodes exist. It surfaces as a **setup/system failure** in cube-harness
+  — the experiment aborts; nothing to retry.
+- **`"skip"` mode**: each skipped task's episode is written with status
+  `INVALID_CONFIG` (terminal, non-retriable). The auto-retry loop leaves it
+  alone by construction; the summary counts it under `n_skipped` /
+  `n_invalid_config` rather than `n_failed`, keeping the accuracy
+  denominator honest.
+
+A dedicated `INCOMPATIBLE` / `SKIPPED` status is an **optional future
+refinement** for cleaner dashboards (it would distinguish "infra can't
+serve" from "bad model name"). It touches the `Status` `Literal`,
+`TERMINAL_STATUSES`, `STATUS_ICONS`, and exhaustive matches in
+cube-harness — modest but non-trivial. Recommendation: **ship v1 reusing
+`INVALID_CONFIG`**; add `INCOMPATIBLE` later only if the reporting
+distinction proves valuable. Either way, the retry semantics are correct
+from day one because both are non-retriable terminal.
+
+### 5. Static compatibility preview (unchanged from rev 1)
 
 ```python
 @classmethod
 def compatibility_report(cls, infra: InfraConfig) -> CompatibilityReport: ...
 ```
 
-Returns a structured report (count runnable / skipped, distribution of
-missing tokens) so tooling (`cube list --infra=toolkit`) can show
-"tbench2: 84/89 runnable on toolkit; 5 need `container:root`" without
-spinning up containers.
+Reads metadata only (no container launches) so `cube list --infra=toolkit`
+and CI gates can show "tbench2: incompatible on toolkit (needs
+container:root, container:apt)" before anyone spends a dollar.
 
 ## Migration impact
 
 Backward compatibility is the default:
 
-- Existing `ContainerConfig` instances default to `requires = set()`. No
-  task gets newly gated by this PR alone.
-- Existing `InfraConfig.capabilities()` implementations don't declare
-  the new tokens. As long as no task requires them, nothing changes.
-- Behaviour change happens **only** when a cube starts declaring
-  `container:root` (or similar) AND a paired infra-side PR teaches
-  root-capable infras to publish the token.
+- `BenchmarkConfig.requirements()` defaults to `set()`; `ContainerConfig.requires`
+  defaults to `set()`. No benchmark is newly gated by this PR alone.
+- Existing `InfraConfig.capabilities()` implementations are unchanged.
+- `Benchmark.setup` gains an `on_incompatible="raise"` parameter with a
+  default that is a **no-op when `requirements()` is empty** — so existing
+  cubes see no behaviour change.
 
-Recommended rollout order (handled in follow-up PRs, **not** this RFC):
+Behaviour changes only when a cube declares `requirements()` AND a paired
+infra-side PR teaches root-capable infras to publish the matching tokens.
+Recommended rollout (follow-up PRs, not this RFC):
 
-1. Land this RFC (vocabulary + type extensions + filter behaviour).
-2. cube-resources side: `LocalInfraConfig`, `DaytonaInfraConfig`,
-   `AWSInfraConfig`, `AzureInfraConfig` publish
-   `"container:root", "container:apt", "container:privileged-ports"`
-   (root-capable infras). `ToolkitInfraConfig` publishes none of these.
-3. cube-harness side: `terminalbench2-cube` annotates the ~5 root-required
-   tasks via `container_config.requires = {"container:root", "container:apt"}`.
-4. Tooling: `cube list` and CI dashboards display the compatibility matrix.
-
-After (3), tbench2 on toolkit declines 5 tasks fast with reason, scores
-the rest, and reports `0.X over 84 tasks attempted` instead of `0.17 over
-all 89`. The metric becomes legible.
+1. Land this RFC (vocabulary + types + gate behaviour + status mapping).
+2. cube-resources: `LocalInfraConfig`, `DaytonaInfraConfig`, `AWSInfraConfig`,
+   `AzureInfraConfig` publish `container:root`, `container:apt`,
+   `container:privileged-ports`. `ToolkitInfraConfig` publishes none of these.
+3. cube-harness: `terminalbench2-cube` declares
+   `requirements() = {"container:root", "container:apt"}`. tbench2 on
+   toolkit now fails fast at setup with a clear message.
+4. cube-harness: wire the `on_incompatible` knob into `Experiment` / `run_*`
+   and the episode-status `INVALID_CONFIG` mapping for skip mode.
+5. Tooling: `cube list --infra=<name>` and CI dashboards display the
+   compatibility matrix.
 
 ## Alternatives considered
 
-- **Mark the whole benchmark as root-required, not per task.** Rejected:
-  too coarse for tbench2 (84 of 89 tasks are fine non-root). Forces a
-  binary cube/infra compatibility that hides the runnable subset.
-- **Encode requirements in the image** (e.g., `LABEL cube.requires=root`).
-  Rejected: image-side is a foreign system to cube-standard; couples
-  the requirement-declaration cadence to image rebuilds. Python-side
-  is the configuration (per the constitution, Pillar II).
-- **Boolean fields per requirement** (`requires_root: bool`,
-  `requires_apt: bool`, …). Rejected: doesn't grow gracefully. The
-  existing `set[str]` token vocabulary already proved this point — new
-  capabilities arrive without breaking older serialisations.
-- **Tool-layer wrapping (the simulate-non-root flag for fairness
-  benchmarking).** Adjacent but orthogonal — covered by a separate
-  proposal once this contract lands.
+- **Per-task-only requirements (rev 1's primary framing).** Rejected as the
+  *primary* mechanism — the main use case is blanket-per-benchmark, and
+  per-task investigation is too costly. Kept as an optional override for
+  heterogeneous benchmarks.
+- **A brand-new `INCOMPATIBLE` episode status as the v1 mechanism.**
+  Rejected for v1: `INVALID_CONFIG` already carries the exact
+  non-retriable-terminal semantics. New status is a clean later refinement,
+  not a prerequisite.
+- **Two modes only (raise / skip).** Rejected: the "force / try-anyway"
+  mode is operationally important for validating that an infra/image
+  policy change has made an old requirement obsolete without editing the
+  cube.
+- **Encode requirements in the Docker image** (`LABEL cube.requires=root`).
+  Rejected: foreign system; couples requirement cadence to image rebuilds;
+  violates "Python is the configuration".
 
 ## Open questions
 
-1. Where do the tokens *live*? Two options:
-   (a) free-form strings, documented in `resource/spec.md`. Cheap.
-   (b) `Literal` type or `Enum`. Stronger typing but every new token
-   becomes a contract change. **Lean toward (a)** for v1; can promote
-   to `Literal` later without breaking existing declarations.
-2. Should `Benchmark._setup` distinguish `infra is None` (debug-run, no
-   container launches) from compatibility check? Probably yes — when
-   `infra is None`, skip the filter (no enforcement makes sense without
-   a target infra to compare against).
-3. Should the skipped-tasks summary include a hint at which infras
-   *would* serve them (`"these tasks need container:root; available
-   on: daytona, aws, azure, local"`)? Useful but requires the framework
-   to know about other infras at setup time. Defer to tooling.
+1. Where exactly does the `on_incompatible` knob live in cube-harness —
+   `Experiment` field, `run_*` arg, or both? (cube-standard only defines
+   the `setup` parameter + enum; cube-harness owns the surface.)
+2. Should `"force"` mode downgrade the requirement check to a logged
+   warning at *every* task launch, or just once at setup? (Lean: once at
+   setup + a per-task trace breadcrumb.)
+3. Confirm `INVALID_CONFIG` reuse is acceptable to cube-harness owners vs.
+   adding `INCOMPATIBLE` now. (This RFC recommends reuse; flagging for
+   explicit sign-off since it slightly overloads the status's meaning.)
