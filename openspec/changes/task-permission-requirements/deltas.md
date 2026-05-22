@@ -25,18 +25,13 @@ class ContainerConfig(TypedBaseModel):
     disk_gb: float = 10.0
     ports: list[int] | None = None
     requires: set[str] = Field(default_factory=set)   # NEW
-
-    def requirements(self) -> set[str]:               # NEW
-        out = set(self.requires)
-        if self.gpu:
-            out.add("gpu:nvidia")
-        return out
+    """Capability tokens this task's container needs, e.g. {"container:root"}.
+    Empty (default) = runs on any infra."""
 ```
 
 `requires` is the source of truth. A blanket per-benchmark need is stamped
 on every task by the cube's metadata-generation script; heterogeneous
-benchmarks set it per task. Mirrors `VMResourceConfig.requires_kvm` →
-`requirements() -> {"kvm"}`.
+benchmarks set it per task.
 
 ## ADDED — `resource/spec.md`: `InfraConfig.can_serve_task()` + `on_incompatible`
 
@@ -51,10 +46,10 @@ class InfraConfig(TypedBaseModel, ABC):
     mark the rest INVALID_CONFIG. 'force': attempt every task anyway."""
 
     def can_serve_task(self, container_config: ContainerConfig) -> bool:
-        """Per-task compatibility bool — set-inclusion of the task's
-        requirements against this infra's capabilities. Mirrors the existing
+        """Per-task compatibility bool — set-inclusion of the task's requires
+        against this infra's capabilities. Mirrors the existing
         can_serve(resource); cheap, metadata-only, no launch."""
-        return container_config.requirements().issubset(self.capabilities())
+        return container_config.requires.issubset(self.capabilities())
 ```
 
 The harness loops `can_serve_task` over tasks. No benchmark-level aggregate.
@@ -68,7 +63,7 @@ per-task bool **before any episode is created**:
 def setup(self, infra: InfraConfig | None) -> None:
     if infra is not None and infra.on_incompatible != "force":
         incompatible = [
-            SkippedTask(tid, sorted(m.container_config.requirements() - infra.capabilities()))
+            SkippedTask(tid, sorted(m.container_config.requires - infra.capabilities()))
             for tid, m in self.tasks.items()
             if m.container_config and not infra.can_serve_task(m.container_config)
         ]

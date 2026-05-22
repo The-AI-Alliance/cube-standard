@@ -43,11 +43,8 @@ already owns a `ContainerConfig` (tbench2: 89 tasks, 89 distinct images):
 class ContainerConfig(TypedBaseModel):
     ...
     requires: set[str] = Field(default_factory=set)
-    def requirements(self) -> set[str]:
-        out = set(self.requires)
-        if self.gpu:
-            out.add("gpu:nvidia")
-        return out
+    """Capability tokens this task's container needs, e.g. {"container:root"}.
+    Empty (default) = runs on any infra."""
 ```
 
 The blanket "all of tbench2 needs root" case is handled by the
@@ -62,7 +59,7 @@ build); the infra answers one task at a time, reusing `capabilities()`:
 class InfraConfig(TypedBaseModel, ABC):
     ...
     def can_serve_task(self, container_config: ContainerConfig) -> bool:
-        return container_config.requirements().issubset(self.capabilities())
+        return container_config.requires.issubset(self.capabilities())
 ```
 
 The harness loops this over tasks; "is the whole benchmark incompatible?"
