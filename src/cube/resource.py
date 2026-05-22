@@ -480,6 +480,19 @@ class InfraConfig(ValidatedConfig, ABC):
     - ``"force"`` — attempt everything anyway; the escape hatch to probe whether a stale
       requirement still holds."""
 
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def install(self) -> None:
+        """Install system dependencies required by this infra backend. No-op by default.
+
+        Called by ``BenchmarkConfig.make()`` before provisioning. Must be idempotent —
+        it is invoked every time ``make()`` is called, so it must be fast when
+        dependencies are already satisfied.
+
+        Override in subclasses that require system packages (e.g. qemu-system-x86_64
+        for LocalInfraConfig, docker for container-based infras).
+        """
+
     # ── Abstract interface ────────────────────────────────────────────────────
 
     @abstractmethod
