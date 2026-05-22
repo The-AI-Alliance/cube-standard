@@ -71,16 +71,12 @@ without breaking anything.
 Adding a token is non-breaking: infras default to *not* publishing it;
 benchmarks/tasks default to *not* requiring it.
 
-### 2. Requirements ride on the per-task resource; the benchmark exposes a derived aggregate
+### 2. Requirements ride on the per-task `ContainerConfig`; the infra answers a per-task bool
 
 Requirements live where the resource lives — on each task's
-`ContainerConfig` — and flow through the **existing** resource machinery.
-Each tbench2 task already instantiates its own `ContainerConfig`
-(89 tasks, 89 distinct images, no shared template) which `launch_task_container`
-turns into a per-task `DockerServiceConfig`. We thread `requires` through
-that build so `DockerServiceConfig.requirements()` returns the tokens and
-the **already-existing** `InfraConfig.can_serve(resource)` answers
-per-task compatibility — no new check primitive:
+`ContainerConfig`. Each tbench2 task already instantiates its own
+`ContainerConfig` (89 tasks, 89 distinct images, no shared template), so
+this is a natural home:
 
 ```python
 class ContainerConfig(TypedBaseModel):
@@ -93,81 +89,76 @@ class ContainerConfig(TypedBaseModel):
         return out
 ```
 
-```python
-# cube.task_infra.launch_task_container — thread the tokens into the resource
-resource = DockerServiceConfig(
-    name=name, scope="task", docker_images=[image],
-    requires=container_config.requirements(),   # NEW: was implicitly empty
-    launch_script=build_docker_run_script(...),
-)
-```
-
 **Blanket use case stays cheap.** "All of tbench2 needs root" is achieved
 not by per-task investigation but by the metadata-generation script
 (`scripts/create_task_metadata.py`) stamping `requires={"container:root"}`
 on every task's `ContainerConfig` at generation time. One line in the
 codegen, all 89 tasks covered, zero manual triage. Heterogeneous benchmarks
-that genuinely differ per task set `requires` per task instead.
+set `requires` per task instead.
 
-**Benchmark-level compatibility is derived, not separately declared.** A
-benchmark exposes an introspection helper that unions the per-task
-requirements so an infra can answer "is the *whole* benchmark
-incompatible?" without launching anything:
+**The compatibility primitive is a per-task bool the infra returns.** Rather
+than a benchmark-level aggregate (awkward to build — the benchmark would
+have to materialise or union every task's resource), the infra answers one
+task at a time, reusing its existing `capabilities()`:
 
 ```python
-class BenchmarkConfig(TypedBaseModel, ABC):
+class InfraConfig(TypedBaseModel, ABC):
     ...
-    def aggregate_requirements(self) -> set[str]:
-        """Union of every task's container_config.requirements(). Reads
-        task metadata only (no archive load, no container launch). The
-        infra introspects this at setup to decide whole-benchmark
-        compatibility. Derived — there is no separately-declared
-        benchmark-level requirement to drift out of sync with the tasks."""
-        out: set[str] = set()
-        for meta in self.tasks_metadata().values():
-            if meta.container_config is not None:
-                out |= meta.container_config.requirements()
-        return out
+    def can_serve_task(self, container_config: ContainerConfig) -> bool:
+        """True iff this infra provides every capability the task's container
+        requires. Cheap, metadata-only — no resource built, no launch."""
+        return container_config.requirements().issubset(self.capabilities())
 ```
 
-For tbench2 this returns `{"container:root"}` (every task stamped); for a
-benchmark with no root-needing tasks it returns `set()`.
+This mirrors the existing `InfraConfig.can_serve(resource)` (which checks a
+`ResourceConfig`); `can_serve_task` is the same set-inclusion test against a
+task's `ContainerConfig`. The harness loops over tasks and collects the
+per-task bool — there is **no aggregate method to keep in sync**, and
+"is the whole benchmark incompatible?" is simply "did every task come back
+False?".
 
-### 3. The gate: `Benchmark.setup(infra, on_incompatible=...)` — three modes
+### 3. The mode is a flag on the `InfraConfig`
+
+The policy for handling incompatible tasks belongs to the infra — it is the
+component that knows its own constraints. Add a field:
 
 ```python
 OnIncompatible = Literal["raise", "skip", "force"]
+
+class InfraConfig(TypedBaseModel, ABC):
+    on_incompatible: OnIncompatible = "raise"
 ```
 
-Resolved at experiment-setup time (default `"raise"`):
+At `Benchmark.setup(infra)` / before launch, the harness walks the tasks,
+calls `infra.can_serve_task(task.container_config)` for each, and applies
+`infra.on_incompatible`:
 
-- **`"raise"`** (default). At `setup`, introspect the per-task resources
-  via `aggregate_requirements()` and compute
-  `missing = benchmark.aggregate_requirements() - infra.capabilities()`.
-  If non-empty, **raise `IncompatibleInfraError` immediately, before any
-  episode is created**. tbench2 on toolkit stops at setup with:
-  `"ToolkitInfraConfig cannot run terminalbench2-cube: missing
-  {container:root}."` No episodes, no retries, no spend.
+- **`"raise"`** (default). If **any** task is incompatible, **raise
+  `IncompatibleInfraError` immediately, before any episode is created**.
+  tbench2 on toolkit stops at setup with:
+  `"ToolkitInfraConfig cannot run 5/89 tasks of terminalbench2-cube
+  (missing container:root): nginx-request-logging, …"`. No episodes, no
+  retries, no spend. (This is the whole-benchmark fail-fast, achieved by
+  the per-task loop — no aggregate needed.)
 
-- **`"skip"`**. Run the compatible subset. Each task is checked
-  individually via its own resource (`infra.can_serve(task_resource)`); a
-  task whose requirement isn't met is **not launched**, its episode is
-  recorded with a terminal, **non-retriable** status (§4), and it is
-  excluded from the accuracy denominator. Reported as `n_skipped`. This is
-  where per-task granularity earns its keep: a heterogeneous benchmark runs
-  its root-free tasks and skips the rest.
+- **`"skip"`**. Run the compatible subset. Each incompatible task is **not
+  launched**; its episode is recorded with a terminal, **non-retriable**
+  status (§4) and excluded from the accuracy denominator. Reported as
+  `n_skipped`. Where per-task granularity earns its keep: a heterogeneous
+  benchmark runs its root-free tasks and skips the rest.
 
-- **`"force"`** (try-anyway override). Skip the gate entirely; launch every
-  task regardless. The escape hatch for probing whether a new image policy /
+- **`"force"`** (try-anyway override). Skip the check; launch every task
+  regardless. The escape hatch for probing whether a new image policy /
   infra change has obviated a stale requirement — "did toolkit start
-  allowing root? run with `force` and see." Logs a warning so the override
-  is visible in the trace.
+  allowing root? set `force` and see." Logs a warning so the override is
+  visible in the trace.
 
-Where the mode lives: a field on the experiment-run path (cube-harness
-`Experiment` / `run_*`), forwarded into `Benchmark.setup`. cube-standard
-defines the enum + the `setup` parameter; cube-harness wires the CLI/recipe
-knob. A given infra MAY also pin a stricter default, but the per-run setting
-wins.
+Putting the flag on `InfraConfig` means a user picks the policy where they
+pick the infra — e.g. `ToolkitInfraConfig(on_incompatible="skip")` to run
+the compatible subset on toolkit, or the default `"raise"` to refuse the
+combination outright. cube-standard owns the field + enum; cube-harness
+reads `infra.on_incompatible` in `setup`/launch and maps skip-mode episodes
+to `INVALID_CONFIG`.
 
 ### 4. Status mapping — reuse the existing non-retriable terminal bucket
 
@@ -180,9 +171,10 @@ retry, so replaying only burns the retry budget."* `RETRIABLE_STATUSES =
 An incompatible task is exactly that shape: it will fail identically every
 retry. So:
 
-- **`"raise"` mode**: the failure happens at `Benchmark.setup`, before
-  episodes exist. It surfaces as a **setup/system failure** in cube-harness
-  — the experiment aborts; nothing to retry.
+- **`"raise"` mode**: the failure happens at `Benchmark.setup` (the per-task
+  loop hit ≥1 incompatible task), before episodes exist. It surfaces as a
+  **setup/system failure** in cube-harness — the experiment aborts; nothing
+  to retry.
 - **`"skip"` mode**: each skipped task's episode is written with status
   `INVALID_CONFIG` (terminal, non-retriable). The auto-retry loop leaves it
   alone by construction; the summary counts it under `n_skipped` /
@@ -205,50 +197,49 @@ from day one because both are non-retriable terminal.
 def compatibility_report(cls, infra: InfraConfig) -> CompatibilityReport: ...
 ```
 
-Reads metadata only (no container launches) — built on the same
-`aggregate_requirements()` introspection — so `cube list --infra=toolkit`
-and CI gates can show "tbench2: incompatible on toolkit (needs
-container:root)" before anyone spends a dollar.
+Reads metadata only (no container launches) — the same per-task
+`infra.can_serve_task(meta.container_config)` loop — so `cube list
+--infra=toolkit` and CI gates can show "tbench2: 84/89 runnable on toolkit;
+5 need container:root" before anyone spends a dollar.
 
 ## Migration impact
 
 Backward compatibility is the default:
 
 - `ContainerConfig.requires` defaults to `set()`, so
-  `aggregate_requirements()` returns `set()` for every existing cube. No
+  `can_serve_task` returns `True` for every task of every existing cube. No
   benchmark is newly gated by this PR alone.
 - Existing `InfraConfig.capabilities()` implementations are unchanged.
-- `Benchmark.setup` gains an `on_incompatible="raise"` parameter that is a
-  **no-op when `aggregate_requirements()` is empty** — existing cubes see
-  no behaviour change.
-- `DockerServiceConfig` gains a `requires` field defaulting to `set()`;
-  the `requirements()` it already exposes simply returns it.
+- `InfraConfig` gains `on_incompatible: OnIncompatible = "raise"` and a
+  `can_serve_task()` default method — both no-ops when no task declares
+  `requires`.
 
 Behaviour changes only when a cube stamps `ContainerConfig.requires` AND a
 paired infra-side PR teaches root-capable infras to publish the token.
 Recommended rollout (follow-up PRs, not this RFC):
 
-1. Land this RFC (token + `ContainerConfig.requires` + `DockerServiceConfig`
-   threading + `aggregate_requirements()` + `setup` gate + status mapping).
+1. Land this RFC (token + `ContainerConfig.requires` + `InfraConfig.can_serve_task`
+   + `InfraConfig.on_incompatible` + the setup/launch loop + status mapping).
 2. cube-resources: `LocalInfraConfig`, `DaytonaInfraConfig`, `AWSInfraConfig`,
    `AzureInfraConfig` publish `container:root`. `ToolkitInfraConfig` does not.
 3. cube-harness: `terminalbench2-cube`'s `scripts/create_task_metadata.py`
    stamps `requires={"container:root"}` on every task's `ContainerConfig`.
    tbench2 on toolkit now fails fast at setup with a clear message.
-4. cube-harness: wire the `on_incompatible` knob into `Experiment` / `run_*`
-   and the episode-status `INVALID_CONFIG` mapping for skip mode.
+4. cube-harness: read `infra.on_incompatible` in `setup`/launch; map
+   skip-mode episodes to `INVALID_CONFIG`.
 5. Tooling: `cube list --infra=<name>` and CI dashboards display the
    compatibility matrix.
 
 ## Alternatives considered
 
-- **A separately-declared benchmark-level `requirements()` field (rev 2).**
-  Rejected: it duplicates information that already lives on the per-task
-  `ContainerConfig` and can drift out of sync with the tasks. The benchmark
-  view is *derived* (`aggregate_requirements()`) from the per-task
-  resources instead — single source of truth, and the infra introspects
-  the real per-task resources. The blanket "all tasks need root" case is
-  handled by the codegen stamping each task, not by a second declaration.
+- **A benchmark-level aggregate requirement (rev 4 `aggregate_requirements()`,
+  or a separately-declared rev-2 `requirements()` field).** Rejected: the
+  aggregate is awkward to implement (the benchmark would have to materialise
+  or union every task's resource) and a separately-declared field duplicates
+  what already lives on the per-task `ContainerConfig`. Instead the infra
+  answers a **per-task bool** (`can_serve_task`) and the harness loops;
+  "is the whole benchmark incompatible?" falls out of the loop with no
+  aggregate to maintain.
 - **A brand-new `INCOMPATIBLE` episode status as the v1 mechanism.**
   Rejected for v1: `INVALID_CONFIG` already carries the exact
   non-retriable-terminal semantics. New status is a clean later refinement,
@@ -263,12 +254,18 @@ Recommended rollout (follow-up PRs, not this RFC):
 
 ## Open questions
 
-1. Where exactly does the `on_incompatible` knob live in cube-harness —
-   `Experiment` field, `run_*` arg, or both? (cube-standard only defines
-   the `setup` parameter + enum; cube-harness owns the surface.)
-2. Should `"force"` mode downgrade the requirement check to a logged
-   warning at *every* task launch, or just once at setup? (Lean: once at
-   setup + a per-task trace breadcrumb.)
+1. `on_incompatible` lives on `InfraConfig` (a config field, serialised with
+   the infra). Should a per-run override also exist (e.g. an `Experiment`
+   field that wins over the infra default), or is the infra field the single
+   source? (Lean: infra field only for v1 — simplest; add an override later
+   if a need appears.)
+2. Should `"force"` mode log a warning once at setup or per forced task?
+   (Lean: once at setup + a per-task trace breadcrumb.)
 3. Confirm `INVALID_CONFIG` reuse is acceptable to cube-harness owners vs.
    adding `INCOMPATIBLE` now. (This RFC recommends reuse; flagging for
    explicit sign-off since it slightly overloads the status's meaning.)
+4. `can_serve_task` takes a `ContainerConfig` (cube.container), but
+   `InfraConfig` lives in cube.resource. Confirm the import direction is
+   clean, or whether the check should live as a free function /
+   `ContainerConfig.is_served_by(infra)` to avoid a resource→container
+   dependency. (Implementation detail; doesn't change the design.)

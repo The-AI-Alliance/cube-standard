@@ -21,30 +21,35 @@ benchmarks/tasks default to **not** requiring one. The pre-existing
 vocabulary (`kvm`, `docker`, `vm`, `gpu:nvidia`, `network:egress`) is
 unchanged.
 
-## ADDED — `openspec/specs/benchmark/spec.md`: `BenchmarkConfig.aggregate_requirements()` (derived)
+## ADDED — `openspec/specs/resource/spec.md`: `InfraConfig.can_serve_task()` (per-task bool) + `on_incompatible`
+
+The compatibility primitive is a **per-task bool** the infra returns; the
+harness loops over tasks. No benchmark-level aggregate (awkward to build).
 
 ```python
-class BenchmarkConfig(TypedBaseModel, ABC):
+OnIncompatible = Literal["raise", "skip", "force"]
+
+class InfraConfig(TypedBaseModel, ABC):
     ...
-    def aggregate_requirements(self) -> set[str]:
-        """Union of every task's container_config.requirements(). DERIVED
-        from the per-task resources — there is no separately-declared
-        benchmark-level requirement to drift out of sync. Reads task
-        metadata only (no archive load, no container launch); the infra
-        introspects this at setup to decide whole-benchmark compatibility."""
-        out: set[str] = set()
-        for meta in self.tasks_metadata().values():
-            if meta.container_config is not None:
-                out |= meta.container_config.requirements()
-        return out
+    on_incompatible: OnIncompatible = "raise"
+    """Policy when a task needs a capability this infra lacks. 'raise':
+    abort setup if ANY task is incompatible. 'skip': run the compatible
+    subset, mark the rest INVALID_CONFIG. 'force': attempt every task
+    anyway (override for probing stale requirements)."""
+
+    def can_serve_task(self, container_config: ContainerConfig) -> bool:
+        """True iff this infra provides every capability the task's container
+        requires. Cheap, metadata-only — no resource built, no launch.
+        Mirrors the existing can_serve(resource) set-inclusion test."""
+        return container_config.requirements().issubset(self.capabilities())
 ```
 
 The **source of truth is the per-task `ContainerConfig.requires`** (below).
-`aggregate_requirements()` is a read-only projection over the tasks, used
-for setup-time whole-benchmark gating and the static compatibility report.
+"Is the whole benchmark incompatible?" is answered by the harness looping
+`can_serve_task` over the tasks — there is no aggregate method to maintain.
 The blanket "all of tbench2 needs root" case is realised by the
 metadata-generation script stamping `requires={"container:root"}` on every
-task's `ContainerConfig` — not by a second benchmark-level declaration.
+task's `ContainerConfig`.
 
 ## MODIFIED — `openspec/specs/container/spec.md`: `ContainerConfig`
 
@@ -87,78 +92,62 @@ class ContainerConfig(TypedBaseModel):
 Mirrors the existing `VMResourceConfig.requires_kvm: bool` →
 `requirements() -> {"kvm"}` projection.
 
-## MODIFIED — `openspec/specs/resource/spec.md` + `cube.task_infra`: thread `requires` into the per-task resource
+## MODIFIED — `openspec/specs/benchmark/spec.md`: `Benchmark.setup` gate (per-task loop, infra-owned policy)
 
-`DockerServiceConfig` gains a `requires: set[str] = Field(default_factory=set)`
-field; its existing `requirements()` returns it (currently returns `set()`).
-`cube.task_infra.launch_task_container` threads the task's tokens through:
-
-```python
-resource = DockerServiceConfig(
-    name=name, scope="task", docker_images=[image],
-    requires=container_config.requirements(),   # NEW (was implicitly empty)
-    launch_script=build_docker_run_script(container_name, image, ram_gb, cpu_cores),
-)
-```
-
-This makes the **already-existing** `InfraConfig.can_serve(resource)`
-(= `resource.requirements().issubset(infra.capabilities())`) answer per-task
-compatibility with no new primitive. `launch_task_container` (or `setup` in
-skip mode) consults `can_serve` before `launch`.
-
-## MODIFIED — `openspec/specs/benchmark/spec.md`: `Benchmark.setup` gate
-
-`Benchmark.setup` gains an `on_incompatible` parameter and an explicit
-capability gate that fires **before any episode is created**:
+`Benchmark.setup` reads `infra.on_incompatible` and loops the per-task bool
+`infra.can_serve_task(...)`. No new `setup` parameter, no benchmark-level
+aggregate:
 
 ```python
-OnIncompatible = Literal["raise", "skip", "force"]
-
-def setup(self, infra: InfraConfig | None, *, on_incompatible: OnIncompatible = "raise") -> None:
-    if infra is not None and on_incompatible != "force":
-        # Whole-benchmark gate: derived union over the per-task resources.
-        bench_missing = self.config.aggregate_requirements() - infra.capabilities()
-        if bench_missing and on_incompatible == "raise":
+def setup(self, infra: InfraConfig | None) -> None:
+    if infra is not None and infra.on_incompatible != "force":
+        incompatible = [
+            SkippedTask(task_id, sorted(meta.container_config.requirements() - infra.capabilities()))
+            for task_id, meta in self.tasks.items()
+            if meta.container_config is not None and not infra.can_serve_task(meta.container_config)
+        ]
+        if incompatible and infra.on_incompatible == "raise":
             raise IncompatibleInfraError(
-                f"{type(infra).__name__} cannot run {self.config.metadata.name}: "
-                f"missing required capabilities {sorted(bench_missing)}. "
-                f"Use on_incompatible='skip' to run the compatible subset, or "
-                f"'force' to attempt anyway."
+                f"{type(infra).__name__} cannot run {len(incompatible)}/{len(self.tasks)} "
+                f"tasks of {self.config.metadata.name}: "
+                f"{[(s.task_id, s.missing_capabilities) for s in incompatible[:5]]}. "
+                f"Set infra.on_incompatible='skip' to run the compatible subset, "
+                f"or 'force' to attempt anyway."
             )
-        # skip mode: check each task's own resource via the existing can_serve.
-        runnable, skipped = [], []
-        for task_id, meta in self.tasks.items():
-            req = meta.container_config.requirements() if meta.container_config else set()
-            missing = req - infra.capabilities()
-            (skipped if missing else runnable).append(
-                SkippedTask(task_id, sorted(missing)) if missing else task_id
-            )
-        self._runnable_tasks, self._skipped_tasks = runnable, skipped
+        skipped_ids = {s.task_id for s in incompatible}    # skip mode
+        self._runnable_tasks = [t for t in self.tasks if t not in skipped_ids]
+        self._skipped_tasks = incompatible
     else:
         self._runnable_tasks, self._skipped_tasks = list(self.tasks), []
     # ... existing resource-provisioning setup
 ```
 
-- **`"raise"`** (default): whole-benchmark incompatibility (derived from the
-  per-task resources) aborts setup with `IncompatibleInfraError`. No episodes
-  created → cube-harness surfaces a setup/system failure → nothing to retry.
+- **`"raise"`** (default): if the per-task loop finds **any** incompatible
+  task, abort setup with `IncompatibleInfraError`. No episodes created →
+  cube-harness surfaces a setup/system failure → nothing to retry.
 - **`"skip"`**: incompatible tasks are excluded from `_runnable_tasks` and
   recorded in `_skipped_tasks`; the experiment runs the compatible subset.
-- **`"force"`**: gate skipped entirely; every task runs (per-task launch may
-  still fail, but the harness no longer pre-empts it). A warning is logged.
+- **`"force"`**: loop skipped entirely; every task runs (per-task launch may
+  still fail naturally, but the harness no longer pre-empts it). A warning is
+  logged once.
 
 When `infra is None` (debug / non-container runs) the gate is a no-op and
 the whole task list passes through — matching today's behaviour.
+
+(Optional, not required by this RFC: `cube.task_infra.launch_task_container`
+may additionally thread `container_config.requirements()` into the
+`DockerServiceConfig` it builds, so the existing `can_serve(resource)` also
+enforces at launch time — defense in depth. The setup-time `can_serve_task`
+loop is the primary gate.)
 
 ## ADDED — `openspec/specs/benchmark/spec.md`: `IncompatibleInfraError`, `SkippedTask`, `CompatibilityReport`
 
 ```python
 class IncompatibleInfraError(Exception):
-    """Raised by Benchmark.setup(on_incompatible='raise') when the benchmark's
-    aggregate_requirements() (derived from the per-task resources) are not
-    satisfied by the target infra's capabilities(). A setup-time, pre-episode
-    failure: the experiment aborts before launching work, so no retry budget
-    is consumed."""
+    """Raised by Benchmark.setup when infra.on_incompatible == 'raise' and the
+    per-task can_serve_task loop finds ≥1 task whose requirements the infra's
+    capabilities don't satisfy. A setup-time, pre-episode failure: the
+    experiment aborts before launching work, so no retry budget is consumed."""
 
 @dataclass
 class SkippedTask:
@@ -204,13 +193,13 @@ Documented here for reviewer context (cube-harness follow-up PR):
 
 | Audience | Change | When |
 |---|---|---|
-| **Cubes that stamp no `requires`** | None. `ContainerConfig.requires` defaults `set()` → `aggregate_requirements()` empty → gate is a no-op. | Immediate. |
-| **Existing `InfraConfig` subclasses** | None. New token unrequested until a cube opts in. | Immediate. |
-| **`DockerServiceConfig` consumers** | New `requires` field defaults `set()`; existing `requirements()` returns it. No change unless populated. | This PR (spec). |
-| **`Benchmark.setup` callers** | New keyword-only `on_incompatible="raise"`, no-op when `aggregate_requirements()` is empty. Existing call sites unaffected. | This PR (spec); cube-harness wires the knob. |
+| **Cubes that stamp no `requires`** | None. `ContainerConfig.requires` defaults `set()` → `can_serve_task` returns True for every task → loop is a no-op. | Immediate. |
+| **Existing `InfraConfig` subclasses** | None. They inherit `on_incompatible="raise"` + the default `can_serve_task`; both no-op until a task declares `requires`. | Immediate. |
+| **`Benchmark.setup` callers** | No signature change — `setup` reads `infra.on_incompatible` internally. Existing call sites unaffected. | This PR (spec). |
 | **Cubes adopting requirements (tbench2)** | Stamp `ContainerConfig.requires` (via the codegen script). Gated on infras lacking the token. | Per-cube follow-up. |
 | **Root-capable infras** | Publish `container:root` in `capabilities()`. | Paired with the first adopting cube. |
-| **cube-harness runner** | Forward `on_incompatible` from `Experiment`/`run_*`; map skip-mode episodes to `INVALID_CONFIG`. | cube-harness follow-up. |
+| **Constrained infras (toolkit)** | Optionally set `on_incompatible` default (e.g. `"raise"`); otherwise inherit the base default. | Optional. |
+| **cube-harness runner** | Read `infra.on_incompatible` in `setup`/launch; map skip-mode episodes to `INVALID_CONFIG`. | cube-harness follow-up. |
 
 No silent behaviour change: the gate only fires for benchmarks whose tasks
 stamp `requires`.
