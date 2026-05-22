@@ -52,6 +52,7 @@ import csv
 import enum
 import fnmatch
 import importlib.resources
+import importlib.util
 import json
 import logging
 import subprocess
@@ -59,7 +60,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections import Counter
 from pathlib import Path
-from typing import Any, ClassVar, Generator, Mapping, Self, Sequence, cast
+from typing import Any, ClassVar, Generator, Mapping, NamedTuple, Self, Sequence, cast
 
 from pydantic import Field, SerializeAsAny
 
@@ -129,16 +130,46 @@ class BenchmarkMetadata(TypedBaseModel):
             "Example: {'train_only': ('split', 'train')}"
         ),
     )
-    benchmark_hint_prompt: str | None = Field(
-        default=None,
-        description=(
-            "Optional concise hint a harness may prepend to the agent's prompt to "
-            "orient it on this benchmark — e.g. a one-paragraph workflow or a "
-            "clarification of conventions that apply to every task. Keep it short "
-            "and as generic as possible: a generalist agent should remain "
-            "competitive without it. The framework does not deliver this string "
-            "to the agent itself; harnesses decide whether and how to surface it."
-        ),
+
+
+#: Sidecar module (next to the benchmark module) that carries the optional prompt
+#: overlay — a benchmark-wide ``BENCHMARK_HINT`` string and a ``TASK_CLARIFICATION``
+#: ``{task_id: text}`` dict. A ``.py`` (rather than data file) lets one clarification
+#: be reused across many task ids, which keeps clarifications general — a regularizer.
+_CLARIFICATIONS_MODULE = "benchmark_clarifications"
+
+
+class BenchmarkClarifications(NamedTuple):
+    """Optional prompt overlay loaded from a benchmark's sidecar module.
+
+    The framework only loads and carries these; nothing is delivered to the
+    agent automatically. A harness reads them at experiment-design time and
+    folds them into the agent config (e.g. ``GennyConfig.benchmark_hint_prompt``
+    / ``task_clarification``).
+    """
+
+    benchmark_hint: str | None = None
+    task_clarification: dict[str, str] = {}  # noqa: RUF012 — NamedTuple default, never mutated
+
+
+def _load_benchmark_clarifications(package: str | None) -> BenchmarkClarifications:
+    """Load the ``benchmark_clarifications`` sidecar from ``package``.
+
+    Returns an empty overlay when ``package`` is falsy or has no sidecar. Import
+    errors *inside* an existing sidecar propagate — only absence is silent.
+    """
+    if not package:
+        return BenchmarkClarifications()
+    module_name = f"{package}.{_CLARIFICATIONS_MODULE}"
+    try:
+        if importlib.util.find_spec(module_name) is None:
+            return BenchmarkClarifications()
+    except ModuleNotFoundError:
+        return BenchmarkClarifications()
+    module = importlib.import_module(module_name)
+    return BenchmarkClarifications(
+        benchmark_hint=getattr(module, "BENCHMARK_HINT", None),
+        task_clarification=dict(getattr(module, "TASK_CLARIFICATION", {}) or {}),
     )
 
 
@@ -218,17 +249,6 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
         default=None,
         description="Optional seed generator yielding per-task seeds during get_task_configs().",
     )
-    add_task_clarification: bool = Field(
-        default=False,
-        description=(
-            "When True, harnesses should surface ``TaskMetadata.task_clarification`` "
-            "(when populated) alongside the task objective so the agent sees the "
-            "added wording. Defaults to False so a run reproduces the original "
-            "benchmark wording untouched; flip on to evaluate with curated "
-            "per-task clarifications applied. The framework only declares the "
-            "intent — actual prompt assembly happens in the harness."
-        ),
-    )
 
     # ──────────────────────────────────────────────────────────────────────────
     # File-loading helpers
@@ -307,6 +327,46 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
                     data["recommended_max_steps"] = int(data["recommended_max_steps"])
                 tasks.append(TaskMetadata.model_validate(data))
         return {t.id: t for t in tasks}
+
+    @classmethod
+    def load_benchmark_clarifications(cls) -> BenchmarkClarifications:
+        """Load this benchmark's optional prompt overlay from its sidecar module.
+
+        Reads a ``benchmark_clarifications.py`` next to the benchmark's module
+        (the same "files next to the module" convention used for
+        ``task_metadata``), exposing ``BENCHMARK_HINT: str | None`` and
+        ``TASK_CLARIFICATION: dict[str, str]``; returns an empty overlay when no
+        sidecar exists. The benchmark only *organizes* these strings — nothing
+        is applied automatically. A harness reads them at experiment-design time
+        and folds them into the agent config (e.g.
+        ``GennyConfig.benchmark_hint_prompt`` / ``task_clarification``); to run a
+        clean baseline it simply does not.
+
+        Purpose and when to use each:
+
+        ``BENCHMARK_HINT`` — one concise paragraph orienting a generalist agent
+        on conventions a first-time reader would miss but that are not specific
+        to any single task: a high-level workflow, the shape of the verifier, a
+        recurring ambiguity in the wording. Keep it short and generic — a
+        generalist agent should remain competitive without it. It exists so
+        evaluations that opt in can report a number on a level playing field,
+        not so authors can engineer prompts for one model.
+
+        ``TASK_CLARIFICATION`` — per-task fixes for individually brittle tasks
+        whose original wording omits a step a reasonable LLM would not infer.
+        Canonical example: a miniwob task whose objective reads "set slider to 32
+        and string value to 'foo'" but whose verifier only rewards if the agent
+        then clicks submit — a competent LLM would not click submit unprompted,
+        and that is not really the LLM's fault. Mapping that task id to "After
+        setting the values, click submit." keeps the original benchmark wording
+        intact while letting an evaluation opt the fix in. Because the overlay is
+        a ``.py``, one clarification can be reused across many task ids — that
+        reuse is a deliberate regularizer, pushing clarifications to generalize
+        rather than overfit. Leave a task out when its wording is unambiguous;
+        the dict grows over time as the auto-cube workflow detects brittle tasks.
+        """
+        package = cls.__module__.rpartition(".")[0]
+        return _load_benchmark_clarifications(package)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Subclass validation / file auto-load

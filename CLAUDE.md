@@ -34,6 +34,15 @@ Cross-cutting:
 - **Lean diffs.** Make the minimal change that solves the problem. Avoid verbose additions, unnecessary abstractions, and duplicated logic that already exists elsewhere. If existing code can be reused or consolidated, do it. A hard-to-review diff is a liability.
 - **Think long-term.** Every change should age well. Ask whether today's shortcut becomes tomorrow's debt — and whether the design could evolve cleanly if requirements change.
 
+## Explore before you plan or decide
+
+CUBE spans several repos, so a local view rarely tells the whole story. Build the wider picture before planning a change or making a call:
+
+- **Trace real usage**, not just the definition — `Grep` call sites, subclasses, and tests across the repo.
+- **Read the spec and the code together** — the spec is intent (can be stale); the code is what runs.
+- **Follow the dependency direction** — cube-standard's `cube.*` contracts ripple downstream into cube-harness and every cube; check consumers before changing one.
+- **Fan out with subagents** (`Explore`, `general-purpose`) for broad searches — keep the conclusion without burning context.
+
 ## Code review
 
 **Default branch is `dev`** — base all PRs off it, not `main`.
