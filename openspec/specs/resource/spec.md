@@ -76,7 +76,7 @@ class VolumeSpec(TypedBaseModel):
 class InfraConfig(TypedBaseModel, ABC):
     default_ttl_seconds: int | None = 86400          # 1 day; overrides resource TTL
     image_name_suffix: str = ""                       # e.g. "-test" to isolate CI
-    on_incompatible: Literal["raise", "skip", "force"] = "raise"  # capability-gate policy
+    on_incompatible: Literal["raise", "force"] = "raise"  # capability-gate policy
 
     @abstractmethod
     def fingerprint(self) -> str                     # "aws:us-east-2", "azure:westus2", "local"
@@ -139,10 +139,12 @@ Checked at `make()` by running `can_serve` over each task's `container_config` a
 benchmark's `resources`:
 - `"raise"` (default) — abort with `IncompatibleInfraError` if **any** resource is
   incompatible. No provisioning, no episodes, no spend.
-- `"skip"` — run only the compatible tasks (the task view is narrowed); the harness records
-  the dropped ones terminally (`INVALID_CONFIG`). An incompatible *benchmark-scoped* resource
-  is shared and still raises.
 - `"force"` — attempt everything anyway (escape hatch to probe a stale requirement).
+
+Future: a per-task mode (`"per-task-raise"`) may let the benchmark proceed while each
+incompatible task raises at episode start — recording them as terminal per-task errors
+rather than dropping them. A silent `"skip"` is intentionally absent: silently dropping
+tasks is the failure mode this gate exists to remove.
 
 ## Cleanup Methods Reference
 

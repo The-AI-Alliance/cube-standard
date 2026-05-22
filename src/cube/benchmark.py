@@ -733,24 +733,23 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
         for per-task container launches can do so from ``_setup()`` without
         overriding ``make``.
         """
-        # 0. Capability gate (fail-fast, before any install / provisioning or episode).
-        cfg: Self = self
+        # 0. Capability gate: fail fast before any install / provisioning or episode.
         if infra is not None and infra.on_incompatible != "force":
-            cfg = self._gate_infra_compatibility(infra)
+            self._gate_infra_compatibility(infra)
 
         if infra is not None:
             infra.install()
 
-        if cfg.resources:
+        if self.resources:
             if infra is None:
                 logger.debug(
                     "%s.make() called without infra but %d resource(s) are declared; "
                     "skipping provisioning (task-scoped resources will be launched per-task).",
-                    type(cfg).__name__,
-                    len(cfg.resources),
+                    type(self).__name__,
+                    len(self.resources),
                 )
             else:
-                for resource in cfg.resources:
+                for resource in self.resources:
                     status = infra.provision_status(resource)
                     if status == "ready":
                         logger.info("Resource %s already provisioned on %s", resource.name, infra.fingerprint())
@@ -758,19 +757,16 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
                     logger.info("Provisioning resource %s on %s...", resource.name, infra.fingerprint())
                     infra.provision(resource)
 
-        benchmark = type(cfg).benchmark_class(config=cfg, infra=infra)
+        benchmark = type(self).benchmark_class(config=self, infra=infra)
         benchmark.setup()
         return benchmark
 
-    def _gate_infra_compatibility(self, infra: InfraConfig) -> Self:
-        """Run ``infra.can_serve`` over every resource this benchmark needs and apply
-        ``infra.on_incompatible``. Returns ``self`` (or, in ``"skip"`` mode, a task-narrowed
-        copy); raises ``IncompatibleInfraError`` in ``"raise"`` mode. Metadata-only and
-        launch-free, so it stays cheap even for large benchmarks. Never called for
-        ``on_incompatible == "force"``.
+    def _gate_infra_compatibility(self, infra: InfraConfig) -> None:
+        """Raise ``IncompatibleInfraError`` if ``infra`` cannot serve every resource this
+        benchmark needs — each task's container plus the benchmark's declared resources.
+        Metadata-only and launch-free, so it stays cheap even for large benchmarks. Only
+        called when ``infra.on_incompatible == "raise"`` (``"force"`` skips the gate).
         """
-        # Benchmark-scoped resources are shared by every task → an incompatible one is
-        # always fatal (it cannot be skipped), regardless of the policy.
         bad_shared = [r for r in self.resources if not infra.can_serve(r)]
         incompatible = {
             tid: sorted(tm.container_config.requirements())
@@ -778,29 +774,16 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
             if tm.container_config is not None and not infra.can_serve(tm.container_config)
         }
         if not bad_shared and not incompatible:
-            return self
+            return
 
-        if bad_shared or infra.on_incompatible == "raise":
-            detail = {r.name: sorted(r.requirements()) for r in bad_shared}
-            detail.update(dict(list(incompatible.items())[:5]))
-            more = "" if len(incompatible) <= 5 else f" (+{len(incompatible) - 5} more tasks)"
-            raise IncompatibleInfraError(
-                f"{type(infra).__name__} (capabilities={sorted(infra.capabilities())}) cannot "
-                f"serve {len(bad_shared) + len(incompatible)} resource(s) of benchmark "
-                f"{self.benchmark_metadata.name!r}: {detail}{more}"
-            )
-
-        # skip mode: drop the incompatible tasks, keep the compatible subset.
-        keep = [tid for tid in self.tasks() if tid not in incompatible]
-        logger.warning(
-            "on_incompatible='skip': %s cannot serve %d/%d task(s) of %r; skipping %s",
-            type(infra).__name__,
-            len(incompatible),
-            len(self.tasks()),
-            self.benchmark_metadata.name,
-            sorted(incompatible),
+        detail = {r.name: sorted(r.requirements()) for r in bad_shared}
+        detail.update(dict(list(incompatible.items())[:5]))
+        more = "" if len(incompatible) <= 5 else f" (+{len(incompatible) - 5} more tasks)"
+        raise IncompatibleInfraError(
+            f"{type(infra).__name__} (capabilities={sorted(infra.capabilities())}) cannot "
+            f"serve {len(bad_shared) + len(incompatible)} resource(s) of benchmark "
+            f"{self.benchmark_metadata.name!r}: {detail}{more}"
         )
-        return self.subset_from_list(keep)
 
 
 class Benchmark[TBenchConfig: BenchmarkConfig](ABC):

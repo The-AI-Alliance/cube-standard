@@ -420,7 +420,7 @@ class ResourceHandle(ABC):
 
 # ── InfraConfig ───────────────────────────────────────────────────────────────
 
-OnIncompatible = Literal["raise", "skip", "force"]
+OnIncompatible = Literal["raise", "force"]
 
 
 class InfraConfig(ValidatedConfig, ABC):
@@ -474,11 +474,13 @@ class InfraConfig(ValidatedConfig, ABC):
 
     - ``"raise"`` (default) — abort with ``IncompatibleInfraError`` if ANY resource is
       incompatible. No provisioning, no episodes, no spend.
-    - ``"skip"`` — run only the compatible tasks; incompatible ones are dropped from the
-      task view (the harness records them terminally). An incompatible *benchmark-scoped*
-      resource still raises — it is shared and cannot be skipped.
     - ``"force"`` — attempt everything anyway; the escape hatch to probe whether a stale
-      requirement still holds."""
+      requirement still holds.
+
+    Future: a per-task mode (``"per-task-raise"``) will let the benchmark proceed while each
+    incompatible task raises at episode start, so the incompatible tasks are recorded as
+    terminal per-task errors rather than vanishing. (A silent ``"skip"`` was deliberately
+    not kept — silently dropping tasks is the failure mode this gate exists to remove.)"""
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

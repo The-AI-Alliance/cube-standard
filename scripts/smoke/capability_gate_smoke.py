@@ -12,8 +12,7 @@ Part A — handshake against the REAL `LocalInfraConfig.capabilities()` (no daem
 Part B — `BenchmarkConfig.make()` gate end-to-end with real local infra capabilities
   (install() no-op'd — orthogonal system-dep step we are not testing):
     * a non-root infra (real local minus `container:root`, mirroring EAI Toolkit) →
-      `on_incompatible="raise"` aborts with `IncompatibleInfraError`; `"skip"` drops only
-      the root task; `"force"` keeps everything.
+      `on_incompatible="raise"` aborts with `IncompatibleInfraError`; `"force"` keeps everything.
     * a root-capable infra serves both tasks.
 
 Part C — capability TRUTH (docker daemon required, else SKIP): launch a container on local
@@ -123,16 +122,8 @@ def check_gate() -> None:
     log.info("  [B] raise -> IncompatibleInfraError on non-root infra OK")
 
     if not has_docker:
-        log.info("  [B] no docker binary — skipping skip/force/positive cases (plain task needs docker)")
+        log.info("  [B] no docker binary — skipping force/positive cases (plain task needs docker)")
         return
-
-    # skip: drop only the incompatible (root) task.
-    bench = _GateBenchConfig().make(_NonRootLocal(on_incompatible="skip"))
-    try:
-        assert set(bench.config.tasks()) == {"plain"}, set(bench.config.tasks())
-    finally:
-        bench.close()
-    log.info("  [B] skip -> {plain} kept, {root} dropped OK")
 
     # force: keep everything.
     bench = _GateBenchConfig().make(_NonRootLocal(on_incompatible="force"))

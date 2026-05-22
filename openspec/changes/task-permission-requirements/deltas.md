@@ -31,7 +31,7 @@ Subclasses fold `requires` via `super().requirements()`:
 
 ```python
 class InfraConfig(...):
-    on_incompatible: Literal["raise", "skip", "force"] = "raise"
+    on_incompatible: Literal["raise", "force"] = "raise"
 ```
 
 `can_serve(resource)` (existing — `requirements() <= capabilities()`) is the per-resource
@@ -47,13 +47,14 @@ publish `container:root`; `Toolkit` does not (pins a non-root uid).
 benchmark's `resources`, then apply the policy:
 
 - `"raise"` — any incompatible resource → `IncompatibleInfraError` (pre-episode, no spend).
-- `"skip"` — narrow the task view to the compatible subset (`subset_from_list`); a shared
-  benchmark-scoped incompatible resource still raises.
 - `"force"` — skip the gate entirely.
+
+A silent `"skip"` mode is intentionally absent — silently dropping tasks is the failure
+mode this gate removes. A future `"per-task-raise"` (benchmark proceeds; each incompatible
+task raises at episode start, recorded terminally) is the planned successor.
 
 ## CONSUMED (cube-harness follow-up, not in this change)
 
-- **skip mode** episodes map to the existing terminal, non-retriable `INVALID_CONFIG`.
 - tbench2 (and other root-needing cubes) codegen stamps `requires={"container:root"}`.
 
 ## Migration

@@ -28,12 +28,12 @@ unification a task's `container_config` **is** a `ResourceConfig`, so the existi
 2. **Declaration.** `ResourceConfig.requires: set[str]` (base field), folded into
    `requirements()` by each subclass via `super().requirements()`. A task declares
    `requires={"container:root"}`.
-3. **Policy.** `InfraConfig.on_incompatible: Literal["raise","skip","force"] = "raise"`.
+3. **Policy.** `InfraConfig.on_incompatible: Literal["raise","force"] = "raise"`.
 4. **Gate.** `BenchmarkConfig.make()` runs `can_serve` over each task's `container_config`
    and the benchmark's declared `resources` **before provisioning**:
-   `"raise"` → `IncompatibleInfraError` (pre-episode, no spend); `"skip"` → narrow the task
-   view to the compatible subset (harness records the dropped ones as the existing terminal,
-   non-retriable `INVALID_CONFIG`); `"force"` → run everything. Metadata-only and launch-free.
+   `"raise"` → `IncompatibleInfraError` (pre-episode, no spend) if any resource is
+   incompatible; `"force"` → run everything. Metadata-only and launch-free.
+   (A silent `"skip"` was deliberately not kept — see below.)
 
 ## Why this shape
 
@@ -46,5 +46,9 @@ unification a task's `container_config` **is** a `ResourceConfig`, so the existi
 ## Out of scope / follow-ups
 
 - **cube-harness:** tbench2 (and other root-needing cubes) codegen stamps
-  `requires={"container:root"}`; harness maps skip-mode tasks to `INVALID_CONFIG`.
+  `requires={"container:root"}`.
+- **Per-task-raise mode:** a future `"per-task-raise"` may let the benchmark proceed while
+  each incompatible task raises at episode start (recorded as a terminal per-task error). A
+  silent `"skip"` is intentionally absent — silently dropping tasks is the failure mode this
+  gate exists to remove.
 - **Meta-infra + composite resources:** a separate effort. This gate already supports it.
