@@ -65,7 +65,7 @@ from cube import get_cache_dir
 from cube.core import TypedBaseModel, ValidatedConfig
 from cube.resource import InfraConfig, ResourceConfig
 from cube.seed import AbstractSeedGenerator
-from cube.task import RuntimeContext, Task, TaskConfig, TaskMetadata
+from cube.task import BenchmarkPromptContext, RuntimeContext, Task, TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
 
 logger = logging.getLogger(__name__)
@@ -492,14 +492,20 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
     def get_task_configs(self) -> Generator[TaskConfig, None, None]:
         """Yield one ``TaskConfig`` per task (expanded by seed_generator if set).
 
-        Stamps full ``TaskMetadata`` onto each emitted config so workers never
-        need to import the owning ``BenchmarkConfig`` class to resolve metadata.
+        Stamps full ``TaskMetadata`` and a ``BenchmarkPromptContext`` (the
+        benchmark hint prompt + clarification toggle) onto each emitted config
+        so workers never need to import the owning ``BenchmarkConfig`` class to
+        resolve metadata or assemble the agent prompt.
 
         Cubes with heavy execution data (problem statements, patches, …)
         populate ``Task.execution_info`` inside ``TaskConfig.make()`` by
         validating ``self.load_task_execution_info()`` against a typed
         ``TaskExecutionInfo`` subclass — no override of this method needed.
         """
+        prompt_context = BenchmarkPromptContext(
+            hint_prompt=self.benchmark_metadata.benchmark_hint_prompt,
+            add_task_clarification=self.add_task_clarification,
+        )
         for tm in self.tasks().values():
             if self.seed_generator is not None:
                 for seed in self.seed_generator(tm):
@@ -507,12 +513,14 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
                         metadata=tm,
                         tool_config=self.tool_config,
                         seed=seed,
+                        benchmark_prompt_context=prompt_context,
                     )
             else:
                 yield self.task_config_class(
                     metadata=tm,
                     tool_config=self.tool_config,
                     seed=None,
+                    benchmark_prompt_context=prompt_context,
                 )
 
     # ──────────────────────────────────────────────────────────────────────────

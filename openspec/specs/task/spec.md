@@ -47,7 +47,9 @@ agent then clicks submit. Storing the fix as metadata keeps the original
 benchmark wording intact and lets evaluations toggle the clarifications
 on or off without forking the benchmark. Leave `None` for tasks whose
 wording is unambiguous. The framework only declares the slot — actual
-prompt assembly happens in the harness.
+prompt assembly happens in the harness, which reads the toggle from the
+config's `benchmark_prompt_context.add_task_clarification` (stamped at spawn,
+see `TaskConfig` below).
 
 ### `TaskExecutionInfo` (serializable)
 ```python
@@ -211,6 +213,7 @@ class TaskConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     seed: int | None = None
     tool_config: SerializeAsAny[ToolConfig] | None = None
     sub_bench_name: str | None = None            # composite routing hint (see below)
+    benchmark_prompt_context: BenchmarkPromptContext  # benchmark-level prompt context, stamped at spawn
 
     @property
     def task_id(self) -> str:
@@ -247,6 +250,16 @@ emitted config by `BenchmarkConfig.get_task_configs()` on the driver).
 `make()` uses `self.metadata` directly; no import of the owning
 `BenchmarkConfig` is needed on the worker. This is the single most important
 invariant of the layer: the serialization boundary is self-describing.
+
+**Benchmark-level prompt context.** `benchmark_prompt_context`
+(`BenchmarkPromptContext`) mirrors the two benchmark-level prompt fields onto
+the config at spawn so the boundary stays self-describing for prompt assembly
+too: `hint_prompt` (from `BenchmarkMetadata.benchmark_hint_prompt`) and
+`add_task_clarification` (from `BenchmarkConfig.add_task_clarification`). It is
+stamped by `get_task_configs()`; a `TaskConfig` constructed directly defaults
+to an empty context. The framework only carries these values — whether and how
+they reach the agent is the harness's decision (see
+[benchmark/spec.md](../benchmark/spec.md)).
 
 Subclasses that carry heavy install-time data (e.g. SWE-bench problem
 statements, OSWorld evaluator configs) declare a `TaskExecutionInfo`

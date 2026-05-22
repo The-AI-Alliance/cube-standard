@@ -446,6 +446,36 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
             self._container = None
 
 
+class BenchmarkPromptContext(TypedBaseModel):
+    """Benchmark-level prompt context stamped onto each ``TaskConfig`` by
+    ``BenchmarkConfig.get_task_configs()``.
+
+    A worker only ever sees a ``TaskConfig`` (live ``Benchmark`` objects never
+    cross the process boundary), so the benchmark-level prompt fields are
+    copied here at spawn time. This lets a harness assemble the agent prompt
+    from the config alone, without importing the owning ``BenchmarkConfig``.
+    The framework only carries these values; the harness decides whether and
+    how to surface them (see benchmark/spec.md).
+    """
+
+    hint_prompt: str | None = Field(
+        default=None,
+        description=(
+            "Mirror of ``BenchmarkMetadata.benchmark_hint_prompt`` — a concise, "
+            "generic orientation hint a harness may prepend to the agent's "
+            "prompt for every task in this benchmark."
+        ),
+    )
+    add_task_clarification: bool = Field(
+        default=False,
+        description=(
+            "Mirror of ``BenchmarkConfig.add_task_clarification`` — when True, "
+            "harnesses should surface ``TaskMetadata.task_clarification`` "
+            "(when populated) alongside the task objective."
+        ),
+    )
+
+
 class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
     """Serializable task configuration — self-contained unit handed to workers.
 
@@ -500,6 +530,15 @@ class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
             "Names the sub-benchmark this task originated from; "
             "``CompositeBenchmark.spawn()`` uses it to route to the right sub-benchmark's "
             "runtime_context. None for standalone (non-composite) benchmarks."
+        ),
+    )
+    benchmark_prompt_context: BenchmarkPromptContext = Field(
+        default_factory=BenchmarkPromptContext,
+        description=(
+            "Benchmark-level prompt context (hint prompt + clarification toggle) "
+            "stamped by ``BenchmarkConfig.get_task_configs()``. Defaults to an "
+            "empty context, so a config constructed directly (outside the spawn "
+            "path) stays backward-compatible and surfaces no extra prompt text."
         ),
     )
 

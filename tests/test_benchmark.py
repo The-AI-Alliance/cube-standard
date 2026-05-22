@@ -294,6 +294,38 @@ def test_get_task_configs_stamps_metadata_on_each_config():
     assert configs["t4"].metadata == MyBenchmarkConfig.task_metadata["t4"]
 
 
+def test_get_task_configs_prompt_context_defaults_empty():
+    """Default benchmark: each config gets an empty prompt context (no hint, toggle off)."""
+    for cfg in MyBenchmarkConfig().get_task_configs():
+        assert cfg.benchmark_prompt_context.hint_prompt is None
+        assert cfg.benchmark_prompt_context.add_task_clarification is False
+
+
+def test_get_task_configs_stamps_prompt_context_and_round_trips():
+    """The benchmark hint prompt and clarification toggle are copied onto every
+    emitted config and survive a JSON round-trip across the worker boundary."""
+
+    class _HintedBenchmarkConfig(MyBenchmarkConfig):
+        benchmark_metadata = BenchmarkMetadata(
+            name="MyBenchmark",
+            version="2.0.0",
+            description="Test benchmark",
+            num_tasks=4,
+            benchmark_hint_prompt="Use the filter UI, not column clicks.",
+        )
+
+    configs = list(_HintedBenchmarkConfig(add_task_clarification=True).get_task_configs())
+    assert configs  # non-empty
+    for cfg in configs:
+        ctx = cfg.benchmark_prompt_context
+        assert ctx.hint_prompt == "Use the filter UI, not column clicks."
+        assert ctx.add_task_clarification is True
+
+    reloaded = _TaskConfig.model_validate_json(configs[0].model_dump_json())
+    assert reloaded.benchmark_prompt_context.hint_prompt == "Use the filter UI, not column clicks."
+    assert reloaded.benchmark_prompt_context.add_task_clarification is True
+
+
 def test_get_task_configs_honours_subset():
     cfg = MyBenchmarkConfig().subset_from_list(["t1", "t3"])
     configs = list(cfg.get_task_configs())

@@ -47,7 +47,9 @@ Keep it short and generic: a generalist agent should remain competitive
 without it; the field exists so benchmarks with unusual conventions can
 opt into a level playing field for evaluations that report numbers with
 the hint applied. The framework only declares the slot — actual prompt
-assembly happens in the harness.
+assembly happens in the harness, which reads it from each emitted config's
+`benchmark_prompt_context.hint_prompt` (stamped by `get_task_configs()`; see
+below).
 
 `reset_isolation` is informational for harness users to reason about parallelism:
 - `SNAPSHOT` — VM reverts to savestate (~5s)
@@ -100,7 +102,8 @@ declared on `TaskMetadata.task_clarification` (see
 [task/spec.md](../task/spec.md)). Default `False` so a run reproduces the
 original benchmark wording untouched and stays comparable with baselines
 that ignored these clarifications. Harnesses interpret the flag during
-prompt assembly; the framework only carries the intent.
+prompt assembly; the framework only carries the intent — copied onto each
+emitted `TaskConfig.benchmark_prompt_context` by `get_task_configs()`.
 
 Per-task container needs are declared via `TaskMetadata.container_config`
 (`ContainerConfig`) and provisioned through the injected `InfraConfig` — see
@@ -131,7 +134,9 @@ happens.
 - `name` (property) — `self.benchmark_metadata.name`.
 - `get_task_configs()` → `Generator[TaskConfig]` — yields one
   `task_config_class` per task in `tasks()`, expanding via `seed_generator` if
-  set.
+  set. Stamps each emitted config with its `TaskMetadata` and a
+  `BenchmarkPromptContext` (`benchmark_hint_prompt` + `add_task_clarification`)
+  so the worker can assemble the agent prompt without the owning config.
 - `subset_from_list(tasks, benchmark_name_suffix="custom")` → `Self` (same
   subclass, new instance) with `task_ids` populated. Accepts ids or `TaskMetadata` objects.
   Duplicates deduped (first-wins order).
