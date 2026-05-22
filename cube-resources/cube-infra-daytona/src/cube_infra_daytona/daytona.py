@@ -69,7 +69,7 @@ class DaytonaInfraConfig(InfraConfig):
         return f"daytona:{target}"
 
     def capabilities(self) -> set[str]:
-        return {"docker", "network:egress"}
+        return {"docker", "network:egress", "container:root"}
 
     def provision(self, resource: ResourceConfig) -> None:
         """Validate resource shape and record a ProvisionStore entry.

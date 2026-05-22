@@ -52,7 +52,7 @@ class ModalInfraConfig(InfraConfig):
         return f"modal:{self.app_name}"
 
     def capabilities(self) -> set[str]:
-        return {"docker", "network:egress", "gpu:nvidia"}
+        return {"docker", "network:egress", "gpu:nvidia", "container:root"}
 
     def provision(self, resource: ResourceConfig) -> None:
         """Record a ProvisionStore entry.  Modal pulls images on-demand at Sandbox creation."""

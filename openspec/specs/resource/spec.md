@@ -38,18 +38,27 @@ class ResourceConfig(TypedBaseModel):
     source_hash: str | None = None                   # informational; not used for dedup
     default_ttl_seconds: int | None = 3600           # auto-cleanup TTL
     bootstrap_script_extra: str | None = None        # benchmark-specific VM setup
+    requires: set[str] = set()                       # explicit extra tokens, e.g. {"container:root"}
 
-    def requirements(self) -> set[str]               # capability tokens infra must support
+    def requirements(self) -> set[str]               # folds `requires`; subclasses super()-union
 ```
 
-Standard capability tokens: `"kvm"`, `"docker"`, `"gpu:nvidia"`, `"network:egress"`.
+Standard capability tokens: `"kvm"`, `"docker"`, `"gpu:nvidia"`, `"network:egress"`,
+`"container:root"` (container processes run as uid 0 — needed by tasks that `apt`-install
+or write to `/etc`, `/var`; absent on infras that pin a non-root uid, e.g. EAI Toolkit).
+
+`requires` is the declarative escape hatch: any resource adds tokens here and every
+subclass folds them via `super().requirements()`, so `requirements()` is the single
+read point used by `can_serve`.
 
 **Subclasses:**
 - `VMResourceConfig(requires_kvm: bool = True)` — VM-based (OSWorld, WindowsAgentArena, AndroidWorld…)
 - `DockerServiceConfig(docker_images, services, launch_script, endpoint_to_site, volumes)` —
   multi-container stack (WebArena, WorkArena)
-- `DockerImageConfig(image, ram_gb, cpu_cores, disk_gb, gpu, ports)` — single image per
-  task (SWE-bench, MLE-bench, CTF)
+- `ContainerConfig(image, ram_gb, cpu_cores, disk_gb, gpu, ports)` — single image per task
+  (SWE-bench, terminal-bench, CTF). Defined in `cube.resource`, re-exported from
+  `cube.container`; declared on `TaskMetadata.container_config`. `requirements()` →
+  `{"docker"}` (+ `"gpu:nvidia"` if `gpu`) ∪ `requires`.
 
 ### `VolumeSpec` (used by `DockerServiceConfig`)
 ```python
@@ -67,6 +76,7 @@ class VolumeSpec(TypedBaseModel):
 class InfraConfig(TypedBaseModel, ABC):
     default_ttl_seconds: int | None = 86400          # 1 day; overrides resource TTL
     image_name_suffix: str = ""                       # e.g. "-test" to isolate CI
+    on_incompatible: Literal["raise", "skip", "force"] = "raise"  # capability-gate policy
 
     @abstractmethod
     def fingerprint(self) -> str                     # "aws:us-east-2", "azure:westus2", "local"
@@ -89,7 +99,10 @@ class InfraConfig(TypedBaseModel, ABC):
 **Concrete helpers** (provided):
 - `register(resource, resource_info: dict)` — record that an image is available
 - `provision_status(resource)` → `"ready" | "needs_provisioning"`
-- `can_serve(resource)` → bool — `resource.requirements() <= self.capabilities()`
+- `can_serve(resource)` → bool — `resource.requirements() <= self.capabilities()`. The unit
+  of the capability handshake; `BenchmarkConfig.make()` runs it over every task's
+  `container_config` and the benchmark's declared `resources` before provisioning, applying
+  `on_incompatible`. A meta-infra overrides `can_serve` to delegate per-resource to children.
 
 `fingerprint()` rule: encode provider + region/location only. Two configs with the
 same fingerprint share the same provisioned image. Do NOT encode instance size,
@@ -118,6 +131,18 @@ class ResourceHandle(ABC):
 ### Exceptions
 - `ResourceNotReadyError` — `launch()` called before `provision()` or `register()`
 - `UnsupportedResourceType` — infra doesn't support the given `ResourceConfig` subclass
+- `IncompatibleInfraError` — raised by `BenchmarkConfig.make()` (pre-provision, pre-episode)
+  when `on_incompatible == "raise"` and a resource is not servable
+
+### `on_incompatible` policy
+Checked at `make()` by running `can_serve` over each task's `container_config` and the
+benchmark's `resources`:
+- `"raise"` (default) — abort with `IncompatibleInfraError` if **any** resource is
+  incompatible. No provisioning, no episodes, no spend.
+- `"skip"` — run only the compatible tasks (the task view is narrowed); the harness records
+  the dropped ones terminally (`INVALID_CONFIG`). An incompatible *benchmark-scoped* resource
+  is shared and still raises.
+- `"force"` — attempt everything anyway (escape hatch to probe a stale requirement).
 
 ## Cleanup Methods Reference
 

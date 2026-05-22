@@ -179,16 +179,20 @@ encoded as their own columns; complex types in subclass fields go through
 JSON-encoded strings as well.
 
 **The factory:**
-- `make(infra: InfraConfig | None = None) -> Benchmark` — for every
-  resource whose `infra.provision_status(resource) != "ready"`, call
-  `infra.provision(resource)` (idempotent), then instantiate
-  `type(self).benchmark_class(config=self, infra=infra)`, call
-  `benchmark.setup()`, and return the live `Benchmark`. `infra` is
-  forwarded to the runtime constructor so subclasses can reach it via
-  `self._infra` from `_setup()`. When `infra` is None and `resources` is
-  non-empty, provisioning is skipped with a debug log — benchmarks that use
-  only task-scoped (L3) resources launched per-task can legitimately pass
-  `infra=None` at `make` time.
+- `make(infra: InfraConfig | None = None) -> Benchmark` — runs the **capability
+  gate** first (when `infra` is set and `infra.on_incompatible != "force"`):
+  `can_serve` is checked over every task's `container_config` and the benchmark's
+  declared `resources`, applying `infra.on_incompatible` (`"raise"` →
+  `IncompatibleInfraError` before any provisioning; `"skip"` → task view narrowed to
+  the compatible subset; an incompatible benchmark-scoped resource always raises). This
+  is metadata-only and launch-free, so it stays cheap. Then, for every resource whose
+  `infra.provision_status(resource) != "ready"`, call `infra.provision(resource)`
+  (idempotent), instantiate `type(cfg).benchmark_class(config=cfg, infra=infra)`, call
+  `benchmark.setup()`, and return the live `Benchmark`. `infra` is forwarded to the
+  runtime constructor so subclasses can reach it via `self._infra` from `_setup()`. When
+  `infra` is None the gate is skipped (and, if `resources` is non-empty, provisioning is
+  skipped with a debug log) — benchmarks that use only task-scoped (L3) resources
+  launched per-task can legitimately pass `infra=None` at `make` time.
 
 ### `Benchmark` (abstract, plain Python class — not serializable)
 
