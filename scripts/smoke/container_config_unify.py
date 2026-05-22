@@ -5,27 +5,28 @@ Background
 ==========
 ``ContainerConfig`` used to be a standalone ``TypedBaseModel``; the orphan
 ``DockerImageConfig`` was a parallel single-image ``ResourceConfig`` (defined, never
-launched by any infra). Phase 1 made ``ContainerConfig`` a ``ResourceConfig`` — so it
-joins the capability handshake (``requirements()`` / ``InfraConfig.can_serve``) — and
-deleted ``DockerImageConfig``.
+launched by any infra). The unification made ``ContainerConfig`` a ``ResourceConfig``
+— so it joins the capability handshake (``requirements()`` / ``InfraConfig.can_serve``)
+— deleted ``DockerImageConfig``, and moved ``ContainerConfig`` to ``cube.resource``
+(re-exported from ``cube.container`` for back-compat).
 
-The risk surface is **serialization**: thousands of already-committed
-``task_metadata.json`` entries carry ``"_type": "cube.container.ContainerConfig"`` and
-were serialized *before* the now-inherited (and required on ``ResourceConfig``)
-``name`` field existed. They must still deserialize without regeneration.
+The risk surface is **serialization**: already-committed ``task_metadata.json`` entries
+carry ``"_type": "cube.container.ContainerConfig"`` and were serialized *before* both
+the move and the now-inherited (required on ``ResourceConfig``) ``name`` field. They
+must still deserialize — via the re-export, defaulting ``name`` — without regeneration.
 
 What it does
 ============
 Part A — serialization (always runs, no docker):
   1. Invariants — ``ContainerConfig`` is-a ``ResourceConfig``; ``requirements() == {"docker"}``
      (``+ "gpu:nvidia"`` when ``gpu=True``); a docker-capable infra ``can_serve`` it, a
-     non-docker one does not; the ``_type`` tag stays ``cube.container.ContainerConfig``.
-  2. Legacy round-trip — a dict with no ``name`` and the legacy ``_type`` deserializes
-     via ``ResourceConfig.model_validate`` into a ``ContainerConfig(name="")``.
-  3. Real-data sweep — every ``cube.container.ContainerConfig`` blob in the sibling
-     cube-harness cubes' ``task_metadata.json`` must deserialize as a ``ContainerConfig``
-     with ``docker`` in ``requirements()`` (swebench-verified/-live, terminalbench2 ≈ 2.5k
-     blobs). Skipped (with a note) if cube-harness is not found.
+     non-docker one does not; fresh configs serialize as ``cube.resource.ContainerConfig``.
+  2. Legacy round-trip — a dict with no ``name`` and the legacy ``cube.container`` ``_type``
+     deserializes via ``ResourceConfig.model_validate`` into a ``ContainerConfig(name="")``.
+  3. Real-data sweep — every ContainerConfig blob (legacy ``cube.container`` or current
+     ``cube.resource`` ``_type``) in the sibling cube-harness cubes' ``task_metadata.json``
+     must deserialize as a ``ContainerConfig`` with ``docker`` in ``requirements()``
+     (swebench-verified/-live, terminalbench2 ≈ 2.5k blobs). Skipped if cube-harness absent.
 
 Part B — launch (docker required, else noted as skipped):
   Provision + launch ``python:3.12-slim`` via ``launch_task_container`` on
@@ -56,16 +57,16 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from cube.container import ContainerConfig
 from cube.infra_local import LocalInfraConfig
-from cube.resource import ResourceConfig
+from cube.resource import ContainerConfig, ResourceConfig
 from cube.task_infra import launch_task_container
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("cc-unify-smoke")
 
 NAME = "container_config_unify"
-LEGACY_TYPE = "cube.container.ContainerConfig"
+CURRENT_TYPE = "cube.resource.ContainerConfig"  # canonical home after the move
+LEGACY_TYPE = "cube.container.ContainerConfig"  # pre-move; still resolves via the re-export shim
 LAUNCH_IMAGE = "python:3.12-slim"
 
 
@@ -79,9 +80,9 @@ def banner(status: str, reason: str = "") -> int:
 
 
 def _iter_container_blobs(node: Any) -> Iterator[dict]:
-    """Yield every dict whose ``_type`` is the legacy ContainerConfig tag."""
+    """Yield every dict whose ``_type`` is a ContainerConfig tag (legacy or current)."""
     if isinstance(node, dict):
-        if node.get("_type") == LEGACY_TYPE:
+        if node.get("_type") in (LEGACY_TYPE, CURRENT_TYPE):
             yield node
         for v in node.values():
             yield from _iter_container_blobs(v)
@@ -98,7 +99,7 @@ def check_invariants() -> None:
     assert cc.requirements() == {"docker"}, cc.requirements()
     assert ContainerConfig(image="x", gpu=True).requirements() == {"docker", "gpu:nvidia"}
     assert cc.scope == "task", cc.scope
-    assert cc.model_dump()["_type"] == LEGACY_TYPE, "the _type tag must stay stable"
+    assert cc.model_dump()["_type"] == CURRENT_TYPE, "fresh configs serialize with the canonical _type"
     # can_serve is exactly set-inclusion of requirements() in capabilities():
     assert cc.requirements().issubset({"docker", "network:egress"}), "docker-shaped caps must serve it"
     assert not cc.requirements().issubset({"kvm"}), "a kvm-only infra must NOT serve it"

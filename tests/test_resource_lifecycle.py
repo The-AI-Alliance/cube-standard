@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from cube.container import ContainerConfig
 from cube.provision_store import ProvisionStore
 from cube.resource import (
+    ContainerConfig,
     DockerServiceConfig,
     InfraConfig,
     ResourceConfig,
@@ -204,14 +204,21 @@ class TestContainerConfigUnification:
         assert _StubInfra(name="x", caps=["docker"]).can_serve(cc) is True
         assert _StubInfra(name="x", caps=["kvm"]).can_serve(cc) is False
 
-    def test_type_tag_stays_on_cube_container_path(self) -> None:
-        # _type must remain cube.container.ContainerConfig so the thousands of
-        # already-serialized task_metadata.json entries keep resolving.
-        assert ContainerConfig(image="img").model_dump()["_type"] == "cube.container.ContainerConfig"
+    def test_type_tag_is_cube_resource_path(self) -> None:
+        # Canonical home after the move is cube.resource.
+        assert ContainerConfig(image="img").model_dump()["_type"] == "cube.resource.ContainerConfig"
+
+    def test_legacy_cube_container_import_is_same_class(self) -> None:
+        # Back-compat re-export: the old import path resolves to the same class object,
+        # so `_type: cube.container.ContainerConfig` blobs still deserialize via it.
+        from cube.container import ContainerConfig as LegacyContainerConfig
+
+        assert LegacyContainerConfig is ContainerConfig
 
     def test_legacy_metadata_without_name_deserializes(self) -> None:
-        # Entry serialized before ContainerConfig inherited the (required) name
-        # field — must still load, defaulting name to "".
+        # Entry serialized before the move AND before the (now-required, inherited)
+        # name field — both the legacy cube.container _type and the missing name must
+        # still load, defaulting name to "". Exercises the re-export shim.
         legacy = {
             "_type": "cube.container.ContainerConfig",
             "image": "python:3.12-slim",
