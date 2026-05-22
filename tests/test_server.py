@@ -101,6 +101,7 @@ _TASK_META_1 = {
     "abstract_description": "",
     "recommended_max_steps": None,
     "container_config": None,
+    "task_clarification": None,
 }
 
 _TASK_META_2 = {**_TASK_META_1, "id": "task-2"}
@@ -176,6 +177,7 @@ def test_benchmark_info(bench_client):
         "tags": [],
         "reset_isolation": None,
         "named_subsets": {},
+        "benchmark_hint_prompt": None,
     }
 
 

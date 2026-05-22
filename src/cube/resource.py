@@ -254,19 +254,29 @@ class DockerServiceConfig(ResourceConfig):
         return {"docker"}
 
 
-class DockerImageConfig(ResourceConfig):
-    """Single Docker image per task (SWE-bench, MLE-bench, CTF...).
+class ContainerConfig(ResourceConfig):
+    """Serializable description of *what* single-container resource a task needs.
 
-    Resource requirements (ram_gb, cpu_cores, disk_gb, ports) are read by
-    DockerInfraConfig.launch() to configure the container. gpu=True maps to
-    the "gpu:nvidia" capability requirement token via requirements().
+    A ``ResourceConfig`` (one Docker image, ``scope="task"``), so it shares the
+    capability handshake — ``requirements()`` / ``InfraConfig.can_serve`` — with
+    every other resource. Declared on ``TaskMetadata.container_config`` and consumed
+    by the ``InfraConfig`` path in ``Task.model_post_init`` (via
+    ``cube.task_infra.launch_task_container``).  *How* the container is
+    provisioned is owned by the injected ``InfraConfig`` (see below).
+
+    Re-exported from ``cube.container`` for backward compatibility (its original home).
     """
 
+    # ResourceConfig.name is required; task containers are keyed by the task id at
+    # launch (launch_task_container(name=task.metadata.id, ...)), so the field is
+    # unused here and defaults to "" — which keeps legacy metadata (serialized
+    # before ContainerConfig carried a name) loadable without regeneration.
+    name: str = ""
     image: str
     ram_gb: float = 4.0
     cpu_cores: float = 2.0
-    disk_gb: float = 10.0
     gpu: bool = False
+    disk_gb: float = 10.0
     ports: list[int] | None = None
 
     def requirements(self) -> set[str]:

@@ -19,6 +19,7 @@ class TaskMetadata(TypedBaseModel):
     abstract_description: str = ""             # for search/filtering only — NOT the objective
     recommended_max_steps: int | None = None   # harness hint, not enforced
     container_config: ContainerConfig | None = None
+    task_clarification: str | None = None      # optional opt-in clarification (see below)
 ```
 
 `TaskMetadata` is the lightweight, eager-loaded view of a task: it ships in
@@ -34,6 +35,19 @@ scripts, …) lives on a `TaskExecutionInfo` subclass surfaced via
 
 The actual task objective is surfaced in the first `Observation` returned by `reset()`.
 `abstract_description` is for tooling (search, subsetting), never to be shown to the agent.
+
+`task_clarification` is an optional short string a harness may append to
+the task objective **only when** the owning
+`BenchmarkConfig.add_task_clarification` is `True` (see
+[benchmark/spec.md](../benchmark/spec.md)). Populated over time for
+brittle tasks whose original wording omits a step a reasonable LLM would
+not infer — for instance a miniwob task whose objective reads "set slider
+to 32 and string value to 'foo'" but whose verifier only rewards if the
+agent then clicks submit. Storing the fix as metadata keeps the original
+benchmark wording intact and lets evaluations toggle the clarifications
+on or off without forking the benchmark. Leave `None` for tasks whose
+wording is unambiguous. The framework only declares the slot — actual
+prompt assembly happens in the harness.
 
 ### `TaskExecutionInfo` (serializable)
 ```python
