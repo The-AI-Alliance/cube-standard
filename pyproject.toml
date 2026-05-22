@@ -71,6 +71,8 @@ include = ["src/cube/scripts/install_local_infra.sh"]
 fix = true
 line-length = 120
 indent-width = 4
+# CI/utility scripts are not held to the library's lint/format style.
+extend-exclude = [".github/scripts"]
 
 [tool.ruff.format]
 quote-style = "double"
