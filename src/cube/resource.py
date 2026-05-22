@@ -254,28 +254,6 @@ class DockerServiceConfig(ResourceConfig):
         return {"docker"}
 
 
-class DockerImageConfig(ResourceConfig):
-    """Single Docker image per task (SWE-bench, MLE-bench, CTF...).
-
-    Resource requirements (ram_gb, cpu_cores, disk_gb, ports) are read by
-    DockerInfraConfig.launch() to configure the container. gpu=True maps to
-    the "gpu:nvidia" capability requirement token via requirements().
-    """
-
-    image: str
-    ram_gb: float = 4.0
-    cpu_cores: float = 2.0
-    disk_gb: float = 10.0
-    gpu: bool = False
-    ports: list[int] | None = None
-
-    def requirements(self) -> set[str]:
-        reqs = {"docker"}
-        if self.gpu:
-            reqs.add("gpu:nvidia")
-        return reqs
-
-
 # ── ResourceHandle ────────────────────────────────────────────────────────────
 
 

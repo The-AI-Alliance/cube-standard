@@ -20,8 +20,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict
 
-from cube.core import TypedBaseModel
-from cube.resource import ResourceHandle
+from cube.resource import ResourceConfig, ResourceHandle
 
 logger = logging.getLogger(__name__)
 
@@ -178,21 +177,34 @@ def port_from_url(url: str) -> int:
 # ── Task container requirements ──────────────────────────────────────────────
 
 
-class ContainerConfig(TypedBaseModel):
-    """Serializable description of *what* container a task needs.
+class ContainerConfig(ResourceConfig):
+    """Serializable description of *what* single-container resource a task needs.
 
-    Declared on ``TaskMetadata.container_config`` and consumed by the
-    ``InfraConfig`` path in ``Task.model_post_init`` (via
+    A ``ResourceConfig`` (one Docker image, ``scope="task"``), so it shares the
+    capability handshake — ``requirements()`` / ``InfraConfig.can_serve`` — with
+    every other resource. Declared on ``TaskMetadata.container_config`` and consumed
+    by the ``InfraConfig`` path in ``Task.model_post_init`` (via
     ``cube.task_infra.launch_task_container``).  *How* the container is
     provisioned is owned by the injected ``InfraConfig`` (see ``cube.resource``).
     """
 
+    # ResourceConfig.name is required; task containers are keyed by the task id at
+    # launch (launch_task_container(name=task.metadata.id, ...)), so the field is
+    # unused here and defaults to "" — which keeps legacy metadata (serialized
+    # before ContainerConfig carried a name) loadable without regeneration.
+    name: str = ""
     image: str
     ram_gb: float = 4.0
     cpu_cores: float = 2.0
     gpu: bool = False
     disk_gb: float = 10.0
     ports: list[int] | None = None
+
+    def requirements(self) -> set[str]:
+        reqs = {"docker"}
+        if self.gpu:
+            reqs.add("gpu:nvidia")
+        return reqs
 
 
 # === auto-fix notes ===  (spec: openspec/specs/auto-fix/spec.md)

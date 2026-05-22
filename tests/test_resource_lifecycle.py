@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
+from cube.container import ContainerConfig
 from cube.provision_store import ProvisionStore
 from cube.resource import (
-    DockerImageConfig,
     DockerServiceConfig,
     InfraConfig,
     ResourceConfig,
@@ -167,8 +167,8 @@ class TestResourceConfig:
         r = DockerServiceConfig(name="webarena", compose_url="http://example.com/compose.yml")
         assert r.requirements() == {"docker"}
 
-    def test_docker_image_requires_docker(self) -> None:
-        r = DockerImageConfig(name="swebench", image="swebench/swe-bench:latest")
+    def test_container_config_requires_docker(self) -> None:
+        r = ContainerConfig(name="swebench", image="swebench/swe-bench:latest")
         assert r.requirements() == {"docker"}
 
     def test_default_ttl_is_one_hour(self) -> None:
@@ -178,6 +178,61 @@ class TestResourceConfig:
     def test_scope_defaults_to_task(self) -> None:
         r = VMResourceConfig(name="vm")
         assert r.scope == "task"
+
+
+# ── ContainerConfig is a ResourceConfig (unification) ─────────────────────────
+
+
+class TestContainerConfigUnification:
+    """ContainerConfig was folded into the ResourceConfig family (it absorbed the
+    deleted DockerImageConfig). These guard the capability handshake and the
+    backward-compatible deserialization of metadata serialized before the change."""
+
+    def test_is_a_resource_config(self) -> None:
+        assert issubclass(ContainerConfig, ResourceConfig)
+        assert isinstance(ContainerConfig(image="img"), ResourceConfig)
+
+    def test_requirements_adds_gpu_token(self) -> None:
+        assert ContainerConfig(image="img").requirements() == {"docker"}
+        assert ContainerConfig(image="img", gpu=True).requirements() == {"docker", "gpu:nvidia"}
+
+    def test_scope_defaults_to_task(self) -> None:
+        assert ContainerConfig(image="img").scope == "task"
+
+    def test_can_serve_against_capabilities(self) -> None:
+        cc = ContainerConfig(image="img")
+        assert _StubInfra(name="x", caps=["docker"]).can_serve(cc) is True
+        assert _StubInfra(name="x", caps=["kvm"]).can_serve(cc) is False
+
+    def test_type_tag_stays_on_cube_container_path(self) -> None:
+        # _type must remain cube.container.ContainerConfig so the thousands of
+        # already-serialized task_metadata.json entries keep resolving.
+        assert ContainerConfig(image="img").model_dump()["_type"] == "cube.container.ContainerConfig"
+
+    def test_legacy_metadata_without_name_deserializes(self) -> None:
+        # Entry serialized before ContainerConfig inherited the (required) name
+        # field — must still load, defaulting name to "".
+        legacy = {
+            "_type": "cube.container.ContainerConfig",
+            "image": "python:3.12-slim",
+            "ram_gb": 1.0,
+            "cpu_cores": 1.0,
+            "gpu": False,
+            "disk_gb": 10.0,
+            "ports": None,
+        }
+        obj = ResourceConfig.model_validate(legacy)
+        assert isinstance(obj, ContainerConfig)
+        assert obj.name == ""
+        assert obj.image == "python:3.12-slim"
+        assert obj.requirements() == {"docker"}
+
+    def test_polymorphic_roundtrip_through_resource_config(self) -> None:
+        cc = ContainerConfig(image="img", ram_gb=2.0, gpu=True, ports=[8080])
+        reloaded = ResourceConfig.model_validate(cc.model_dump())
+        assert isinstance(reloaded, ContainerConfig)
+        assert reloaded == cc
+        assert reloaded.requirements() == {"docker", "gpu:nvidia"}
 
 
 # ── InfraConfig base: register / provision_status / can_serve ─────────────────
