@@ -66,7 +66,7 @@ from pydantic import Field, SerializeAsAny
 
 from cube import get_cache_dir
 from cube.core import TypedBaseModel, ValidatedConfig
-from cube.resource import InfraConfig, ResourceConfig
+from cube.resource import IncompatibleInfraError, InfraConfig, ResourceConfig
 from cube.seed import AbstractSeedGenerator
 from cube.task import RuntimeContext, Task, TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
@@ -733,19 +733,24 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
         for per-task container launches can do so from ``_setup()`` without
         overriding ``make``.
         """
+        # 0. Capability gate (fail-fast, before any install / provisioning or episode).
+        cfg: Self = self
+        if infra is not None and infra.on_incompatible != "force":
+            cfg = self._gate_infra_compatibility(infra)
+
         if infra is not None:
             infra.install()
 
-        if self.resources:
+        if cfg.resources:
             if infra is None:
                 logger.debug(
                     "%s.make() called without infra but %d resource(s) are declared; "
                     "skipping provisioning (task-scoped resources will be launched per-task).",
-                    type(self).__name__,
-                    len(self.resources),
+                    type(cfg).__name__,
+                    len(cfg.resources),
                 )
             else:
-                for resource in self.resources:
+                for resource in cfg.resources:
                     status = infra.provision_status(resource)
                     if status == "ready":
                         logger.info("Resource %s already provisioned on %s", resource.name, infra.fingerprint())
@@ -753,9 +758,49 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
                     logger.info("Provisioning resource %s on %s...", resource.name, infra.fingerprint())
                     infra.provision(resource)
 
-        benchmark = type(self).benchmark_class(config=self, infra=infra)
+        benchmark = type(cfg).benchmark_class(config=cfg, infra=infra)
         benchmark.setup()
         return benchmark
+
+    def _gate_infra_compatibility(self, infra: InfraConfig) -> Self:
+        """Run ``infra.can_serve`` over every resource this benchmark needs and apply
+        ``infra.on_incompatible``. Returns ``self`` (or, in ``"skip"`` mode, a task-narrowed
+        copy); raises ``IncompatibleInfraError`` in ``"raise"`` mode. Metadata-only and
+        launch-free, so it stays cheap even for large benchmarks. Never called for
+        ``on_incompatible == "force"``.
+        """
+        # Benchmark-scoped resources are shared by every task → an incompatible one is
+        # always fatal (it cannot be skipped), regardless of the policy.
+        bad_shared = [r for r in self.resources if not infra.can_serve(r)]
+        incompatible = {
+            tid: sorted(tm.container_config.requirements())
+            for tid, tm in self.tasks().items()
+            if tm.container_config is not None and not infra.can_serve(tm.container_config)
+        }
+        if not bad_shared and not incompatible:
+            return self
+
+        if bad_shared or infra.on_incompatible == "raise":
+            detail = {r.name: sorted(r.requirements()) for r in bad_shared}
+            detail.update(dict(list(incompatible.items())[:5]))
+            more = "" if len(incompatible) <= 5 else f" (+{len(incompatible) - 5} more tasks)"
+            raise IncompatibleInfraError(
+                f"{type(infra).__name__} (capabilities={sorted(infra.capabilities())}) cannot "
+                f"serve {len(bad_shared) + len(incompatible)} resource(s) of benchmark "
+                f"{self.benchmark_metadata.name!r}: {detail}{more}"
+            )
+
+        # skip mode: drop the incompatible tasks, keep the compatible subset.
+        keep = [tid for tid in self.tasks() if tid not in incompatible]
+        logger.warning(
+            "on_incompatible='skip': %s cannot serve %d/%d task(s) of %r; skipping %s",
+            type(infra).__name__,
+            len(incompatible),
+            len(self.tasks()),
+            self.benchmark_metadata.name,
+            sorted(incompatible),
+        )
+        return self.subset_from_list(keep)
 
 
 class Benchmark[TBenchConfig: BenchmarkConfig](ABC):

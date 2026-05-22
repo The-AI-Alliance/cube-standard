@@ -242,6 +242,38 @@ class TestContainerConfigUnification:
         assert reloaded.requirements() == {"docker", "gpu:nvidia"}
 
 
+# ── requires folding + container:root handshake (RFC #191) ────────────────────
+
+
+class TestResourceRequires:
+    """Every ResourceConfig folds its explicit ``requires`` tokens into ``requirements()``,
+    and ``container:root`` participates in the ``can_serve`` capability handshake."""
+
+    def test_base_requires_is_the_requirements(self) -> None:
+        assert ResourceConfig(name="x", requires={"container:root"}).requirements() == {"container:root"}
+
+    def test_container_requires_unions_with_docker(self) -> None:
+        assert ContainerConfig(image="i", requires={"container:root"}).requirements() == {
+            "docker",
+            "container:root",
+        }
+
+    def test_container_requires_composes_with_gpu(self) -> None:
+        cc = ContainerConfig(image="i", gpu=True, requires={"container:root"})
+        assert cc.requirements() == {"docker", "gpu:nvidia", "container:root"}
+
+    def test_vm_requires_unions_with_kvm(self) -> None:
+        assert VMResourceConfig(name="v", requires={"extra"}).requirements() == {"kvm", "extra"}
+
+    def test_empty_requires_changes_nothing(self) -> None:
+        assert ContainerConfig(image="i").requirements() == {"docker"}
+
+    def test_can_serve_respects_container_root(self) -> None:
+        cc = ContainerConfig(image="i", requires={"container:root"})
+        assert _StubInfra(name="root", caps=["docker", "container:root"]).can_serve(cc) is True
+        assert _StubInfra(name="nonroot", caps=["docker"]).can_serve(cc) is False
+
+
 # ── InfraConfig base: register / provision_status / can_serve ─────────────────
 
 

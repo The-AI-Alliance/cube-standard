@@ -513,6 +513,7 @@ class LocalInfraConfig(InfraConfig):
                 pass
         if shutil.which("docker"):
             caps.add("docker")
+            caps.add("container:root")  # local Docker containers run as uid 0
         return caps
 
     def provision(self, resource: ResourceConfig) -> None:

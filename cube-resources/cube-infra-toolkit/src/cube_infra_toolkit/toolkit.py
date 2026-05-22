@@ -114,6 +114,8 @@ class ToolkitInfraConfig(InfraConfig):
         return f"toolkit:{prof}"
 
     def capabilities(self) -> set[str]:
+        # No "container:root": the EAI cluster pins a non-root uid (13011), so tasks that
+        # need root (apt-install, writes to /etc, /var) are correctly reported incompatible.
         return {"docker", "network:egress"}
 
     def provision(self, resource: ResourceConfig) -> None:

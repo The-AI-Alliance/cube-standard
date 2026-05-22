@@ -1045,8 +1045,8 @@ class AzureInfraConfig(InfraConfig):
         return f"azure:{self.location}"
 
     def capabilities(self) -> set[str]:
-        """Azure can satisfy VM and Docker resources (native hypervisor + Docker in VM)."""
-        return {"kvm", "docker"}
+        """Azure can satisfy VM and Docker resources (native hypervisor + Docker in VM, root)."""
+        return {"kvm", "docker", "container:root"}
 
     def provision(self, resource: ResourceConfig) -> None:
         """Bootstrap OSWorld (or any VM image) from source_url into the Compute Gallery.

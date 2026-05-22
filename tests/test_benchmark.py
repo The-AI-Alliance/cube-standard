@@ -15,6 +15,13 @@ from cube.benchmark import (
     _load_benchmark_clarifications,
 )
 from cube.core import Observation
+from cube.resource import (
+    ContainerConfig,
+    IncompatibleInfraError,
+    InfraConfig,
+    ResourceConfig,
+    ResourceHandle,
+)
 from cube.seed import AbstractSeedGenerator
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
@@ -657,6 +664,7 @@ def test_setup_calls_cleanup_stale_when_infra_set() -> None:
     from cube.resource import InfraConfig
 
     infra = MagicMock(spec=InfraConfig)
+    infra.on_incompatible = "force"  # spec'd mocks don't expose pydantic fields; skip the gate here
     infra.cleanup_stale.return_value = []
 
     bench = MyBenchmarkConfig().make(infra=infra)
@@ -682,6 +690,7 @@ def test_setup_cleanup_stale_failure_does_not_block_setup() -> None:
     from cube.resource import InfraConfig
 
     infra = MagicMock(spec=InfraConfig)
+    infra.on_incompatible = "force"  # spec'd mocks don't expose pydantic fields; skip the gate here
     infra.cleanup_stale.side_effect = RuntimeError("transient cloud 503")
 
     # Must not raise — failure is swallowed and logged.
@@ -699,6 +708,7 @@ def test_setup_cleanup_stale_called_before_subclass_setup() -> None:
 
     call_order: list[str] = []
     infra = MagicMock(spec=InfraConfig)
+    infra.on_incompatible = "force"  # spec'd mocks don't expose pydantic fields; skip the gate here
     infra.cleanup_stale.side_effect = lambda: call_order.append("cleanup_stale") or []
 
     class _OrderingTaskConfig(_TaskConfig):
@@ -721,5 +731,91 @@ def test_setup_cleanup_stale_called_before_subclass_setup() -> None:
     bench = _OrderingBenchConfig().make(infra=infra)
     try:
         assert call_order == ["cleanup_stale", "_setup"]
+    finally:
+        bench.close()
+
+
+# ── make() capability gate: on_incompatible raise / skip / force (RFC #191) ────
+
+
+class _GateInfra(InfraConfig):
+    """Minimal concrete infra whose capabilities are set per-test."""
+
+    caps: list[str] = []
+
+    def fingerprint(self) -> str:
+        return "gate"
+
+    def capabilities(self) -> set[str]:
+        return set(self.caps)
+
+    def provision(self, resource: ResourceConfig) -> None:
+        pass
+
+    def launch(self, resource: ResourceConfig, run_id: str, ttl_seconds: int | None = None) -> ResourceHandle:
+        raise NotImplementedError
+
+    def list_active(self, run_id: str | None = None) -> list[ResourceHandle]:
+        return []
+
+    def cleanup(self, run_id: str) -> None:
+        pass
+
+    def cleanup_stale(self, max_age_seconds: int | None = None) -> list[str]:
+        return []
+
+
+class _GateTaskConfig(TaskConfig):
+    def make(self, runtime_context=None):
+        return _Task(metadata=self.metadata, tool_config=self.tool_config or _ToolConfig())
+
+
+class _GateBench(Benchmark):
+    def _setup(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class _GateBenchConfig(BenchmarkConfig):
+    benchmark_metadata = BenchmarkMetadata(name="gate-bench", version="1", description="x")
+    task_metadata = {
+        "root": TaskMetadata(id="root", container_config=ContainerConfig(image="img", requires={"container:root"})),
+        "plain": TaskMetadata(id="plain", container_config=ContainerConfig(image="img")),
+    }
+    task_config_class = _GateTaskConfig
+    benchmark_class = _GateBench
+
+
+def test_make_raise_aborts_when_a_task_is_incompatible() -> None:
+    infra = _GateInfra(caps=["docker"], on_incompatible="raise")  # no container:root
+    with pytest.raises(IncompatibleInfraError, match="cannot serve"):
+        _GateBenchConfig().make(infra=infra)
+
+
+def test_make_skip_drops_only_the_incompatible_tasks() -> None:
+    infra = _GateInfra(caps=["docker"], on_incompatible="skip")
+    bench = _GateBenchConfig().make(infra=infra)
+    try:
+        assert set(bench.config.tasks()) == {"plain"}
+    finally:
+        bench.close()
+
+
+def test_make_force_keeps_every_task() -> None:
+    infra = _GateInfra(caps=["docker"], on_incompatible="force")
+    bench = _GateBenchConfig().make(infra=infra)
+    try:
+        assert set(bench.config.tasks()) == {"root", "plain"}
+    finally:
+        bench.close()
+
+
+def test_make_passes_when_infra_serves_root() -> None:
+    infra = _GateInfra(caps=["docker", "container:root"], on_incompatible="raise")
+    bench = _GateBenchConfig().make(infra=infra)
+    try:
+        assert set(bench.config.tasks()) == {"root", "plain"}
     finally:
         bench.close()

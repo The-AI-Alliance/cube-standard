@@ -111,6 +111,15 @@ class UnsupportedResourceType(NotImplementedError):
         )
 
 
+class IncompatibleInfraError(RuntimeError):
+    """Raised at ``BenchmarkConfig.make`` — before any provisioning or episode — when an
+    infra cannot serve one or more of a benchmark's resources and its ``on_incompatible``
+    policy is ``"raise"``.
+
+    Setup-time and pre-launch by construction: nothing is provisioned and no retry budget
+    is consumed, so the same request will not be re-attempted."""
+
+
 # ── ResourceConfig ────────────────────────────────────────────────────────────
 
 
@@ -141,14 +150,20 @@ class ResourceConfig(TypedBaseModel):
     source_hash: str | None = None
     default_ttl_seconds: int | None = 3600
     bootstrap_script_extra: str | None = None
+    requires: set[str] = Field(default_factory=set)
+    """Explicit capability tokens this resource needs beyond what its subclass implies,
+    e.g. ``{"container:root"}``. Folded into ``requirements()``; empty (default) adds
+    nothing, so existing resources are unaffected."""
 
     def requirements(self) -> set[str]:
         """Declare what the infra must support to run this resource.
 
-        Checked against InfraConfig.capabilities() before provisioning or launch.
-        Standard tokens: "kvm", "docker", "gpu:nvidia", "network:egress".
+        Checked against ``InfraConfig.capabilities()`` (via ``InfraConfig.can_serve``)
+        before provisioning or launch. Subclasses union their structural needs onto the
+        explicit ``requires`` tokens via ``super().requirements()``.
+        Standard tokens: "kvm", "docker", "gpu:nvidia", "network:egress", "container:root".
         """
-        return set()
+        return set(self.requires)
 
 
 class VMResourceConfig(ResourceConfig):
@@ -184,7 +199,7 @@ class VMResourceConfig(ResourceConfig):
     parallel workers can share a host without colliding on a fixed local port."""
 
     def requirements(self) -> set[str]:
-        return {"kvm"} if self.requires_kvm else set()
+        return super().requirements() | ({"kvm"} if self.requires_kvm else set())
 
 
 class VolumeSpec(TypedBaseModel):
@@ -251,7 +266,7 @@ class DockerServiceConfig(ResourceConfig):
     volumes: list[VolumeSpec] = []
 
     def requirements(self) -> set[str]:
-        return {"docker"}
+        return super().requirements() | {"docker"}
 
 
 class ContainerConfig(ResourceConfig):
@@ -280,7 +295,7 @@ class ContainerConfig(ResourceConfig):
     ports: list[int] | None = None
 
     def requirements(self) -> set[str]:
-        reqs = {"docker"}
+        reqs = super().requirements() | {"docker"}
         if self.gpu:
             reqs.add("gpu:nvidia")
         return reqs
@@ -405,6 +420,8 @@ class ResourceHandle(ABC):
 
 # ── InfraConfig ───────────────────────────────────────────────────────────────
 
+OnIncompatible = Literal["raise", "skip", "force"]
+
 
 class InfraConfig(ValidatedConfig, ABC):
     """Harness-owned config + executor for resource provisioning and lifecycle.
@@ -450,6 +467,19 @@ class InfraConfig(ValidatedConfig, ABC):
     the resource name.  E.g. image_name_suffix="-test" and resource.name="foo"
     → image named "foo-test", store key "foo-test@<fingerprint>"."""
 
+    on_incompatible: OnIncompatible = "raise"
+    """Policy when a resource needs a capability this infra lacks — checked at
+    ``BenchmarkConfig.make`` (before provisioning) by running ``can_serve`` over each
+    task's container and the benchmark's declared resources:
+
+    - ``"raise"`` (default) — abort with ``IncompatibleInfraError`` if ANY resource is
+      incompatible. No provisioning, no episodes, no spend.
+    - ``"skip"`` — run only the compatible tasks; incompatible ones are dropped from the
+      task view (the harness records them terminally). An incompatible *benchmark-scoped*
+      resource still raises — it is shared and cannot be skipped.
+    - ``"force"`` — attempt everything anyway; the escape hatch to probe whether a stale
+      requirement still holds."""
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def install(self) -> None:
@@ -482,7 +512,9 @@ class InfraConfig(ValidatedConfig, ABC):
         """Declare what this infra supports.
 
         Checked against resource.requirements() before provisioning or launch.
-        Standard tokens: "kvm", "docker", "gpu:nvidia", "network:egress".
+        Standard tokens: "kvm", "docker", "gpu:nvidia", "network:egress",
+        "container:root" (container processes run as uid 0 — needed by tasks that
+        apt-install or write to /etc, /var; absent on infras that pin a non-root uid).
         """
         ...
 
