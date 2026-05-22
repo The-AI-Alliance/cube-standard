@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
-"""Smoke: ContainerConfig folded into the ResourceConfig family (Phase 1 unify).
+"""Smoke: ``ContainerConfig`` serialization across committed metadata + end-to-end launch.
 
-Background
-==========
-``ContainerConfig`` used to be a standalone ``TypedBaseModel``; the orphan
-``DockerImageConfig`` was a parallel single-image ``ResourceConfig`` (defined, never
-launched by any infra). The unification made ``ContainerConfig`` a ``ResourceConfig``
-— so it joins the capability handshake (``requirements()`` / ``InfraConfig.can_serve``)
-— deleted ``DockerImageConfig``, and moved ``ContainerConfig`` to ``cube.resource``
-(re-exported from ``cube.container`` for back-compat).
-
-The risk surface is **serialization**: already-committed ``task_metadata.json`` entries
-carry ``"_type": "cube.container.ContainerConfig"`` and were serialized *before* both
-the move and the now-inherited (required on ``ResourceConfig``) ``name`` field. They
-must still deserialize — via the re-export, defaulting ``name`` — without regeneration.
+``ContainerConfig`` is a ``ResourceConfig`` living in ``cube.resource`` (re-exported
+from ``cube.container`` for back-compat), so it shares the capability handshake
+(``requirements()`` / ``InfraConfig.can_serve``). The fragile surface is
+**serialization**: thousands of committed ``task_metadata.json`` entries embed a
+``ContainerConfig`` and must keep deserializing across schema/location changes —
+including legacy ``"_type": "cube.container.ContainerConfig"`` blobs (resolved via the
+re-export) and ones serialized before ``ContainerConfig`` inherited the required
+``name`` field. This smoke guards that, plus the local-docker launch path.
 
 What it does
 ============
@@ -41,9 +36,9 @@ How to read the output
 
 Run from the cube-standard repo root::
 
-    uv run scripts/smoke/container_config_unify.py
-    uv run scripts/smoke/container_config_unify.py --cube-harness /path/to/cube-harness
-    uv run scripts/smoke/container_config_unify.py --no-launch
+    uv run scripts/smoke/container_config_smoke.py
+    uv run scripts/smoke/container_config_smoke.py --cube-harness /path/to/cube-harness
+    uv run scripts/smoke/container_config_smoke.py --no-launch
 """
 
 from __future__ import annotations
@@ -64,7 +59,7 @@ from cube.task_infra import launch_task_container
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("cc-unify-smoke")
 
-NAME = "container_config_unify"
+NAME = "container_config_smoke"
 CURRENT_TYPE = "cube.resource.ContainerConfig"  # canonical home after the move
 LEGACY_TYPE = "cube.container.ContainerConfig"  # pre-move; still resolves via the re-export shim
 LAUNCH_IMAGE = "python:3.12-slim"
