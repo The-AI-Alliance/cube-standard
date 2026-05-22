@@ -98,44 +98,54 @@ Every debug task must hit `reward == 1.0`. If one doesn't, either the debug acti
 
 ## Prompt hints and per-task clarifications
 
-Two optional metadata fields let benchmark authors steer how harnesses
-present tasks to the agent without rewriting the benchmark itself. Both
-are framework slots: `cube-standard` only declares them and ships them
-across the serialization boundary. Whether and how to surface them is the
-harness's call.
+A benchmark may *organize* two optional, agent-facing prompt strings to steer
+how harnesses present it — without rewriting the benchmark itself. The
+benchmark only stores them; `cube-standard` loads them and a harness folds them
+into the agent config at experiment-design time.
 
-**`BenchmarkMetadata.benchmark_hint_prompt`** — one concise paragraph the
-harness may prepend to every task in this benchmark. Use it when the
-benchmark has conventions a first-time reader would miss but that aren't
-specific to any single task: a high-level workflow, the shape of a
-verifier, a recurring ambiguity in the wording. Keep it short and
-generic. A generalist agent should remain competitive without it; the
-field exists so evaluations that opt in can report a number on a level
-playing field, not so authors can engineer prompts for any one model.
-Default: `None`.
-
-**`TaskMetadata.task_clarification`** — an optional short string a
-harness may append to the task objective, gated by
-`BenchmarkConfig.add_task_clarification`. Use it for individual brittle
-tasks whose original wording omits a step a reasonable LLM would not
-infer. Canonical example: a miniwob task whose objective reads "set
-slider to 32 and string value to 'foo'" but whose verifier only rewards
-if the agent then clicks submit — a competent LLM would not click submit
-unprompted, and that is not really the LLM's fault. Adding
-`task_clarification="After setting the values, click submit."` keeps the
-original benchmark wording intact while letting evaluations toggle the
-fix on. Populated over time by the `/auto-cube` workflow as it detects
-brittle tasks; left `None` for tasks whose wording is unambiguous.
-
-**`BenchmarkConfig.add_task_clarification`** — instance-level switch on
-the config. Default `False` so a run reproduces the original benchmark
-wording untouched and stays comparable with baselines that ignored these
-clarifications. Set `True` on the config when you want the run to apply
-all populated `task_clarification` strings.
+Both live in an optional **`benchmark_clarifications.py` sidecar next to the
+benchmark's module** (mirroring the `task_metadata` "files next to the module"
+convention), exposing two module-level names:
 
 ```python
-cfg = MyBenchmarkConfig(add_task_clarification=True)
+# my_cube/benchmark_clarifications.py
+BENCHMARK_HINT = "Submit your final answer with final_step."
+
+_SLIDER_TASKS = ["slider-1", "slider-2", "slider-3"]
+TASK_CLARIFICATION = {tid: "After setting the values, click submit." for tid in _SLIDER_TASKS}
 ```
+
+**`BENCHMARK_HINT`** — one concise paragraph for conventions a first-time reader
+would miss but that aren't specific to any single task: a high-level workflow,
+the shape of a verifier, a recurring ambiguity. Keep it short and generic — a
+generalist agent should remain competitive without it; it exists so opt-in
+evaluations report on a level playing field, not so authors engineer prompts
+for one model.
+
+**`TASK_CLARIFICATION`** — a `{task_id: text}` dict for individually brittle
+tasks whose original wording omits a step a reasonable LLM would not infer.
+Canonical example: a miniwob task whose objective reads "set slider to 32 and
+string value to 'foo'" but whose verifier only rewards if the agent then clicks
+submit — a competent LLM would not click submit unprompted, and that is not
+really the LLM's fault. Because it's a `.py`, one clarification can be reused
+across many task ids (above) — that reuse is a deliberate **regularizer**,
+pushing clarifications to generalize rather than overfit per task.
+
+A harness loads both via `BenchmarkConfig.load_benchmark_clarifications()`
+(returns `(benchmark_hint, task_clarification)`; empty when no sidecar exists),
+then folds them into the agent config at experiment-design time — e.g.:
+
+```python
+overlay = MyBenchmarkConfig.load_benchmark_clarifications()
+agent = GennyConfig(
+    benchmark_hint_prompt=overlay.benchmark_hint,
+    task_clarification=overlay.task_clarification,  # pass {} to run without clarifications
+    ...,
+)
+```
+
+Applying the overlay is the recipe's explicit choice — to run a clean baseline,
+simply don't pass it. There is no separate on/off flag.
 
 Because both fields are metadata, third-party harnesses see them through
 the same serialization the rest of `TaskMetadata` / `BenchmarkMetadata`

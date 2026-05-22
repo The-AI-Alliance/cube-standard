@@ -7,7 +7,13 @@ from typing import Literal
 
 import pytest
 
-from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata
+from cube.benchmark import (
+    Benchmark,
+    BenchmarkClarifications,
+    BenchmarkConfig,
+    BenchmarkMetadata,
+    _load_benchmark_clarifications,
+)
 from cube.core import Observation
 from cube.seed import AbstractSeedGenerator
 from cube.task import Task, TaskConfig, TaskMetadata
@@ -92,28 +98,29 @@ def test_benchmark_metadata_defaults():
         requirements={},
         named_subsets={},
         reset_isolation=None,
-        benchmark_hint_prompt=None,
     )
 
 
-def test_benchmark_metadata_hint_prompt_round_trips():
-    bm = BenchmarkMetadata(
-        name="foo",
-        version="1.0",
-        description="bar",
-        benchmark_hint_prompt="Submit your final answer with final_step.",
-    )
-    reloaded = BenchmarkMetadata.model_validate_json(bm.model_dump_json())
-    assert reloaded.benchmark_hint_prompt == "Submit your final answer with final_step."
+def test_load_benchmark_clarifications_from_sidecar():
+    """A benchmark whose package ships ``benchmark_clarifications.py`` loads both
+    the benchmark hint and the per-task clarification dict from it."""
+    overlay = _load_benchmark_clarifications("tests.clarif_fixture")
+    assert overlay.benchmark_hint == "Submit your final answer with final_step."
+    assert overlay.task_clarification["slider-2"] == "After setting the values, click Submit."
+    assert len(overlay.task_clarification) == 3
 
 
-def test_benchmark_config_add_task_clarification_defaults_false():
-    cfg = MyBenchmarkConfig()
-    assert cfg.add_task_clarification is False
-    enabled = MyBenchmarkConfig(add_task_clarification=True)
-    assert enabled.add_task_clarification is True
-    reloaded = MyBenchmarkConfig.model_validate_json(enabled.model_dump_json())
-    assert reloaded.add_task_clarification is True
+def test_load_benchmark_clarifications_absent_returns_empty():
+    overlay = _load_benchmark_clarifications("tests")  # no sidecar next to the tests package
+    assert overlay == BenchmarkClarifications()
+    assert overlay.benchmark_hint is None
+    assert overlay.task_clarification == {}
+
+
+def test_benchmark_config_load_clarifications_empty_by_default():
+    """The classmethod resolves the sidecar from the config's own module; the test
+    benchmark has none, so it returns an empty overlay."""
+    assert MyBenchmarkConfig.load_benchmark_clarifications() == BenchmarkClarifications()
 
 
 # ── __init_subclass__ validation ──────────────────────────────────────────────

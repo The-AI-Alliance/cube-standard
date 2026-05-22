@@ -54,14 +54,7 @@ def test_task_metadata_defaults():
         abstract_description="",
         recommended_max_steps=None,
         container_config=None,
-        task_clarification=None,
     )
-
-
-def test_task_metadata_clarification_round_trips():
-    tm = TaskMetadata(id="my-task", task_clarification="After setting values, click submit.")
-    reloaded = TaskMetadata.model_validate_json(tm.model_dump_json())
-    assert reloaded.task_clarification == "After setting values, click submit."
 
 
 # --- Task.reset ---
