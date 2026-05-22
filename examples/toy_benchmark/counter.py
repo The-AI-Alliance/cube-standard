@@ -11,10 +11,10 @@ from collections.abc import Generator
 from typing import Any, ClassVar, Dict, Literal, Tuple
 
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
-from cube.container import Container, ContainerConfig
+from cube.container import Container
 from cube.core import Action, ActionSchema, Observation
 from cube.infra_local import LocalInfraConfig
-from cube.resource import InfraConfig
+from cube.resource import ContainerConfig, InfraConfig
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
 

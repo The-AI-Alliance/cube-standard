@@ -27,7 +27,7 @@ from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
 from typing_extensions import TypeVar
 
 from cube import get_cache_dir
-from cube.container import Container, ContainerConfig
+from cube.container import Container
 from cube.core import (
     Action,
     ActionSchema,
@@ -38,7 +38,7 @@ from cube.core import (
     StructuredContent,
     TypedBaseModel,
 )
-from cube.resource import ResourceHandle
+from cube.resource import ContainerConfig, ResourceHandle
 from cube.tool import AbstractTool, ToolConfig
 
 # Type parameters for ``Task``. ``TTMetadata`` narrows ``self.metadata``; ``TTool``
