@@ -51,8 +51,10 @@ from __future__ import annotations
 import csv
 import enum
 import fnmatch
+import importlib.resources
 import json
 import logging
+import subprocess
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter
@@ -599,12 +601,14 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
 
     @classmethod
     def install(cls) -> None:
-        """Populate the per-task execution cache with heavy data needed at task-run time.
+        """Install system dependencies and populate the per-task execution cache.
 
-        Override in subclasses that ship minimal ``task_metadata.json`` and
-        need to download or compute heavier per-task execution data (e.g.
-        SWE-bench problem statements, OSWorld evaluator configs). The default
-        is a no-op.
+        The base implementation runs ``scripts/install.sh`` from the cube's
+        package data if present (idempotent system dependency setup — e.g.
+        installing playwright browsers or qemu). Subclasses that need to
+        populate the per-task execution cache should call ``super().install()``
+        then write each task's processed data as a JSON file at
+        ``cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"``.
 
         Convention: write each task's processed data as a JSON file at
         ``cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"``
@@ -618,6 +622,19 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
 
         Must be idempotent.
         """
+        cls._run_install_script()
+
+    @classmethod
+    def _run_install_script(cls) -> None:
+        """Run ``scripts/install.sh`` from the cube package if present."""
+        package = cls.__module__.split(".")[0]
+        try:
+            ref = importlib.resources.files(package).joinpath("scripts/install.sh")
+            with importlib.resources.as_file(ref) as script:
+                if script.exists():
+                    subprocess.run(["bash", str(script)], check=True)
+        except (ModuleNotFoundError, TypeError):
+            pass
 
     @classmethod
     def uninstall(cls) -> None:
@@ -656,6 +673,9 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
         for per-task container launches can do so from ``_setup()`` without
         overriding ``make``.
         """
+        if infra is not None:
+            infra.install()
+
         if self.resources:
             if infra is None:
                 logger.debug(
