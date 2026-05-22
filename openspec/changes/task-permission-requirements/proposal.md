@@ -49,14 +49,24 @@ gates at `Benchmark.setup` time with a clear three-mode policy.
 
 ### 1. Permission token vocabulary (additive)
 
-Add to the `InfraConfig.capabilities()` documented vocabulary:
+Add one token to the `InfraConfig.capabilities()` documented vocabulary:
 
 | Token | Meaning |
 |---|---|
 | `container:root` | Container processes run as uid 0 |
-| `container:apt` | `apt-get install` works (implies root + Debian-mirror egress) |
-| `container:privileged-ports` | A process may `bind()` ports <1024 |
-| `container:systemd` | `systemctl` / `service` work |
+
+A single `container:root` token is deliberate. In practice the
+finer-grained needs — `apt-get install`, writing to `/etc` and `/var`,
+binding ports <1024, `systemctl` — are **all root-gated**, and they
+correlate near-perfectly on both sides: an infra either grants root (and
+thus all of them) or it doesn't (Daytona/local/AWS/Azure run as root;
+EAI Toolkit forces uid 13011 and so denies the whole set). Splitting into
+`container:apt` / `container:systemd` / `container:privileged-ports`
+would be speculative granularity with no current consumer that needs the
+distinction. The token vocabulary is open (`set[str]`), so a future infra
+that offers a *partial* root surface — e.g. rootless Podman with
+`CAP_NET_BIND_SERVICE` but no apt — can introduce a finer token then,
+without breaking anything.
 
 Adding a token is non-breaking: infras default to *not* publishing it;
 benchmarks/tasks default to *not* requiring it.
@@ -83,7 +93,7 @@ class BenchmarkConfig(TypedBaseModel, ABC):
 # cubes/terminalbench2-cube
 class TerminalBench2BenchmarkConfig(BenchmarkConfig):
     def requirements(self) -> set[str]:
-        return {"container:root", "container:apt"}
+        return {"container:root"}
 ```
 
 A per-task override stays available for genuinely heterogeneous
@@ -116,7 +126,7 @@ Resolved at experiment-setup time (default `"raise"`):
   If non-empty, **raise `IncompatibleInfraError` immediately, before any
   episode is created**. tbench2 on toolkit stops at setup with:
   `"ToolkitInfraConfig cannot run terminalbench2-cube: missing
-  {container:apt, container:root}."` No episodes, no retries, no spend.
+  {container:root}."` No episodes, no retries, no spend.
 
 - **`"skip"`**. Run the compatible subset. A task whose effective
   requirement isn't met is **not launched**; its episode is recorded with
@@ -175,7 +185,7 @@ def compatibility_report(cls, infra: InfraConfig) -> CompatibilityReport: ...
 
 Reads metadata only (no container launches) so `cube list --infra=toolkit`
 and CI gates can show "tbench2: incompatible on toolkit (needs
-container:root, container:apt)" before anyone spends a dollar.
+container:root)" before anyone spends a dollar.
 
 ## Migration impact
 
@@ -194,11 +204,10 @@ Recommended rollout (follow-up PRs, not this RFC):
 
 1. Land this RFC (vocabulary + types + gate behaviour + status mapping).
 2. cube-resources: `LocalInfraConfig`, `DaytonaInfraConfig`, `AWSInfraConfig`,
-   `AzureInfraConfig` publish `container:root`, `container:apt`,
-   `container:privileged-ports`. `ToolkitInfraConfig` publishes none of these.
+   `AzureInfraConfig` publish `container:root`. `ToolkitInfraConfig` does not.
 3. cube-harness: `terminalbench2-cube` declares
-   `requirements() = {"container:root", "container:apt"}`. tbench2 on
-   toolkit now fails fast at setup with a clear message.
+   `requirements() = {"container:root"}`. tbench2 on toolkit now fails fast
+   at setup with a clear message.
 4. cube-harness: wire the `on_incompatible` knob into `Experiment` / `run_*`
    and the episode-status `INVALID_CONFIG` mapping for skip mode.
 5. Tooling: `cube list --infra=<name>` and CI dashboards display the

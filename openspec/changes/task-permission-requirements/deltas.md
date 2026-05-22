@@ -2,15 +2,19 @@
 
 ## ADDED — `openspec/specs/resource/spec.md`: capability token vocabulary
 
-The `InfraConfig.capabilities()` docstring is extended with the standard
-permission-shaped token vocabulary:
+The `InfraConfig.capabilities()` docstring is extended with one
+permission-shaped token:
 
 | Token | Meaning |
 |---|---|
 | `container:root` | Container processes run as uid 0 |
-| `container:apt` | `apt-get install` (and equivalent) work — implies root + reachable Debian/Ubuntu mirrors |
-| `container:privileged-ports` | A process inside the container may `bind()` ports <1024 |
-| `container:systemd` | `systemctl` / `service` work (PID 1 is systemd-compatible) |
+
+A single token is intentional: `apt-get`, writes to `/etc` / `/var`,
+binding ports <1024, and `systemctl` are all root-gated and correlate
+near-perfectly with "is the container root?" on both the infra and image
+sides. The vocabulary stays open (`set[str]`), so a finer token (e.g.
+`container:cap-net-bind` for a future rootless-with-capabilities infra)
+can be added later without breaking existing declarations.
 
 Adding a token is non-breaking. Infras default to **not** publishing one;
 benchmarks/tasks default to **not** requiring one. The pre-existing
@@ -175,7 +179,7 @@ Documented here for reviewer context (cube-harness follow-up PR):
 | **Existing `InfraConfig` subclasses** | None. New tokens unrequested until a cube opts in. | Immediate. |
 | **`Benchmark.setup` callers** | New keyword-only `on_incompatible="raise"` with a no-op default when `requirements()` is empty. Existing call sites unaffected. | This PR (spec); cube-harness wires the knob. |
 | **Cubes adopting requirements (tbench2)** | Implement `BenchmarkConfig.requirements()`. Gated on infras lacking the tokens. | Per-cube follow-up. |
-| **Root-capable infras** | Publish `container:root` / `container:apt` / `container:privileged-ports` in `capabilities()`. | Paired with the first adopting cube. |
+| **Root-capable infras** | Publish `container:root` in `capabilities()`. | Paired with the first adopting cube. |
 | **cube-harness runner** | Forward `on_incompatible` from `Experiment`/`run_*`; map skip-mode episodes to `INVALID_CONFIG`. | cube-harness follow-up. |
 
 No silent behaviour change: the gate only fires for benchmarks that
