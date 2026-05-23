@@ -123,6 +123,7 @@ def relocate_if_readonly(
     new_wd: str,
     *,
     extra_setup: str | None = None,
+    force: bool = False,
 ) -> str:
     """Copy *working_dir* to *new_wd* if it isn't writable by the runtime user.
 
@@ -130,6 +131,15 @@ def relocate_if_readonly(
     *new_wd* after the copy).  Cubes that need additional setup after the copy
     (e.g. ``git config safe.directory``) can pass the commands as *extra_setup*
     — they are appended to the ``cp -a`` invocation with ``&&``.
+
+    The default probe (``test -w working_dir``) only checks the **top** dir. A
+    writable top dir can still hold root-owned, non-writable *subdirectories*
+    (some upstream Docker images bake them in) that a non-root runtime user
+    can neither write nor reparent in place — the caller knows this from its own
+    deeper writability check and passes ``force=True`` to relocate unconditionally
+    to a fully runtime-user-owned copy (``cp -a`` creates everything owned by the
+    runtime user). Tests run from *new_wd* import the relocated copy because
+    ``python -m pytest`` puts the cwd first on ``sys.path``.
 
     Typical usage in a cube's ``_build_tool()``::
 
@@ -141,9 +151,13 @@ def relocate_if_readonly(
             container=self._container
         )
     """
-    probe = container.exec(f"test -w {working_dir} && echo W || echo R", timeout=30)
-    if "W" in probe.stdout:
-        return working_dir
+    # auto-fix(205)↓ force= skips the top-dir probe so a caller can relocate even
+    # when `test -w {working_dir}` passes — it misses root-owned non-writable subdirs.
+    if not force:
+        probe = container.exec(f"test -w {working_dir} && echo W || echo R", timeout=30)
+        if "W" in probe.stdout:
+            return working_dir
+    # /auto-fix(205)
     logger.info("%s not writable by runtime user — copying to %s", working_dir, new_wd)
     cmd = f"cp -a {working_dir} {new_wd}"
     if extra_setup:
@@ -193,4 +207,14 @@ from cube.resource import ContainerConfig  # noqa: E402,F401
 #   why:       check result.exit_code; raise the module's domain exception
 #              (ContainerExecError), consistent with its error hierarchy.
 #   tested:    tests/test_container.py relocate cases.
+#   hash=PENDING: stamped by scripts/auto_fix_lint.py (Tier-1) on first run.
+# auto-fix-note(205) {class=L1 issue=205 hash=PENDING ctx=toolkit/uid-13011/swebench-verified/cube-standard@a9d98a7}
+#   symptoms:  non-root runtime (EAI toolkit uid 13011) — `test -w /testbed` passes
+#              but a root-owned subdir (psf/requests' /testbed/requests/) is
+#              non-writable, so relocate never fired and patches hit Permission denied.
+#   invariant: relocate_if_readonly yields a FULLY writable working dir; force= lets
+#              a caller that detected nested non-writable paths relocate regardless.
+#   why:       force= is additive (default False = prior probe behavior); only the
+#              caller knows its tree must be fully writable (it patches every file).
+#   tested:    cube-harness #443 — psf/requests gold patch 0/6 -> 6/6 on toolkit.
 #   hash=PENDING: stamped by scripts/auto_fix_lint.py (Tier-1) on first run.
