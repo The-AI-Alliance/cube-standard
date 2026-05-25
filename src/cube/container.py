@@ -79,7 +79,16 @@ class Container(ResourceHandle, ABC):
         workdir: str | None = None,
         env: Dict[str, str] | None = None,
     ) -> ExecResult:
-        """Execute *command* inside the container."""
+        """Execute *command* inside the container.
+
+        Resilience contract: implementations should tolerate **transient transport
+        failures** (e.g. a proxy/API read-timeout) up to a small bounded budget and
+        raise :class:`ContainerExecError` only on a genuine, persistent failure — a
+        single network blip must not crash a long-running episode. Retrying the
+        *command* itself is unsafe once it has started (non-idempotent side effects);
+        prefer an async-submit + idempotent-poll transport (the Daytona driver does
+        this) so the retry lands on the poll, not the command.
+        """
 
     @abstractmethod
     def forward_port(self, container_port: int) -> int:

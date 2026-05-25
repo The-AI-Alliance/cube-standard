@@ -52,31 +52,11 @@ _retry_io = retry(
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
-
-def _parse_session_output(raw: str) -> tuple[str, str]:
-    """Parse multiplexed session output into (stdout, stderr).
-
-    The Daytona session protocol prefixes output chunks with
-    ``\\x01`` for stdout and ``\\x02`` for stderr.
-    """
-    stdout_parts: list[str] = []
-    stderr_parts: list[str] = []
-    current = stdout_parts
-    i = 0
-    while i < len(raw):
-        if raw[i] == "\x01":
-            current = stdout_parts
-            i += 1
-        elif raw[i] == "\x02":
-            current = stderr_parts
-            i += 1
-        else:
-            j = i
-            while j < len(raw) and raw[j] not in ("\x01", "\x02"):
-                j += 1
-            current.append(raw[i:j])
-            i = j
-    return "".join(stdout_parts), "".join(stderr_parts)
+# Async-exec poll tuning. The submit returns a cmd_id immediately, so its HTTP read
+# is short; the long wait is decomposed into these short, idempotent polls.
+_SUBMIT_TIMEOUT_S = 60
+_POLL_INTERVAL_S = 2.0
+_POLL_GRACE_S = 15.0
 
 
 class DaytonaContainer(Container):
@@ -125,23 +105,55 @@ class DaytonaContainer(Container):
 
         start = time.monotonic()
         try:
-            response = self._sandbox.process.execute_session_command(
+            # auto-fix(207)↓
+            # Submit asynchronously and poll, instead of one long synchronous read.
+            # `run_async=False` held a single HTTP read open for the whole command, so a
+            # transient `proxy.app.daytona.io` ReadTimeout (~135s) raised ContainerExecError
+            # and crashed the whole (often many-step) episode — unretryable, because by then
+            # the command had already started. With `run_async=True` the long wait becomes
+            # short, *idempotent* polls (`_get_command`/`_command_logs`, each @_retry_io), so a
+            # transient blip retries safely; the command's real bound stays the in-sandbox
+            # `timeout Ns` wrapper. Logs come back already split into stdout/stderr.
+            submit = self._sandbox.process.execute_session_command(
                 self._session_id,
-                SessionExecuteRequest(command=wrapped, run_async=False),
-                timeout=effective_timeout + 10,
+                SessionExecuteRequest(command=wrapped, run_async=True),
+                timeout=_SUBMIT_TIMEOUT_S,
             )
+            cmd_id = submit.cmd_id
+            if cmd_id is None:
+                raise ContainerExecError("Daytona async submit returned no cmd_id")
+
+            exit_code = submit.exit_code
+            deadline = start + effective_timeout + _POLL_GRACE_S
+            while exit_code is None and time.monotonic() < deadline:
+                time.sleep(_POLL_INTERVAL_S)
+                exit_code = self._get_command(cmd_id).exit_code
+
+            logs = self._command_logs(cmd_id)
             duration = time.monotonic() - start
-
-            stdout, stderr = _parse_session_output(response.output or "")
-
+            # exit_code still None ⇒ our poll deadline beat the in-sandbox `timeout`
+            # wrapper; report it as a timeout (124) rather than a spurious success.
             return ExecResult(
-                stdout=stdout.strip(),
-                stderr=stderr.strip(),
-                exit_code=response.exit_code if response.exit_code is not None else 1,
+                stdout=(logs.stdout or "").strip(),
+                stderr=(logs.stderr or "").strip(),
+                exit_code=exit_code if exit_code is not None else 124,
                 duration_seconds=round(duration, 3),
             )
+            # /auto-fix(207)
+        except ContainerExecError:
+            raise
         except Exception as exc:
             raise ContainerExecError(f"Daytona exec failed: {exc}") from exc
+
+    @_retry_io
+    def _get_command(self, cmd_id: str) -> Any:
+        """Poll a session command's status. Idempotent → safe to retry on transient transport errors."""
+        return self._sandbox.process.get_session_command(self._session_id, cmd_id)
+
+    @_retry_io
+    def _command_logs(self, cmd_id: str) -> Any:
+        """Fetch a session command's stdout/stderr. Idempotent → safe to retry."""
+        return self._sandbox.process.get_session_command_logs(self._session_id, cmd_id)
 
     def forward_port(self, container_port: int) -> int:
         return port_from_url(self.get_url(container_port))
@@ -195,3 +207,7 @@ class DaytonaContainer(Container):
         if container_port in self._allowed_ports:
             return
         raise ContainerError(f"Port {container_port} is not in declared spec ports: {sorted(self._allowed_ports)}")
+
+
+# === auto-fix notes ===  (spec: openspec/specs/auto-fix/spec.md)
+# auto-fix-note(207) {class=L1 anchor=PR#207 hash=PENDING ctx=daytona/exec-sync-read-timeout-crashed-episode/async-submit+idempotent-poll-retry/tbench2:kv-store-grpc+mailman+rstan-to-pystan/cube-standard@a9d98a7}
