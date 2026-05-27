@@ -1,7 +1,7 @@
 """Task and TaskConfig for counter-cube.
 
 Task owns a Tool and implements the episode loop (reset / step / evaluate / close).
-Must implement: reset() → (Observation, info), evaluate(obs) → (reward, info).
+Must implement: reset() → (Observation, info), evaluate(obs) → TaskResult.
 Optional: finished() for early termination, filter_actions() to restrict actions.
 
 For per-task state, prefer typed Pydantic fields over stringly-typed dicts.
@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from cube.benchmark import RuntimeContext
 from cube.container import ContainerBackend
-from cube.core import Observation
+from cube.core import Observation, TaskResult
 from cube.task import Task, TaskConfig, TaskMetadata
 from counter_cube.tool import CounterToolConfig
 
@@ -48,14 +48,16 @@ class ReachTargetTask(Task):
         obs = Observation.from_text(f"Counter starts at 0. Use 'increment' action to reach {self.target}.")
         return obs, {"task_type": "reach_target", "target": self.target}
 
-    def evaluate(self, obs: Observation | None = None) -> tuple[float, dict[str, Any]]:
+    def evaluate(self, obs: Observation | None = None) -> TaskResult:
         value = self.tool._env.counter
 
         if value == self.target:
-            return 1.0, {"solved": True, "value": value}
+            return TaskResult(reward=1.0, checks=[], info={"solved": True, "value": value})
 
         progress = min(1.0, value / self.target) if self.target > 0 else 0.0
-        return progress * 0.5, {"solved": False, "value": value, "target": self.target}
+        return TaskResult(
+            reward=progress * 0.5, checks=[], info={"solved": False, "value": value, "target": self.target}
+        )
 
     def finished(self, obs: Observation | None = None) -> bool:
         return self.tool._env.counter == self.target

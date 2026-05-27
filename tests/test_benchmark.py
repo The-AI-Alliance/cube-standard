@@ -8,7 +8,7 @@ from typing import Literal
 import pytest
 
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata
-from cube.core import Observation
+from cube.core import Observation, TaskResult
 from cube.seed import AbstractSeedGenerator
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
@@ -32,8 +32,8 @@ class _Task(Task):
     def reset(self):
         return Observation.from_text("ready"), {}
 
-    def evaluate(self, obs=None):
-        return 0.0, {}
+    def evaluate(self, obs=None) -> TaskResult:
+        return TaskResult(reward=0.0, checks=[], info={})
 
 
 class _TaskConfig(TaskConfig):

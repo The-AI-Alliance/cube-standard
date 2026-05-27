@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
 from cube.container import Container, ContainerBackend
-from cube.core import Observation
+from cube.core import Observation, TaskResult
 from cube.server import make_benchmark_jsonrpc_app, make_task_jsonrpc_app
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
@@ -52,10 +52,10 @@ class _CounterTask(Task):
         self.tool.reset()
         return Observation.from_text("start"), {}
 
-    def evaluate(self, obs: Observation | None = None) -> tuple[float, dict[str, Any]]:
+    def evaluate(self, obs: Observation | None = None) -> TaskResult:
         assert isinstance(self.tool, _CounterTool)
         done = self.tool._counter >= self._TARGET
-        return (1.0 if done else 0.0), {"done": done}
+        return TaskResult(reward=1.0 if done else 0.0, checks=[], info={"done": done})
 
     def finished(self, obs: Observation | None = None) -> bool:
         assert isinstance(self.tool, _CounterTool)

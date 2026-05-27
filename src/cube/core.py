@@ -440,3 +440,21 @@ class EnvironmentOutput(TypedBaseModel):
     truncated: bool = False
     info: dict = Field(default_factory=dict)
     error: StepError | None = None
+
+
+class EvaluationCheck(TypedBaseModel):
+    """One named check in a task evaluation — pass/fail with optional expected/actual."""
+
+    name: str
+    passed: bool
+    expected: str | None
+    actual: str | None
+    comment: str | None
+
+
+class TaskResult(TypedBaseModel):
+    """Structured evaluation result from Task.evaluate()."""
+
+    reward: float
+    checks: list[EvaluationCheck]
+    info: dict[str, Any]

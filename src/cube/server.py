@@ -442,8 +442,8 @@ def make_task_jsonrpc_app(task: Task) -> FastAPI:
 
             elif method == "cube/evaluate":
                 obs = Observation.model_validate(params["obs"]) if "obs" in params else None
-                reward, info = task.evaluate(obs)
-                result = {"reward": reward, "info": info}
+                eval_result = task.evaluate(obs)
+                result = {"reward": eval_result.reward, "info": eval_result.info}
 
             elif method == "cube/close":
                 task.close()

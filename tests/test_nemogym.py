@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
 from cube.container import Container, ContainerBackend
-from cube.core import Observation
+from cube.core import Observation, TaskResult
 from cube.integrations.nemogym import CubeResourcesServer
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
@@ -31,8 +31,8 @@ class _Task(Task):
         self.tool.reset()
         return Observation.from_text("Welcome! What would you like to do?"), {}
 
-    def evaluate(self, obs: Observation | None = None):
-        return 0.5, {"score": 0.5}
+    def evaluate(self, obs: Observation | None = None) -> TaskResult:
+        return TaskResult(reward=0.5, checks=[], info={"score": 0.5})
 
 
 class _TaskConfig(TaskConfig):

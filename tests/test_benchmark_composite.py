@@ -15,7 +15,7 @@ from cube.benchmark import (
     CompositeBenchmark,
     CompositeBenchmarkConfig,
 )
-from cube.core import Observation
+from cube.core import Observation, TaskResult
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
 
@@ -40,8 +40,8 @@ class _Task(Task):
     def reset(self):
         return Observation.from_text(f"reset:{self.metadata.id}"), {}
 
-    def evaluate(self, obs=None):
-        return 0.0, {}
+    def evaluate(self, obs=None) -> TaskResult:
+        return TaskResult(reward=0.0, checks=[], info={})
 
 
 class _TaskConfig(TaskConfig):

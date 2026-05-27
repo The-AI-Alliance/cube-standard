@@ -11,7 +11,7 @@ from pydantic import PrivateAttr
 
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata
 from cube.container import Container
-from cube.core import Action, Observation
+from cube.core import Action, Observation, TaskResult
 from cube.task import STOP_ACTION, Task, TaskConfig, TaskMetadata
 from cube.testing import (
     aggregate_profiling,
@@ -46,8 +46,8 @@ class DoneTask(Task):
     def reset(self):
         return Observation.from_text("ready"), {}
 
-    def evaluate(self, obs: Observation | None = None):
-        return 1.0, {}
+    def evaluate(self, obs: Observation | None = None) -> TaskResult:
+        return TaskResult(reward=1.0, checks=[], info={})
 
     def close(self):
         self._close_calls += 1
@@ -62,8 +62,8 @@ class FailOnResetTask(Task):
     def reset(self):
         raise RuntimeError("reset failed")
 
-    def evaluate(self, obs: Observation | None = None):
-        return 0.0, {}
+    def evaluate(self, obs: Observation | None = None) -> TaskResult:
+        return TaskResult(reward=0.0, checks=[], info={})
 
     def close(self):
         self._close_calls += 1

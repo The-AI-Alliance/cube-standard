@@ -13,7 +13,7 @@ from typing import Any, ClassVar, Dict, Literal, Tuple
 
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
 from cube.container import Container, ContainerBackend, ContainerConfig
-from cube.core import Action, ActionSchema, Observation
+from cube.core import Action, ActionSchema, Observation, TaskResult
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
 
@@ -141,27 +141,26 @@ class ReachTargetTask(Task):
         obs = Observation.from_text(f"Counter starts at 0. Use 'increment' action to reach {self.target}.")
         return obs, {"task_type": "reach_target", "target": self.target}
 
-    def evaluate(self, obs: Observation | None = None) -> Tuple[float, Dict[str, Any]]:
+    def evaluate(self, obs: Observation | None = None) -> TaskResult:
         """Validate if counter reached target."""
         assert isinstance(self.tool, ConfigurableCounterTool)
         counter_value = self.tool.counter
         steps_taken = len(self.tool.history)
 
         if counter_value == self.target:
-            return 1.0, {
-                "solved": True,
-                "value": counter_value,
-                "steps": steps_taken,
-            }
+            return TaskResult(
+                reward=1.0,
+                checks=[],
+                info={"solved": True, "value": counter_value, "steps": steps_taken},
+            )
 
         # Partial reward based on progress
         progress = min(1.0, counter_value / self.target) if self.target > 0 else 0.0
-        return progress * 0.5, {
-            "solved": False,
-            "value": counter_value,
-            "target": self.target,
-            "steps": steps_taken,
-        }
+        return TaskResult(
+            reward=progress * 0.5,
+            checks=[],
+            info={"solved": False, "value": counter_value, "target": self.target, "steps": steps_taken},
+        )
 
     def finished(self, obs: Observation | None = None) -> bool:
         """Check if task is complete."""

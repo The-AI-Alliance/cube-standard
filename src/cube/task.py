@@ -11,7 +11,7 @@ do and how it is evaluated.
 Abstract classes:
     Task — subclasses must implement:
         reset() -> (Observation, dict)        set up initial state, return first obs
-        evaluate(obs: Observation) -> (float, dict)   score the current state
+        evaluate(obs: Observation) -> TaskResult        score the current state
     TaskConfig — subclasses must implement:
         make(...) -> Task     instantiate the Task from serialized config data
 """
@@ -35,6 +35,7 @@ from cube.core import (
     Observation,
     StepError,
     StructuredContent,
+    TaskResult,
     TypedBaseModel,
 )
 from cube.resource import ResourceHandle
@@ -334,7 +335,9 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         )
         if done or self.validate_per_step:
             t_eval_start = time.perf_counter()
-            reward, info = self.evaluate(obs)
+            result = self.evaluate(obs)
+            reward = result.reward
+            info = result.info
             profiling["evaluate"] = time.perf_counter() - t_eval_start
         t_post_start = time.perf_counter()
         obs = self.obs_postprocess(obs)
@@ -350,8 +353,8 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         return obs
 
     @abstractmethod
-    def evaluate(self, obs: Observation | None = None) -> Tuple[float, dict]:
-        """Validate the current state of the task and return (reward, info).
+    def evaluate(self, obs: Observation | None = None) -> TaskResult:
+        """Validate the current state of the task and return a structured result.
 
         ``obs`` is optional because many tasks derive the score entirely from
         internal tool state (e.g. a counter value, a VM screenshot taken inside

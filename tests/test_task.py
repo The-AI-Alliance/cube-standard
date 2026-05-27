@@ -5,7 +5,7 @@ import json
 import pytest
 
 from cube.container import Container
-from cube.core import Action, EnvironmentOutput, Observation, StepError, TextContent
+from cube.core import Action, EnvironmentOutput, Observation, StepError, TaskResult, TextContent
 from cube.task import STOP_ACTION, Task, TaskConfig, TaskExecutionInfo, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
 
@@ -31,8 +31,8 @@ class SimpleTask(Task):
     def reset(self):
         return Observation.from_text("ready"), {}
 
-    def evaluate(self, obs: Observation | None = None):
-        return 0.5, {"score": 0.5}
+    def evaluate(self, obs: Observation | None = None) -> TaskResult:
+        return TaskResult(reward=0.5, checks=[], info={"score": 0.5})
 
 
 def make_task(**kwargs) -> SimpleTask:

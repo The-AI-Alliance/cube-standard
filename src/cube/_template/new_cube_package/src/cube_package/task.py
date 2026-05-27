@@ -23,7 +23,7 @@ from typing import Any
 
 from cube.benchmark import RuntimeContext
 from cube.container import ContainerBackend
-from cube.core import Observation
+from cube.core import Observation, TaskResult
 from cube.task import Task, TaskConfig, TaskExecutionInfo  # noqa: F401  (TaskExecutionInfo used in commented CubeExecutionInfo example below)
 from cube_package.tool import CubeToolConfig
 
@@ -55,19 +55,16 @@ class CubeTask(Task):
         obs = Observation.from_text("Episode started. Use available actions to complete the task.")
         return obs, {}
 
-    def evaluate(self, obs: Observation | None = None) -> tuple[float, dict[str, Any]]:
+    def evaluate(self, obs: Observation | None = None) -> TaskResult:
         """Score the current state.
 
         Returns
         -------
-        reward : float
-            1.0 = solved, 0.0 = not solved.  Partial credit is allowed.
-        info : dict
-            Evaluation details (e.g. {"solved": True, "value": 42}).
+        TaskResult with reward (1.0 = solved, 0.0 = not), checks, and info.
         """
         # TODO: inspect obs and/or self.tool to determine the reward.
         solved = False  # replace with real check
-        return (1.0 if solved else 0.0), {"solved": solved}
+        return TaskResult(reward=1.0 if solved else 0.0, checks=[], info={"solved": solved})
 
     def finished(self, obs: Observation | None = None) -> bool:
         """Return True to end the episode early (before max steps)."""
