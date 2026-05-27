@@ -160,7 +160,13 @@ class ToolkitInfraConfig(InfraConfig):
         # can be baked into job tags — a job whose client is hard-killed
         # mid-launch is then still reapable (by tag) and cluster-bounded
         # (by --max-run-time), instead of orphaning to the 48h default.
-        run_id = str(uuid.uuid4())
+        # auto-fix(206)↓ CUBE_RUN_ID (exported by the harness per experiment) scopes the
+        # reaping tag to the whole run, so infra.cleanup(run_id) — and a liveness-based
+        # startup GC (cube-harness) — can reap EVERY job an experiment launched once its
+        # client dies (Ray OOM-crash / laptop sleep), not just one job. Falls back to a
+        # per-job uuid (prior behavior) when unset, so non-harness callers are unaffected.
+        run_id = os.environ.get("CUBE_RUN_ID") or str(uuid.uuid4())
+        # /auto-fix(206)
         effective_ttl = (
             self.default_ttl_seconds if self.default_ttl_seconds is not None else resource.default_ttl_seconds
         )
@@ -678,3 +684,19 @@ def _publish_cube_bundle(full_name: str, eai_path: str, profile: str | None) -> 
 #              stale mode asserts cleanup_stale() reaps a dropped-handle
 #              run by tag + sweeps orphan port-forward procs.
 #              + tests/test_toolkit_cleanup.py (incl. reaper unit tests).
+# auto-fix-note(206) {class=L1 issue=206 hash=PENDING ctx=eai-toolkit/yul101/darwin-arm64/cube-standard@c72dfeb}
+#   symptoms:  abnormal client exit (Ray OOM-crash / laptop sleep) orphaned every
+#              in-flight eai job ~24h: launch() minted a per-JOB run_id, so cleanup(run_id)
+#              could only reap one job, and the only group reaper (cleanup_stale by
+#              _MANAGED_TAG) is cross-session-destructive. A time-based local guard for
+#              the same class was tried + reverted (cube-harness #445/#458): 141/300
+#              false-cancels — any fixed elapsed-time threshold conflates dead-vs-busy.
+#   invariant: cleanup(run_id) reaps EVERY resource a single run launched. Reaping is
+#              identity-based (whose run + is that run alive), never time-on-task.
+#   why:       run_id now reads CUBE_RUN_ID (harness exports it per experiment) →
+#              experiment-scoped tag; cleanup(run_id) already reaps by tag. Additive +
+#              backward-compatible (per-job uuid fallback when unset). Pairs with the
+#              cube-harness driver-side reaper + heartbeat startup GC.
+#   tested:    scripts/smoke/experiment_scoped_reap.py (2 jobs, shared CUBE_RUN_ID →
+#              cleanup(run_id) reaps both; distinct ids → reaps only its own).
+#   hash=PENDING: stamped by scripts/auto_fix_lint.py (Tier-1) on first run.

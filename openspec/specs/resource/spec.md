@@ -155,6 +155,18 @@ tasks is the failure mode this gate exists to remove.
 | `infra.cleanup_stale(max_age)` | L2/L3 | Called automatically by `Benchmark.setup()` (the "harness startup" hook); harnesses may also call it explicitly on lifecycle exit as a defense-in-depth sweep | GCs TTL-expired resources across all runs |
 | `infra.unprovision(resource)` | L1 | Manual (retire / switch region) | Removes provisioned image + store entry |
 
+**Experiment-scoped `run_id` (`CUBE_RUN_ID`).** For `cleanup(run_id)` to reap a
+whole run's resources in one call, every resource a run launches must share one
+`run_id`. A harness signals this by exporting **`CUBE_RUN_ID`** (a stable per-experiment
+id) into the environment before launching; tag-based backends adopt it as the
+`run_id` tag (falling back to a fresh per-resource id when unset, so non-harness
+callers are unaffected — env-resolved like credentials, never an `InfraConfig` field).
+This is what lets a harness reap **identity-based, not time-based**: on a clean exit it
+calls `cleanup(run_id)`; for a hard-killed/slept client it runs a startup GC that calls
+`cleanup(run_id)` for each run its local heartbeat records prove dead (stale/terminal) —
+never cancelling a still-heartbeating run, and never touching another session's `run_id`.
+The server-side TTL (`cleanup_stale` / `--max-run-time`) remains the last-resort backstop.
+
 ## Recommended Harness Lifecycle
 
 ```python
