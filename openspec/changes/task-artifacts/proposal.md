@@ -1,9 +1,9 @@
-# Task Artifacts — typed side-channel outputs from tasks and tools
+# Task Artifacts — side-channel outputs from tasks and tools
 
 **Status:** Proposed
 **Date:** 2026-05-14
 **Scope:** `cube.core`, `cube.task`, `cube.tool`
-**Targets:** `main`
+**Targets:** `dev`
 **Related:** Unblocks cube-harness episode artifact export (Playwright traces,
 HAR files, screenshots) and OTel artifact attachment.
 
@@ -11,79 +11,72 @@ HAR files, screenshots) and OTel artifact attachment.
 
 ## Problem
 
-Tasks and tools produce side-channel outputs that aren't part of the
-observation stream: Playwright traces, HAR network logs, screenshots,
-container logs. Today there's no standard way to collect these after an
-episode completes. cube-harness has ad-hoc code that reaches into tool
-internals to extract traces — tightly coupled to specific tool
-implementations and not generalizable.
+Tasks and tools produce side-channel outputs that aren't part of the observation
+stream: Playwright traces, HAR network logs, screenshots, container logs. There's
+no standard way to collect these after an episode completes, so the harness would
+have to reach into tool internals — coupled to specific implementations and not
+generalizable.
 
 ## Solution
 
-Three additions:
+Reuse the existing `cube.core.Content` union as the artifact payload type instead
+of inventing a parallel envelope. Screenshots → `ImageContent`, logs →
+`TextContent`, HAR → `StructuredContent`. The only thing `Content` can't express
+is *out-of-line* data (a path/URL instead of inlined bytes), so we add one
+subclass:
 
-1. **`Artifact` + blob types in `cube.core`** — a typed envelope for
-   side-channel data. Each artifact has an `id`, a `mime` type, and a
-   `blob` that is one of: `BinaryArtifactBlob` (in-memory bytes),
-   `FileArtifactBlob` (local path), `RemoteFileArtifactBlob` (URL),
-   `TextArtifactBlob` (plain text). The blob union is discriminated on
-   `type` for clean serialization.
+1. **`cube.core.FileContent`** — `Content` whose `data` is a location (local path
+   or remote URL, `is_remote` flag), with an optional `mime` hint. For large
+   artifacts that must not be inlined into trajectory JSON or pickled across
+   workers. Uses `Content`'s existing polymorphic serialization — no new
+   discriminated union.
 
-2. **`Tool.artifacts() -> list[Artifact]`** — abstract method on
-   `AbstractTool`. Called after `close()` to collect any artifacts the
-   tool produced during the episode. Default on `Tool` returns `[]`.
-   `Toolbox` fans out to all contained tools and concatenates results.
+2. **`Tool.artifacts() -> list[Content]`** — collected after `close()`; never
+   enters the LLM observation stream. **Concrete default returning `[]`** on
+   `AbstractTool`/`AbstractAsyncTool` (not abstract — most tools have none, so
+   nothing is forced to implement it). `Toolbox` fans out and concatenates.
 
-3. **`Task.artifacts() -> list[Artifact]`** — collects tool artifacts
-   plus any task-specific artifacts. Two methods:
-   - `task_artifacts()` — override point for task-specific artifacts
-     (default `[]`).
-   - `artifacts()` — returns `task_artifacts() + tool.artifacts()`.
-     Not intended to be overridden.
+3. **`Task.artifacts() -> list[Content]`** — the task's *own* artifacts (override
+   point, default `[]`). Symmetric with `Tool.artifacts()`: each object reports only
+   its own outputs. Tool artifacts stay reachable via `task.tool.artifacts()`.
 
-The harness calls `task.artifacts()` after the episode loop completes
-(after `close()`) and handles export (write to disk, upload to GCS,
-attach to OTel spans) — that's a harness concern, not a cube-standard
-concern.
+The harness, after the episode loop (after `close()`), collects
+`task.artifacts() + task.tool.artifacts()` and handles export (write to disk, upload,
+attach to OTel spans) — a harness concern.
+
+## Why reuse `Content`
+
+`Artifact` + a 4-variant `ArtifactBlob` union would duplicate types we already
+have (`TextArtifactBlob`≈`TextContent`, binary≈the `bytes` already on
+`Audio`/`VideoContent`). The genuine delta over `Content` is out-of-line storage
+(path/URL) plus an explicit `mime` — both folded into one `FileContent`. Bonus:
+existing `to_markdown()` means screenshots/logs render in XRay for free.
 
 ## Backwards compatibility
 
-**Fully backwards compatible for `Tool` and `AsyncTool` subclasses.**
-The concrete bases provide a default `artifacts()` returning `[]`.
-
-**Breaking for direct `AbstractTool`/`AbstractAsyncTool` subclasses**
-that don't go through `Tool`/`AsyncTool`. These must add an
-`artifacts()` implementation. In cube-harness, `ToolWithTelemetry` and
-`AsyncToolWithTelemetry` are the known cases — they should delegate to
-the wrapped tool's `artifacts()`.
-
-**Fully backwards compatible for existing Task subclasses.** Both
-`task_artifacts()` and `artifacts()` have default implementations.
+Fully backwards compatible. `artifacts()` has a concrete default on the abstract
+tool bases, so every existing tool (direct subclass or via `Tool`/`AsyncTool`)
+is unaffected; `Task` defaults return `[]`. No new required methods.
 
 ## Non-goals
 
-- Defining how artifacts are exported/stored — that's the harness's job.
-- Async artifact collection — artifacts are collected after `close()`,
-  not during the hot loop. Sync is fine.
-- Artifact streaming during an episode — out of scope. Artifacts are
-  batch-collected at episode end.
+- How artifacts are exported/stored — harness's job.
+- Async collection — collected after `close()`, not on the hot loop. Sync is fine.
+- Streaming during an episode — batch-collected at episode end.
 
 ## Migration
 
 **This PR (cube-standard):**
 
-- `cube.core`: add `BinaryArtifactBlob`, `FileArtifactBlob`,
-  `RemoteFileArtifactBlob`, `TextArtifactBlob`, `ArtifactBlob`
-  (discriminated union), `Artifact`.
-- `cube.tool`: add `AbstractTool.artifacts()` abstract method.
-  `Tool.artifacts()` returns `[]`. `Toolbox.artifacts()` fans out.
-- `cube.task`: add `Task.task_artifacts()` (default `[]`) and
-  `Task.artifacts()` (combines task + tool artifacts).
+- `cube.core`: add `FileContent`.
+- `cube.tool`: add `AbstractTool.artifacts()` / `AbstractAsyncTool.artifacts()`
+  (concrete default `[]`); `Toolbox`/`AsyncToolbox` fan out.
+- `cube.task`: add `Task.artifacts()` (task's own artifacts, default `[]`).
 - Update specs: `core/spec.md`, `tool/spec.md`, `task/spec.md`.
 
 **Follow-up PRs:**
 
-- cube-standard `feat/playwright-trace-artifacts`: `PlaywrightSession`
-  tracing + `SyncPlaywrightTool.artifacts()` returning the trace ZIP.
-- cube-harness: episode artifact export calling `task.artifacts()` and
-  routing to storage/OTel.
+- cube-standard `feat/playwright-trace-artifacts`: `PlaywrightSession` tracing +
+  `SyncPlaywrightTool.artifacts()` returning a `FileContent` for the trace ZIP.
+- cube-harness: episode artifact export calling `task.artifacts()` and routing to
+  storage/OTel.

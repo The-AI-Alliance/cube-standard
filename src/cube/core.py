@@ -20,8 +20,7 @@ import io
 import json
 import traceback
 from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import Annotated, Any, Callable, ClassVar, Literal, Self
+from typing import Any, Callable, ClassVar, Self
 
 from PIL import Image as PILImage
 from pydantic import (
@@ -371,6 +370,31 @@ class VideoContent(Content):
         raise NotImplementedError("Video is not supported by LLM message format.")
 
 
+class FileContent(Content):
+    """Reference to out-of-line data — a local filesystem path or a remote URL.
+
+    Unlike the other `Content` subclasses, the payload is *not* inlined: `data` holds a
+    location, not the bytes themselves. This is for large side-channel artifacts
+    (Playwright traces, screen recordings, HAR dumps) that should not be embedded in
+    trajectory JSON or pickled across workers. The harness reads/uploads the referenced
+    data when exporting; it does not enter the LLM observation stream.
+
+    Set `is_remote=True` when `data` is a URL the harness should reference as-is rather
+    than read from the local filesystem. `mime` is an optional hint for export/storage.
+    """
+
+    data: str  # local filesystem path or remote URL
+    mime: str | None = None
+    is_remote: bool = False
+
+    def to_markdown(self) -> str:
+        label = self.name or self.data
+        return f"[{label}]({self.data})"
+
+    def to_llm_message(self) -> dict:
+        raise NotImplementedError("FileContent is an out-of-line artifact reference, not an LLM-facing observation.")
+
+
 class Observation(TypedBaseModel):
     """
     Represents an observation from the environment.
@@ -441,35 +465,3 @@ class EnvironmentOutput(TypedBaseModel):
     truncated: bool = False
     info: dict = Field(default_factory=dict)
     error: StepError | None = None
-
-
-class BinaryArtifactBlob(TypedBaseModel):
-    type: Literal["binary"] = "binary"
-    blob: bytes
-
-
-class FileArtifactBlob(TypedBaseModel):
-    type: Literal["file"] = "file"
-    path: Path
-
-
-class RemoteFileArtifactBlob(TypedBaseModel):
-    type: Literal["remote_file"] = "remote_file"
-    url: str
-
-
-class TextArtifactBlob(TypedBaseModel):
-    type: Literal["text"] = "text"
-    text: str
-
-
-ArtifactBlob = Annotated[
-    BinaryArtifactBlob | TextArtifactBlob | FileArtifactBlob | RemoteFileArtifactBlob,
-    Field(discriminator="type"),
-]
-
-
-class Artifact(TypedBaseModel):
-    mime: str
-    id: str
-    blob: ArtifactBlob

@@ -30,7 +30,6 @@ from cube.container import Container, ContainerBackend, ContainerConfig
 from cube.core import (
     Action,
     ActionSchema,
-    Artifact,
     Content,
     EnvironmentOutput,
     Observation,
@@ -403,13 +402,14 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
             self._container.stop()
             self._container = None
 
-    def task_artifacts(self) -> list[Artifact]:
-        """Override point for task-specific artifacts (e.g. container logs). Default: none."""
-        return []
+    def artifacts(self) -> list[Content]:
+        """Task-specific side-channel outputs (e.g. container logs). Collected after close().
 
-    def artifacts(self) -> list[Artifact]:
-        """Collect all artifacts from the task and its tool. Called after close()."""
-        return self.task_artifacts() + self.tool.artifacts()
+        Returns only the task's own artifacts; override to provide some. Tool artifacts are
+        separate — get them via ``self.tool.artifacts()``. The harness combines both at
+        episode end (``task.artifacts() + task.tool.artifacts()``). Default: none.
+        """
+        return []
 
 
 class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):

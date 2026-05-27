@@ -1,82 +1,58 @@
 # Deltas — Task Artifacts
 
-## ADDED — `cube.core`: Artifact types
+## ADDED — `cube.core`: `FileContent` (out-of-line `Content`)
 
 ```python
-class BinaryArtifactBlob(TypedBaseModel):
-    type: Literal["binary"] = "binary"
-    blob: bytes
-
-class FileArtifactBlob(TypedBaseModel):
-    type: Literal["file"] = "file"
-    path: Path
-
-class RemoteFileArtifactBlob(TypedBaseModel):
-    type: Literal["remote_file"] = "remote_file"
-    url: str
-
-class TextArtifactBlob(TypedBaseModel):
-    type: Literal["text"] = "text"
-    text: str
-
-ArtifactBlob = Annotated[
-    BinaryArtifactBlob | TextArtifactBlob | FileArtifactBlob | RemoteFileArtifactBlob,
-    Field(discriminator="type"),
-]
-
-class Artifact(TypedBaseModel):
-    mime: str
-    id: str
-    blob: ArtifactBlob
+class FileContent(Content):
+    data: str            # local filesystem path or remote URL
+    mime: str | None = None
+    is_remote: bool = False
 ```
 
-Typed envelope for side-channel outputs (traces, logs, screenshots)
-produced by tools and tasks. The discriminated `ArtifactBlob` union
-allows the harness to handle each storage form differently (read from
-disk, upload bytes, reference a remote URL).
+Artifacts reuse the existing `Content` union rather than a new envelope:
+screenshots → `ImageContent`, logs → `TextContent`, HAR → `StructuredContent`.
+The only gap is *out-of-line* data, so we add one `Content` subclass whose
+`data` is a location, not the inlined bytes — for large artifacts (Playwright
+traces, recordings) that must not be embedded in trajectory JSON or pickled
+across workers. `FileContent` participates in `Content`'s existing polymorphic
+(`_type`) serialization; no discriminated union is introduced. `to_markdown()`
+renders a link (so XRay shows it); `to_llm_message()` raises — it is a
+side-channel reference, never an LLM-facing observation.
 
 ## ADDED — `cube.tool`: `AbstractTool.artifacts()` / `AbstractAsyncTool.artifacts()`
 
 ```python
 class AbstractTool(ABC):
-    @abstractmethod
-    def artifacts(self) -> list[Artifact]: ...
+    def artifacts(self) -> list[Content]:
+        return []
 
 class AbstractAsyncTool(ABC):
-    @abstractmethod
-    def artifacts(self) -> list[Artifact]: ...
+    def artifacts(self) -> list[Content]:
+        return []
 ```
 
-Called after `close()` to collect side-channel outputs. Must not raise.
-Abstract — direct `AbstractTool`/`AbstractAsyncTool` subclasses must
-implement it. The concrete `Tool` and `AsyncTool` bases provide a
-default returning `[]`.
-
-`Toolbox.artifacts()` and `AsyncToolbox.artifacts()` concatenate
+Called after `close()` to collect side-channel outputs; never enters the LLM
+observation stream. Must not raise. **Concrete default returning `[]`** (not
+abstract) — no subclass is forced to implement it; tools that produce artifacts
+override it. `Toolbox.artifacts()` / `AsyncToolbox.artifacts()` concatenate
 results from all contained tools.
 
-## ADDED — `cube.task`: `Task.task_artifacts()` and `Task.artifacts()`
+## ADDED — `cube.task`: `Task.artifacts()`
 
 ```python
 class Task:
-    def task_artifacts(self) -> list[Artifact]:
+    def artifacts(self) -> list[Content]:
         return []
-
-    def artifacts(self) -> list[Artifact]:
-        return self.task_artifacts() + self.tool.artifacts()
 ```
 
-`task_artifacts()` is the override point for task-specific artifacts.
-`artifacts()` combines task and tool artifacts — not intended to be
-overridden.
+Returns the task's *own* artifacts (override to provide some). Consistent with
+`Tool.artifacts()` — each object reports only its own outputs. Tool artifacts are
+reached separately via `self.tool.artifacts()`; the harness combines both at episode
+end (`task.artifacts() + task.tool.artifacts()`).
 
 ## Migration impact
 
-**`Tool` / `AsyncTool` subclasses** — no change required (default
-returns `[]`).
-
-**Direct `AbstractTool` / `AbstractAsyncTool` subclasses** — must add
-`artifacts() -> list[Artifact]`. In cube-harness, `ToolWithTelemetry`
-and `AsyncToolWithTelemetry` should delegate to the wrapped tool.
-
-**`Task` subclasses** — no change required (defaults return `[]`).
+**Fully backwards compatible.** `artifacts()` has a concrete default on
+`AbstractTool`/`AbstractAsyncTool`, so existing tools (direct or via
+`Tool`/`AsyncTool`) need no change. `Task` defaults return `[]`. No new
+required methods anywhere.
