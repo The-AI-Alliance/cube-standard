@@ -66,7 +66,9 @@ No code change.
 ### Optional `Task.primitive_toolbox()` method
 
 ```python
-class Task(ABC):
+# Task is generic over (TTMetadata, TTool) per cube-standard:2dfcdeb;
+# omitted here for brevity.
+class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     # ... existing methods ...
 
     def primitive_toolbox(self) -> AsyncToolbox | None:
