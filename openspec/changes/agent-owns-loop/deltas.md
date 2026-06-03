@@ -30,6 +30,58 @@ duplicating capture logic inside the tool implementation.
 
 No code change.
 
+### New optional method `async_execute_action` on `AbstractTool` / `AbstractAsyncTool`
+
+```python
+class AbstractTool(ABC):
+    @abstractmethod
+    def execute_action(self, action: Action) -> Any: ...
+
+    async def async_execute_action(self, action: Action) -> Any:
+        """Async-shaped facade. Default: call sync `execute_action`
+        directly on the current thread (no `to_thread` hop). Tools with
+        truly async I/O subclass `AbstractAsyncTool` and let their async
+        `execute_action` become the canonical implementation."""
+        return self.execute_action(action)
+
+
+class AbstractAsyncTool(ABC):
+    @abstractmethod
+    async def execute_action(self, action: Action) -> Any: ...
+
+    async def async_execute_action(self, action: Action) -> Any:
+        """Mirror — default delegates to async `execute_action`."""
+        return await self.execute_action(action)
+```
+
+Rationale: gives every tool — sync or async — a uniform async
+call-site. Lets a single container (`AsyncToolbox`) host BOTH sync and
+async leaves: dispatch always goes through `async_execute_action`, which
+runs sync leaves synchronously (no thread hop) and awaits async leaves
+normally. Eliminates the dual `MonitoredTool` / `AsyncMonitoredTool`
+class split on the harness side (the harness wraps any inner with one
+`MonitoredTool` class and exposes both call shapes).
+
+### `AsyncToolbox` accepts mixed sync + async leaves
+
+```python
+class AsyncToolbox(AsyncTool):
+    def __init__(self, tools: list[AbstractTool | AbstractAsyncTool]):
+        ...
+
+    async def execute_action(self, action: Action) -> Observation | StepError:
+        return await self._action_name_to_tool[action.name].async_execute_action(action)
+```
+
+`reset()` / `close()` similarly tolerate both — if the leaf method
+returns a coroutine, it's awaited; otherwise the sync return is
+accepted directly.
+
+Backward compatibility: pure-async toolboxes (the existing usage —
+e.g. AsyncBrowserTool) work unchanged because their `async_execute_action`
+default already awaits `execute_action`. Existing pure-sync `Toolbox`
+behavior is unchanged.
+
 ---
 
 ## MODIFIED — `openspec/specs/server/spec.md`

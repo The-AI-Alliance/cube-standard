@@ -422,3 +422,84 @@ async def test_async_toolbox_close_calls_close_on_all_tools():
 
     await AsyncToolbox(tools=[TrackingAsyncTool(), TrackingAsyncTool()]).close()
     assert closed == 2
+
+
+# ── async_execute_action defaults + mixed-leaf AsyncToolbox ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_async_execute_action_default_on_sync_tool_runs_sync_body():
+    """`AbstractTool.async_execute_action` default delegates to sync
+    `execute_action` directly — no thread hop. Sync tools are usable
+    from async call-sites uniformly."""
+    tool = EchoTool()
+    action = Action(name="echo", arguments={"text": "hi"})
+    result = await tool.async_execute_action(action)
+    assert isinstance(result, Observation)
+    assert result.contents[0].data == "hi"
+
+
+@pytest.mark.asyncio
+async def test_async_execute_action_default_on_async_tool_awaits():
+    """`AbstractAsyncTool.async_execute_action` default delegates to
+    async `execute_action` — same payload, just through the unified
+    call-site name."""
+    tool = AsyncEchoTool()
+    action = Action(name="echo", arguments={"text": "hi"})
+    result = await tool.async_execute_action(action)
+    assert isinstance(result, Observation)
+    assert result.contents[0].data == "hi"
+
+
+@pytest.mark.asyncio
+async def test_async_toolbox_accepts_mixed_sync_and_async_leaves():
+    """`AsyncToolbox` holds a mix of sync and async leaves and dispatches
+    each through `async_execute_action`. Sync leaf runs synchronously;
+    async leaf is awaited. No adapter layer needed."""
+    box = AsyncToolbox(tools=[EchoTool(), AsyncUpperTool()])
+    # Sync leaf
+    sync_result = await box.execute_action(Action(name="echo", arguments={"text": "hello"}))
+    assert isinstance(sync_result, Observation)
+    assert sync_result.contents[0].data == "hello"
+    # Async leaf
+    async_result = await box.execute_action(Action(name="upper", arguments={"text": "hi"}))
+    assert isinstance(async_result, Observation)
+    assert async_result.contents[0].data == "HI"
+
+
+@pytest.mark.asyncio
+async def test_async_toolbox_reset_and_close_handle_mixed_leaves():
+    """`reset` / `close` tolerate both sync and async leaves: each leaf's
+    method runs, awaited only if it returned a coroutine."""
+    sync_calls = {"reset": 0, "close": 0}
+    async_calls = {"reset": 0, "close": 0}
+
+    class SyncTrackingTool(Tool):
+        @tool_action
+        def sync_ping(self) -> str:
+            """Ping (sync)."""
+            return "sync"
+
+        def reset(self) -> None:
+            sync_calls["reset"] += 1
+
+        def close(self) -> None:
+            sync_calls["close"] += 1
+
+    class AsyncTrackingTool(AsyncTool):
+        @tool_action
+        async def async_ping(self) -> str:
+            """Ping (async)."""
+            return "async"
+
+        async def reset(self) -> None:
+            async_calls["reset"] += 1
+
+        async def close(self) -> None:
+            async_calls["close"] += 1
+
+    box = AsyncToolbox(tools=[SyncTrackingTool(), AsyncTrackingTool()])
+    await box.reset()
+    await box.close()
+    assert sync_calls == {"reset": 1, "close": 1}
+    assert async_calls == {"reset": 1, "close": 1}
