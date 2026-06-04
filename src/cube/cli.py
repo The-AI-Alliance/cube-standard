@@ -1047,9 +1047,21 @@ _TODO = "<TODO: {}>"
 _REGISTRY_DEFAULT = "The-AI-Alliance/cube-registry"
 
 
+def _guess_entry_id(package_name: str) -> str:
+    """Derive registry id from package name.
+
+    Registry convention strips a trailing ``-cube`` from the wrapper package
+    name so the id refers to the benchmark, not the wrapper (e.g.
+    ``swebench-verified-cube`` → ``swebench-verified``). Package names that
+    don't end in ``-cube`` are left as-is.
+    """
+    return package_name.removesuffix("-cube")
+
+
 def _guess_display_name(package_name: str) -> str:
-    """arithmetic-cube → 'Arithmetic Cube', miniwob-cube → 'Miniwob Cube'."""
-    return " ".join(p.capitalize() for p in package_name.replace("_", "-").split("-"))
+    """arithmetic-cube → 'Arithmetic', swebench-verified-cube → 'Swebench Verified'."""
+    base = _guess_entry_id(package_name)
+    return " ".join(p.capitalize() for p in base.replace("_", "-").split("-"))
 
 
 def _detect_dev_install_url(path: Path) -> str | None:
@@ -1320,7 +1332,7 @@ def cmd_registry_add(path: Path, submit: bool, registry: str) -> None:
             err_console.print("[error]pyproject.toml is missing [cmd]project.version[/cmd][/error]")
             sys.exit(1)
 
-        entry_id = package
+        entry_id = _guess_entry_id(package)
         raw_authors = project.get("authors", [])
         authors = [{"github": None, "name": a.get("name")} for a in raw_authors] or [{}]
 

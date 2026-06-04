@@ -13,6 +13,7 @@ from cube.cli import (
     _DEFAULT_NAME,
     _build_registry_yaml,
     _guess_display_name,
+    _guess_entry_id,
     _parse_pyproject_license,
     _resolve_debug_module,
     cmd_init,
@@ -659,11 +660,34 @@ def test_cmd_test_demo_reset_repro_shows_reset_error_panel(fake_debug_in_sys_mod
     assert "demo token" in spy.call_args.kwargs["reset_diff"]
 
 
+# ── _guess_entry_id ───────────────────────────────────────────────────────────
+
+
+def test_guess_entry_id_strips_cube_suffix():
+    assert _guess_entry_id("swebench-verified-cube") == "swebench-verified"
+
+
+def test_guess_entry_id_strips_only_trailing_suffix():
+    # Substring "cube" mid-name must be preserved.
+    assert _guess_entry_id("counter-cube-extras") == "counter-cube-extras"
+
+
+def test_guess_entry_id_passthrough_without_suffix():
+    assert _guess_entry_id("miniwob") == "miniwob"
+
+
+def test_guess_entry_id_short_suffix_only():
+    # Edge case: package literally named "-cube" collapses to empty; document
+    # the behavior (callers should never see this, but be explicit).
+    assert _guess_entry_id("-cube") == ""
+
+
 # ── _guess_display_name ───────────────────────────────────────────────────────
 
 
 def test_guess_display_name_hyphenated():
-    assert _guess_display_name("arithmetic-cube") == "Arithmetic Cube"
+    # `-cube` suffix is stripped so the display name refers to the benchmark.
+    assert _guess_display_name("arithmetic-cube") == "Arithmetic"
 
 
 def test_guess_display_name_single_word():
@@ -674,8 +698,8 @@ def test_guess_display_name_underscores_treated_as_hyphens():
     assert _guess_display_name("my_bench_cube") == "My Bench Cube"
 
 
-def test_guess_display_name_mixed_separators():
-    assert _guess_display_name("my_bench-cube") == "My Bench Cube"
+def test_guess_display_name_mixed_separators_strips_trailing_cube():
+    assert _guess_display_name("my_bench-cube") == "My Bench"
 
 
 # ── _parse_pyproject_license ─────────────────────────────────────────────────
