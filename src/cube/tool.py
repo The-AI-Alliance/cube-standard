@@ -88,6 +88,22 @@ class AbstractTool(ABC):
         """Execute a single action and return the result."""
         pass
 
+    async def async_execute_action(self, action: Action) -> Any:
+        """Async-shaped facade over `execute_action`.
+
+        Default: call sync `execute_action` directly on the current
+        thread (no `to_thread` hop — the call is fully synchronous
+        underneath, just packaged as a coroutine so async callers can
+        `await` uniformly).
+
+        Tools with truly async I/O should subclass `AbstractAsyncTool`
+        (or `AsyncTool`) so their own async `execute_action` becomes
+        the canonical implementation; `async_execute_action` is then
+        the unified call-site for any caller that wants an awaitable,
+        regardless of whether the inner tool is sync or async.
+        """
+        return self.execute_action(action)
+
     @property
     @abstractmethod
     def action_set(self) -> List[ActionSchema]:
@@ -144,6 +160,16 @@ class AbstractAsyncTool(ABC):
     async def execute_action(self, action: Action) -> Any:
         """Execute a single action and return the result."""
         pass
+
+    async def async_execute_action(self, action: Action) -> Any:
+        """Mirror of `AbstractTool.async_execute_action` — the unified
+        async call-site any caller can use, regardless of whether the
+        inner tool is sync or async.
+
+        Default: delegate to `execute_action` (which is already async on
+        this ABC, so the await passes through unchanged).
+        """
+        return await self.execute_action(action)
 
     @property
     @abstractmethod
@@ -468,11 +494,21 @@ class Toolbox(Tool):
 
 
 class AsyncToolbox(AsyncTool):
-    """Composite async tool that delegates to a list of AbstractAsyncTool instances."""
+    """Composite async tool that delegates to a list of tool instances.
 
-    def __init__(self, tools: list[AbstractAsyncTool]):
+    Accepts BOTH `AbstractTool` (sync) and `AbstractAsyncTool` (async)
+    leaves. Dispatch goes through each leaf's `async_execute_action` —
+    sync leaves run synchronously on the current task; async leaves
+    await as usual. Lets a single container mix sync and async tools
+    without a separate adapter layer.
+
+    Sync `reset`/`close` on sync leaves are called via `to_thread` so
+    a slow blocking `close()` doesn't stall the loop on shutdown.
+    """
+
+    def __init__(self, tools: list["AbstractTool | AbstractAsyncTool"]):
         self.tools = tools
-        self._action_name_to_tool: dict[str, AbstractAsyncTool] = {}
+        self._action_name_to_tool: dict[str, AbstractTool | AbstractAsyncTool] = {}
         for tool in tools:
             for action in tool.action_set:
                 if action.name in self._action_name_to_tool:
@@ -488,7 +524,7 @@ class AsyncToolbox(AsyncTool):
         """Returns the union of all action sets across contained tools."""
         return [action for tool in self.tools for action in tool.action_set]
 
-    def find_tool(self, tool_cls: type) -> AbstractAsyncTool | None:
+    def find_tool(self, tool_cls: type) -> "AbstractTool | AbstractAsyncTool | None":
         """Find a tool of the given class in the toolbox."""
         for tool in self.tools:
             if isinstance(tool, tool_cls):
@@ -497,16 +533,20 @@ class AsyncToolbox(AsyncTool):
 
     async def reset(self) -> None:
         for tool in self.tools:
-            await tool.reset()
+            r = tool.reset()
+            if inspect.iscoroutine(r):
+                await r
 
     async def execute_action(self, action: Action) -> Observation | StepError:
         if action.name not in self._action_name_to_tool:
             raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
-        return await self._action_name_to_tool[action.name].execute_action(action)
+        return await self._action_name_to_tool[action.name].async_execute_action(action)
 
     async def close(self) -> None:
         for tool in self.tools:
-            await tool.close()
+            c = tool.close()
+            if inspect.iscoroutine(c):
+                await c
 
 
 class ToolboxConfig(ToolConfig):
