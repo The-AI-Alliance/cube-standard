@@ -99,13 +99,50 @@ class Tool(_ToolActionsMixin, AbstractTool):
         ...
 ```
 
+### `Toolbox` — single container class with dual routing
+
+```python
+class Toolbox(Tool):
+    """Container. Holds Tools. Routes actions by name; the leaves do
+    the per-method sync/async dispatch.
+    """
+
+    def __init__(self, tools: list[Tool]):
+        self.tools = tools
+        self._action_name_to_tool = {a.name: t for t in tools for a in t.action_set}
+
+    @property
+    def action_set(self) -> list[ActionSchema]:
+        return [a for t in self.tools for a in t.action_set]
+
+    def execute_action(self, action: Action) -> Observation | StepError:
+        return self._action_name_to_tool[action.name].execute_action(action)
+
+    async def async_execute_action(self, action: Action) -> Observation | StepError:
+        return await self._action_name_to_tool[action.name].async_execute_action(action)
+```
+
 ### Deprecated aliases
 
 ```python
-# Backward-compat aliases — emit DeprecationWarning when subclassed.
+# Backward-compat aliases — emit DeprecationWarning when subclassed / called.
 # Will be removed after one release window.
 AbstractAsyncTool = AbstractTool
 AsyncTool = Tool
+
+class AsyncToolbox(Toolbox):
+    """Deprecated shim. Preserves the async-`execute_action` semantic
+    so legacy `await tb.execute_action(action)` callers keep working
+    during the migration window."""
+
+    async def execute_action(self, action: Action) -> Observation | StepError:
+        warnings.warn(
+            "AsyncToolbox.execute_action is deprecated; "
+            "use Toolbox.async_execute_action.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.async_execute_action(action)
 ```
 
 ### `_ToolActionsMixin.__init_subclass__` validation — relaxed

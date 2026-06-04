@@ -34,30 +34,38 @@ There's a second problem: the `sync`/`async` distinction is encoded in the **cla
 
 ## The change in one diagram
 
+The same dual-API pattern (`execute_action` sync + `async_execute_action` async on every class) applies at all three layers — the abstract base, the concrete leaf, and the container. Today's split becomes one column:
+
 ```mermaid
 flowchart LR
     classDef gone fill:#fee2e2,stroke:#dc2626
     classDef stay fill:#dcfce7,stroke:#16a34a
 
-    subgraph Today["Today — class-level split"]
-        T1["AbstractTool"]:::stay
-        T2["AbstractAsyncTool"]:::gone
-        T3["Tool<br/>(all @tool_action sync)"]:::stay
-        T4["AsyncTool<br/>(all @tool_action async)"]:::gone
-        T1 --> T3
-        T2 --> T4
+    subgraph Today["Today — three pairs of parallel classes"]
+        TA["AbstractTool"]:::stay
+        TB["AbstractAsyncTool"]:::gone
+        TC["Tool"]:::stay
+        TD["AsyncTool"]:::gone
+        TE["Toolbox"]:::stay
+        TF["AsyncToolbox"]:::gone
+        TA --> TC
+        TB --> TD
+        TC --> TE
+        TD --> TF
     end
 
-    subgraph After["After — one class, per-method routing"]
-        A1["AbstractTool"]:::stay
-        A2["Tool<br/>(@tool_action methods<br/>can be sync OR async)"]:::stay
-        A1 --> A2
+    subgraph After["After — one class per layer, dual API"]
+        AA["AbstractTool"]:::stay
+        AB["Tool<br/>(@tool_action sync OR async)"]:::stay
+        AC["Toolbox<br/>(routes by action name<br/>to leaf's dual API)"]:::stay
+        AA --> AB
+        AB --> AC
     end
 
-    Today -.->|"AsyncTool, AbstractAsyncTool<br/>become aliases<br/>(deprecation window)"| After
+    Today -.->|"AsyncTool / AsyncToolbox /<br/>AbstractAsyncTool become<br/>deprecated aliases<br/>(one release window)"| After
 ```
 
-`AsyncTool` and `AbstractAsyncTool` stay as deprecated aliases of the unified classes — existing code keeps working, downstream cubes migrate over one release window.
+`AsyncTool`, `AsyncToolbox`, and `AbstractAsyncTool` stay as deprecated aliases of the unified classes — existing code keeps working, downstream cubes migrate over one release window.
 
 ## What you write after this lands
 
@@ -294,26 +302,53 @@ A reference data point: cube-harness's parallelism smoke (`scripts/smoke/investi
 | `class FooTool(Tool)` (all sync) | unchanged |
 | `class FooTool(AsyncTool)` (all async) | works via alias; one-line edit to `Tool` recommended |
 | `AsyncBrowserTool(AsyncTool)` | flips to `Tool` in this PR (canonical example) |
-| `from cube.tool import AsyncTool, AbstractAsyncTool` | works, `DeprecationWarning` emitted on subclass |
+| `tb = Toolbox([...])` + `tb.execute_action(...)` (sync) | unchanged |
+| `tb = AsyncToolbox([...])` + `await tb.execute_action(...)` | works via deprecated shim; rename to `await tb.async_execute_action(...)` when convenient |
+| `from cube.tool import AsyncTool, AbstractAsyncTool, AsyncToolbox` | works, `DeprecationWarning` emitted on subclass / call |
 
 The deprecation window stays open for one release. Downstream cubes can migrate at their own pace; no urgent action.
 
-## Why not also collapse `Toolbox` + `AsyncToolbox`? (Phase 2)
+## Toolbox follows the same dual-API pattern
 
-`AsyncToolbox.execute_action` is *async by contract* — callers do `await tb.execute_action(action)`. If we collapsed `AsyncToolbox` into a sync-execute Toolbox, every existing `await tb.execute_action` call site would break.
+`Toolbox` becomes one class with both routing methods. The intelligence stays in the leaf `Tool` (which handles per-method bridging) — the toolbox is purely a router by action name:
 
-The collapse is doable (mirror the dual API at the toolbox level too) but:
+```python
+class Toolbox(Tool):
+    def __init__(self, tools: list[Tool]):
+        self.tools = tools
+        self._by_name = {a.name: t for t in tools for a in t.action_set}
 
-- ~5 `await tb.execute_action` sites in cube-harness today; breaking them all for marginal gain is the wrong trade.
-- `AsyncToolbox` already accepts mixed sync + async leaves (cube-standard #152). So mixed-action `Tool` instances work inside it today without any further change.
+    def execute_action(self, action):                           # sync caller
+        return self._by_name[action.name].execute_action(action)
 
-Phase 2 is a separate RFC if the cost-benefit ever shifts.
+    async def async_execute_action(self, action):               # async caller
+        return await self._by_name[action.name].async_execute_action(action)
+```
+
+That's the whole routing change. Both methods exist; bridging happens at the leaf.
+
+**Backward compat for `await asynctb.execute_action(...)` callers** — `AsyncToolbox` becomes a thin shim that preserves the async-`execute_action` semantic with a deprecation warning:
+
+```python
+class AsyncToolbox(Toolbox):                                    # deprecated shim
+    async def execute_action(self, action):
+        warnings.warn(
+            "AsyncToolbox.execute_action is deprecated; "
+            "use Toolbox.async_execute_action.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.async_execute_action(action)
+```
+
+Migration cost: ~5 `await tb.execute_action(action)` call sites in cube-harness, one-line rename each (`execute_action` → `async_execute_action`); shim keeps them working in the meantime.
 
 ## Alternatives we considered
 
 - **Keep the split.** Status quo. The "one async tool method forces the whole class to be async" friction stays. Inconsistent with cube-harness `MonitoredTool` shape.
 - **Make `execute_action` always async on the unified class, drop the sync method.** Cleaner one-method API, but the debuggable single-stack pdb story for `Agent._run` goes away — every tool call would have at least an event-loop frame in between. The dual surface is the point.
-- **Drop the aliases entirely with no deprecation window.** Cleaner repo state, but breaks every downstream cube subclassing `AsyncTool` in one shot. The one-release-window cost is small and worth it.
+- **Drop the aliases entirely with no deprecation window.** Cleaner repo state, but breaks every downstream cube subclassing `AsyncTool` / `AsyncToolbox` in one shot. The one-release-window cost is small and worth it.
+- **Consolidate `Tool` only, leave `Toolbox` / `AsyncToolbox` split** (the original Phase 2 framing in an earlier draft of this RFC). Rejected after a review pass: the same dual-API pattern collapses Toolbox cleanly, the alias trick covers backward compat for `await tb.execute_action(...)` callers, and shipping both consolidations together leaves the codebase with one consistent pattern rather than half-and-half. The original Phase 2 reasoning was based on a misread ("collapse into sync-only Toolbox") rather than the actual dual-API design.
 
 ## Risks
 
