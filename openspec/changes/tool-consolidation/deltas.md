@@ -38,25 +38,64 @@ class AbstractTool(ABC):
 class Tool(_ToolActionsMixin, AbstractTool):
     """Concrete base for any tool. `@tool_action` methods may be sync
     or async, per method. Action discovery via `action_set` still works
-    identically; dispatch routes per the method's kind.
+    identically; dispatch routes per the method's kind and bridges the
+    impedance mismatch when caller and method differ.
     """
 
     def execute_action(self, action: Action) -> Observation | StepError:
+        """Sync call-site. Works for both sync and async actions.
+
+        Sync action → direct call, no overhead.
+        Async action → bridge via a one-shot worker thread with its own
+        event loop (~2-5 ms). `contextvars.copy_context()` propagates
+        the caller's tracing/OTel context into the worker.
+        """
         method = self.get_action_method(action)
         if inspect.iscoroutinefunction(method):
-            raise TypeError(
-                f"Action {action.name!r} is async — call "
-                f"`async_execute_action` or use an async call-site."
-            )
-        # sync dispatch (existing body)
+            return self._bridge_async_to_sync(method, action)
+        # sync dispatch (existing body — validate args, call, wrap result)
         ...
 
     async def async_execute_action(self, action: Action) -> Observation | StepError:
+        """Async call-site. Works for both sync and async actions.
+
+        Async action → direct await, no thread hop.
+        Sync action → `asyncio.to_thread(method)` — pooled worker, no
+        per-call spawn, enables real OS-thread parallelism when wrapped
+        in `asyncio.gather`.
+
+        Tools with thread-affinity needs (sync Playwright, etc.) override
+        to dispatch through a per-instance single-threaded executor.
+        """
         method = self.get_action_method(action)
-        result = method(**action.arguments)
-        if inspect.iscoroutine(result):
-            result = await result
+        if inspect.iscoroutinefunction(method):
+            result = await method(**action.arguments)
+        else:
+            result = await asyncio.to_thread(method, **action.arguments)
         # wrap → Observation | StepError (existing wrap logic)
+        ...
+
+    def _bridge_async_to_sync(
+        self, async_method: Callable, action: Action
+    ) -> Observation | StepError:
+        """Run an async method to completion from a sync call-site.
+
+        Implementation: spawn a daemon thread, run a new event loop
+        inside it, block on the result. ~2-5 ms overhead per call.
+        Caller's `contextvars` are propagated so OTel spans /
+        logging state carry into the worker.
+        """
+        ctx = contextvars.copy_context()
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+
+        def runner() -> None:
+            try:
+                fut.set_result(ctx.run(asyncio.run, async_method(**action.arguments)))
+            except Exception as e:
+                fut.set_exception(e)
+
+        threading.Thread(target=runner, daemon=True).start()
+        # wrap fut.result() → Observation | StepError
         ...
 ```
 
@@ -83,14 +122,19 @@ descriptive.
 
 ### Invariants
 
-1. A `@tool_action`-decorated method is reachable through `Tool.execute_action` iff it is sync.
-2. A `@tool_action`-decorated method is reachable through `Tool.async_execute_action` regardless of its sync/async kind.
-3. `action_set` lists all `@tool_action`-decorated methods irrespective of kind.
+1. Every `@tool_action`-decorated method is reachable through BOTH `Tool.execute_action` and `Tool.async_execute_action`, regardless of the method's sync/async kind.
+2. The fast paths (sync caller × sync action, async caller × async action) introduce no overhead beyond a normal Python method call.
+3. The bridge paths (sync caller × async action, async caller × sync action) introduce a thread hop:
+   - sync → async: one-shot daemon thread + new event loop, ~2-5 ms per call.
+   - async → sync: pooled worker via `asyncio.to_thread` — no per-call spawn cost, enables real OS-thread parallelism inside `asyncio.gather`.
+4. `action_set` lists all `@tool_action`-decorated methods irrespective of kind.
+5. Tools wrapping thread-affine resources MAY override `async_execute_action` to route through a per-instance single-threaded executor; the base class's default uses the global thread pool.
 
 ### Gotchas
 
 - `AsyncBrowserTool` (the single in-tree `AsyncTool` subclass) flips to `Tool` with no body change. After the alias is removed, downstream cubes that still subclass `AsyncTool` need a one-line edit.
-- Tools that previously got an `__init_subclass__` error for mixed async/sync now silently pass; the failure mode shifts from "import error" to "TypeError on first call." Tests should exercise both call sites.
+- Tools that previously got an `__init_subclass__` error for mixed async/sync now pass silently. The previous structural mistake is now legal (mixing is supported); intentional misuse surfaces as a runtime bridge invocation that's slower than expected, not as an error.
+- A sync caller invoking a hot-path async action repeatedly pays ~2-5 ms × N for the bridge. For agents that care about per-call latency, switch to `Agent._arun` so calls go through `async_execute_action` directly.
 
 ---
 
