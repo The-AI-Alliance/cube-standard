@@ -139,6 +139,15 @@ class AbstractTool(ABC):
         """
         pass
 
+    def artifacts(self) -> list[Content]:
+        """Return side-channel outputs produced during the episode (traces, logs, etc.).
+
+        Collected after close(); never enters the LLM observation stream. Default: none.
+        Override when a tool produces artifacts (e.g. return a FileContent for a trace ZIP).
+        Must not raise.
+        """
+        return []
+
 
 class AbstractAsyncTool(ABC):
     """
@@ -176,6 +185,15 @@ class AbstractAsyncTool(ABC):
     def action_set(self) -> List[ActionSchema]:
         """Returns list of actions supported by that tool (same format as AbstractTool)."""
         pass
+
+    def artifacts(self) -> list[Content]:
+        """Return side-channel outputs produced during the episode (traces, logs, etc.).
+
+        Collected after close(); never enters the LLM observation stream. Default: none.
+        Override when a tool produces artifacts (e.g. return a FileContent for a trace ZIP).
+        Must not raise.
+        """
+        return []
 
 
 class ToolConfig(ValidatedConfig, ABC):
@@ -492,6 +510,12 @@ class Toolbox(Tool):
         for tool in self.tools:
             tool.close()
 
+    def artifacts(self) -> list[Content]:
+        result: list[Content] = []
+        for tool in self.tools:
+            result.extend(tool.artifacts())
+        return result
+
 
 class AsyncToolbox(AsyncTool):
     """Composite async tool that delegates to a list of tool instances.
@@ -547,6 +571,12 @@ class AsyncToolbox(AsyncTool):
             c = tool.close()
             if inspect.iscoroutine(c):
                 await c
+
+    def artifacts(self) -> list[Content]:
+        result: list[Content] = []
+        for tool in self.tools:
+            result.extend(tool.artifacts())
+        return result
 
 
 class ToolboxConfig(ToolConfig):

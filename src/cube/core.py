@@ -430,6 +430,31 @@ class VideoContent(Content):
         raise NotImplementedError("Video is not supported by LLM message format.")
 
 
+class FileContent(Content):
+    """Reference to out-of-line data — a local filesystem path or a remote URL.
+
+    Unlike the other `Content` subclasses, the payload is *not* inlined: `data` holds a
+    location, not the bytes themselves. This is for large side-channel artifacts
+    (Playwright traces, screen recordings, HAR dumps) that should not be embedded in
+    trajectory JSON or pickled across workers. The harness reads/uploads the referenced
+    data when exporting; it does not enter the LLM observation stream.
+
+    Set `is_remote=True` when `data` is a URL the harness should reference as-is rather
+    than read from the local filesystem. `mime` is an optional hint for export/storage.
+    """
+
+    data: str  # local filesystem path or remote URL
+    mime: str | None = None
+    is_remote: bool = False
+
+    def to_markdown(self) -> str:
+        label = self.name or self.data
+        return f"[{label}]({self.data})"
+
+    def to_llm_message(self) -> dict:
+        raise NotImplementedError("FileContent is an out-of-line artifact reference, not an LLM-facing observation.")
+
+
 class Observation(TypedBaseModel):
     """
     Represents an observation from the environment.

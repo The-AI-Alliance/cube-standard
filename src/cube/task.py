@@ -431,6 +431,15 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
             self._container.stop()
             self._container = None
 
+    def artifacts(self) -> list[Content]:
+        """Task-specific side-channel outputs (e.g. container logs). Collected after close().
+
+        Returns only the task's own artifacts; override to provide some. Tool artifacts are
+        separate — get them via ``self.tool.artifacts()``. The harness combines both at
+        episode end (``task.artifacts() + task.tool.artifacts()``). Default: none.
+        """
+        return []
+
 
 class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
     """Serializable task configuration — self-contained unit handed to workers.
