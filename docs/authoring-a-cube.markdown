@@ -173,7 +173,7 @@ Once `cube test` and `/review-cube` both pass, submit to the registry with one c
 cube registry add --submit
 ```
 
-This generates a `cube-registry-entry.yaml` from your `pyproject.toml`, forks [cube-registry](https://github.com/The-AI-Alliance/cube-registry), commits the entry, and opens a PR. Registry CI validates and auto-merges the happy path — no human review required.
+This generates a `cube-registry-entry.yaml` from your `pyproject.toml`, forks [cube-registry](https://github.com/The-AI-Alliance/cube-registry), commits the entry, and opens a PR. Registry CI runs three hard gates (ownership-check, quick-compliance, LLM semantic review) plus an informational pre-merge slow-check. On hard gates green and a path-isolated diff, the PR auto-merges. If the LLM review flags a `CONCERN` (typical causes: package not yet on PyPI so the page is empty, README doesn't cover the cube subdirectory, author handles can't be confirmed against the linked repo's git history), the PR is labeled `ready-for-review` for a maintainer.
 
 Run `cube registry add` without `--submit` first if you want to generate the YAML locally, edit it, and review the entry before opening the PR.
 

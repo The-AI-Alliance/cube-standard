@@ -80,8 +80,24 @@ Format per `references/report-template.md`. Two sections (Blocking, Suggestions 
 ## References
 
 - `references/pr-detection.md` — how to identify a cube-adding PR in any repo.
-- `references/checks.md` — the full checklist: Registry YAML / Cube code static / Compliance suite / Hygiene.
+- `references/checks.md` — the full checklist: Registry YAML / Cube code static / Compliance suite / Hygiene / Registry LLM-review preview.
 - `references/report-template.md` — report markdown structure.
+
+## Note: cube-registry runs its own LLM semantic review
+
+This skill audits the cube **code and configuration** locally. Once a
+submission lands on a cube-registry PR, the registry CI runs its own LLM
+semantic check (`scripts/entry_review.py`) against the entry YAML that
+pulls PyPI metadata + the linked repo's README + existing entries +
+known-authors. It returns a structured verdict (`PASS` or `CONCERN`)
+that gates auto-merge.
+
+The semantic review is intentionally separate from this skill — it sees
+different evidence (PyPI page, cross-repo author history) and asks a
+different question (is this entry plausibly what it claims to be?). When
+running `/review-cube` pre-submission, include the "Registry LLM-review
+preview" section from `references/checks.md` in your report so the user
+knows what *additional* checks they'll face on the PR.
 
 ## Out of scope
 

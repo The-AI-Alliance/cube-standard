@@ -123,7 +123,24 @@ Per layer:
   - `max_concurrent_tasks`
   - `parallelization_mode`
 - Patch placeholders into the YAML. Show the completed file.
+- **Pre-flight via `/review-cube ./<cube-dir>`** (recommended) — catches cube-code issues + previews what the registry's LLM semantic review will check.
 - Confirm, then run `cube registry add --submit` (forks + PRs via `gh`).
+
+**Post-submission — what happens on the PR:** registry CI runs three hard
+gates (ownership-check, quick-compliance, an LLM semantic review) plus an
+informational pre-merge slow-check. On all hard gates green and a
+path-isolated diff under `entries/<id>.yaml`, the PR auto-merges.
+Common reasons the LLM review returns `CONCERN` (which routes the PR to
+maintainer review instead):
+
+- Package not yet on PyPI → empty PyPI page can't verify `description_matches_package` or `wrapper_license_plausible`.
+- The linked repo's top-level README doesn't cover the cube subdirectory.
+- `authors[].github` handles aren't visible in the cube subdirectory's git history.
+- `id` near-duplicates an existing entry, or `name`/`description` reads like impersonation of a famous benchmark.
+
+If you anticipate any of these — most commonly "not on PyPI yet" — flag it
+to the user; the PR will still open and get a thorough LLM review, but a
+maintainer will need to manually merge after seeing the verdict.
 
 ### 8. Recipe (optional — ask)
 Offer to draft a harness recipe modeled on `cube-harness/recipes/hello_miniwob.py`. The user runs it themselves.

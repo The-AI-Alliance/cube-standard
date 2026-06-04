@@ -87,6 +87,29 @@ Detect which the cube uses by grepping the benchmark module for the ClassVar ass
 - S-25: `authors` list empty in `pyproject.toml`.
 - S-25: No SPDX `LICENSE` file at the repo root, even though `legal.wrapper_license` is declared in the YAML.
 
+## 5. Registry LLM-review preview (advisory)
+
+When `/review-cube` runs pre-submission, surface the five semantic checks
+that `scripts/entry_review.py` in cube-registry will run on the PR. This
+is not a Blocking section — the registry's review is the source of truth
+— but it warns the user about likely-CONCERN paths before they submit.
+
+For each check, walk it mentally against the cube + entry YAML and add a
+**Suggestion** if you see a likely-CONCERN signal:
+
+| Registry check | Common failure mode → suggest |
+|---|---|
+| `description_matches_package` | S-75 if PyPI page for `package` is empty (package not published yet) — the registry can't verify the description from PyPI metadata; verdict will likely be CONCERN. Recommend publishing to PyPI or telling the user the PR will land at `ready-for-review`. |
+| `authors_consistent_with_git` | S-50 if no `authors[].github` handle appears in `git log -- <cube-subdir>/` of the linked `dev_install_url` repo. Recommend either adding the author to the cube subdir's history or noting the discrepancy. |
+| `no_id_squat_vs_existing` | S-50 if `id` is a one-character variant of an existing registry id (e.g. `swe-bench-verified` vs `swebench-verified`). |
+| `no_brand_impersonation` | S-50 if `name` matches a famous benchmark but the description / code looks unrelated. Faithful ports of the same name are fine — flag only if it reads as impersonation. |
+| `wrapper_license_plausible` | S-25 if `legal.wrapper_license` is declared but no `LICENSE` file exists at the cube package root or the SPDX id doesn't match the file's contents. |
+
+For each Suggestion in this section, mark it `[registry preview]` in the
+report so the user can distinguish "this skill flagged it" from "the
+registry will flag it." None of these are Blocking — the registry's LLM
+review is advisory + a maintainer can override on the PR.
+
 ## Finding format
 
 Every finding is a dict / bullet with:

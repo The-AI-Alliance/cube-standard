@@ -150,7 +150,10 @@ class TestRegistryAdd:
         assert yaml_path.exists(), "cube-registry-entry.yaml was not created"
 
         content = yaml_path.read_text()
-        assert "id: arithmetic-cube" in content
+        # Registry convention strips the `-cube` suffix from the wrapper
+        # package name so the id refers to the benchmark.
+        assert "id: arithmetic" in content
+        assert "id: arithmetic-cube" not in content
         assert 'version: "0.1.0"' in content
         assert "package: arithmetic-cube" in content
         assert "dev_install_url:" in content
