@@ -17,12 +17,20 @@
   how the runtime obtains the agent surface without leaking the task.
 - **`Task.on_turn_start()`** — per-turn cube hook; the supported replacement for
   overriding `step()`.
+- **Shared per-action core** (`execute_step` / internal) — `STOP-check → tool dispatch →
+  obs_postprocess`, built on the cube hooks. The single implementation both `step` and
+  `TaskTool.execute_action` build on; cubes never call or override it directly.
 
 ## MODIFIED (provisional)
 
-- **`Task.step()`** (already "concrete; do not override") — re-expressed over the same
-  execution path as `execute_action`, so the gym view and the tool view share one
-  implementation. Rule becomes enforced once `on_turn_start` ships + cubes migrate.
+- **`Task.step()`** — re-expressed as a **view** over the shared per-action core (loop the
+  core over the batch → `finished`/`evaluate` once → `EnvironmentOutput`). **Finalized +
+  documented do-not-override** (the spec already says "do not override"; this makes it
+  enforceable, since the path is now shared and per-turn logic has `on_turn_start`).
+  Convergence guarantee: a cube's `evaluate`/`finished`/`on_turn_start` behave identically
+  under gym `step`, the agent loop, or an external `cube.server` agent — none bypass the
+  core. The one per-caller knob is the **`StepError` policy** (gym: error ⇒ done; agent
+  loop: error ⇒ returned to the agent).
 
 ## OPEN (block firming up the deltas)
 

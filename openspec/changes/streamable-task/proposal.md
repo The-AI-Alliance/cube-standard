@@ -81,7 +81,9 @@ class Task:                                # lifecycle stays here — runtime-dr
     def agent_tools(self) -> list[TaskTool]: ...  # NEW: one TaskTool per agent (N=1 default)
     def on_turn_start(self) -> None: ...          # NEW hook: per-turn cube setup; the
                                                   # supported replacement for overriding step()
-    # reset / evaluate / close / step — UNCHANGED; the agent never sees them
+    # reset / evaluate / close — UNCHANGED, agent never sees them.
+    # step — re-expressed as a view over the shared per-action core (finalized;
+    #        do-not-override). See "One path, many views" below.
 ```
 
 The agent is handed a `TaskTool` (via `task.agent_tools()`), never the task. Everything
@@ -104,6 +106,59 @@ sequenceDiagram
   Ep->>Tk: evaluate()
   Ep-->>St: on_eval(reward, info)
 ```
+
+## One path, many views — nothing bypasses the cube
+
+Every API is a thin **view over a single per-action core** on the `Task`, so they
+**converge by construction** and the runtime can never bypass a cube's logic:
+
+- **core** (one place): `STOP-check → tool dispatch → obs_postprocess`, built on the
+  cube's hooks (`reset` / `evaluate` / `finished` / `obs_postprocess` / `on_turn_start`).
+- **`task.step()`** — gym view: loop the core over a batch → `finished` / `evaluate` once
+  → `EnvironmentOutput`. A convenience view, **finalized + documented do-not-override** so
+  a subclass can't silently fork the path. Cubes that need per-turn logic use
+  `on_turn_start`, not a `step` override.
+- **`TaskTool.execute_action()`** — agent view: core + emit `on_action` + budget hook;
+  returns the obs, raises `AgentStop` on `final_step`.
+
+So **cube developers customize hooks, never the orchestration** — and whatever they put in
+`evaluate` / `finished` / `on_turn_start` behaves identically whether driven by gym `step`,
+the in-process agent loop, or an external agent over `cube.server`. The single per-caller
+knob is the **`StepError` policy** (gym: error ⇒ episode done; agent loop: error ⇒ returned
+to the agent to recover).
+
+The harness only ever drives a cube through these two views, so it cannot reach around the
+core. Use cases:
+
+```mermaid
+flowchart TB
+  subgraph HARNESS["cube-harness — the runtime (drives the views, owns the rest)"]
+    direction TB
+    GYM[gym / RL caller]
+    EP["Episode · single agent<br/>1 connector + Streamer + budget"]
+    AR["Arena · multi-agent<br/>scheduler + N connectors + Streamer + budget"]
+    SINK[("concrete Streamer<br/>FileStorage · XRay · OTel · RL")]
+  end
+
+  subgraph STD["cube-standard — the world + the seam"]
+    direction TB
+    STEP["task.step()  ·gym view·"]
+    TT["TaskTool.execute_action  ·agent view·"]
+    CORE{{"Task core · ONE path<br/>STOP → dispatch → obs_postprocess<br/>hooks: reset · evaluate · finished · on_turn_start"}}
+    STREAM[["Streamer · abstract seam"]]
+    STEP --> CORE
+    TT --> CORE
+    TT -. on_action / on_eval .-> STREAM
+  end
+
+  GYM -->|task.step| STEP
+  EP -->|drives| TT
+  AR -->|drives N| TT
+  STREAM -. implemented by .-> SINK
+```
+
+(A "connector" inside Episode/Arena is the per-agent-type adapter: in-process LLM loop,
+CLI subprocess via `cube.server`/MCP, A2A — each drives the same `TaskTool`.)
 
 ## Is this view complete? (read this first)
 
