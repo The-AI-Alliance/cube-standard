@@ -228,6 +228,17 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
             "``named_subset`` to narrow the set without touching the ClassVar."
         ),
     )
+    subset_name: str | None = Field(
+        default=None,
+        description=(
+            "Registered ``named_subsets`` key this config was produced by, set by "
+            "``named_subset(name)`` (e.g. 'lite-gold'). None for the full benchmark, an "
+            "ad-hoc ``subset_from_list``, or a raw ``subset_from_glob``. Records which "
+            "official subset the config represents, so reproducibility tooling can treat a "
+            "complete run of it as a first-class, reproducible subset rather than a "
+            "hand-picked task list — without re-deriving the membership."
+        ),
+    )
     # ``SerializeAsAny`` on every polymorphic field so subclass-specific state
     # survives JSON round-trip. Without it Pydantic dumps only the declared
     # base type's fields — subclass extras are silently stripped and the
@@ -585,6 +596,8 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
         self,
         tasks: Sequence[str] | Sequence[TaskMetadata],
         benchmark_name_suffix: str = "custom",  # noqa: ARG002 — accepted for call-site compat
+        *,
+        subset_name: str | None = None,
     ) -> Self:
         """Return a new ``BenchmarkConfig`` restricted to the given tasks.
 
@@ -599,6 +612,12 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
         has no effect in the new design; subsets inherit their name from the
         parent class's ``benchmark_metadata``. Use a display-layer convention
         if you need a distinct label.
+
+        ``subset_name`` records the registered named-subset key this selection
+        represents; ``named_subset`` threads it through so a single ``model_copy``
+        sets both ``task_ids`` and the provenance. It defaults to None — an
+        explicit hand-picked list is not a named subset, and any ``subset_name``
+        inherited from a parent ``named_subset`` is dropped.
         """
         current = self.tasks()
         existing_ids = set(current.keys())
@@ -619,15 +638,18 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
         ordered = list(dict.fromkeys(task_ids))
         if not ordered:
             raise ValueError("The resulting task list cannot be empty.")
-        return self.model_copy(update={"task_ids": ordered})
+        return self.model_copy(update={"task_ids": ordered, "subset_name": subset_name})
 
-    def subset_from_glob(self, glob_key: str, glob_pattern: str) -> Self:
+    def subset_from_glob(self, glob_key: str, glob_pattern: str, *, subset_name: str | None = None) -> Self:
         """Return a new ``BenchmarkConfig`` containing only tasks whose ``glob_key`` matches ``glob_pattern``.
 
         ``glob_key`` is any top-level field on the (subclassed) ``TaskMetadata``
         — built-ins like ``id`` / ``split`` / ``abstract_description``, or any
         named field declared by a ``TaskMetadata`` subclass.
         ``glob_pattern`` is a standard Unix shell wildcard.
+
+        ``subset_name`` is forwarded to the recorded provenance — ``named_subset``
+        passes the registered key; a raw glob leaves it None (not an official subset).
         """
         current = self.tasks()
         matches = [
@@ -637,7 +659,9 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
         ]
         if not matches:
             raise ValueError(f"No tasks found matching glob pattern '{glob_pattern}' on key '{glob_key}'")
-        return self.subset_from_list(tasks=matches, benchmark_name_suffix=f"[{glob_key}={glob_pattern}]")
+        return self.subset_from_list(
+            tasks=matches, benchmark_name_suffix=f"[{glob_key}={glob_pattern}]", subset_name=subset_name
+        )
 
     @classmethod
     def named_subsets(cls) -> list[str]:
@@ -647,13 +671,16 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
     def named_subset(self, name: str) -> Self:
         """Return a filtered config for a pre-defined named subset.
 
-        Equivalent to ``subset_from_glob(*benchmark_metadata.named_subsets[name])``.
+        Equivalent to ``subset_from_glob(*benchmark_metadata.named_subsets[name])``,
+        and additionally records ``subset_name=name`` so the config carries which
+        official subset it represents (read by reproducibility tooling without
+        re-deriving the membership).
         """
         named = type(self).benchmark_metadata.named_subsets
         if name not in named:
             raise KeyError(f"Unknown subset {name!r}. Available: {list(named.keys())}")
         glob_key, glob_pattern = named[name]
-        return self.subset_from_glob(glob_key, glob_pattern)
+        return self.subset_from_glob(glob_key, glob_pattern, subset_name=name)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Data lifecycle (class-level; shared across all instances of a subclass)
