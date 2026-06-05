@@ -1,27 +1,26 @@
 """
 Tool configuration for CUBE benchmarks.
 
-This module defines AbstractTool, Tool, AsyncTool, ToolConfig, and the @tool_action decorator
-for implementing and configuring agent action interfaces. ToolConfig allows researchers
-to swap tool implementations for experimentation, enabling research on different tool
-sets and configurations without modifying benchmark code.
+This module defines `AbstractTool`, `Tool`, `ToolConfig`, `Toolbox`, and the
+`@tool_action` decorator. `ToolConfig` lets researchers swap tool
+implementations for experimentation without modifying benchmark code.
+
+`Tool` carries a dual call surface — `execute_action` (sync) and
+`async_execute_action` (async) — and routes per the `@tool_action` method's
+own `def` keyword. Sync and async methods may coexist on one class; the
+framework bridges the impedance mismatch when caller and method differ.
 
 Abstract classes:
     AbstractTool — subclasses must implement:
         - execute_action(action: Action) -> Observation | StepError
         - action_set (property) -> list[ActionSchema]
-    AbstractAsyncTool — same contract but fully async:
-        - async execute_action(action: Action) -> Observation | StepError
-        - action_set (property) -> list[ActionSchema]
-    Tool is a concrete subclass of AbstractTool that implements both automatically
-    via the @tool_action decorator — subclass Tool instead of AbstractTool directly.
-    AsyncTool is a concrete subclass of AbstractAsyncTool — all @tool_action methods
-    must be async def. A TypeError is raised at class definition time otherwise.
+      and inherit a default `async_execute_action` that delegates to
+      `execute_action`. Override it for async-native dispatch.
 
     ToolConfig — subclasses must implement:
-        - make(container) -> AbstractTool | AbstractAsyncTool
+        - make(container) -> AbstractTool
 
-Example — defining a custom sync tool and its config:
+Example — defining a tool and its config:
 
     from cube.tool import Tool, ToolConfig, tool_action
     from cube.container import Container
@@ -30,13 +29,13 @@ Example — defining a custom sync tool and its config:
         base_url: str
 
         @tool_action
-        def navigate(self, url: str) -> str:
-            '''Navigate to a URL and return the page title.'''
+        def screenshot(self) -> bytes:
+            '''Capture a screenshot of the current page.'''
             ...
 
         @tool_action
-        def click(self, selector: str) -> str:
-            '''Click on an element identified by a CSS selector.'''
+        async def navigate(self, url: str) -> str:
+            '''Navigate to a URL and return the page title.'''
             ...
 
     class BrowserToolConfig(ToolConfig):
@@ -45,14 +44,6 @@ Example — defining a custom sync tool and its config:
         def make(self, container: Container | None = None) -> BrowserTool:
             url = container.get_url(port=9222) if container else self.base_url
             return BrowserTool(base_url=url)
-
-Example — defining an async tool:
-
-    class AsyncBrowserTool(AsyncTool):
-        @tool_action
-        async def navigate(self, url: str) -> str:
-            '''Navigate to a URL and return the page title.'''
-            ...
 
 The BrowserToolConfig can then be passed to a Task or Benchmark, letting
 harness users swap browser backends without touching benchmark logic.
@@ -64,7 +55,6 @@ import contextvars
 import inspect
 import logging
 import threading
-import warnings
 from abc import ABC, abstractmethod
 from typing import Any, Callable, List
 
@@ -94,18 +84,12 @@ class AbstractTool(ABC):
         pass
 
     async def async_execute_action(self, action: Action) -> Any:
-        """Async-shaped facade over `execute_action`.
+        """Async call-site for executing an action.
 
-        Default: call sync `execute_action` directly on the current
-        thread (no `to_thread` hop — the call is fully synchronous
-        underneath, just packaged as a coroutine so async callers can
-        `await` uniformly).
-
-        Tools with truly async I/O should subclass `AbstractAsyncTool`
-        (or `AsyncTool`) so their own async `execute_action` becomes
-        the canonical implementation; `async_execute_action` is then
-        the unified call-site for any caller that wants an awaitable,
-        regardless of whether the inner tool is sync or async.
+        Default: delegate to sync `execute_action` on the current thread
+        (no thread hop). Subclasses with native async dispatch — most
+        commonly `Tool`, which routes per the action method's own
+        `def`/`async def` keyword — override this method.
         """
         return self.execute_action(action)
 
@@ -145,42 +129,6 @@ class AbstractTool(ABC):
         pass
 
 
-class AbstractAsyncTool(AbstractTool):
-    """Deprecated. Subclass `AbstractTool` directly.
-
-    `AbstractTool` now declares both `execute_action` (sync) and
-    `async_execute_action` (async) — no class-level split is needed.
-
-    This subclass preserves the async-`execute_action` shape so
-    legacy `class Foo(AbstractAsyncTool): async def execute_action(...)`
-    code keeps working through one release window. Subclassing emits a
-    `DeprecationWarning`.
-    """
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        # Skip the warning when our own deprecated shim (`AsyncTool`) is the
-        # immediate subclass — its own __init_subclass__ already emits one,
-        # and we don't want the warning to fire at module import time.
-        if cls.__module__ == __name__ and cls.__name__ == "AsyncTool":
-            return
-        warnings.warn(
-            f"Subclassing AbstractAsyncTool is deprecated (see {cls.__name__}); "
-            f"subclass AbstractTool directly. AbstractTool now declares both "
-            f"`execute_action` (sync) and `async_execute_action` (async).",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-    @abstractmethod
-    async def execute_action(self, action: Action) -> Any:  # type: ignore[override]
-        """Legacy async execute_action. Subclasses MUST override."""
-
-    async def async_execute_action(self, action: Action) -> Any:
-        """Delegate to the legacy async `execute_action`."""
-        return await self.execute_action(action)
-
-
 class ToolConfig(ValidatedConfig, ABC):
     """
     Configuration for creating task-specific tools.
@@ -208,28 +156,24 @@ class ToolConfig(ValidatedConfig, ABC):
 
 
 class AsyncToolConfig(ValidatedConfig, ABC):
-    """Configuration for creating async task-specific tools.
-
-    Mirrors ToolConfig but make() is a coroutine, allowing async resource
-    acquisition (browser launch, network connections, etc.) before the tool
-    is handed to the caller.
+    """Configuration for creating task-specific tools whose `make()`
+    needs to be a coroutine (async resource acquisition: browser launch,
+    network connections, etc.) before the tool is handed to the caller.
     """
 
     @abstractmethod
-    async def make(self, container: Container | None = None) -> AbstractAsyncTool:
-        """Instantiate AsyncTool from configuration data."""
+    async def make(self, container: Container | None = None) -> AbstractTool:
+        """Instantiate a Tool from configuration data."""
         pass
 
 
 def tool_action(func: Callable) -> Callable:
     """
-    Decorator to mark a method as an action in a Tool or AsyncTool.
+    Decorator to mark a method as an action on a Tool.
 
-    This decorator automatically registers methods as actions that will be
-    discovered by the tool's action_set property.
-
-    For AsyncTool subclasses, the decorated method must be async def —
-    a TypeError is raised at class definition time otherwise.
+    Decorated methods are discovered by the tool's `action_set` property.
+    Methods may be sync `def` or `async def` — `Tool` dispatches per the
+    method's own keyword.
 
     Usage:
         class MyTool(Tool):
@@ -238,10 +182,10 @@ def tool_action(func: Callable) -> Callable:
                 '''Action description.'''
                 return f"Result: {param}"
 
-        class MyAsyncTool(AsyncTool):
             @tool_action
-            async def my_action(self, param: str) -> str:
-                '''Action description.'''
+            async def my_slow_action(self, param: str) -> str:
+                '''Async action on the same class.'''
+                await some_io()
                 return f"Result: {param}"
     """
     func._is_action = True  # type: ignore[attr-defined]
@@ -250,9 +194,8 @@ def tool_action(func: Callable) -> Callable:
 
 class _ToolActionsMixin:
     """
-    Shared action discovery and dispatch logic for Tool and AsyncTool.
-
-    Not intended to be subclassed directly.
+    Shared action discovery logic for `Tool`. Not intended to be subclassed
+    directly.
     """
 
     def get_action_method(self, action: Action) -> Callable:
@@ -472,34 +415,6 @@ class Tool(_ToolActionsMixin, AbstractTool):
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
 
-class AsyncTool(Tool, AbstractAsyncTool):
-    """Deprecated alias of `Tool`. Subclass `Tool` directly.
-
-    `Tool` now supports `@tool_action` methods of either sync or async
-    kind on the same class — see `Tool`'s docstring.
-
-    This subclass preserves the async `execute_action` interface so
-    legacy `await tool.execute_action(action)` callers keep working
-    through the deprecation window. Multiple-inherits `AbstractAsyncTool`
-    so `isinstance(x, AbstractAsyncTool)` checks on subclasses keep
-    returning True. Subclassing `AsyncTool` emits a `DeprecationWarning`.
-    """
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        warnings.warn(
-            f"Subclassing AsyncTool is deprecated (see {cls.__name__}); "
-            f"subclass Tool directly. Tool now supports both sync and "
-            f"async @tool_action methods on the same class.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-    async def execute_action(self, action: Action) -> Observation | StepError:  # type: ignore[override]
-        """Legacy async dispatch — delegates to `Tool.async_execute_action`."""
-        return await self.async_execute_action(action)
-
-
 class Toolbox(Tool):
     """Composite tool that holds a list of `Tool` instances and routes
     actions by name. Both sync and async dispatch supported — leaf
@@ -537,34 +452,24 @@ class Toolbox(Tool):
         return None
 
     def reset(self) -> None:
-        """Sync reset. If a leaf's `reset` returns a coroutine (legacy
-        `AsyncTool` shim), the coroutine is closed without awaiting —
-        call `async_reset` from an async context for proper cleanup."""
+        """Sync reset — calls `reset` on every leaf."""
         for tool in self.tools:
-            r = tool.reset()
-            if inspect.iscoroutine(r):
-                r.close()
+            tool.reset()
 
     async def async_reset(self) -> None:
-        """Async reset. Awaits coroutine returns from any leaf."""
+        """Async reset. Same body as `reset` — leaves' `reset` is sync."""
         for tool in self.tools:
-            r = tool.reset()
-            if inspect.iscoroutine(r):
-                await r
+            tool.reset()
 
     def close(self) -> None:
-        """Sync close. Same coroutine-handling as `reset`."""
+        """Sync close — calls `close` on every leaf."""
         for tool in self.tools:
-            c = tool.close()
-            if inspect.iscoroutine(c):
-                c.close()
+            tool.close()
 
     async def async_close(self) -> None:
-        """Async close. Awaits coroutine returns from any leaf."""
+        """Async close. Same body as `close` — leaves' `close` is sync."""
         for tool in self.tools:
-            c = tool.close()
-            if inspect.iscoroutine(c):
-                await c
+            tool.close()
 
     def execute_action(self, action: Action) -> Observation | StepError:
         """Sync dispatch — delegates to leaf's `execute_action`.
@@ -579,33 +484,6 @@ class Toolbox(Tool):
         if action.name not in self._action_name_to_tool:
             raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
         return await self._action_name_to_tool[action.name].async_execute_action(action)
-
-
-class AsyncToolbox(Toolbox):
-    """Deprecated. Use `Toolbox` directly (its `async_execute_action`
-    is the canonical async call-site).
-
-    Kept as a thin shim that preserves the async-`execute_action`
-    semantic for legacy `await tb.execute_action(action)` callers.
-    Each call emits a `DeprecationWarning`.
-
-    `reset()` and `close()` are also async on this shim, mirroring the
-    pre-consolidation contract.
-    """
-
-    async def execute_action(self, action: Action) -> Observation | StepError:  # type: ignore[override]
-        warnings.warn(
-            "AsyncToolbox.execute_action is deprecated; use Toolbox.async_execute_action.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return await self.async_execute_action(action)
-
-    async def reset(self) -> None:  # type: ignore[override]
-        await self.async_reset()
-
-    async def close(self) -> None:  # type: ignore[override]
-        await self.async_close()
 
 
 class ToolboxConfig(ToolConfig):
@@ -625,10 +503,10 @@ class ToolboxConfig(ToolConfig):
 
 
 class AsyncToolboxConfig(AsyncToolConfig):
-    """Configuration for a list of async only tools."""
+    """Configuration for a list of tools whose `make()` is async."""
 
     tool_configs: list[AsyncToolConfig] = []
 
-    async def make(self, container: Container | None = None) -> AsyncToolbox:
+    async def make(self, container: Container | None = None) -> Toolbox:
         tools = [await tc.make(container) for tc in self.tool_configs]
-        return AsyncToolbox(tools=tools)
+        return Toolbox(tools=tools)

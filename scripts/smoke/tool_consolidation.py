@@ -2,8 +2,7 @@
 """Smoke: end-to-end exercise of the consolidated Tool dispatch.
 
 Verifies the four cells of the (sync/async caller) × (sync/async action)
-matrix on a real `Tool` subclass with mixed @tool_action methods, plus
-the deprecation shims (AsyncTool, AsyncToolbox) still work end-to-end.
+matrix on a real `Tool` subclass with mixed @tool_action methods.
 
 Run:
     uv run scripts/smoke/tool_consolidation.py
@@ -16,10 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-import warnings
 
 from cube.core import Action, Observation
-from cube.tool import AsyncTool, AsyncToolbox, Tool, Toolbox, tool_action
+from cube.tool import Tool, Toolbox, tool_action
 
 NAME = "tool_consolidation"
 
@@ -128,48 +126,6 @@ async def _bridge_from_running_loop(tool: MixedTool) -> str | None:
     return None
 
 
-def _legacy_async_tool_shim_emits_deprecation() -> str | None:
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
-
-        class _Legacy(AsyncTool):
-            @tool_action
-            async def hi(self) -> str:
-                """Legacy."""
-                return "hi"
-
-    deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
-    if not any("AsyncTool is deprecated" in str(w.message) for w in deprecations):
-        return "no DeprecationWarning emitted on subclassing AsyncTool"
-    return None
-
-
-async def _legacy_asynctoolbox_shim_works() -> str | None:
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-
-        class _LegacyAsyncEcho(AsyncTool):
-            @tool_action
-            async def echo(self, msg: str) -> str:
-                """Echo."""
-                return msg
-
-        box = AsyncToolbox(tools=[_LegacyAsyncEcho()])
-
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
-        result = await box.execute_action(Action(name="echo", arguments={"msg": "hi"}))
-
-    if not isinstance(result, Observation):
-        return f"AsyncToolbox.execute_action gave non-Observation: {type(result).__name__}"
-    if result.contents[0].data != "hi":
-        return f"AsyncToolbox.execute_action gave {result.contents[0].data!r}, expected 'hi'"
-    deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
-    if not any("AsyncToolbox.execute_action is deprecated" in str(w.message) for w in deprecations):
-        return "no DeprecationWarning emitted on calling AsyncToolbox.execute_action"
-    return None
-
-
 def _unified_toolbox_routes_both_kinds() -> str | None:
     """Toolbox containing a single MixedTool routes sync and async actions
     through the sync `execute_action` (sync caller path)."""
@@ -193,8 +149,6 @@ async def main_async() -> int:
         ("(async caller × async action) direct await", await _cell_async_caller_async_action(tool)),
         ("parallel gather over sync actions (real parallelism)", await _parallel_gather_realism(tool)),
         ("bridge from inside a running loop", await _bridge_from_running_loop(tool)),
-        ("AsyncTool shim emits DeprecationWarning", _legacy_async_tool_shim_emits_deprecation()),
-        ("AsyncToolbox.execute_action shim still works + warns", await _legacy_asynctoolbox_shim_works()),
         ("Toolbox routes both kinds through bridge", _unified_toolbox_routes_both_kinds()),
     ]:
         if err is not None:

@@ -43,13 +43,10 @@ class BrowserTool(Tool):
 
 class AsyncBrowserTool(Tool):
     """Abstract base for async browser tools used by web-based tasks
-    (setup, validation, observation).
-
-    Subclasses `Tool` directly (was `AsyncTool` before the tool
-    consolidation). All `@tool_action` methods on subclasses are
-    `async def`; `Tool.async_execute_action` dispatches them
-    natively, and `Tool.execute_action` bridges via thread+loop for
-    sync callers.
+    (setup, validation, observation). All `@tool_action` methods on
+    subclasses are `async def`; `Tool.async_execute_action` dispatches
+    them natively, and `Tool.execute_action` bridges via thread+loop
+    for sync callers.
     """
 
     @property

@@ -1,4 +1,4 @@
-"""Tests for cube.tool - Tool, AsyncTool, ToolConfig, tool_action."""
+"""Tests for cube.tool — Tool, Toolbox, ToolConfig, tool_action."""
 
 import asyncio
 import inspect
@@ -6,7 +6,7 @@ import inspect
 import pytest
 
 from cube.core import Action, ActionSchema, Observation, StepError, TextContent
-from cube.tool import AsyncTool, AsyncToolbox, Tool, Toolbox, tool_action
+from cube.tool import Tool, Toolbox, tool_action
 
 
 def assert_tool_docstrings_valid(tool_cls: type) -> None:
@@ -55,7 +55,9 @@ class EchoTool(Tool):
         return "hidden"
 
 
-class AsyncEchoTool(AsyncTool):
+class AsyncEchoTool(Tool):
+    """A `Tool` whose `@tool_action` methods are all `async def`."""
+
     @tool_action
     async def echo(self, text: str) -> str:
         """Echo the given text."""
@@ -146,7 +148,7 @@ def test_tool_execute_action_missing_required_returns_observation():
     assert "Invalid arguments for add" in result.contents[0].data
 
 
-# ── AsyncTool ─────────────────────────────────────────────────────────────────
+# ── Tool with async @tool_action methods ──────────────────────────────────────
 
 
 def test_async_tool_action_decorator_sets_flag():
@@ -167,21 +169,21 @@ def test_async_tool_action_set_schemas_have_descriptions():
 
 @pytest.mark.asyncio
 async def test_async_tool_execute_action_returns_observation():
-    result = await AsyncEchoTool().execute_action(Action(name="echo", arguments={"text": "hello"}))
+    result = await AsyncEchoTool().async_execute_action(Action(name="echo", arguments={"text": "hello"}))
     assert isinstance(result, Observation)
     assert result.contents == [TextContent(data="hello")]
 
 
 @pytest.mark.asyncio
 async def test_async_tool_execute_action_none_returns_success():
-    """A @tool_action returning None should yield an Observation with 'Success'."""
+    """An async @tool_action returning None should yield an Observation with 'Success'."""
 
-    class SilentAsyncTool(AsyncTool):
+    class SilentAsyncTool(Tool):
         @tool_action
         async def do_nothing(self) -> None:
             """Does nothing."""
 
-    result = await SilentAsyncTool().execute_action(Action(name="do_nothing", arguments={}))
+    result = await SilentAsyncTool().async_execute_action(Action(name="do_nothing", arguments={}))
     assert isinstance(result, Observation)
     assert result.contents == [TextContent(data="Success")]
 
@@ -189,18 +191,18 @@ async def test_async_tool_execute_action_none_returns_success():
 @pytest.mark.asyncio
 async def test_async_tool_execute_action_unknown_method_raises():
     with pytest.raises(ValueError, match="does not exist"):
-        await AsyncEchoTool().execute_action(Action(name="nonexistent", arguments={}))
+        await AsyncEchoTool().async_execute_action(Action(name="nonexistent", arguments={}))
 
 
 @pytest.mark.asyncio
 async def test_async_tool_execute_action_non_action_method_raises():
     with pytest.raises(ValueError, match="not decorated"):
-        await AsyncEchoTool().execute_action(Action(name="not_an_action", arguments={}))
+        await AsyncEchoTool().async_execute_action(Action(name="not_an_action", arguments={}))
 
 
 @pytest.mark.asyncio
 async def test_async_tool_execute_action_exception_returns_step_error():
-    result = await AsyncEchoTool().execute_action(Action(name="crash", arguments={}))
+    result = await AsyncEchoTool().async_execute_action(Action(name="crash", arguments={}))
     assert isinstance(result, StepError)
     assert result.error_type == "RuntimeError"
     assert result.exception_str == "intentional error"
@@ -208,35 +210,9 @@ async def test_async_tool_execute_action_exception_returns_step_error():
 
 @pytest.mark.asyncio
 async def test_async_tool_execute_action_unknown_kwarg_returns_observation():
-    result = await AsyncEchoTool().execute_action(Action(name="echo", arguments={"text": "hi", "timeout": 120}))
+    result = await AsyncEchoTool().async_execute_action(Action(name="echo", arguments={"text": "hi", "timeout": 120}))
     assert isinstance(result, Observation)
     assert "Invalid arguments for echo" in result.contents[0].data
-
-
-def test_async_tool_subclass_accepts_mixed_methods():
-    """Post-consolidation: `AsyncTool` is a deprecated alias of `Tool` and
-    no longer enforces all-async at class definition time. Mixing sync
-    and async `@tool_action` methods is now legal on either base class.
-    Subclassing `AsyncTool` emits a DeprecationWarning."""
-    import warnings
-
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
-
-        class _MixedAsyncTool(AsyncTool):
-            @tool_action
-            def sync_action(self) -> str:
-                """Mixing a sync action is now allowed."""
-                return "sync_ok"
-
-            @tool_action
-            async def async_action(self) -> str:
-                """Async action alongside sync one — both work."""
-                return "async_ok"
-
-        # Deprecation warning fires at subclass time.
-        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
-        assert any("AsyncTool is deprecated" in str(w.message) for w in deprecations)
 
 
 # ── assert_tool_docstrings_valid ─────────────────────────────────────────────────────────────────
@@ -303,14 +279,14 @@ class UpperTool(Tool):
         return text.upper()
 
 
-class AsyncUpperTool(AsyncTool):
+class AsyncUpperTool(Tool):
     @tool_action
     async def upper(self, text: str) -> str:
         """Return the text in uppercase."""
         return text.upper()
 
 
-# ── Toolbox (sync) ─────────────────────────────────────────────────────────────
+# ── Toolbox — sync dispatch ────────────────────────────────────────────────────
 
 
 def test_toolbox_action_set_is_union_of_tools():
@@ -373,74 +349,36 @@ def test_toolbox_close_calls_close_on_all_tools():
     assert closed == 2
 
 
-# ── AsyncToolbox ───────────────────────────────────────────────────────────────
-
-
-def test_async_toolbox_action_set_is_union_of_tools():
-    box = AsyncToolbox(tools=[AsyncEchoTool(), AsyncUpperTool()])
-    names = {a.name for a in box.action_set}
-    assert names == {"echo", "add", "crash", "upper"}
+# ── Toolbox — async dispatch over mixed leaves ────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_async_toolbox_execute_action_delegates_to_correct_tool():
-    box = AsyncToolbox(tools=[AsyncEchoTool(), AsyncUpperTool()])
-    result = await box.execute_action(Action(name="upper", arguments={"text": "hello"}))
+async def test_toolbox_async_execute_action_routes_async_leaf():
+    box = Toolbox(tools=[AsyncEchoTool(), AsyncUpperTool()])
+    result = await box.async_execute_action(Action(name="upper", arguments={"text": "hello"}))
     assert isinstance(result, Observation)
     assert result.contents == [TextContent(data="HELLO")]
 
 
 @pytest.mark.asyncio
-async def test_async_toolbox_execute_action_unknown_raises():
-    box = AsyncToolbox(tools=[AsyncEchoTool()])
+async def test_toolbox_async_execute_action_unknown_raises():
+    box = Toolbox(tools=[AsyncEchoTool()])
     with pytest.raises(ValueError, match="not supported"):
-        await box.execute_action(Action(name="nonexistent", arguments={}))
-
-
-def test_async_toolbox_duplicate_action_name_raises_on_construction():
-    with pytest.raises(ValueError, match="Duplicate action name"):
-        AsyncToolbox(tools=[AsyncEchoTool(), AsyncEchoTool()])
-
-
-def test_async_toolbox_find_tool_returns_correct_instance():
-    echo = AsyncEchoTool()
-    upper = AsyncUpperTool()
-    box = AsyncToolbox(tools=[echo, upper])
-    assert box.find_tool(AsyncUpperTool) is upper
-
-
-def test_async_toolbox_find_tool_returns_none_when_absent():
-    box = AsyncToolbox(tools=[AsyncEchoTool()])
-    assert box.find_tool(AsyncUpperTool) is None
+        await box.async_execute_action(Action(name="nonexistent", arguments={}))
 
 
 @pytest.mark.asyncio
-async def test_async_toolbox_reset_calls_reset_on_all_tools():
-    resets = 0
-
-    class TrackingAsyncTool(AsyncTool):
-        async def reset(self) -> None:
-            nonlocal resets
-            resets += 1
-
-    await AsyncToolbox(tools=[TrackingAsyncTool(), TrackingAsyncTool()]).reset()
-    assert resets == 2
-
-
-@pytest.mark.asyncio
-async def test_async_toolbox_close_calls_close_on_all_tools():
-    closed = 0
-
-    class TrackingAsyncTool(AsyncTool):
-        async def close(self) -> None:
-            nonlocal closed
-            closed += 1
-
-    await AsyncToolbox(tools=[TrackingAsyncTool(), TrackingAsyncTool()]).close()
-    assert closed == 2
-
-
-# ── async_execute_action defaults + mixed-leaf AsyncToolbox ───────────────────
+async def test_toolbox_async_execute_action_handles_mixed_sync_and_async_leaves():
+    """A single `Toolbox` may hold a mix of sync and async leaves;
+    `async_execute_action` routes per the leaf's action method's kind.
+    """
+    box = Toolbox(tools=[EchoTool(), AsyncUpperTool()])
+    sync_result = await box.async_execute_action(Action(name="echo", arguments={"text": "hello"}))
+    assert isinstance(sync_result, Observation)
+    assert sync_result.contents[0].data == "hello"
+    async_result = await box.async_execute_action(Action(name="upper", arguments={"text": "hi"}))
+    assert isinstance(async_result, Observation)
+    assert async_result.contents[0].data == "HI"
 
 
 @pytest.mark.asyncio
@@ -455,81 +393,11 @@ async def test_async_execute_action_default_on_sync_tool_runs_sync_body():
     assert result.contents[0].data == "hi"
 
 
-@pytest.mark.asyncio
-async def test_async_execute_action_default_on_async_tool_awaits():
-    """`AbstractAsyncTool.async_execute_action` default delegates to
-    async `execute_action` — same payload, just through the unified
-    call-site name."""
-    tool = AsyncEchoTool()
-    action = Action(name="echo", arguments={"text": "hi"})
-    result = await tool.async_execute_action(action)
-    assert isinstance(result, Observation)
-    assert result.contents[0].data == "hi"
-
-
-@pytest.mark.asyncio
-async def test_async_toolbox_accepts_mixed_sync_and_async_leaves():
-    """`AsyncToolbox` holds a mix of sync and async leaves and dispatches
-    each through `async_execute_action`. Sync leaf runs synchronously;
-    async leaf is awaited. No adapter layer needed."""
-    box = AsyncToolbox(tools=[EchoTool(), AsyncUpperTool()])
-    # Sync leaf
-    sync_result = await box.execute_action(Action(name="echo", arguments={"text": "hello"}))
-    assert isinstance(sync_result, Observation)
-    assert sync_result.contents[0].data == "hello"
-    # Async leaf
-    async_result = await box.execute_action(Action(name="upper", arguments={"text": "hi"}))
-    assert isinstance(async_result, Observation)
-    assert async_result.contents[0].data == "HI"
-
-
-@pytest.mark.asyncio
-async def test_async_toolbox_reset_and_close_handle_mixed_leaves():
-    """`reset` / `close` tolerate both sync and async leaves: each leaf's
-    method runs, awaited only if it returned a coroutine."""
-    sync_calls = {"reset": 0, "close": 0}
-    async_calls = {"reset": 0, "close": 0}
-
-    class SyncTrackingTool(Tool):
-        @tool_action
-        def sync_ping(self) -> str:
-            """Ping (sync)."""
-            return "sync"
-
-        def reset(self) -> None:
-            sync_calls["reset"] += 1
-
-        def close(self) -> None:
-            sync_calls["close"] += 1
-
-    class AsyncTrackingTool(AsyncTool):
-        @tool_action
-        async def async_ping(self) -> str:
-            """Ping (async)."""
-            return "async"
-
-        async def reset(self) -> None:
-            async_calls["reset"] += 1
-
-        async def close(self) -> None:
-            async_calls["close"] += 1
-
-    box = AsyncToolbox(tools=[SyncTrackingTool(), AsyncTrackingTool()])
-    await box.reset()
-    await box.close()
-    assert sync_calls == {"reset": 1, "close": 1}
-    assert async_calls == {"reset": 1, "close": 1}
-
-
-# ── Tool consolidation: 4-cell dispatch matrix ─────────────────────────────────
+# ── Tool consolidation — 4-cell dispatch matrix ───────────────────────────────
 
 
 class MixedActionTool(Tool):
-    """Tool with both sync and async @tool_action methods on one class.
-
-    Possible after consolidation; rejected by the old AsyncTool
-    `__init_subclass__` validation.
-    """
+    """Tool with both sync and async @tool_action methods on one class."""
 
     @tool_action
     def fast_sync(self, x: int) -> str:
@@ -569,7 +437,6 @@ def test_sync_caller_async_action_bridge_inside_running_loop():
     on the current thread."""
 
     async def harness():
-        # Inside a running loop, call sync `execute_action` on an async action.
         tool = MixedActionTool()
         return tool.execute_action(Action(name="slow_async", arguments={"x": 7}))
 
@@ -623,56 +490,3 @@ async def test_async_caller_parallel_gather_over_sync_actions():
     # 4 × 100ms sequential = 400ms. Parallel should be well under 250ms.
     assert elapsed < 0.25, f"parallel-gather over sync actions ran sequentially? elapsed={elapsed:.3f}s"
     assert all(isinstance(r, Observation) for r in results)
-
-
-# ── Deprecation warnings ──────────────────────────────────────────────────────
-
-
-def test_subclassing_asynctool_emits_deprecation_warning():
-    """Subclassing the deprecated `AsyncTool` alias fires a `DeprecationWarning`."""
-    import warnings
-
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
-
-        class _LegacyAsync(AsyncTool):
-            @tool_action
-            async def echo(self, x: str) -> str:
-                """Echo."""
-                return x
-
-        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
-        assert any("AsyncTool is deprecated" in str(w.message) for w in deprecations)
-
-
-@pytest.mark.asyncio
-async def test_asynctoolbox_execute_action_emits_deprecation_warning():
-    """Calling the deprecated async-`execute_action` on `AsyncToolbox`
-    fires a `DeprecationWarning` but still works."""
-    import warnings
-
-    box = AsyncToolbox(tools=[AsyncEchoTool()])
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
-        result = await box.execute_action(Action(name="echo", arguments={"text": "hi"}))
-
-    assert isinstance(result, Observation)
-    assert result.contents[0].data == "hi"
-    deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
-    assert any("AsyncToolbox.execute_action is deprecated" in str(w.message) for w in deprecations)
-
-
-def test_asynctool_subclass_isinstance_of_abstract_async_tool():
-    """Backward compat: existing code using `isinstance(x, AbstractAsyncTool)`
-    on AsyncTool subclasses must keep returning True."""
-    import warnings
-
-    from cube.tool import AbstractAsyncTool, AbstractTool
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        tool = AsyncEchoTool()
-
-    assert isinstance(tool, AbstractAsyncTool), "AsyncTool subclass must isinstance(AbstractAsyncTool)"
-    assert isinstance(tool, AbstractTool), "AsyncTool subclass must isinstance(AbstractTool) too"
-    assert isinstance(tool, Tool), "AsyncTool subclass must isinstance(Tool) (the new canonical base)"

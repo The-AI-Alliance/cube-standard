@@ -2,7 +2,7 @@
 
 ## What this is, in one sentence
 
-Right now, when you write a cube tool, you have to pick whether it's a *sync tool* or an *async tool* upfront — and once you pick, every `@tool_action` method on the class has to match. This proposal lets one tool class carry both kinds of methods, with dispatch routed per method.
+Today, a cube tool author has to pick *sync tool* or *async tool* upfront, and once they pick, every `@tool_action` method on the class has to match. This proposal lets one tool class carry both kinds of methods, with dispatch routed per method.
 
 ## The friction today
 
@@ -23,25 +23,25 @@ class AsyncBrowserTool(AsyncTool):
         return f"clicked {selector}"
 ```
 
-If you're writing a browser tool that has one async operation (a Playwright `click` that awaits a network event) but ten sync helpers (a `screenshot` that reads a local PNG file, a `scroll_to_top` that's a one-liner), you can't put them on one class. Either:
+A browser tool with one async operation (a Playwright `click` that awaits a network event) but ten sync helpers (a `screenshot` that reads a local PNG, a `scroll_to_top` one-liner) can't live on one class. Either:
 
 - Make everything async (the sync helpers acquire a meaningless `async`/`await`), or
-- Split into two classes (your cube now has `BrowserSyncHelpers` and `AsyncBrowserTool`, which is weird).
+- Split into two classes (your cube now has `BrowserSyncHelpers` and `AsyncBrowserTool`).
 
-This is why **`AsyncBrowserTool` is the only `AsyncTool` subclass in the entire codebase today**. Tool authors hit this friction once and just pick sync.
+`AsyncBrowserTool` is the only `AsyncTool` subclass in the entire codebase. Tool authors hit this friction once and just pick sync.
 
-There's a second problem: the `sync`/`async` distinction is encoded in the **class name** and the **base class**, but conceptually it's a per-method property. A reader can't tell from `class WebTool(AsyncTool)` whether `screenshot()` is fast-local or slow-network — they have to read each method.
+Second problem: the sync/async distinction is encoded in the **class name** and the **base class**, but conceptually it's a per-method property. A reader can't tell from `class WebTool(AsyncTool)` whether `screenshot()` is fast-local or slow-network — they have to read each method.
 
 ## The change in one diagram
 
-The same dual-API pattern (`execute_action` sync + `async_execute_action` async on every class) applies at all three layers — the abstract base, the concrete leaf, and the container. Today's split becomes one column:
+The same dual-API pattern (`execute_action` sync + `async_execute_action` async on every class) applies at all three layers — the abstract base, the concrete leaf, and the container. Three pairs collapse to one column:
 
 ```mermaid
 flowchart LR
     classDef gone fill:#fee2e2,stroke:#dc2626
     classDef stay fill:#dcfce7,stroke:#16a34a
 
-    subgraph Today["Today — three pairs of parallel classes"]
+    subgraph Before["Three pairs of parallel classes"]
         TA["AbstractTool"]:::stay
         TB["AbstractAsyncTool"]:::gone
         TC["Tool"]:::stay
@@ -54,18 +54,16 @@ flowchart LR
         TD --> TF
     end
 
-    subgraph After["After — one class per layer, dual API"]
+    subgraph After["One class per layer, dual API"]
         AA["AbstractTool"]:::stay
         AB["Tool<br/>(@tool_action sync OR async)"]:::stay
-        AC["Toolbox<br/>(routes by action name<br/>to leaf's dual API)"]:::stay
+        AC["Toolbox<br/>(routes by action name)"]:::stay
         AA --> AB
         AB --> AC
     end
-
-    Today -.->|"AsyncTool / AsyncToolbox /<br/>AbstractAsyncTool become<br/>deprecated aliases<br/>(one release window)"| After
 ```
 
-`AsyncTool`, `AsyncToolbox`, and `AbstractAsyncTool` stay as deprecated aliases of the unified classes — existing code keeps working, downstream cubes migrate over one release window.
+`AbstractAsyncTool`, `AsyncTool`, and `AsyncToolbox` are deleted outright — we're pre-1.0, there's no external surface to preserve.
 
 ## What you write after this lands
 
@@ -97,17 +95,17 @@ class BrowserTool(Tool):
         return f"loaded {url}"
 ```
 
-Case 3 is the new thing. Today it's impossible without two classes.
+Case 3 is the new thing.
 
 ## How dispatch works (the two call sites, four routes)
 
-A `Tool` exposes **two** ways to execute an action. The caller picks based on their own call-site shape, not based on the tool:
+A `Tool` exposes **two** ways to execute an action. The caller picks based on its own call-site shape, not based on the tool:
 
 ```python
-# Sync call-site (e.g. inside Agent._run, or a sync test):
+# Sync call-site (Agent._run, sync test, sync helper):
 result = tool.execute_action(action)
 
-# Async call-site (e.g. inside Agent._arun + asyncio.gather):
+# Async call-site (Agent._arun + asyncio.gather):
 result = await tool.async_execute_action(action)
 ```
 
@@ -131,32 +129,28 @@ flowchart TD
     ASK -- "async def" --> ASR2["✓ await method directly<br/>(no thread hop)"]:::awaitp
 ```
 
-Read this as a 2×2 matrix:
-
 |  | action `def` (sync) | action `async def` (async) |
 |---|---|---|
 | `execute_action()` (sync caller) | direct call, no overhead | thread+loop bridge, ~2-5 ms |
 | `await async_execute_action()` (async caller) | `asyncio.to_thread`, pooled worker | direct await, no thread |
 
-The two "fast" cells handle most calls (sync→sync and async→async). The two "bridge" cells let mixed-action tools "just work" from any call-site — you pay the bridge cost only on the mismatch, and only for that one call.
-
-The same dual-API shape already ships on cube-harness's `MonitoredTool`. Mirroring it in cube-standard makes the pattern consistent end-to-end and means an author can write a 90/10 mixed tool without ever thinking about which dispatch the agent will use.
+The two "fast" cells handle most calls. The two "bridge" cells let mixed-action tools just work from any call-site — you pay the bridge cost only on the mismatch, and only for that one call.
 
 ## What this means for agent authors
 
-cube-harness's `Agent` base class already has two loop-body methods, picked by a config flag:
+cube-harness's `Agent` base class has two loop-body methods, picked by a config flag:
 
 - **`Agent._run`** — sync body. The default. Loops `step → execute_action → step → ...`. No `await` anywhere on the action path.
 - **`Agent._arun`** — async body. Opt-in via `AgentConfig.parallel_actions=True`. Dispatches N actions per step in parallel via `asyncio.gather`.
 
-After this consolidation, each loop body maps cleanly to one dispatch method:
+Each loop body maps cleanly to one dispatch method:
 
 | Agent loop | Tool call site | Best for |
 |---|---|---|
 | `_run` (sync, default) | `tool.execute_action(a)` | The 99% case. Single-stack pdb. Bridges to a thread+loop for the rare async-action call so mixed tools still work. |
 | `_arun` (async, opt-in) | `await tool.async_execute_action(a)` | LLM emits N independent tool calls per turn; wall-clock = max(latencies). Sync actions pool through `asyncio.to_thread` for real parallelism. |
 
-Both bodies work against the **same** tool class **and any mix of sync/async actions inside it**. The agent author picks based on their loop semantics, not the tool's. A tool author shipping `BrowserTool` (mixed case 3 above) doesn't have to know or care which agent will use it — the framework handles the impedance per-call.
+Both bodies work against the **same** tool class **and any mix of sync/async actions inside it**. The agent author picks based on their loop semantics, not the tool's. A tool author shipping `BrowserTool` (mixed case 3 above) doesn't have to know or care which agent uses it.
 
 ## What the implementation looks like
 
@@ -180,14 +174,12 @@ class Tool(_ToolActionsMixin, AbstractTool):
         method = self.get_action_method(action)
         if inspect.iscoroutinefunction(method):
             # Fast path: async action, async caller. Direct await.
-            result = method(**action.arguments)
             try:
-                result = await result or "Success"
+                result = await method(**action.arguments) or "Success"
             except Exception as e:
                 return StepError.from_exception(e)
         else:
-            # Sync action, async caller: hop to a thread pool.
-            # `to_thread` uses Python's default ThreadPoolExecutor
+            # Sync action, async caller: hop to the default ThreadPoolExecutor
             # (pooled, reused — no per-call thread spawn).
             try:
                 result = await asyncio.to_thread(method, **action.arguments) or "Success"
@@ -222,11 +214,11 @@ class Tool(_ToolActionsMixin, AbstractTool):
         return Observation(contents=[Content.from_data(result, tool_call_id=action.id)])
 ```
 
-~50 lines of dispatch code on the base class. Subclasses don't need to touch any of it.
+~50 lines of dispatch on the base class. Subclasses don't touch any of it.
 
 ### Thread-affine tools (override hook)
 
-Some tools wrap thread-affine resources — sync Playwright sessions, some database drivers, anything that pins state to the thread it was created on. The default `asyncio.to_thread` rotates through pool threads, which breaks that affinity.
+Some tools wrap thread-affine resources — sync Playwright sessions, some database drivers, anything that pins state to the thread it was created on. The default `asyncio.to_thread` rotates through pool threads, which breaks affinity.
 
 Such tools override `async_execute_action` to dispatch through a per-instance single-threaded executor:
 
@@ -234,8 +226,8 @@ Such tools override `async_execute_action` to dispatch through a per-instance si
 class PlaywrightTool(Tool):
     def __init__(self) -> None:
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        # Initialize the playwright session ON the executor thread so the
-        # session and all subsequent calls share thread identity.
+        # Initialize the session ON the executor thread so the session
+        # and all subsequent calls share thread identity.
         self._session = self._executor.submit(self._init_session).result()
 
     async def async_execute_action(self, action: Action) -> Observation | StepError:
@@ -253,11 +245,11 @@ class PlaywrightTool(Tool):
         return Observation(contents=[Content.from_data(result, tool_call_id=action.id)])
 ```
 
-This is a documented extension point, not a hidden gotcha — thread affinity is a real Python concern for some libraries, and the override is the right place to handle it.
+A documented extension point, not a hidden gotcha — thread affinity is a real Python concern for some libraries, and the override is the right level of abstraction.
 
 ## Why this helps debugging
 
-A picture is worth a thousand words. Here are the actual call stacks when you hit a `breakpoint()` inside a tool action method:
+Actual call stacks when you hit a `breakpoint()` inside a tool action method:
 
 **Sync agent (`_run`) calling a sync action via `execute_action`:**
 
@@ -268,7 +260,7 @@ toolbox.py      execute_action       return leaf.execute_action(action)
 user_tool.py    my_action            x = self.compute(...)      ← breakpoint here
 ```
 
-Three frames. All on the main thread. `pdb> step` walks the code linearly. No event-loop frames, no thread-pool worker frames, no `to_thread` resumption frames in between. **This is the property `Agent._run` was designed to preserve, and the unified `Tool` keeps it intact.**
+Three frames. All on the main thread. `pdb> step` walks the code linearly. No event-loop frames, no thread-pool worker frames. **This is the property `Agent._run` was designed to preserve, and the unified `Tool` keeps it intact.**
 
 **Async agent (`_arun`) calling a sync action via `async_execute_action` + `gather`:**
 
@@ -281,88 +273,51 @@ monitored_tool  async_execute_action await asyncio.to_thread(inner.execute_actio
 <worker thread> user_tool   my_action    x = self.compute(...)  ← breakpoint here
 ```
 
-More frames, jumps to a thread-pool worker for the sync method. Still debuggable, just harder to reason about. This is the cost of opting into parallel dispatch.
+More frames, jumps to a thread-pool worker for the sync method. Still debuggable, just harder to reason about. The cost of opting into parallel dispatch.
 
-**The point**: agent authors who don't need parallelism keep the cheap, debuggable path. Agent authors who do need parallelism pay only for what they ask for. Tool authors write one class and don't care which side calls them.
+Agent authors who don't need parallelism keep the cheap, debuggable path. Tool authors write one class and don't care which side calls them.
 
 ## Why this helps efficiency
 
-**Sync default**: zero async overhead, zero thread-pool overhead. The function call is one frame deep through the toolbox dispatch into the tool method. Same as today.
+**Sync default**: zero async overhead, zero thread-pool overhead. One frame from toolbox into the tool method. Same as today.
 
-**Parallel dispatch**: N actions of K seconds each finish in `max(K_i)` wall-clock instead of `sum(K_i)`. Sync actions inside the gather hop to a thread-pool worker via `asyncio.to_thread`; async actions are awaited directly. Real OS-thread parallelism for I/O-bound work.
+**Parallel dispatch**: N actions of K seconds each finish in `max(K_i)` wall-clock instead of `sum(K_i)`. Sync actions inside `asyncio.gather` hop to a thread-pool worker via `asyncio.to_thread`; async actions are awaited directly. Real OS-thread parallelism for I/O-bound work.
 
-A reference data point: cube-harness's parallelism smoke (`scripts/smoke/investigator_drivers.py`) measures clean dispatch through 24 parallel sync-action calls before any CLI-side contention. The new shape preserves that.
+Reference data point: cube-harness's parallelism smoke (`scripts/smoke/investigator_drivers.py`) measures clean dispatch through 24 parallel sync-action calls before any CLI-side contention. The new shape preserves that.
 
-**Cost of misuse is a clear error, not a slow path**: if a sync agent accidentally calls into a tool method that's `async def`, `execute_action` raises `TypeError` naming the action and pointing at `async_execute_action`. No silent coroutine leaks, no surprise blocking.
-
-## Migration story
+## Migration
 
 | What you have today | After this lands |
 |---|---|
 | `class FooTool(Tool)` (all sync) | unchanged |
-| `class FooTool(AsyncTool)` (all async) | works via alias; one-line edit to `Tool` recommended |
+| `class FooTool(AsyncTool)` (all async) | one-line edit: `(AsyncTool)` → `(Tool)` |
 | `AsyncBrowserTool(AsyncTool)` | flips to `Tool` in this PR (canonical example) |
-| `tb = Toolbox([...])` + `tb.execute_action(...)` (sync) | unchanged |
-| `tb = AsyncToolbox([...])` + `await tb.execute_action(...)` | works via deprecated shim; rename to `await tb.async_execute_action(...)` when convenient |
-| `from cube.tool import AsyncTool, AbstractAsyncTool, AsyncToolbox` | works, `DeprecationWarning` emitted on subclass / call |
+| `tb = Toolbox([...])` + `tb.execute_action(...)` | unchanged |
+| `tb = AsyncToolbox([...])` + `await tb.execute_action(...)` | `Toolbox([...])` + `await tb.async_execute_action(...)` |
+| `from cube.tool import AsyncTool, AbstractAsyncTool, AsyncToolbox` | rename to `Tool` / `AbstractTool` / `Toolbox` |
 
-The deprecation window stays open for one release. Downstream cubes can migrate at their own pace; no urgent action.
-
-## Toolbox follows the same dual-API pattern
-
-`Toolbox` becomes one class with both routing methods. The intelligence stays in the leaf `Tool` (which handles per-method bridging) — the toolbox is purely a router by action name:
-
-```python
-class Toolbox(Tool):
-    def __init__(self, tools: list[Tool]):
-        self.tools = tools
-        self._by_name = {a.name: t for t in tools for a in t.action_set}
-
-    def execute_action(self, action):                           # sync caller
-        return self._by_name[action.name].execute_action(action)
-
-    async def async_execute_action(self, action):               # async caller
-        return await self._by_name[action.name].async_execute_action(action)
-```
-
-That's the whole routing change. Both methods exist; bridging happens at the leaf.
-
-**Backward compat for `await asynctb.execute_action(...)` callers** — `AsyncToolbox` becomes a thin shim that preserves the async-`execute_action` semantic with a deprecation warning:
-
-```python
-class AsyncToolbox(Toolbox):                                    # deprecated shim
-    async def execute_action(self, action):
-        warnings.warn(
-            "AsyncToolbox.execute_action is deprecated; "
-            "use Toolbox.async_execute_action.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return await self.async_execute_action(action)
-```
-
-Migration cost: ~5 `await tb.execute_action(action)` call sites in cube-harness, one-line rename each (`execute_action` → `async_execute_action`); shim keeps them working in the meantime.
+cube-harness has the only consumer of `AbstractAsyncTool`/`AsyncToolbox` (in `MonitoredTool` and `as_async`). A paired cube-harness PR migrates those off in lockstep with this PR.
 
 ## Alternatives we considered
 
 - **Keep the split.** Status quo. The "one async tool method forces the whole class to be async" friction stays. Inconsistent with cube-harness `MonitoredTool` shape.
 - **Make `execute_action` always async on the unified class, drop the sync method.** Cleaner one-method API, but the debuggable single-stack pdb story for `Agent._run` goes away — every tool call would have at least an event-loop frame in between. The dual surface is the point.
-- **Drop the aliases entirely with no deprecation window.** Cleaner repo state, but breaks every downstream cube subclassing `AsyncTool` / `AsyncToolbox` in one shot. The one-release-window cost is small and worth it.
-- **Consolidate `Tool` only, leave `Toolbox` / `AsyncToolbox` split** (the original Phase 2 framing in an earlier draft of this RFC). Rejected after a review pass: the same dual-API pattern collapses Toolbox cleanly, the alias trick covers backward compat for `await tb.execute_action(...)` callers, and shipping both consolidations together leaves the codebase with one consistent pattern rather than half-and-half. The original Phase 2 reasoning was based on a misread ("collapse into sync-only Toolbox") rather than the actual dual-API design.
+- **Ship deprecation aliases for one release window.** Considered but rejected: we're pre-1.0, the only consumer of these aliases is cube-harness (paired PR), and the alias machinery (~70 LOC) adds code now to delete later. Cleaner to do the migration atomically.
+- **Consolidate `Tool` only, leave `Toolbox` / `AsyncToolbox` split.** The same dual-API pattern collapses Toolbox cleanly; shipping both consolidations together leaves the codebase with one consistent pattern rather than half-and-half.
 
 ## Risks
 
-- **Class-definition-time validation goes away.** Today, `class FooTool(AsyncTool)` with a sync `@tool_action def` is an import-time error (`__init_subclass__` raises). After this PR, mixing is explicitly supported, so that check is dropped. Authors who previously caught structural mistakes at import now catch them at first call (or never, if the path isn't exercised) — slight regression in early-error guarantees.
-- **`Tool` is a moderately exposed name.** Every cube subclasses it. The unit-test matrix in `tests/test_tool.py` will cover all four dispatch combinations (sync/async action × sync/async caller); downstream cubes should also run their own `pytest tests/` once the change lands.
-- **Bridge overhead is invisible in the call site.** A sync agent calling an async-action tool spawns a thread + new loop — ~2–5 ms per call. If a hot path silently bridges every iteration, it adds up. Mitigation: the docstring on `execute_action` flags the bridge clearly; agents that care about per-call latency switch to `_arun` and use `async_execute_action` directly.
+- **Class-definition-time validation goes away.** Today, `class FooTool(AsyncTool)` with a sync `@tool_action def` is an import-time error. After this PR, mixing is explicitly supported, so that check is dropped. Authors who previously caught structural mistakes at import now catch them at first call (or never, if the path isn't exercised) — slight regression in early-error guarantees.
+- **`Tool` is a moderately exposed name.** Every cube subclasses it. The unit-test matrix in `tests/test_tool.py` covers all four dispatch combinations (sync/async action × sync/async caller); downstream cubes should also run their own `pytest tests/` once the change lands.
+- **Bridge overhead is invisible in the call site.** A sync agent calling an async-action tool spawns a thread + new loop — ~2–5 ms per call. If a hot path silently bridges every iteration, it adds up. Mitigation: the docstring on `execute_action` flags the bridge; agents that care about per-call latency switch to `_arun` and use `async_execute_action` directly.
 - **Thread affinity stays an author's concern.** Default `async_execute_action` uses pooled threads (`asyncio.to_thread`). Tools wrapping thread-affine resources (sync Playwright, some DB drivers) must override `async_execute_action` to dispatch through a per-instance single-threaded executor (documented above). Not solved by this RFC — it's an unavoidable Python concern, and the override hook is the right level of abstraction.
 
 ## Known harness-side follow-ups (out of scope for this RFC)
 
-- **F1 — sync-browser cubes broken on the agent-owns-loop episode** (miniwob, workarena, browsercomp). `Episode.run` runs under `asyncio.run`, and sync Playwright refuses to start with a running loop on the thread. Fix lands in cube-harness (route `task.reset/evaluate/close` + sync tool dispatch through a per-episode env-executor — Option A in the F1 plan). Orthogonal to this RFC: F1 is about where Episode runs sync work; this RFC is about how `Tool` dispatches it.
+- **F1 — sync-browser cubes broken on the agent-owns-loop episode** (miniwob, workarena, browsercomp). `Episode.run` runs under `asyncio.run`, and sync Playwright refuses to start with a running loop on the thread. Fix lands in cube-harness (route `task.reset/evaluate/close` + sync tool dispatch through a per-episode env-executor). Orthogonal to this RFC: F1 is about where Episode runs sync work; this RFC is about how `Tool` dispatches it.
 - **cube-harness PR #487** — `install_monitoring` was wrapping `task.tool` in place, breaking task-side `setup/reset/evaluate/finished` for nearly every cube. Already fixed: the helper now returns a separate `env_tool` for the agent and leaves `task._tool` concrete. Independent of this RFC but worth merging before downstream cubes adopt the consolidated `Tool`.
 
 ## Companion work
 
-- **No cube-harness API change required.** Once cube-standard ships the next rc with this consolidation, `MonitoredTool.async_execute_action` keeps working — its dispatch already mirrors `Tool.async_execute_action`'s default. Future thread-affine cubes can override at the `Tool` layer.
-- **`AsyncBrowserTool`** (in `cube-resources/cube-browser-playwright/`) flips from `AsyncTool` → `Tool` in this PR (canonical example; one-line edit). The migration to a future `BrowserTool` that mixes a sync `screenshot()` + async `click()` is a separate, downstream cube change.
+- **Paired cube-harness PR** migrates `MonitoredTool`, `as_async`, and the agent's `isinstance(env_tool, AbstractAsyncTool)` checks off the deleted symbols. Merges in lockstep with this PR.
+- **`AsyncBrowserTool`** (in `cube/tools/browser.py`) flips from `AsyncTool` → `Tool` in this PR (canonical example; one-line edit).

@@ -17,18 +17,15 @@ class AbstractTool(ABC):
     def action_set(self) -> list[ActionSchema]: ...
 
     def execute_action(self, action: Action) -> Any:
-        """Sync dispatch. Subclasses override.
-
-        Implementations MUST raise `TypeError` if the resolved action
-        method is async (point the caller at `async_execute_action`)."""
+        """Sync dispatch. Subclasses override."""
 
     async def async_execute_action(self, action: Action) -> Any:
         """Async dispatch — universal call-site.
 
         Default: call sync `execute_action` directly on the current
-        thread (already shipped by cube-standard #152). Subclasses
-        with async-native dispatch (e.g. `Tool` with async actions)
-        override to handle both kinds without a `to_thread` hop."""
+        thread. Subclasses with async-native dispatch (e.g. `Tool`
+        with async actions) override to handle both kinds without a
+        `to_thread` hop."""
         return self.execute_action(action)
 ```
 
@@ -122,40 +119,13 @@ class Toolbox(Tool):
         return await self._action_name_to_tool[action.name].async_execute_action(action)
 ```
 
-### Deprecated aliases
-
-```python
-# Backward-compat aliases — emit DeprecationWarning when subclassed / called.
-# Will be removed after one release window.
-AbstractAsyncTool = AbstractTool
-AsyncTool = Tool
-
-class AsyncToolbox(Toolbox):
-    """Deprecated shim. Preserves the async-`execute_action` semantic
-    so legacy `await tb.execute_action(action)` callers keep working
-    during the migration window."""
-
-    async def execute_action(self, action: Action) -> Observation | StepError:
-        warnings.warn(
-            "AsyncToolbox.execute_action is deprecated; "
-            "use Toolbox.async_execute_action.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return await self.async_execute_action(action)
-```
-
 ### `_ToolActionsMixin.__init_subclass__` validation — relaxed
 
-The current AsyncTool subclass hook validates that every `@tool_action`
-method is async. With `Tool` accepting both kinds, that validation goes
+The previous `AsyncTool` subclass hook validated that every `@tool_action`
+method was async. With `Tool` accepting both kinds, that validation goes
 away. Authors who mix sync and async actions on one class are explicitly
-supported.
-
-Class-definition-time errors that were caught before are now caught at
-first-call time (sync `execute_action` raises `TypeError` naming the
-action). Acceptable trade for the consolidation; error messages are
-descriptive.
+supported — dispatch routes per the method's own `def` keyword and bridges
+when caller and method differ.
 
 ### Invariants
 
@@ -169,20 +139,24 @@ descriptive.
 
 ### Gotchas
 
-- `AsyncBrowserTool` (the single in-tree `AsyncTool` subclass) flips to `Tool` with no body change. After the alias is removed, downstream cubes that still subclass `AsyncTool` need a one-line edit.
+- `AsyncBrowserTool` (the single in-tree `AsyncTool` subclass) flips to `Tool` with no body change. cube-harness `MonitoredTool` / `as_async` / agent isinstance checks migrate in a paired PR.
 - Tools that previously got an `__init_subclass__` error for mixed async/sync now pass silently. The previous structural mistake is now legal (mixing is supported); intentional misuse surfaces as a runtime bridge invocation that's slower than expected, not as an error.
 - A sync caller invoking a hot-path async action repeatedly pays ~2-5 ms × N for the bridge. For agents that care about per-call latency, switch to `Agent._arun` so calls go through `async_execute_action` directly.
 
 ---
 
-## REMOVED — none
+## REMOVED
 
-`AbstractAsyncTool` and `AsyncTool` are not deleted — they become aliases of `AbstractTool` and `Tool` for one release window. Removal is a follow-up RFC after migrations land.
+- `AbstractAsyncTool` — fold into `AbstractTool` (which now declares both `execute_action` and `async_execute_action`).
+- `AsyncTool` — fold into `Tool` (which now accepts sync OR async `@tool_action` methods on the same class).
+- `AsyncToolbox` — fold into `Toolbox` (whose `async_execute_action` is the canonical async call-site).
+
+Deletion is atomic; no deprecation window. The only consumer of these symbols outside cube-standard is cube-harness, which migrates in a paired PR.
 
 ---
 
 ## ADDED — none beyond the dual surface above
 
-`async_execute_action` was already added on `AbstractTool` by cube-standard
-#152. This change reuses it as the universal call-site and removes the
+`async_execute_action` already exists on `AbstractTool` (added by cube-standard
+#152). This change reuses it as the universal call-site and removes the
 class-level split that made the dual surface invisible.

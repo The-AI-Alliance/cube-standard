@@ -15,7 +15,7 @@ or coordinate experiments — that lives in **cube-harness**.
 | Layer | Module | Spec | What it does |
 |-------|--------|------|--------------|
 | 1. Core types | `cube.core` | [core/spec.md](openspec/specs/core/spec.md) | `Action`, `Observation`, `Content`, `EnvironmentOutput`, `TypedBaseModel` |
-| 2. Tool | `cube.tool` | [tool/spec.md](openspec/specs/tool/spec.md) | `Tool`, `AsyncTool`, `@tool_action`, `ToolConfig`, `Toolbox` |
+| 2. Tool | `cube.tool` | [tool/spec.md](openspec/specs/tool/spec.md) | `Tool`, `@tool_action`, `ToolConfig`, `Toolbox` |
 | 3. Task | `cube.task` | [task/spec.md](openspec/specs/task/spec.md) | `Task`, `TaskMetadata`, `TaskConfig`, gym-style `reset/step/evaluate` |
 | 4. Benchmark | `cube.benchmark` | [benchmark/spec.md](openspec/specs/benchmark/spec.md) | `Benchmark`, `BenchmarkMetadata`, class-level registry |
 | 5. Testing | `cube.testing` | [testing/spec.md](openspec/specs/testing/spec.md) | `run_debug_suite`, `assert_debug_tasks_reward_one` |
