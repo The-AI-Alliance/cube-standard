@@ -140,11 +140,21 @@ Three more that need a decision but won't sink it:
 
 ## Multi-agent (shape it now)
 
-The facet generalizes: **`task.agent_tools()` returns one `TaskTool` per agent.** Each
-carries its agent's id, action space, observation, and reward attribution; a streamer
+**Decomposition (decided): one task, many tools.** A single `Task` owns the shared world
+and its single lifecycle; `task.agent_tools()` returns **one `TaskTool` per agent**. Each
+tool carries its agent's id, action space, observation, and reward attribution; a streamer
 records a unified, per-agent-tagged trajectory. **Single-agent is the N=1 case** — a good
 sign this is the right shape. We commit to the shape now (it doesn't fork the design); we
 don't build the runtime yet.
+
+Why one task and not *N tasks* (`make()` returns a list): the world is **singular** (one
+shared state, one `reset`/`close`) while interaction is **plural**. Centralizing the world
+on one `Task` makes three things fall out for free — (a) its `evaluate()` sees the
+**global** state, so per-agent / general-sum rewards are attributable from the joint
+outcome; (b) all tools delegate to that one world, so state stays coherent; (c) lifecycle
+runs **once**. The N-tasks alternative smears the world's single lifecycle across N tasks
+(whose `reset`/`close` then conflict) and gives each task only its own slice (so joint
+reward is awkward) — so it's recorded here as **considered and rejected**.
 
 ```mermaid
 flowchart LR
@@ -194,8 +204,8 @@ others' intervening actions).
   facet, never the `Task` (lifecycle hidden).
 - **(3)** accept `Streamer` + `TaskTool` in cube-standard as a pure seam (vs harness-only).
 - **(4)** `finished` / `evaluate` cadence: per-turn (proposed) vs per-action.
-- **(5) multi-agent scope for v1:** which variants land first (async/turn/batch?),
-  is inter-agent communication an action or a channel, and is the scheduler a
-  cube-standard concept or a harness one?
+- **(5) multi-agent scope for v1** (decomposition RESOLVED — one task, many tools):
+  which timing variants land first (async/turn/batch?), is inter-agent communication an
+  action or a channel, and is the scheduler a cube-standard concept or a harness one?
 
 `deltas.md` stays intentionally thin until we settle (1)–(5).
