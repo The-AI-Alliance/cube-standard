@@ -8,11 +8,13 @@
 
 - **`Streamer` (abstract)** — `on_action(action, result)` + `on_eval(reward, info)`.
   Seam only: no event types, no storage, no budget. Concrete impls live downstream.
-- **`Task.execute_action(action) -> Observation | StepError`** — the tool view: run the
-  action through the task's tool + `obs_postprocess`, notify the attached `Streamer`,
-  raise `AgentStop` on `final_step`. (Pending decision (2): exposed via a restricted
-  facet vs the whole task.)
-- **`Task.attach_streamer(streamer | None)`** — bind/unbind the streamer (episode-scoped).
+- **`TaskTool`** — the agent-facing tool facet over a task; the ONLY surface the agent
+  holds. `execute_action(action) -> Observation | StepError` (delegates to the task's
+  per-action execution + `obs_postprocess`, emits `on_action`, raises `AgentStop` on
+  `final_step`), `action_set`, `attach_streamer`. **No** `reset`/`evaluate`/`close` —
+  lifecycle stays on `Task`, runtime-driven.
+- **`Task.agent_tools() -> list[TaskTool]`** — one facet per agent (single-agent = N=1);
+  how the runtime obtains the agent surface without leaking the task.
 - **`Task.on_turn_start()`** — per-turn cube hook; the supported replacement for
   overriding `step()`.
 
@@ -24,10 +26,10 @@
 
 ## OPEN (block firming up the deltas)
 
-1. Trajectory capture is split: task-streamer (env) vs agent (LLM) — who merges?
-2. Restricted tool facet vs whole task handed to the agent.
-3. Accept `Streamer` in cube-standard (reverses `agent-owns-loop` "monitoring is not a
-   cube-standard concern").
+1. Trajectory capture is split: `TaskTool` stream (env) vs agent (LLM) — who merges?
+2. ~~Restricted facet vs whole task~~ — RESOLVED: agent holds a `TaskTool`, never the task.
+3. Accept `Streamer` + `TaskTool` in cube-standard (reverses `agent-owns-loop`
+   "monitoring is not a cube-standard concern").
 4. `finished`/`evaluate` cadence — per-turn vs per-action.
 5. Multi-agent: task = set of agent-tools (single-agent = N=1). Per-agent obs/action/
    reward + agent-id on streamer events. Scheduler/turn-policy (async/turn/batch),

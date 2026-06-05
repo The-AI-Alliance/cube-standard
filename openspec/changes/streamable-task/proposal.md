@@ -8,16 +8,20 @@
 
 ## The idea
 
-Give `Task` a second *view*: **a Task is a tool an agent interacts with.** The agent
-calls `task.execute_action(action)` and gets an `Observation` back — same surface as
-any `Tool`. You can **attach a `Streamer`** to the task; every time an action is
-executed or an evaluation is produced, the task notifies the streamer.
+A `Task` keeps its lifecycle — `reset` / `evaluate` / `close` — and **the agent must
+never reach those.** So the task is *not* the tool. Instead cube-standard adds a thin
+**`TaskTool`**: a tool-shaped facet over a task (`execute_action` + `action_set`) that the
+agent holds *instead of* the task. Lifecycle stays on the `Task`, driven by the runtime
+(Episode); the agent only ever sees the `TaskTool`. (`TaskTool` is the agent-facing
+view; distinct from the task's own `tool`/`toolbox`, which it delegates to.)
 
-`Streamer` is an **abstract class in cube-standard** — just the seam. The harness (or
-any user) implements a concrete one (write to disk, XRay, OTel, RL-HTTP…). cube-standard
-defines *when* it fires and *with what data*, never *where it goes*.
+You **attach a `Streamer`** to the `TaskTool`; every action it executes — and each
+evaluation the runtime produces — is streamed. `Streamer` is an **abstract class in
+cube-standard** (the seam only): it defines *when* events fire and *with what data*,
+never *where they go*. Concrete sinks (disk, XRay, OTel, RL-HTTP…) live downstream.
 
-The gym `Task.step()` stays as-is — a second view of the same task, for gym/RL callers.
+For multi-agent, a task exposes **one `TaskTool` per agent** (single-agent = N=1). The
+gym `Task.step()` stays as a separate view for gym/RL callers.
 
 ## Why
 
@@ -47,12 +51,14 @@ flowchart LR
     T1 -. evaluate / finished<br/>see the WRAPPER .-> MT
   end
 
-  subgraph PROPOSED["Proposed — the Task is the tool; streamer is a seam"]
-    A2[Agent] -->|execute_action| T2[Task as tool]
+  subgraph PROPOSED["Proposed — thin TaskTool facet over the Task; streamer is a seam"]
+    A2[Agent] -->|execute_action| TT[TaskTool facet<br/>execute_action + action_set]
+    TT -->|delegates| T2[(Task<br/>lifecycle hidden from agent)]
     T2 --> TB2[its own concrete tool]
-    T2 -->|on_action / on_eval| S[[Streamer abstract]]
+    TT -->|on_action| S[[Streamer abstract]]
+    EP[Episode] -->|on_eval| S
+    EP -->|reset / evaluate / close| T2
     S -. implemented by .-> H[harness / user sink]
-    EP[Episode] -->|reset / evaluate / close| T2
   end
 ```
 
@@ -64,35 +70,39 @@ class Streamer(ABC):                       # NEW — just the seam
     def on_eval(self, reward: float, info: dict) -> None: ...
     # no event types, no storage, no budget — those live downstream
 
-class Task:
-    # tool view (NEW): execute one action through the tool + obs_postprocess,
-    # notify the streamer. final_step raises AgentStop (today's TaskDone).
-    def execute_action(self, action: Action) -> Observation | StepError: ...
+class TaskTool:                            # NEW — the ONLY surface the agent holds
+    action_set: list[ActionSchema]                                   # the task's actions
+    def execute_action(self, action) -> Observation | StepError: ... # delegates to the
+        # task's per-action execution + obs_postprocess; emits on_action; final_step
+        # raises AgentStop (today's TaskDone). No reset / evaluate / close.
+    def attach_streamer(self, streamer: Streamer | None) -> None: ...
 
-    def attach_streamer(self, streamer: Streamer | None) -> None: ...   # NEW
-
-    def on_turn_start(self) -> None: ...    # NEW hook: per-turn cube setup, the
-                                            # supported replacement for overriding step()
-
-    def step(self, action) -> EnvironmentOutput: ...   # UNCHANGED gym view
+class Task:                                # lifecycle stays here — runtime-driven only
+    def agent_tools(self) -> list[TaskTool]: ...  # NEW: one TaskTool per agent (N=1 default)
+    def on_turn_start(self) -> None: ...          # NEW hook: per-turn cube setup; the
+                                                  # supported replacement for overriding step()
+    # reset / evaluate / close / step — UNCHANGED; the agent never sees them
 ```
 
-Everything else stays downstream: trajectory **event types**, **budget/limits**,
-**LLM/agent capture**, and all **persistence**. cube-standard only learns the words
-"a task can stream what it executes."
+The agent is handed a `TaskTool` (via `task.agent_tools()`), never the task. Everything
+else stays downstream: trajectory **event types**, **budget/limits**, **LLM/agent
+capture**, and all **persistence**. cube-standard only learns "a task can be driven
+through a streamable tool facet."
 
 ```mermaid
 sequenceDiagram
   participant Ag as Agent
-  participant Tk as Task (tool view)
+  participant TT as TaskTool
+  participant Tk as Task
   participant St as Streamer
   participant Ep as Episode
-  Ag->>Tk: execute_action(a)
-  Tk->>Tk: tool.execute_action(a) + obs_postprocess
-  Tk-->>St: on_action(a, result)
-  Tk-->>Ag: Observation
+  Ag->>TT: execute_action(a)
+  TT->>Tk: per-action exec + obs_postprocess
+  TT-->>St: on_action(a, result)
+  TT-->>Ag: Observation
+  Note over Ep,Tk: lifecycle is runtime-only
   Ep->>Tk: evaluate()
-  Tk-->>St: on_eval(reward, info)
+  Ep-->>St: on_eval(reward, info)
 ```
 
 ## Is this view complete? (read this first)
@@ -108,12 +118,11 @@ load-bearing and not yet addressed — if we don't, it fails:
    task and the agent, or does the harness own the merge? *(This is the one most likely to
    bite — the mental model "streamer on the task = full capture" is the shallow part.)*
 
-2. **"The Task is the tool the agent holds" reverses a deliberate decision.** The
-   agent-owns-loop change (cube-harness `#386`) kept the `task` reference *away* from the
-   agent so it couldn't call `reset`/`evaluate`/`close`. If the agent now holds the
-   task-as-tool, it can reach the lifecycle. Decision:
-   expose a **restricted tool facet** (only `execute_action` / `action_set`) to the agent,
-   vs. hand it the whole task and trust it.
+2. **Lifecycle must stay hidden from the agent — RESOLVED.** The agent holds a `TaskTool`
+   facet (`execute_action` / `action_set`) — never the `Task` — so `reset` / `evaluate` /
+   `close` are unreachable. This is *why* the task is not itself the tool: a thin facet
+   over it keeps the agent-owns-loop guarantee (cube-harness `#386`) that the task
+   reference never leaks to the agent.
 
 Three more that need a decision but won't sink it:
 
@@ -131,11 +140,11 @@ Three more that need a decision but won't sink it:
 
 ## Multi-agent (shape it now)
 
-The tool view generalizes: **a multi-agent task exposes a set of agent-facing tools —
-one per agent.** Each carries its agent's id, action space, observation, and reward
-attribution; a streamer records a unified, per-agent-tagged trajectory. **Single-agent
-is the N=1 case** — a good sign this is the right shape. We commit to the shape now (it
-doesn't fork the design); we don't build the runtime yet.
+The facet generalizes: **`task.agent_tools()` returns one `TaskTool` per agent.** Each
+carries its agent's id, action space, observation, and reward attribution; a streamer
+records a unified, per-agent-tagged trajectory. **Single-agent is the N=1 case** — a good
+sign this is the right shape. We commit to the shape now (it doesn't fork the design); we
+don't build the runtime yet.
 
 ```mermaid
 flowchart LR
@@ -180,9 +189,10 @@ others' intervening actions).
 
 ## Open decisions
 
-- **(1)** streamer on the task only, or task + agent, or harness-owned merge.
-- **(2)** restricted tool facet vs whole task to the agent.
-- **(3)** accept `Streamer` in cube-standard as a pure seam (vs harness-only).
+- **(1)** streamer on the `TaskTool` only, or `TaskTool` + agent, or harness-owned merge.
+- ~~**(2)** restricted facet vs whole task~~ — **RESOLVED:** agent holds a `TaskTool`
+  facet, never the `Task` (lifecycle hidden).
+- **(3)** accept `Streamer` + `TaskTool` in cube-standard as a pure seam (vs harness-only).
 - **(4)** `finished` / `evaluate` cadence: per-turn (proposed) vs per-action.
 - **(5) multi-agent scope for v1:** which variants land first (async/turn/batch?),
   is inter-agent communication an action or a channel, and is the scheduler a
