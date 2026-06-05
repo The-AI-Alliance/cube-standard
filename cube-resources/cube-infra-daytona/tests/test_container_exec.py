@@ -9,7 +9,7 @@ import pytest
 from cube_infra_daytona import container as dc
 from cube_infra_daytona.container import DaytonaContainer
 
-from cube.container import ContainerExecError
+from cube.container import ContainerError, ContainerExecError
 
 
 class _Resp:
@@ -49,6 +49,10 @@ class _FakeProcess:
         self._poll_errors = poll_errors
         self.last_request: Any = None
         self.poll_calls = 0
+        self.last_poll_request_timeout: Any = None
+        # exec() polls via the low-level ProcessApi (process._api_client); the fake IS its own
+        # api client so the same scripted methods serve both surfaces.
+        self._api_client = self
 
     def create_session(self, session_id: str) -> None:  # called in __init__
         pass
@@ -59,14 +63,15 @@ class _FakeProcess:
             raise self._submit_exc
         return self._submit
 
-    def get_session_command(self, session_id: str, cmd_id: str) -> _Cmd:
+    def get_session_command(self, session_id: str, cmd_id: str, _request_timeout: Any = None) -> _Cmd:
         self.poll_calls += 1
+        self.last_poll_request_timeout = _request_timeout
         if self._poll_errors > 0:
             self._poll_errors -= 1
             raise TimeoutError("transient proxy read timeout")
         return _Cmd(self._poll_exit_codes.pop(0) if self._poll_exit_codes else 0)
 
-    def get_session_command_logs(self, session_id: str, cmd_id: str) -> _Logs:
+    def get_session_command_logs(self, session_id: str, cmd_id: str, _request_timeout: Any = None) -> _Logs:
         return self._logs
 
 
@@ -106,6 +111,18 @@ def test_exec_retries_transient_poll_error() -> None:
     assert proc.poll_calls == 2  # one transient failure + one success
 
 
+def test_exec_wedged_poll_exhausts_retries_then_fails() -> None:
+    """A *persistently* wedged poll (every read times out) must surface as ContainerExecError,
+    not retry forever or hang. This is the path the read-timeout creates: a real wedged urllib3
+    read raises ReadTimeoutError/MaxRetryError — modelled here by a poll that always raises —
+    which `@_retry_io` retries once, then exhausts and `exec` wraps. Fast failure beats a stall.
+    """
+    proc = _FakeProcess(poll_exit_codes=[0], logs=_Logs(), poll_errors=99)
+    with pytest.raises(ContainerExecError):
+        _container(proc).exec("sleep 999", timeout=30)
+    assert proc.poll_calls == 2  # @_retry_io = 2 attempts, both wedged → give up
+
+
 def test_exec_deadline_reports_124(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dc, "_POLL_GRACE_S", 0.0)
     proc = _FakeProcess(poll_exit_codes=[], logs=_Logs())  # never resolves
@@ -123,3 +140,29 @@ def test_exec_wraps_submit_failure() -> None:
     proc = _FakeProcess(poll_exit_codes=[0], logs=_Logs(), submit_exc=RuntimeError("boom"))
     with pytest.raises(ContainerExecError, match="Daytona exec failed"):
         _container(proc).exec("echo x", timeout=30)
+
+
+def test_exec_passes_request_timeout_to_polls() -> None:
+    """Regression for the 15-min episode stall: each poll must carry `_request_timeout`, so a
+    wedged urllib3 read is cancelled at the socket (→ retryable) instead of blocking forever.
+    Guards against silently dropping the timeout again — the original bug.
+    """
+    proc = _FakeProcess(poll_exit_codes=[None, 0], logs=_Logs(stdout="ok"))
+    _container(proc).exec("echo ok", timeout=30)
+    assert proc.last_poll_request_timeout == dc._POLL_READ_TIMEOUT_S, (
+        "poll issued without _request_timeout — the read can hang the whole episode"
+    )
+
+
+def test_init_fails_loud_if_low_level_api_missing() -> None:
+    """If a future SDK moves `process._api_client`, fail at construction with a clear message
+    rather than silently losing the poll read-timeout (and regressing to the hang)."""
+
+    class _NoApiProcess(_FakeProcess):
+        def __init__(self, **kw: Any) -> None:
+            super().__init__(**kw)
+            self._api_client = None  # simulate the SDK no longer exposing the low-level handle
+
+    proc = _NoApiProcess(poll_exit_codes=[0], logs=_Logs())
+    with pytest.raises(ContainerError, match="ProcessApi"):
+        _container(proc)
