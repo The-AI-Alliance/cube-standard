@@ -18,7 +18,7 @@ from typing import Any
 
 from cube.core import Observation
 from cube.resources.browser_session import AsyncBrowserSession, BrowserSession
-from cube.tool import AsyncTool, Tool
+from cube.tool import Tool
 
 
 class BrowserTool(Tool):
@@ -41,8 +41,16 @@ class BrowserTool(Tool):
     def page_obs(self) -> Observation: ...
 
 
-class AsyncBrowserTool(AsyncTool):
-    """Abstract base for async browser tools used by web-based tasks (setup, validation, observation)."""
+class AsyncBrowserTool(Tool):
+    """Abstract base for async browser tools used by web-based tasks
+    (setup, validation, observation).
+
+    Subclasses `Tool` directly (was `AsyncTool` before the tool
+    consolidation). All `@tool_action` methods on subclasses are
+    `async def`; `Tool.async_execute_action` dispatches them
+    natively, and `Tool.execute_action` bridges via thread+loop for
+    sync callers.
+    """
 
     @property
     @abstractmethod

@@ -1,5 +1,6 @@
 """Tests for cube.tool - Tool, AsyncTool, ToolConfig, tool_action."""
 
+import asyncio
 import inspect
 
 import pytest
@@ -212,15 +213,30 @@ async def test_async_tool_execute_action_unknown_kwarg_returns_observation():
     assert "Invalid arguments for echo" in result.contents[0].data
 
 
-def test_async_tool_rejects_sync_action_at_class_definition():
-    """AsyncTool raises TypeError at class definition if a @tool_action method is sync."""
-    with pytest.raises(TypeError, match="not async"):
+def test_async_tool_subclass_accepts_mixed_methods():
+    """Post-consolidation: `AsyncTool` is a deprecated alias of `Tool` and
+    no longer enforces all-async at class definition time. Mixing sync
+    and async `@tool_action` methods is now legal on either base class.
+    Subclassing `AsyncTool` emits a DeprecationWarning."""
+    import warnings
 
-        class _BadAsyncTool(AsyncTool):
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+
+        class _MixedAsyncTool(AsyncTool):
             @tool_action
             def sync_action(self) -> str:
-                """This should not be allowed."""
-                return "oops"
+                """Mixing a sync action is now allowed."""
+                return "sync_ok"
+
+            @tool_action
+            async def async_action(self) -> str:
+                """Async action alongside sync one — both work."""
+                return "async_ok"
+
+        # Deprecation warning fires at subclass time.
+        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
+        assert any("AsyncTool is deprecated" in str(w.message) for w in deprecations)
 
 
 # ── assert_tool_docstrings_valid ─────────────────────────────────────────────────────────────────
@@ -503,3 +519,160 @@ async def test_async_toolbox_reset_and_close_handle_mixed_leaves():
     await box.close()
     assert sync_calls == {"reset": 1, "close": 1}
     assert async_calls == {"reset": 1, "close": 1}
+
+
+# ── Tool consolidation: 4-cell dispatch matrix ─────────────────────────────────
+
+
+class MixedActionTool(Tool):
+    """Tool with both sync and async @tool_action methods on one class.
+
+    Possible after consolidation; rejected by the old AsyncTool
+    `__init_subclass__` validation.
+    """
+
+    @tool_action
+    def fast_sync(self, x: int) -> str:
+        """Sync action."""
+        return f"sync:{x * 2}"
+
+    @tool_action
+    async def slow_async(self, x: int) -> str:
+        """Async action."""
+        return f"async:{x * 2}"
+
+
+def test_sync_caller_sync_action_direct():
+    """Cell (sync caller, sync action): no overhead, direct dispatch."""
+    tool = MixedActionTool()
+    result = tool.execute_action(Action(name="fast_sync", arguments={"x": 5}))
+    assert isinstance(result, Observation)
+    assert result.contents[0].data == "sync:10"
+
+
+def test_sync_caller_async_action_bridge():
+    """Cell (sync caller, async action): bridge via thread+loop.
+
+    Returns the awaited value through a `concurrent.futures.Future`.
+    Slow but correct.
+    """
+    tool = MixedActionTool()
+    result = tool.execute_action(Action(name="slow_async", arguments={"x": 5}))
+    assert isinstance(result, Observation)
+    assert result.contents[0].data == "async:10"
+
+
+def test_sync_caller_async_action_bridge_inside_running_loop():
+    """The bridge MUST work even when the sync caller is itself running
+    inside an event loop (Agent._run inside Episode's asyncio.run is the
+    motivating use case). Verifies the bridge doesn't try `asyncio.run`
+    on the current thread."""
+
+    async def harness():
+        # Inside a running loop, call sync `execute_action` on an async action.
+        tool = MixedActionTool()
+        return tool.execute_action(Action(name="slow_async", arguments={"x": 7}))
+
+    result = asyncio.run(harness())
+    assert isinstance(result, Observation)
+    assert result.contents[0].data == "async:14"
+
+
+@pytest.mark.asyncio
+async def test_async_caller_sync_action_to_thread():
+    """Cell (async caller, sync action): hops to_thread.
+
+    Pooled worker enables real parallelism inside `asyncio.gather`.
+    Result is returned through the awaitable.
+    """
+    tool = MixedActionTool()
+    result = await tool.async_execute_action(Action(name="fast_sync", arguments={"x": 3}))
+    assert isinstance(result, Observation)
+    assert result.contents[0].data == "sync:6"
+
+
+@pytest.mark.asyncio
+async def test_async_caller_async_action_direct():
+    """Cell (async caller, async action): direct await, no thread hop."""
+    tool = MixedActionTool()
+    result = await tool.async_execute_action(Action(name="slow_async", arguments={"x": 3}))
+    assert isinstance(result, Observation)
+    assert result.contents[0].data == "async:6"
+
+
+@pytest.mark.asyncio
+async def test_async_caller_parallel_gather_over_sync_actions():
+    """Real parallelism: N concurrent sync actions via gather + to_thread.
+
+    Wall-clock should be roughly max(latency_i), not sum(latency_i).
+    """
+    import time
+
+    class SleepyTool(Tool):
+        @tool_action
+        def sleep_a_bit(self, ms: int) -> str:
+            """Sleep `ms` milliseconds then return."""
+            time.sleep(ms / 1000)
+            return f"slept-{ms}"
+
+    tool = SleepyTool()
+    actions = [Action(name="sleep_a_bit", arguments={"ms": 100}) for _ in range(4)]
+    start = time.time()
+    results = await asyncio.gather(*[tool.async_execute_action(a) for a in actions])
+    elapsed = time.time() - start
+    # 4 × 100ms sequential = 400ms. Parallel should be well under 250ms.
+    assert elapsed < 0.25, f"parallel-gather over sync actions ran sequentially? elapsed={elapsed:.3f}s"
+    assert all(isinstance(r, Observation) for r in results)
+
+
+# ── Deprecation warnings ──────────────────────────────────────────────────────
+
+
+def test_subclassing_asynctool_emits_deprecation_warning():
+    """Subclassing the deprecated `AsyncTool` alias fires a `DeprecationWarning`."""
+    import warnings
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+
+        class _LegacyAsync(AsyncTool):
+            @tool_action
+            async def echo(self, x: str) -> str:
+                """Echo."""
+                return x
+
+        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
+        assert any("AsyncTool is deprecated" in str(w.message) for w in deprecations)
+
+
+@pytest.mark.asyncio
+async def test_asynctoolbox_execute_action_emits_deprecation_warning():
+    """Calling the deprecated async-`execute_action` on `AsyncToolbox`
+    fires a `DeprecationWarning` but still works."""
+    import warnings
+
+    box = AsyncToolbox(tools=[AsyncEchoTool()])
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        result = await box.execute_action(Action(name="echo", arguments={"text": "hi"}))
+
+    assert isinstance(result, Observation)
+    assert result.contents[0].data == "hi"
+    deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
+    assert any("AsyncToolbox.execute_action is deprecated" in str(w.message) for w in deprecations)
+
+
+def test_asynctool_subclass_isinstance_of_abstract_async_tool():
+    """Backward compat: existing code using `isinstance(x, AbstractAsyncTool)`
+    on AsyncTool subclasses must keep returning True."""
+    import warnings
+
+    from cube.tool import AbstractAsyncTool, AbstractTool
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        tool = AsyncEchoTool()
+
+    assert isinstance(tool, AbstractAsyncTool), "AsyncTool subclass must isinstance(AbstractAsyncTool)"
+    assert isinstance(tool, AbstractTool), "AsyncTool subclass must isinstance(AbstractTool) too"
+    assert isinstance(tool, Tool), "AsyncTool subclass must isinstance(Tool) (the new canonical base)"
