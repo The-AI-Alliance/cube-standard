@@ -79,6 +79,7 @@ time — `install()` MUST NOT mutate it.
 **Instance fields (Pydantic, serializable):**
 ```python
 task_ids: list[str] | None = None          # None = all; populated by subset_from_*
+subset_name: str | None = None             # registered named_subsets key, set by named_subset(); None for full / subset_from_list / raw subset_from_glob
 resources: list[ResourceConfig] = []       # resource dependencies (L2/L3)
 tool_config: ToolConfig | None             # applied to every task by the default get_task_configs(); override get_task_configs() for per-task variation
 seed_generator: AbstractSeedGenerator | None # yields seeds per TaskMetadata

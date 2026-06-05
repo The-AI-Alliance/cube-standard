@@ -441,6 +441,46 @@ def test_named_subsets_and_named_subset():
 
     sub = ConfigWithNamed().named_subset("easy")
     assert set(sub.task_ids or ()) == {"t1", "t3"}
+    # named_subset records which official subset this config represents.
+    assert sub.subset_name == "easy"
+
+
+def test_subset_name_is_none_for_full_list_and_raw_glob():
+    """Only named_subset records subset_name; full / subset_from_list / subset_from_glob don't."""
+    assert MyBenchmarkConfig().subset_name is None
+    assert MyBenchmarkConfig().subset_from_list(["t1", "t2"]).subset_name is None
+    assert MyBenchmarkConfig().subset_from_glob("split", "train").subset_name is None
+
+
+def test_subset_name_survives_serialization():
+    """subset_name round-trips through JSON so it reaches workers / storage intact."""
+    cfg = MyBenchmarkConfig().model_copy(update={"subset_name": "lite-gold"})
+    restored = MyBenchmarkConfig.model_validate_json(cfg.model_dump_json())
+    assert restored.subset_name == "lite-gold"
+
+
+def test_subset_name_cleared_when_named_subset_is_further_narrowed():
+    """Narrowing a named subset yields a different (hand-picked) set, so subset_name is dropped."""
+
+    class _NTaskConfig(_TaskConfig):
+        pass
+
+    class ConfigWithNamed(BenchmarkConfig):
+        benchmark_metadata = BenchmarkMetadata(
+            name="Named",
+            version="1",
+            description="x",
+            num_tasks=4,
+            named_subsets={"easy": ("difficulty", "easy")},
+        )
+        task_metadata = MyBenchmarkConfig.task_metadata
+        task_config_class = _NTaskConfig
+        benchmark_class = MyBenchmark
+
+    easy = ConfigWithNamed().named_subset("easy")
+    assert easy.subset_name == "easy"
+    assert easy.subset_from_list(["t1"]).subset_name is None
+    assert easy.subset_from_glob("split", "train").subset_name is None
 
 
 def test_named_subset_unknown_raises():
