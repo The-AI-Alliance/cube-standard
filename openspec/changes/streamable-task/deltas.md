@@ -29,3 +29,7 @@
 3. Accept `Streamer` in cube-standard (reverses `agent-owns-loop` "monitoring is not a
    cube-standard concern").
 4. `finished`/`evaluate` cadence — per-turn vs per-action.
+5. Multi-agent: task = set of agent-tools (single-agent = N=1). Per-agent obs/action/
+   reward + agent-id on streamer events. Scheduler/turn-policy (async/turn/batch),
+   shared-state serialization, joint reward, inter-agent comms — cube-standard vs
+   harness ownership TBD.

@@ -1,6 +1,7 @@
-# RFC: The Task as a streamable tool
+# RFC: The Task as a streamable tool (+ a path to multi-agent)
 
 **Status:** DRAFT — high-level (we expand as we go)
+**Scope note:** single-agent now; multi-agent shape committed now, runtime later (see §Multi-agent).
 **Author:** Alexandre Lacoste (w/ Claude)
 **Date:** 2026-06-05
 **Related:** `agent-owns-loop`, `stop-action-auto-include`
@@ -128,11 +129,63 @@ Three more that need a decision but won't sink it:
    means concurrent `on_action` emits — the `Streamer` contract must state whether it can
    assume serialized calls.
 
+## Multi-agent (shape it now)
+
+The tool view generalizes: **a multi-agent task exposes a set of agent-facing tools —
+one per agent.** Each carries its agent's id, action space, observation, and reward
+attribution; a streamer records a unified, per-agent-tagged trajectory. **Single-agent
+is the N=1 case** — a good sign this is the right shape. We commit to the shape now (it
+doesn't fork the design); we don't build the runtime yet.
+
+```mermaid
+flowchart LR
+  A1[Agent 1 loop] -->|execute_action| Tk1[tool · agent 1]
+  A2[Agent 2 loop] -->|execute_action| Tk2[tool · agent 2]
+  Tk1 --> W[(shared task state)]
+  Tk2 --> W
+  W -->|per-agent eval| W
+  Tk1 -->|on_action / on_eval · id=1| S[[Streamer]]
+  Tk2 -->|on_action / on_eval · id=2| S
+  Sch[Scheduler / turn-policy] -. gates .- Tk1
+  Sch -. gates .- Tk2
+```
+
+**Variants to support:** timing (**async** any agent any time · **turn-based** in order
+· **batch** all at once per turn); per-agent **action + observation** spaces; per-agent
+or **joint/general-sum reward**; **inter-agent communication** (direct vs through-env);
+**shared vs partitioned** world state; **dynamic membership** (join/leave/spawn);
+**per-agent vs episode** termination; **partial observability** (an agent's obs reflects
+others' intervening actions).
+
+**Load-bearing considerations (what makes it fail):**
+
+1. **Shared state must serialize even in "async".** Tools are views on one world; two
+   simultaneous `execute_action`s race. "Async" = interleaved with serialized state
+   access; a returned obs is a snapshot others are concurrently changing.
+2. **Batch ≠ turns.** No agent acts unilaterally: collect all N actions → resolve jointly
+   (incl. conflicts) → return each obs. A batch `execute_action` is *submit + await the
+   joint step*, not an immediate execute.
+3. **Make the schedule explicit.** "Who acts when" should be a named **scheduler /
+   turn-policy**, not ad-hoc blocking inside the env. Blocking N loops to simulate turns
+   is uniform for authors but pushes deadlock/ordering risk into the runtime.
+4. **Reward attribution needs the joint state.** "Each tool knows its eval" works only if
+   that eval can see the **global** state — otherwise general-sum rewards are
+   unexpressible.
+5. **The streamer is multi-stream.** Every event needs an **agent id**; the trajectory is
+   one interleaved timeline *and* per-agent slices. Compounds open decision (1): N agents'
+   LLM streams + the env stream all merge.
+6. **The harness needs a multi-agent runner.** `Episode` (one loop) → an **arena** running
+   N agent loops + the scheduler. The bigger-scope piece; spans cube-standard (task = set
+   of agent-tools + per-agent eval + schedule hook) and cube-harness (the runner).
+
 ## Open decisions
 
 - **(1)** streamer on the task only, or task + agent, or harness-owned merge.
 - **(2)** restricted tool facet vs whole task to the agent.
 - **(3)** accept `Streamer` in cube-standard as a pure seam (vs harness-only).
 - **(4)** `finished` / `evaluate` cadence: per-turn (proposed) vs per-action.
+- **(5) multi-agent scope for v1:** which variants land first (async/turn/batch?),
+  is inter-agent communication an action or a channel, and is the scheduler a
+  cube-standard concept or a harness one?
 
-`deltas.md` stays intentionally thin until we settle (1)–(4).
+`deltas.md` stays intentionally thin until we settle (1)–(5).
