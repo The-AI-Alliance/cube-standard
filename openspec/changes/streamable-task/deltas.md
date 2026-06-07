@@ -11,8 +11,9 @@
 - **`TaskTool`** — the agent-facing tool facet over a task; the ONLY surface the agent
   holds. `execute_action(action) -> Observation | StepError` (delegates to the task's
   per-action execution + `obs_postprocess`, emits `on_action`, raises `AgentStop` on
-  `final_step`), `action_set`, `attach_streamer`. **No** `reset`/`evaluate`/`close` —
-  lifecycle stays on `Task`, runtime-driven.
+  `final_step`), `action_set` (**dynamic property**, recomputed from current state each
+  turn — legal-action masking / phase gating / real-time observe-no-op), `attach_streamer`.
+  **No** `reset`/`evaluate`/`close` — lifecycle stays on `Task`, runtime-driven.
 - **`Task.agent_tools() -> list[TaskTool]`** — one facet per agent (single-agent = N=1);
   how the runtime obtains the agent surface without leaking the task.
 - **`Task.on_turn_start()`** — per-turn cube hook; the supported replacement for

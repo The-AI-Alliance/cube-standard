@@ -71,7 +71,10 @@ class Streamer(ABC):                       # NEW — just the seam
     # no event types, no storage, no budget — those live downstream
 
 class TaskTool:                            # NEW — the ONLY surface the agent holds
-    action_set: list[ActionSchema]                                   # the task's actions
+    @property
+    def action_set(self) -> list[ActionSchema]: ...   # DYNAMIC — recomputed from current
+        # state each turn (legal-action masking, phase gating, real-time observe/no-op).
+        # Not a frozen list. Agents re-read it per turn.
     def execute_action(self, action) -> Observation | StepError: ... # delegates to the
         # task's per-action execution + obs_postprocess; emits on_action; final_step
         # raises AgentStop (today's TaskDone). No reset / evaluate / close.
@@ -250,7 +253,34 @@ others' intervening actions).
    LLM streams + the env stream all merge.
 6. **The harness needs a multi-agent runner.** `Episode` (one loop) → an **arena** running
    N agent loops + the scheduler. The bigger-scope piece; spans cube-standard (task = set
-   of agent-tools + per-agent eval + schedule hook) and cube-harness (the runner).
+   of agent-tools + per-agent eval + schedule hook) and cube-harness (the runner — see
+   companion `cube-harness/.../multi-agent-episode`).
+
+### What the standard actually needs (surveyed ~20 multi-agent benchmarks)
+
+Almost everything is **cube logic, not a standard primitive**. The standard needs exactly:
+
+- **Dynamic per-agent action sets** — `TaskTool.action_set` is a property recomputed each
+  turn (above). Unlocks phase gating (Diplomacy/Traitors), legal-action masking
+  (SMAC/OpenSpiel), real-time observe/no-op. Highest-leverage, ~one-line shape.
+- **Contract — non-lockstep:** the world may advance *between/without* an agent's action
+  (real-time engines tick natively); "observe/no-op" is a valid action. (Generalizes the
+  async note.)
+- **Contract — cross-agent effects:** one agent's action may mutate another's next
+  observation — already true via the single shared `Task`; cubes may rely on it.
+
+Everything else stays **cube-side**, no standard change: **communication** = a
+`send_message(to, content)` action (observable, routable, evaluable; topologies —
+broadcast / targeted / team-private / neighbor-graph — are the cube's delivery logic);
+**teams / zero-sum / mixed-motive** = how `evaluate()` maps joint state → per-agent reward;
+fixed/scripted/background **opponents & partners** = environment-internal agents the cube
+runs (`agent_tools()` returns only the seats under test); **multi-metric eval** =
+`evaluate()` returns a metrics dict; **chance/stochasticity** = sampled inside
+`execute_action` / `on_turn_start`.
+
+**Non-goal:** JAX-vectorized MARL training libs (JaxMARL, CAMAR-at-scale). Their value is
+GPU `vmap` over thousands of functional worlds — a different *resource*, not an API gap,
+and RL-training-shaped, not agent-eval. Scoped out rather than bending the standard.
 
 ## Open decisions
 
@@ -259,8 +289,10 @@ others' intervening actions).
   facet, never the `Task` (lifecycle hidden).
 - **(3)** accept `Streamer` + `TaskTool` in cube-standard as a pure seam (vs harness-only).
 - **(4)** `finished` / `evaluate` cadence: per-turn (proposed) vs per-action.
-- **(5) multi-agent scope for v1** (decomposition RESOLVED — one task, many tools):
-  which timing variants land first (async/turn/batch?), is inter-agent communication an
-  action or a channel, and is the scheduler a cube-standard concept or a harness one?
+- **(5) multi-agent scope for v1** — RESOLVED: decomposition = one task, many tools;
+  communication = an **action** (not a channel); scheduler = **harness** (the cube
+  expresses *legality* via dynamic action sets + `on_turn_start`; the arena only picks
+  *who's next*). Remaining: which timing variant lands first (turn-based proposed) and
+  when `async`/`batch`/real-time follow.
 
 `deltas.md` stays intentionally thin until we settle (1)–(5).
