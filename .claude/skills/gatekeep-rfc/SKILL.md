@@ -45,6 +45,10 @@ Judge each distinct part of a proposal on its own; real ones often split.
 - **ACCEPT** — additive, general, lean, in-charter. Rare for external proposals; forward
   with a light note rather than rubber-stamping a merge.
 
+The **headline can be compound** when the parts genuinely diverge — e.g. "ESCALATE the
+multi-agent core, RESHAPE the lean parts that can land now." Don't flatten a split
+proposal into one label; lead with the most consequential part.
+
 ## How to approach it
 
 Beyond the firm rules below, trust your own reasoning. A few things that reliably matter:
@@ -75,10 +79,13 @@ Beyond the firm rules below, trust your own reasoning. A few things that reliabl
 
 Produce two things every run, shaped to fit the case — there is no fixed template:
 
-- **A contributor-facing reply.** Acknowledge the need first; separate need from
-  mechanism; give the reason grounded and concrete (name the symbols, the blast radius);
-  hand over the smaller path; and make explicit they can push back and reach a human.
-  Warm and concise.
+- **A contributor-facing reply. Keep it short — this is the first friction touch, and a
+  wall of text is itself a failure.** Default to a few sentences: name the need, the *one*
+  main reason, and the smaller path; offer to expand. Only grow it when the proposal
+  genuinely splits into several parts that each need a verdict — and even then, lead with
+  a skimmable summary before the per-part detail. Acknowledge the need first; ground the
+  reason concretely (name the symbols / blast radius); make explicit they can push back
+  and reach a human. Warm, not exhaustive.
 - **A one-screen maintainer summary.** Verdict, the real need, blast radius, the smaller
   alternative, escalate-to-human y/n + why, and — when relevant — the **prior-demand
   pattern** (links to related/recurring requests and how they were resolved).
@@ -88,7 +95,9 @@ Produce two things every run, shaped to fit the case — there is no fixed templ
 State which mode you're in, in one line, at the start.
 
 - **PR URL** → reviewer triage. Fetch with `gh pr diff <url>` / `gh pr view <url> --json
-  title,body,author,files`. May offer to post the contributor reply (see rules).
+  title,body,author,files,isDraft,state`. May offer to post the contributor reply (see
+  rules) — **but if the PR is a draft / WIP**, default to "here's the read, no comment
+  needed yet"; don't push to post on something the author is still actively shaping.
 - **change dir / pasted text** → author drafting loop. This is meant to be run **locally,
   early, and repeatedly** — on a rough sketch, not just a finished draft. Frame the output
   as "here's how a maintainer will read this, and the smaller shape to move toward," and
