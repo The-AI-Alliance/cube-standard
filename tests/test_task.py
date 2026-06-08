@@ -164,6 +164,18 @@ def test_task_tool_async_stop_raises_agent_stop():
         asyncio.run(tool.async_execute_action(Action(name=STOP_ACTION.name, arguments={})))
 
 
+def test_task_tracks_last_action_error_for_runtime_telemetry():
+    # A tool error is surfaced to the agent as an observation (non-terminal), but the
+    # structured error is stashed so the runtime can record it; cleared on success.
+    task = make_task()
+    tool = task.agent_tools()[0]
+    tool.execute_action(Action(name="fail", arguments={}))
+    assert task._last_action_error is not None
+    assert task._last_action_error.error_type == "ValueError"
+    tool.execute_action(Action(name="greet", arguments={"name": "X"}))
+    assert task._last_action_error is None
+
+
 def test_task_action_set_includes_stop_action_by_default() -> None:
     task = make_task()
     stop_schemas = [a for a in task.action_set if a.name == STOP_ACTION.name]

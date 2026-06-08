@@ -216,6 +216,11 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     _tool: TTool | None = PrivateAttr(default=None)
     _container: Container | None = PrivateAttr(default=None)
     _resource_handle: ResourceHandle | None = PrivateAttr(default=None)
+    # Structured error from the most recent per-action dispatch (None if it returned
+    # an Observation). A tool error is surfaced to the agent as an observation
+    # (non-terminal); this preserves the *structured* error for the runtime to record
+    # on its ToolCallEvent (telemetry / error stats) without re-running dispatch.
+    _last_action_error: "StepError | None" = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
         """Called after Pydantic __init__. Launches container if configured, then creates tool."""
@@ -360,8 +365,10 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         ``Observation`` through; render a ``StepError`` as an observation (errors
         are surfaced, never terminal)."""
         if isinstance(result, Observation):
+            self._last_action_error = None
             return result
         if isinstance(result, StepError):
+            self._last_action_error = result
             return result.to_observation()
         raise ValueError(
             f"Unknown result type from calling action '{action.name}' with args {action.arguments}: "
