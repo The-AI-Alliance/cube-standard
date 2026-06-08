@@ -121,6 +121,12 @@ legitimate ask for a **human maintainer**. Open a
 your PR. The automated pass just means the human conversation starts already focused on
 the real question.
 
+If your need has **come up before** — earlier issues or proposals asking for the same
+thing, especially ones closed for the same reason — link them. Recurring demand is one of
+the strongest arguments for change: it's exactly what turns a "not now" into "this keeps
+coming back, let's reconsider the design." The gatekeeper looks for that pattern too, but
+you'll often know the history better than it does.
+
 We can't hand-review a flood of framework proposals, so the first pass is automated and
 **you run it on yourself, locally, early and often**. The `/gatekeep-rfc` Claude Code
 skill triages your idea against this philosophy: it separates your real *need* from the

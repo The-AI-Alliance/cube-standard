@@ -122,6 +122,14 @@ The `select()` factory is *convenience* over methods that already exist
 optional, not core. Offer it as a nice-to-have the author can drop, not as a requirement
 — don't trade one over-reach for a smaller one.
 
+**Prior-demand check.** Sweep `openspec/changes/` + archive and `gh issue/pr list
+--search` for the same underlying need (multi-glob / attribute-based task selection)
+before deciding. Here, suppose it comes back clean — a single instance, no recurring
+pattern — so the verdict stays a plain reshape. *If instead* multi-glob selection had been
+asked for and declined two or three times before, that recurrence would outweigh the
+per-RFC view: escalate the pattern to a human ("this keeps coming back — should the
+default selection API just support it?"), rather than reshaping it down a fourth time.
+
 **Escalate to human?** No for the reshape (it's a clean additive change). The *only*
 thing worth a maintainer's nod is whether to also deprecate `named_subset` once
 multi-glob lands — a small lifecycle call, flag it but don't block on it.

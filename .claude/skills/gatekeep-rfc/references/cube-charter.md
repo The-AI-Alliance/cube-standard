@@ -79,6 +79,12 @@ Most "change the framework" needs are served *without* touching core. Cheapest f
 - A real inconsistency or footgun in an existing contract.
 - A principled challenge to a current invariant, or a cross-layer design decision a human
   owner should make.
+- **Recurring demand.** The same underlying need shows up across multiple prior proposals
+  or issues — especially ones repeatedly closed/declined for the same reason — or several
+  overlapping requests were never properly resolved. Recurrence is signal: it's aggregate
+  demand the per-RFC view misses, and a sign the current answer isn't actually serving
+  people. Escalate the *pattern* (with links), not just this instance — and consider that
+  a principle may need revisiting rather than the request re-declined.
 
 Attach your best smaller alternative even when you escalate — give the human the gap *and*
 a starting point.
