@@ -1,5 +1,6 @@
 """Tests for cube.task - Task, TaskMetadata, STOP_ACTION."""
 
+import asyncio
 import json
 
 import pytest
@@ -148,6 +149,19 @@ def test_step_and_tool_share_one_core():
     step_obs = make_task().step(action).obs
     tool_obs = make_task().agent_tools()[0].execute_action(action)
     assert step_obs.to_markdown() == tool_obs.to_markdown()
+
+
+def test_task_tool_async_execute_action_matches_sync():
+    tool = make_task().agent_tools()[0]
+    obs = asyncio.run(tool.async_execute_action(Action(name="greet", arguments={"name": "Async"})))
+    assert isinstance(obs, Observation)
+    assert obs.contents == [TextContent(data="Hello, Async!")]
+
+
+def test_task_tool_async_stop_raises_agent_stop():
+    tool = make_task().agent_tools()[0]
+    with pytest.raises(AgentStop):
+        asyncio.run(tool.async_execute_action(Action(name=STOP_ACTION.name, arguments={})))
 
 
 def test_task_action_set_includes_stop_action_by_default() -> None:

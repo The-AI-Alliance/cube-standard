@@ -343,6 +343,22 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         if action.name == STOP_ACTION.name and self.accept_agent_stop:
             raise AgentStop()
         result = self.tool.execute_action(action)
+        return self._coerce_action_result(action, result)
+
+    async def _aexecute_action(self, action: Action) -> Observation:
+        """Async twin of ``_execute_action`` — same contract, awaits the tool's
+        async dispatch. Used by the agent-facing view's ``async_execute_action``
+        (parallel tool calls); the sync ``step`` view never calls it.
+        """
+        if action.name == STOP_ACTION.name and self.accept_agent_stop:
+            raise AgentStop()
+        result = await self.tool.async_execute_action(action)
+        return self._coerce_action_result(action, result)
+
+    def _coerce_action_result(self, action: Action, result: Observation | StepError) -> Observation:
+        """Map a tool dispatch result to the per-action observation: pass an
+        ``Observation`` through; render a ``StepError`` as an observation (errors
+        are surfaced, never terminal)."""
         if isinstance(result, Observation):
             return result
         if isinstance(result, StepError):
@@ -509,6 +525,14 @@ class TaskTool:
         :class:`AgentStop`, which the runtime catches to end the episode.
         """
         return self._task.obs_postprocess(self._task._execute_action(action))
+
+    async def async_execute_action(self, action: Action) -> Observation:
+        """Async twin of ``execute_action`` — the parallel-tool-call call-site.
+
+        Same contract: runs the task's async per-action core + ``obs_postprocess``,
+        returns the observation only, raises :class:`AgentStop` on ``final_step``.
+        """
+        return self._task.obs_postprocess(await self._task._aexecute_action(action))
 
 
 class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
