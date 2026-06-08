@@ -1,46 +1,41 @@
 # Deltas — streamable-task
 
-> Intentionally thin at this stage. The proposal is high-level; concrete spec deltas
-> firm up once open decisions (1)–(4) are settled. Target spec:
-> `openspec/specs/task/spec.md` (+ possibly a new `streamer` note).
+> Thin until the open decisions settle. Target spec: `openspec/specs/task/spec.md`.
 
-## ADDED (provisional)
+## ADDED
 
-- **`Streamer` (abstract)** — `on_action(action, result)` + `on_eval(reward, info)`.
-  Seam only: no event types, no storage, no budget. Concrete impls live downstream.
-- **`TaskTool`** — the agent-facing tool facet over a task; the ONLY surface the agent
-  holds. `execute_action(action) -> Observation | StepError` (delegates to the task's
-  per-action execution + `obs_postprocess`, emits `on_action`, raises `AgentStop` on
-  `final_step`), `action_set` (**dynamic property**, recomputed from current state each
-  turn — legal-action masking / phase gating / real-time observe-no-op), `attach_streamer`.
-  **No** `reset`/`evaluate`/`close` — lifecycle stays on `Task`, runtime-driven.
-- **`Task.agent_tools() -> list[TaskTool]`** — one facet per agent (single-agent = N=1);
-  how the runtime obtains the agent surface without leaking the task.
-- **`Task.on_turn_start()`** — per-turn cube hook; the supported replacement for
-  overriding `step()`.
-- **Shared per-action core** (`execute_step` / internal) — `STOP-check → tool dispatch →
-  obs_postprocess`, built on the cube hooks. The single implementation both `step` and
-  `TaskTool.execute_action` build on; cubes never call or override it directly.
+- **`TaskTool`** — the agent-facing tool view; the ONLY surface an agent holds.
+  `execute_action(action) -> Observation | StepError` (runs one action through the task +
+  `obs_postprocess`, returns the **obs only** — no reward; `final_step` → `AgentStop`),
+  `action_set` (**dynamic property**, recomputed each turn — legal-action masking / phase
+  gating / real-time observe-no-op). **No** `reset` / `evaluate` / `close`.
+- **`Task.agent_tools() -> list[TaskTool]`** — one view per agent (single-agent = N=1); how
+  the runtime obtains the agent surface without leaking the task.
+- **`Task.on_turn_start()`** — per-turn cube hook; the supported replacement for overriding
+  `step()`.
 
-## MODIFIED (provisional)
+## MODIFIED
 
-- **`Task.step()`** — re-expressed as a **view** over the shared per-action core (loop the
-  core over the batch → `finished`/`evaluate` once → `EnvironmentOutput`). **Finalized +
-  documented do-not-override** (the spec already says "do not override"; this makes it
-  enforceable, since the path is now shared and per-turn logic has `on_turn_start`).
-  Convergence guarantee: a cube's `evaluate`/`finished`/`on_turn_start` behave identically
-  under gym `step`, the agent loop, or an external `cube.server` agent — none bypass the
-  core. The one per-caller knob is the **`StepError` policy** (gym: error ⇒ done; agent
-  loop: error ⇒ returned to the agent).
+- **`Task.step()`** — the complete gym view, **finalized + documented do-not-override**.
+  `TaskTool.execute_action` is a thin view over the same per-action execution, so the gym
+  and agent paths run identical cube logic. Per-caller knob: the `StepError` policy
+  (gym: error ⇒ done; agent loop: error ⇒ returned to the agent).
 
-## OPEN (block firming up the deltas)
+## CONTRACTS (state explicitly)
 
-1. Trajectory capture is split: `TaskTool` stream (env) vs agent (LLM) — who merges?
-2. ~~Restricted facet vs whole task~~ — RESOLVED: agent holds a `TaskTool`, never the task.
-3. Accept `Streamer` + `TaskTool` in cube-standard (reverses `agent-owns-loop`
-   "monitoring is not a cube-standard concern").
-4. `finished`/`evaluate` cadence — per-turn vs per-action.
-5. Multi-agent: task = set of agent-tools (single-agent = N=1). Per-agent obs/action/
-   reward + agent-id on streamer events. Scheduler/turn-policy (async/turn/batch),
-   shared-state serialization, joint reward, inter-agent comms — cube-standard vs
-   harness ownership TBD.
+- The world may advance between/without an agent's action (real-time engines); observe/no-op
+  is a valid action.
+- One agent's action may mutate another agent's next observation (single shared `Task`).
+
+## NOT in this change (forward extensions — add when needed)
+
+- A standard **`Streamer`** seam — capture is harness-side (the agent loop self-emits its
+  tool + LLM events; the harness recovers reward via `task.evaluate()`). Add a `TaskTool`
+  capture hook only for external / black-box agents over `cube.server`.
+- A shared per-action **core** factored out of `step` — only needed for parallel tool calls
+  within a turn.
+
+## OPEN
+
+1. `finished` / `evaluate` cadence — per-turn (proposed) vs per-action.
+2. `StepError` policy default.
