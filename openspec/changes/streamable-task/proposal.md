@@ -28,13 +28,16 @@ harness — so the standard never learns the words *LLM*, *loop*, *turn*, or *bu
 class Task:                               # the world — runtime-driven; never held by an agent
     def step(self, action) -> EnvironmentOutput: ...   # gym-COMPATIBILITY view; FINALIZED, do-not-override
     def evaluate(...) -> tuple[float, dict]: ...        # EXISTING — reward; runtime-side only
-    def agent_tools(self) -> list[TaskTool]: ...        # NEW: one view per agent (N=1 default)
+    def agent_roles(self) -> dict[str|None, int]: ...  # NEW: roster, role->seats (default {None:1})
+    def get_task_tool(self, role=None, seat=0): ...     # NEW: per-seat view factory
+    def action_set_for(self, role=None): ...            # NEW: per-role actions (default = action_set)
+    def agent_tools(self) -> list[TaskTool]: ...        # CONCRETE: expands agent_roles via get_task_tool
     def _execute_action(self, action) -> Observation: ...  # NEW: the shared per-action CORE
         # STOP -> AgentStop, tool dispatch, error -> observation. Both views run THIS.
 
-class TaskTool:                           # the ONLY surface an agent holds
+class TaskTool:                           # the ONLY surface an agent holds (carries role + seat)
     @property
-    def action_set(self) -> list[ActionSchema]: ...    # recomputed each access, so a cube MAY
+    def action_set(self) -> list[ActionSchema]: ...    # = task.action_set_for(self.role); recomputed each access, so a cube MAY
         # vary it (legal-action masking / phase gating / real-time). Rare — almost every cube is
         # static; agents snapshot it at make() today. Per-turn re-read = forward extension.
     def execute_action(self, action: Action) -> Observation: ...
@@ -109,10 +112,18 @@ sequenceDiagram
   Ag->>Rec: emit reward (per step / terminal)
 ```
 
-## Multi-agent — one task, many tools
+## Multi-agent — one task, many tools, with roles
 
-`agent_tools()` returns **one `TaskTool` per agent** over a **single shared `Task`**
-(single-agent = N=1). Centralizing the world on one task is what makes the hard parts fall
+The task declares a **roster** — `agent_roles() -> {role: seat_count}` (default `{None: 1}`,
+single-agent) — and the runtime expands it (`agent_tools()`, concrete) into **one `TaskTool`
+per seat** over a **single shared `Task`**. `role=None` is the lone single-agent seat; every
+multi-agent seat carries a **role** (`"buyer"`/`"seller"`, or a symmetric `"player"`). A role
+is not just a label: `action_set_for(role)` gives each role its **own legal actions** (buyer ≠
+seller), and the role yields a stable `agent_id` (`"buyer-0"`). The runtime attributes the
+right seat to the right agent by role (heterogeneous per-role `AgentConfig`s = a forward
+extension; v1 is homogeneous). Multiplicity is **task-fixed** for now (concrete counts);
+experiment-chosen counts (ranges) can come later. Centralizing the world on one task is what
+makes the hard parts fall
 out for free: its `evaluate()` sees the **global** state, so per-agent / general-sum reward
 is attributable from the joint outcome; all tools mutate **one coherent world**; lifecycle
 runs **once**.

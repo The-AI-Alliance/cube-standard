@@ -9,8 +9,18 @@
   returns the **obs only** — no reward, no done; `final_step` raises `AgentStop`), `action_set`
   (**dynamic property**, recomputed each access — legal-action masking / phase gating /
   real-time observe-no-op). **No** `reset` / `evaluate` / `close`.
-- **`Task.agent_tools() -> list[TaskTool]`** — one view per agent (single-agent = N=1); how
-  the runtime obtains the agent surface without leaking the task.
+- **Role-based multi-agent seam** — how the runtime gets one agent surface per seat without
+  leaking the task, and attributes the right seat to the right agent:
+  - **`Task.agent_roles() -> dict[str | None, int]`** — the roster: each role → seat count.
+    Default `{None: 1}` (single-agent). `role=None` is the single-agent seat only; every
+    multi-agent seat gets a role (even symmetric `"player"`). Override point for the roster.
+  - **`Task.get_task_tool(role=None, seat=0) -> TaskTool`** — per-seat view factory.
+  - **`Task.action_set_for(role=None) -> list[ActionSchema]`** — per-role legal actions
+    (default role-agnostic = `action_set`). The substance of roles: buyer ≠ seller actions.
+  - **`Task.agent_tools() -> list[TaskTool]`** — CONCRETE (do-not-override): expands
+    `agent_roles()` via `get_task_tool()` into one tool per seat. `TaskTool` carries
+    `role` + `seat`; `agent_id` is derived (`"agent"` for the single seat, else
+    `"{role}-{seat}"`), and its `action_set` delegates to `action_set_for(role)`.
 
 > No `pre_step` / `post_step` hooks (decision 3): the only cube that overrode `step()`
 > (workarena) is fixed directly, so the contract needs no new hook surface.
