@@ -10,6 +10,26 @@ CUBE Standard defines the contract: how benchmarks expose tasks, how tools expos
 actions, how resources are provisioned. It does NOT run agents, record trajectories,
 or coordinate experiments — that lives in **cube-harness**.
 
+## Routing contributors (point them to the right place)
+
+External contributors fall into two journeys — send them to the right entry point
+instead of answering ad hoc:
+
+- **Wrapping a benchmark** ("how do I add my benchmark?") → the
+  [Authoring a CUBE guide](https://the-ai-alliance.github.io/cube-standard/authoring-a-cube)
+  and the `/new-cube` then `/review-cube` skills. This rarely needs a framework change.
+- **Changing the framework** ("can we add a field / change this API to fit my use
+  case?") → first the [Design Philosophy](docs/design-philosophy.markdown) (the broader
+  picture + the leanness bar; most such needs have a smaller in-schema form or belong in
+  a subclass/the harness), then the workflow in [CONTRIBUTING.md](CONTRIBUTING.md). For
+  triaging an actual RFC, use the `/gatekeep-rfc` skill
+  ([`.claude/skills/gatekeep-rfc/`](.claude/skills/gatekeep-rfc)) — it separates the real
+  need from the mechanism and counter-proposes the minimal change.
+
+When a contributor pushes to bend an API to their local need, **default to the smaller
+change**: a subclass field, harness-side code, or a minimal additive edit — not new core
+surface. Lean beats convenient-for-one.
+
 ## The 5-layer architecture
 
 | Layer | Module | Spec | What it does |

@@ -2,6 +2,33 @@
 
 > **Building a new CUBE benchmark?** Start with the [Authoring a CUBE guide](https://the-ai-alliance.github.io/cube-standard/authoring-a-cube) — three starting paths, implementation order, validation, and submission. Come back here for framework invariants and the RFC process when you need them. This file covers contributing to the cube-standard **framework itself** (adding features, changing specs, modifying the template).
 
+> **Before you propose a framework change, read the [Design Philosophy](https://the-ai-alliance.github.io/cube-standard/design-philosophy).** CUBE is a small, shared contract that many cubes depend on; most "change the framework" needs are better served by a subclass, harness code, or a smaller in-schema change. The philosophy page explains how we evaluate that — and the `/gatekeep-rfc` skill lets you check your own draft against it before anyone else reads it.
+
+## The contribution workflow (end to end)
+
+For framework changes, the path from idea to merged PR:
+
+0. **Understand the broader picture first.** Read the [Design Philosophy](https://the-ai-alliance.github.io/cube-standard/design-philosophy) and the [ROADMAP](ROADMAP.md), then the spec for the layer you'll touch (`openspec/specs/<layer>/spec.md`). Most proposed API changes have a smaller form that fits the existing schema — find it first.
+
+1. **Branch off `dev`, merge back to `dev`.** Never `main`. *Tip:* if you drive the work with a coding agent, use a `git worktree` per branch so parallel agents don't collide.
+
+2. **Plan with an OpenSpec RFC.** Write `openspec/changes/<name>/proposal.md` + `deltas.md` (Problem · Proposed solution · Alternatives; an optional mermaid diagram if it clarifies). Keep it concise — coding agents draft long; tighten before others read it. Then:
+   - **Iterate with a coding agent** (Claude Code, etc.) until it flags nothing material.
+   - **Iterate with `/gatekeep-rfc` (self pre-flight)** — it reads your draft the way a maintainer will, separates the real need from the mechanism, and hands back the smallest in-schema version. Adopt that before submitting.
+   - **Open the RFC PR** (prefix the title `RFC:`). A reviewer (or a community gatekeeper) runs `/gatekeep-rfc` on it and routes it; you then iterate with the team. **No approval gate blocks you from continuing** — you can start coding and put the implementation in the same PR.
+
+3. **Code it.** Implement against the RFC; keep the diff lean.
+
+4. **Verify with the right tests.** CI runs **unit + integration** automatically — fast, binary, but limited in scope. **Smoke tests** (`scripts/smoke/*.py`) cover end-to-end scopes CI can't reach (real infra, API keys, minutes-long runs). The coding agent decides which existing smokes to run and which new one to add; see the smoke-test conventions in [CLAUDE.md](CLAUDE.md#testing-and-linting).
+
+5. **Self-review with `/code-review`** (the Anthropic code-review skill, run as a sub-agent) and address what it finds.
+
+6. **Submit code in the same PR as the RFC.** One PR carries the proposal, the deltas, and the implementation.
+
+7. **Human code review** merges when there's rough consensus. On merge, archive the change (step 6 of the RFC process below).
+
+The rest of this file is the reference detail behind these steps.
+
 ## Repo layout
 
 ```
@@ -111,16 +138,15 @@ Large changes to the core protocol — new abstract methods, breaking type chang
 - Bug fixes
 - New examples or benchmarks
 - Documentation improvements
-- Additive changes that don't touch existing interfaces
+- Small additive changes that don't touch existing interfaces — a lean living-spec edit is enough. (Additive still isn't free: the [Design Philosophy](https://the-ai-alliance.github.io/cube-standard/design-philosophy) leanness bar still applies — keep it general and minimal, or leave it out.)
 
-**Process:**
+**Process:** (this is the RFC detail behind "[The contribution workflow](#the-contribution-workflow-end-to-end)" above; the proposal and its implementation live in **one PR**)
 
-1. **Discuss** — Open a [GitHub Discussion](https://github.com/The-AI-Alliance/cube-standard/discussions) or issue tagged `RFC` to gauge interest.
-2. **Draft** — Create `openspec/changes/<name>/proposal.md` and `deltas.md`, open a PR prefixed `RFC:`. See [`openspec/README.md`](openspec/README.md) for the delta format.
-3. **Review** — Collect feedback for at least one week. The PR author iterates on the draft.
-4. **Merge** — A maintainer merges when there is rough consensus (no blocking objections from core contributors).
-5. **Implement** — Follow-up PRs implement the RFC. Link them back to the RFC PR.
-6. **Archive** — Move `openspec/changes/<name>/` to `openspec/changes/archive/YYYY-MM-DD-<name>/` and apply deltas to the main spec.
+1. **Draft** — Create `openspec/changes/<name>/proposal.md` and `deltas.md` (Problem · Proposed solution · Alternatives — see [`openspec/README.md`](openspec/README.md)). Self-check with `/gatekeep-rfc` and adopt the smallest in-schema form before opening the PR. Optionally open a [GitHub Discussion](https://github.com/The-AI-Alliance/cube-standard/discussions) first for big or contentious ideas.
+2. **Open the PR** prefixed `RFC:`. A reviewer (or community gatekeeper) runs `/gatekeep-rfc` to route it; you iterate with the team. No approval gate blocks you from continuing.
+3. **Implement in the same PR** — push the code alongside the proposal; verify with smokes (workflow step 4) and self-review with `/code-review`.
+4. **Merge** — a maintainer merges when there's rough consensus (no blocking objections from core contributors).
+5. **Archive** — move `openspec/changes/<name>/` to `openspec/changes/archive/YYYY-MM-DD-<name>/` and apply deltas to the main spec.
 
 Active proposals live in [`openspec/changes/`](openspec/changes/).
 
