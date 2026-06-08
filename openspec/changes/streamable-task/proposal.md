@@ -8,10 +8,15 @@
 ## The idea
 
 A `Task` is the **world**: it owns shared state + lifecycle (`reset` / `evaluate` /
-`close`), and `step()` is its complete **gym view**. Agents never hold the task — they hold
-a thin **`TaskTool`**: a tool-shaped view (`execute_action` + a dynamic `action_set`) that
-returns just the **observation**. A multi-agent task exposes **one `TaskTool` per agent**
-(`agent_tools()`; single-agent = N=1).
+`close`). The **default** way an agent interacts with it is a thin **`TaskTool`** — a
+tool-shaped view (`execute_action` + a dynamic `action_set`) that returns just the
+**observation** — held *instead of* the task. A multi-agent task exposes **one `TaskTool`
+per agent** (`agent_tools()`; single-agent = N=1).
+
+`step()` is **retained as a gym-compatibility view** (gym / RL / NeMo callers) — no longer
+the primary surface. The `TaskTool` is, because it's the one that fits **parallel tool
+calls** (the caller decides multiplicity) and **multi-agent** (N tools) naturally, where the
+batched single-`EnvironmentOutput` `step` is awkward.
 
 The standard stays tiny: the `TaskTool` view, `agent_tools()`, and two **optional** hooks.
 Trajectory **capture** and **orchestration** (loops, scheduling, budget, sinks) stay in the
@@ -21,7 +26,7 @@ harness — so the standard never learns the words *LLM*, *loop*, *turn*, or *bu
 
 ```python
 class Task:                               # the world — runtime-driven; never held by an agent
-    def step(self, action) -> EnvironmentOutput: ...   # the complete gym view; FINALIZED, do-not-override
+    def step(self, action) -> EnvironmentOutput: ...   # gym-COMPATIBILITY view; FINALIZED, do-not-override
     def evaluate(...) -> tuple[float, dict]: ...        # EXISTING — reward; runtime-side only
     def agent_tools(self) -> list[TaskTool]: ...        # NEW: one view per agent (N=1 default)
     def pre_step(self) -> None: ...                    # NEW, OPTIONAL hooks (default no-op):
@@ -48,12 +53,13 @@ class TaskTool:                           # the ONLY surface an agent holds
 construction** — that's the invariant that matters. The *only* thing the two views do
 differently is **when `evaluate` runs**, which is deliberate:
 
-- **`step()`** — gym view: `pre_step` → loop the sub-function → `finished` → `evaluate` →
-  `post_step` → `EnvironmentOutput` (obs + reward + done). **Finalized, do-not-override.**
-  Cubes that need per-step logic use the optional `pre_step` / `post_step` hooks.
-- **`TaskTool.execute_action()`** — agent view: **just the sub-function** (obs only, no
-  evaluate). The harness brackets the agent's step with `pre_step` / `post_step` and calls
-  `evaluate` at its own cadence — so there's no double eval and the agent never sees reward.
+- **`TaskTool.execute_action()`** — the **default** agent view: **just the sub-function**
+  (obs only, no evaluate). The harness brackets the agent's step with `pre_step` /
+  `post_step` and calls `evaluate` at its own cadence — so there's no double eval and the
+  agent never sees reward.
+- **`step()`** — the **gym-compatibility** view: `pre_step` → loop the sub-function →
+  `finished` → `evaluate` → `post_step` → `EnvironmentOutput` (obs + reward + done).
+  **Finalized, do-not-override.** Cubes that need per-step logic use `pre_step` / `post_step`.
 
 Calling the sub-function (not full `step`) is what avoids re-running `evaluate` / `finished`
 per action — the one behavioral difference you'd otherwise hit.
