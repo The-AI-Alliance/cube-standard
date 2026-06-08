@@ -30,25 +30,28 @@ class TaskTool:                           # the ONLY surface an agent holds
     @property
     def action_set(self) -> list[ActionSchema]: ...    # DYNAMIC — recomputed each turn
         # (legal-action masking, phase gating, real-time observe/no-op). Agents re-read it.
-    def execute_action(self, action) -> Observation | StepError: ...
-        # runs one action through the task + obs_postprocess; returns the OBS ONLY (no
-        # reward); final_step raises AgentStop. No reset / evaluate / close. Eval never
-        # flows through here — it stays on the Task, which the agent does not hold.
+    def execute_action(self, action: Action | list[Action]) -> Observation | StepError: ...
+        # RELAYS to step's per-action sub-function (tool dispatch + obs_postprocess) and
+        # returns the OBS ONLY; done/final_step → AgentStop. It does NOT evaluate (the
+        # harness does, at its own cadence — no double eval). Single vs batched is the
+        # caller's (agent/harness) choice. No reset / evaluate / close.
 ```
 
 ## One path — the cube can't be bypassed
 
-`TaskTool.execute_action` is a thin **view** over the same per-action execution `step`
-already performs (`step` = `execute_action` looped over a batch → `finished`/`evaluate` →
-`EnvironmentOutput`). Both paths run identical cube logic:
+`step` is internally one **per-action sub-function** (tool dispatch + `obs_postprocess` +
+`finished`/`STOP`) plus a gym wrapper (`evaluate` + `EnvironmentOutput` packaging). Both
+views share that sub-function — there is no second implementation:
 
-- **`step()`** — the complete gym view. **Finalized, do-not-override.** Cubes that need
-  per-turn logic use `on_turn_start`, not a `step` override.
-- **`TaskTool.execute_action()`** — the agent view: same execution, returns the obs only
-  (reward hidden), `final_step` → `AgentStop`.
+- **`step()`** — the complete gym view: the sub-function (looped over a batch) + `evaluate`
+  + `EnvironmentOutput` (obs + reward + done). **Finalized, do-not-override.** Cubes that
+  need per-turn logic use `on_turn_start`, not a `step` override.
+- **`TaskTool.execute_action()`** — the agent view: the **same sub-function**, returning the
+  **obs only** (no reward, no evaluate), `done`/`final_step` → `AgentStop`. The caller
+  decides one action or a batch; the harness evaluates separately.
 
 So whatever a cube puts in `evaluate` / `finished` / `obs_postprocess` / `on_turn_start`
-behaves identically under gym `step`, an in-process agent loop, or an external agent —
+runs identically under gym `step`, an in-process agent loop, or an external agent —
 **cubes customize hooks, never the orchestration.** The one per-caller knob is the
 **`StepError` policy** (gym: error ⇒ done; agent loop: error ⇒ returned to the agent to
 recover).
@@ -70,8 +73,8 @@ sequenceDiagram
   participant Tk as Task
   participant Rec as Recorder · harness
   Ag->>TT: execute_action(a)
-  TT->>Tk: per-action exec + obs_postprocess
-  TT-->>Ag: Observation (no reward)
+  TT->>Tk: step(a)
+  TT-->>Ag: Observation (reward dropped)
   Ag->>Rec: emit ToolCallEvent(a, obs) + LLM events
   Note over Ag,Tk: eval is runtime-only
   Ag->>Tk: evaluate()  (harness holds the task)
@@ -128,12 +131,51 @@ out rather than bending the standard.
 
 ## Forward extensions (add when needed — not in this change)
 
-- **Parallel tool calls within a turn.** `step` is sequential/batched. For real concurrent
-  intra-turn dispatch, factor the per-action execution out of `step` into a shared core both
-  views call. Add only when an agent needs sub-turn concurrency.
+- **Parallel tool calls within a turn.** The per-action sub-function runs sequentially.
+  Real concurrent intra-turn dispatch means running it concurrently — add only when an
+  agent actually needs sub-turn parallelism.
 - **External / black-box agent capture.** An in-process loop self-emits; a CLI / A2A agent
   driven over `cube.server` can't. Add a capture hook (a `Streamer`-style seam) on the
   `TaskTool` when external agents land — server-side, which also gives hard eval isolation.
+
+## Relation to in-flight / archived changes
+
+- **`core-extensions` — `MultiAgentTask` / `per_agent_action_set` (competing seam, must
+  reconcile).** That change proposes a `MultiAgentTask(Task)` subclass exposing
+  `per_agent_action_set() -> dict[id, list[ActionSchema]]` + a `MultiAgentEnvironmentOutput`.
+  This RFC **supersedes that multi-agent seam**: `agent_tools()` on the **base** `Task`
+  (N=1 default) unifies single- and multi-agent, each `TaskTool` carries its own **dynamic**
+  `action_set` (replacing the per-agent dict), and per-agent reward comes from `evaluate()`
+  over global state (no `MultiAgentEnvironmentOutput`). core-extensions' async / streaming-obs
+  concerns are orthogonal. *To confirm with that change's author.*
+- **`stop-action-auto-include`.** STOP stays auto-included with its Anthropic-safe schema —
+  just surfaced through the **per-turn `TaskTool.action_set`** now; `final_step` → `AgentStop`
+  is the runtime/tool-side handling. The auto-append relocates; no conflict.
+- **`agent-owns-loop` (archived) — the baseline this revises.** It shipped
+  `build_monitored_env_tool` + `agent.run(obs, env_tool)`. This RFC swaps the
+  `env_tool`/`MonitoredTool` surface for `TaskTool` + `agent_tools()` and adds
+  `on_turn_start()`. Its "monitoring is not a cube-standard concern" invariant is preserved
+  (no `Streamer` in the standard).
+- **`primitive_toolbox()` + `tool-consolidation`** — orthogonal; `TaskTool` is defined
+  against the consolidated `Tool` surface and coexists with the Pi-style primitive toolset.
+
+## Landing footprint (what to update so it lands cleanly)
+
+Mostly specs/docs; **one** real cube break.
+
+- **cube-standard `openspec/specs/task/spec.md`** (load-bearing): re-word `step` as
+  *finalized = complete gym view*; add **`on_turn_start()`** to the hooks list; add `TaskTool`
+  + `agent_tools()`; relocate the STOP / `action_set` text into the per-turn `TaskTool.action_set`.
+- **Skills:** `new-cube` (`references/architecture.md`, `SKILL.md`, `todo-checklist.md`) +
+  `review-cube` (`references/checks.md`) — add `on_turn_start`; stop treating a `step()`
+  override as normal.
+- **`src/cube/_template/.../task.py`** — a commented `on_turn_start` stub (discoverability).
+- **cube-harness `openspec/specs/{agent,episode}/spec.md`** — `make(action_set)`-once +
+  per-turn re-read; the loop hands a `TaskTool`, self-emits events, recovers reward via
+  `task.evaluate()`.
+- **The one real break:** `cubes/workarena/.../task.py` overrides `step()` for per-turn
+  cache invalidation → migrate to `on_turn_start()`. Harness agents' manual `STOP_ACTION`
+  appends (`react`/`genny`/`legacy`) adapt to dynamic `action_set` + `final_step → AgentStop`.
 
 ## Open decisions
 

@@ -17,9 +17,12 @@
 ## MODIFIED
 
 - **`Task.step()`** — the complete gym view, **finalized + documented do-not-override**.
-  `TaskTool.execute_action` is a thin view over the same per-action execution, so the gym
-  and agent paths run identical cube logic. Per-caller knob: the `StepError` policy
-  (gym: error ⇒ done; agent loop: error ⇒ returned to the agent).
+  Internally factored into a **per-action sub-function** (tool dispatch + `obs_postprocess`
+  + `finished`/`STOP`) + a gym wrapper (`evaluate` + `EnvironmentOutput`). `TaskTool.
+  execute_action` relays to the **sub-function only** (returns obs, no evaluate) — the gym
+  and agent paths share one implementation, and the harness owns eval cadence (no double
+  eval). Per-caller knob: the `StepError` policy (gym: error ⇒ done; agent loop: error ⇒
+  returned to the agent).
 
 ## CONTRACTS (state explicitly)
 
