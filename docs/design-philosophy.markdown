@@ -122,10 +122,17 @@ your PR. The automated pass just means the human conversation starts already foc
 the real question.
 
 We can't hand-review a flood of framework proposals, so the first pass is automated and
-**you can run it on yourself**. The `/gatekeep-rfc` Claude Code skill triages an RFC
-against this philosophy: it separates your real *need* from the *mechanism*, checks
-whether the schema already covers it, and hands back a concrete in-schema
-counter-proposal. Running it before you submit gets you through human review far faster.
+**you run it on yourself, locally, early and often**. The `/gatekeep-rfc` Claude Code
+skill triages your idea against this philosophy: it separates your real *need* from the
+*mechanism*, checks whether the schema already covers it, and hands back a concrete
+in-schema alternative.
+
+Use it as a **loop while you're still shaping the idea** — on a rough sketch, not just a
+finished draft. The cheap path is: jot the need → run the skill → reshape → repeat, all
+on your machine, and open a PR only once the direction has converged. The expensive path
+is the opposite: polish a full proposal, open a PR, and *then* learn it needs a different
+shape — that wastes your effort and clogs the review queue for everyone. Reshaping a
+sketch costs nothing; reshaping a finished PR costs a lot.
 
 → The skill and its full charter live at
 [`.claude/skills/gatekeep-rfc/`](https://github.com/The-AI-Alliance/cube-standard/tree/main/.claude/skills/gatekeep-rfc).

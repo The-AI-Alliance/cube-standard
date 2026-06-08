@@ -105,7 +105,7 @@ Want to change CUBE *itself* — a field, a method, a protocol type — rather t
 - **[Design Philosophy](https://the-ai-alliance.github.io/cube-standard/design-philosophy)** — the broader picture and the bar a change must clear. **Read this before proposing an API change.** Most needs have a smaller in-schema form.
 - **[Contribution workflow](CONTRIBUTING.md#the-contribution-workflow-end-to-end)** — branch → RFC → code → smoke → review, end to end.
 - **[ROADMAP.md](ROADMAP.md)** — where the project is heading, so your change rides with it.
-- **`/gatekeep-rfc`** ([skill](.claude/skills/gatekeep-rfc)) — run it on your own RFC draft before submitting; it reads it the way a maintainer will and hands back the smallest change that fits.
+- **`/gatekeep-rfc`** ([skill](.claude/skills/gatekeep-rfc)) — run it locally and iteratively *while shaping* your idea (on a rough sketch, not just a finished draft); it reads it the way a maintainer will and points at the smallest change that fits. Converge locally before opening a PR — don't polish a full proposal only to get reshaped.
 
 ## Getting Involved
 

@@ -12,10 +12,11 @@ For framework changes, the path from idea to merged PR:
 
 1. **Branch off `dev`, merge back to `dev`.** Never `main`. *Tip:* if you drive the work with a coding agent, use a `git worktree` per branch so parallel agents don't collide.
 
-2. **Plan with an OpenSpec RFC.** Write `openspec/changes/<name>/proposal.md` + `deltas.md` (Problem · Proposed solution · Alternatives; an optional mermaid diagram if it clarifies). Keep it concise — coding agents draft long; tighten before others read it. Then:
-   - **Iterate with a coding agent** (Claude Code, etc.) until it flags nothing material.
-   - **Iterate with `/gatekeep-rfc` (self pre-flight)** — it reads your draft the way a maintainer will, separates the real need from the mechanism, and hands back the smallest in-schema version. Adopt that before submitting.
-   - **Open the RFC PR** (prefix the title `RFC:`). A reviewer (or a community gatekeeper) runs `/gatekeep-rfc` on it and routes it; you then iterate with the team. **No approval gate blocks you from continuing** — you can start coding and put the implementation in the same PR.
+2. **Plan with an OpenSpec RFC — and converge it *locally* first.** Write `openspec/changes/<name>/proposal.md` + `deltas.md` (Problem · Proposed solution · Alternatives; an optional mermaid diagram if it clarifies). Keep it concise — coding agents draft long; tighten before others read it.
+   - **Run `/gatekeep-rfc` early and often, on your own machine** — on a one-paragraph sketch, not just a finished draft. It reads your idea the way a maintainer will, separates the real need from the mechanism, and points you at the smallest version (often something you can do entirely in your own package). It's cheap; use it as a *loop*, reshaping as you go.
+   - **Avoid the expensive cycle:** *don't* polish a full proposal, open a PR, and only then discover it needs a different shape. Reshaping a sketch costs nothing; reshaping a finished PR wastes your work and clogs the queue. Open the PR once the direction has already converged locally.
+   - **Iterate with a coding agent** (Claude Code, etc.) on the converged proposal until it flags nothing material.
+   - **Open the RFC PR** (prefix the title `RFC:`). A reviewer (or a community gatekeeper) may run `/gatekeep-rfc` again to route it; you then iterate with the team. **No approval gate blocks you from continuing** — you can start coding and put the implementation in the same PR.
 
 3. **Code it.** Implement against the RFC; keep the diff lean.
 
@@ -142,7 +143,7 @@ Large changes to the core protocol — new abstract methods, breaking type chang
 
 **Process:** (this is the RFC detail behind "[The contribution workflow](#the-contribution-workflow-end-to-end)" above; the proposal and its implementation live in **one PR**)
 
-1. **Draft** — Create `openspec/changes/<name>/proposal.md` and `deltas.md` (Problem · Proposed solution · Alternatives — see [`openspec/README.md`](openspec/README.md)). Self-check with `/gatekeep-rfc` and adopt the smallest in-schema form before opening the PR. Optionally open a [GitHub Discussion](https://github.com/The-AI-Alliance/cube-standard/discussions) first for big or contentious ideas.
+1. **Draft** — Create `openspec/changes/<name>/proposal.md` and `deltas.md` (Problem · Proposed solution · Alternatives — see [`openspec/README.md`](openspec/README.md)). Run `/gatekeep-rfc` locally and iteratively *while drafting* — converge on the smallest in-schema form **before** opening the PR, not after. Optionally open a [GitHub Discussion](https://github.com/The-AI-Alliance/cube-standard/discussions) first for big or contentious ideas.
 2. **Open the PR** prefixed `RFC:`. A reviewer (or community gatekeeper) runs `/gatekeep-rfc` to route it; you iterate with the team. No approval gate blocks you from continuing.
 3. **Implement in the same PR** — push the code alongside the proposal; verify with smokes (workflow step 4) and self-review with `/code-review`.
 4. **Merge** — a maintainer merges when there's rough consensus (no blocking objections from core contributors).
