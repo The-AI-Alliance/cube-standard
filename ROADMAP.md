@@ -1,6 +1,6 @@
 # CUBE Standard — Roadmap
 
-> This roadmap reflects current priorities and is updated as the project evolves. Items are roughly ordered by priority within each phase. Active proposals live in [`openspec/changes/`](openspec/changes/); the [`design/`](design/) folder holds long-form reference deep-dives. See the [contribution workflow](CONTRIBUTING.md#the-contribution-workflow-end-to-end) and [RFC process](CONTRIBUTING.md#rfc--change-proposal-process) in CONTRIBUTING.md.
+> This roadmap reflects current priorities and is updated as the project evolves. Items are roughly ordered by priority within each phase. Active proposals live in [`openspec/changes/`](openspec/changes/); the [`design/`](design/) folder holds long-form reference deep-dives. See the [contribution workflow](CONTRIBUTING.md#the-contribution-workflow-end-to-end) (including the RFC process) in CONTRIBUTING.md.
 
 ## Phase 1 — Alpha Stabilization (current)
 
@@ -47,7 +47,7 @@ Goal: CUBE becomes the default interoperability layer for agent benchmarks. Exac
 
 ## RFC Process
 
-Have an idea that changes the core protocol? Open a GitHub Discussion or an `openspec/changes/<name>/` proposal PR. See the [RFC process](CONTRIBUTING.md#rfc--change-proposal-process) in CONTRIBUTING.md for the full process.
+Have an idea that changes the core protocol? Open a GitHub Discussion or an `openspec/changes/<name>/` proposal PR. See the [contribution workflow](CONTRIBUTING.md#the-contribution-workflow-end-to-end) in CONTRIBUTING.md for the full process.
 
 ## How to Influence the Roadmap
 
