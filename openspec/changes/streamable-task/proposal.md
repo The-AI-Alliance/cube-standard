@@ -59,22 +59,23 @@ agent — **cubes customize hooks, never the orchestration.** The one per-caller
 **`StepError` policy** (gym: error ⇒ done; agent loop: error ⇒ returned to the agent to
 recover).
 
-## STOP — one action, one exception
+## STOP — already an exception; the refactor just removes the sprawl
 
-`final_step` (the agent's "I'm done" sentinel) is just a **normal action**, auto-included in
-the `action_set` so the model can call it. Dispatching it — in the shared per-action
-sub-function, **one** recognition point — raises **`AgentStop`** (a `BaseException`, so an
-agent's own `try/except Exception` can't swallow it):
+`final_step` (the agent's "I'm done" sentinel) **already** works this way: dispatching it
+raises `AgentStop` (today's `TaskDone`, a `BaseException`), which the runtime catches with
+`try/except` — the agent loop never introspects actions. **This RFC does not re-architect
+STOP.**
 
-- **gym `step`** catches it internally → `done=True` in the `EnvironmentOutput` (gym contract
-  unchanged).
-- **the agent loop** lets it propagate; the harness's outer `try/except` catches it and
-  finalizes — **no action introspection, no special-casing in the loop.**
+What it removes is the *sprawl* from wrapping each toolbox leaf today. Because the agent now
+holds a single `TaskTool` and STOP is recognized in **one** shared per-action place,
+- per-tool-leaf STOP registration + `_dedup_stop_actions` (the duplicate-name band-aid),
+- the manual `STOP_ACTION` appends in `react` / `genny` / `legacy`,
+- and the `done`-flag plumbing
 
-That single shape removes the fuss STOP has spread across both codebases: **no per-tool-leaf
-registration / dedup, no manual `STOP_ACTION` appends in each agent, no `done`-flag
-plumbing** — it's an action that raises, handled by `try/except`. (`AgentStop` is the renamed
-`TaskDone`.)
+all delete themselves — net code removal, no new mechanism. gym `step` still catches the
+exception → `done=True`; the agent loop still lets it propagate. The auto-include +
+Anthropic-safe schema (`stop-action-auto-include`) stay, now on the dynamic
+`TaskTool.action_set`.
 
 ## Capture & eval live in the harness — no standard seam
 
@@ -169,8 +170,8 @@ out rather than bending the standard.
   over global state (no `MultiAgentEnvironmentOutput`). core-extensions' async / streaming-obs
   concerns are orthogonal. *To confirm with that change's author.*
 - **`stop-action-auto-include`.** Keep the auto-include + Anthropic-safe schema — now
-  surfaced through the **dynamic `TaskTool.action_set`**. The big simplification: STOP becomes
-  *just an action that raises `AgentStop`* (see above), so the per-leaf registration / dedup
+  surfaced through the **dynamic `TaskTool.action_set`**. STOP *stays* an action that raises
+  `AgentStop` (it already does); the simplification is that the per-leaf registration / dedup
   and the per-agent manual appends this change was working around all **go away**.
 - **`agent-owns-loop` (archived) — the baseline this revises.** It shipped
   `build_monitored_env_tool` + `agent.run(obs, env_tool)`. This RFC swaps the
