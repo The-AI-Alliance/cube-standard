@@ -34,8 +34,9 @@ class Task:                               # the world — runtime-driven; never 
 
 class TaskTool:                           # the ONLY surface an agent holds
     @property
-    def action_set(self) -> list[ActionSchema]: ...    # DYNAMIC — recomputed each access
-        # (legal-action masking, phase gating, real-time observe/no-op). Agents re-read it.
+    def action_set(self) -> list[ActionSchema]: ...    # recomputed each access, so a cube MAY
+        # vary it (legal-action masking / phase gating / real-time). Rare — almost every cube is
+        # static; agents snapshot it at make() today. Per-turn re-read = forward extension.
     def execute_action(self, action: Action) -> Observation: ...
         # Runs the SAME per-action core + obs_postprocess; returns the OBS ONLY (no reward,
         # no done). final_step raises AgentStop. The runtime calls finished()/evaluate() at
@@ -206,9 +207,9 @@ Mostly specs/docs; **one** real cube break.
 - **Skills:** `new-cube` (`references/architecture.md`, `SKILL.md`, `todo-checklist.md`) +
   `review-cube` (`references/checks.md`) — document `TaskTool`; flag a `step()` override as a
   smell (use the existing hooks instead).
-- **cube-harness `openspec/specs/{agent,episode}/spec.md`** — `make(action_set)`-once →
-  per-step re-read; the loop hands a `TaskTool`, self-emits events, recovers reward via
-  `task.evaluate()`, catches `AgentStop`.
+- **cube-harness `openspec/specs/{agent,episode}/spec.md`** — the loop hands a `TaskTool`,
+  self-emits events, recovers reward via `task.evaluate()`, catches `AgentStop`. Agents keep
+  taking `action_set` at `make()` (static today); per-turn re-read is a forward extension.
 - **The one real break + the STOP cleanup:** `cubes/workarena/.../task.py` overrides `step()`
   for per-step cache invalidation → fix directly (drop the override; invalidate per action,
   not per step). The STOP machinery is **deleted**: `_dedup_stop_actions` + per-leaf STOP in

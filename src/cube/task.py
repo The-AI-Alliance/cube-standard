@@ -516,9 +516,15 @@ class TaskTool:
 
     @property
     def action_set(self) -> List[ActionSchema]:
-        """The actions legal *right now* — recomputed on each access (legal-action
-        masking / phase gating / real-time observe-no-op). Delegates to the live Task,
-        which already appends STOP (``final_step``) when ``accept_agent_stop`` is set.
+        """The actions legal *right now*. Delegates to the live Task, which already
+        appends STOP (``final_step``) when ``accept_agent_stop`` is set.
+
+        Recomputed on every access, so a cube *may* vary it over an episode
+        (legal-action masking / phase gating / real-time observe-no-op). In practice
+        this is **rare** — almost every cube returns a static set (its tool's actions +
+        STOP), so treat the dynamic capability as available-but-uncommon, not a contract
+        every cube must exercise. (Most agents also snapshot the set at construction
+        today; re-reading it per turn is a forward extension for cubes that need it.)
         """
         return self._task.action_set
 
