@@ -57,6 +57,15 @@ _retry_io = retry(
 _SUBMIT_TIMEOUT_S = 60
 _POLL_INTERVAL_S = 2.0
 _POLL_GRACE_S = 15.0
+# Per-request (connect, read) timeout for the idempotent status/log polls. The high-level
+# `process.get_session_command(...)` / `...logs(...)` wrappers pass NO timeout, so urllib3
+# blocks *forever* on a wedged read (a `proxy.app.daytona.io` stall or SNI-egress block): the
+# read never raises, `@_retry_io` never fires, and the poll `deadline` below is never
+# re-checked — the loop is wedged *inside* one poll. We call the low-level `ProcessApi` the
+# wrapper already delegates to and pass `_request_timeout`, the SDK's real urllib3 timeout
+# (the same mechanism the submit uses). A wedged read then raises at the socket → `@_retry_io`
+# retries → the `deadline` is honoured, instead of hanging the whole episode.
+_POLL_READ_TIMEOUT_S: tuple[float, float] = (10.0, 30.0)  # (connect, read) seconds
 
 
 class DaytonaContainer(Container):
@@ -75,6 +84,20 @@ class DaytonaContainer(Container):
         self._allowed_ports = allowed_ports
         self._session_id = str(uuid4())
         self._sandbox.process.create_session(self._session_id)
+        # The high-level `process.get_session_command(...)` wrapper passes no per-request
+        # timeout, so a wedged poll read would hang the episode forever (see
+        # `_POLL_READ_TIMEOUT_S`). We call the low-level `ProcessApi` it delegates to and pass
+        # `_request_timeout`. Cache the handle and fail LOUD here if a future SDK ever moves it —
+        # better a clear construction-time error than silently losing the read bound.
+        self._process_api = getattr(self._sandbox.process, "_api_client", None)
+        if self._process_api is None or not all(
+            hasattr(self._process_api, m) for m in ("get_session_command", "get_session_command_logs")
+        ):
+            raise ContainerError(
+                "Daytona SDK: cannot reach `process._api_client` (ProcessApi) with the poll "
+                "methods — the exec poll read-timeout can no longer be applied. Pin `daytona` "
+                "or update cube_infra_daytona."
+            )
 
     @property
     def id(self) -> str:
@@ -147,13 +170,24 @@ class DaytonaContainer(Container):
 
     @_retry_io
     def _get_command(self, cmd_id: str) -> Any:
-        """Poll a session command's status. Idempotent → safe to retry on transient transport errors."""
-        return self._sandbox.process.get_session_command(self._session_id, cmd_id)
+        """Poll a session command's status. Idempotent → safe to retry on transient transport errors.
+
+        Calls the low-level `ProcessApi` (which `process.get_session_command(...)` delegates to)
+        so we can pass `_request_timeout` — the high-level wrapper omits it, leaving a wedged
+        read unbounded. See `_POLL_READ_TIMEOUT_S`.
+        """
+        return self._process_api.get_session_command(self._session_id, cmd_id, _request_timeout=_POLL_READ_TIMEOUT_S)
 
     @_retry_io
     def _command_logs(self, cmd_id: str) -> Any:
-        """Fetch a session command's stdout/stderr. Idempotent → safe to retry."""
-        return self._sandbox.process.get_session_command_logs(self._session_id, cmd_id)
+        """Fetch a session command's stdout/stderr. Idempotent → safe to retry.
+
+        Low-level call so the read is bounded by `_request_timeout` (the final log fetch is also
+        a stuck-read risk).
+        """
+        return self._process_api.get_session_command_logs(
+            self._session_id, cmd_id, _request_timeout=_POLL_READ_TIMEOUT_S
+        )
 
     def forward_port(self, container_port: int) -> int:
         return port_from_url(self.get_url(container_port))
