@@ -301,16 +301,40 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
             actions = [*actions, STOP_ACTION]
         return actions
 
-    def agent_tools(self) -> "list[TaskTool]":
-        """Return one :class:`TaskTool` view per agent over this (shared) Task.
+    def agent_roles(self) -> "dict[str | None, int]":
+        """The agent roster: each role mapped to how many seats it staffs.
 
-        This is how the runtime obtains an agent-facing surface without leaking the
-        Task's lifecycle. Default is **single-agent** (N=1). A multi-agent task
-        overrides this to return N tools — one per seat — over the *same* world;
-        ``evaluate()`` then sees the global state and attributes per-agent reward
-        from the joint outcome.
+        Default ``{None: 1}`` — single-agent. Multi-agent tasks override, e.g.
+        ``{"buyer": 2, "seller": 1}`` or ``{"player": 2}``. Use ``role=None`` ONLY for
+        the single-agent case (exactly one seat); give every multi-agent seat a role
+        (even a symmetric ``"player"``) so seats get stable, distinct ids.
         """
-        return [TaskTool(self)]
+        return {None: 1}
+
+    def get_task_tool(self, role: "str | None" = None, seat: int = 0) -> "TaskTool":
+        """Build the agent-facing view for one ``(role, seat)``.
+
+        Override to customize the per-seat view; the per-role action set comes from
+        :meth:`action_set_for`. ``role=None, seat=0`` is the single-agent default.
+        """
+        return TaskTool(self, role=role, seat=seat)
+
+    def agent_tools(self) -> "list[TaskTool]":
+        """Expand :meth:`agent_roles` into one :class:`TaskTool` per seat over this
+        (shared) Task — single-agent = one tool. **Concrete; do not override** —
+        override :meth:`agent_roles` (the roster), :meth:`get_task_tool` (the per-seat
+        view), or :meth:`action_set_for` (per-role actions) instead. ``evaluate()``
+        sees the global state and attributes per-agent reward from the joint outcome.
+        """
+        return [self.get_task_tool(role, seat) for role, count in self.agent_roles().items() for seat in range(count)]
+
+    def action_set_for(self, role: "str | None" = None) -> List[ActionSchema]:
+        """The actions legal for ``role``. Default: role-agnostic (the full
+        :attr:`action_set`). Override to give different roles different action sets
+        (a buyer's actions vs a seller's). STOP is already included by ``action_set``
+        when ``accept_agent_stop`` is set.
+        """
+        return self.action_set
 
     def filter_actions(self, actions: list[ActionSchema]) -> list[ActionSchema]:
         """
@@ -504,20 +528,32 @@ class TaskTool:
     Obs in, action out, no lifecycle. An agent gets exactly two things: ``action_set``
     (what it may do *now*) and ``execute_action`` (do one thing, see the result). It
     never sees ``reset`` / ``evaluate`` / ``close`` / ``step`` — the runtime drives
-    those on the Task. ``Task.agent_tools()`` hands out one ``TaskTool`` per agent over
+    those on the Task. ``Task.agent_tools()`` hands out one ``TaskTool`` per seat over
     a single shared Task: single-agent = one tool, multi-agent = N tools, one world.
+
+    Each tool carries its ``role`` (``None`` for single-agent; e.g. ``"buyer"``) and
+    ``seat`` index. The role drives the per-seat ``action_set`` (a buyer's actions may
+    differ from a seller's) and the stable ``agent_id``.
 
     Not a :class:`Tool` (it exposes no actions of its own) — it is a *facet* of a Task.
     """
 
-    def __init__(self, task: "Task", agent_id: str = "agent") -> None:
+    def __init__(self, task: "Task", role: "str | None" = None, seat: int = 0) -> None:
         self._task = task
-        self.agent_id = agent_id
+        self.role = role
+        self.seat = seat
+
+    @property
+    def agent_id(self) -> str:
+        """Stable per-seat id: ``"agent"`` for the single default seat, else
+        ``"{role}-{seat}"`` (e.g. ``"buyer-0"``)."""
+        return "agent" if self.role is None else f"{self.role}-{self.seat}"
 
     @property
     def action_set(self) -> List[ActionSchema]:
-        """The actions legal *right now*. Delegates to the live Task, which already
-        appends STOP (``final_step``) when ``accept_agent_stop`` is set.
+        """The actions legal *right now* for this seat's ``role``. Delegates to
+        ``Task.action_set_for(self.role)``, which already appends STOP (``final_step``)
+        when ``accept_agent_stop`` is set.
 
         Recomputed on every access, so a cube *may* vary it over an episode
         (legal-action masking / phase gating / real-time observe-no-op). In practice
@@ -526,7 +562,7 @@ class TaskTool:
         every cube must exercise. (Most agents also snapshot the set at construction
         today; re-reading it per turn is a forward extension for cubes that need it.)
         """
-        return self._task.action_set
+        return self._task.action_set_for(self.role)
 
     def execute_action(self, action: Action) -> Observation:
         """Run one action and return its (post-processed) observation.

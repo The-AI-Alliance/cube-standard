@@ -176,6 +176,47 @@ def test_task_tracks_last_action_error_for_runtime_telemetry():
     assert task._last_action_error is None
 
 
+# --- multi-agent roles (agent_roles / get_task_tool / action_set_for) --------
+
+
+def test_agent_roles_default_single_agent():
+    assert make_task().agent_roles() == {None: 1}
+    assert make_task().get_task_tool().agent_id == "agent"  # single seat keeps "agent"
+
+
+def test_get_task_tool_carries_role_and_seat():
+    t = make_task().get_task_tool(role="buyer", seat=2)
+    assert (t.role, t.seat, t.agent_id) == ("buyer", 2, "buyer-2")
+
+
+def test_agent_tools_expands_roster_in_order():
+    class _RoleTask(SimpleTask):
+        def agent_roles(self):
+            return {"buyer": 2, "seller": 1}
+
+    task = _RoleTask(metadata=TaskMetadata(id="r"), tool_config=GreetToolConfig())
+    assert [t.agent_id for t in task.agent_tools()] == ["buyer-0", "buyer-1", "seller-0"]
+
+
+def test_action_set_for_default_is_role_agnostic():
+    task = make_task()
+    assert {a.name for a in task.action_set_for("anything")} == {a.name for a in task.action_set}
+
+
+def test_per_role_action_set_differs_per_seat():
+    class _RoleActions(SimpleTask):
+        def agent_roles(self):
+            return {"buyer": 1, "seller": 1}
+
+        def action_set_for(self, role=None):
+            base = self.action_set
+            return [a for a in base if a.name != "greet"] if role == "seller" else base
+
+    task = _RoleActions(metadata=TaskMetadata(id="ra"), tool_config=GreetToolConfig())
+    assert "greet" in {a.name for a in task.get_task_tool("buyer").action_set}
+    assert "greet" not in {a.name for a in task.get_task_tool("seller").action_set}
+
+
 def test_task_action_set_includes_stop_action_by_default() -> None:
     task = make_task()
     stop_schemas = [a for a in task.action_set if a.name == STOP_ACTION.name]
