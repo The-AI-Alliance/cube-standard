@@ -79,14 +79,17 @@ Beyond the firm rules below, trust your own reasoning. A few things that reliabl
 
 Produce two things every run, shaped to fit the case — there is no fixed template:
 
-- **A contributor-facing reply. Keep it short — this is the first friction touch, and a
-  wall of text is itself a failure.** Default to a few sentences: name the need, the *one*
-  main reason, and the smaller path; offer to expand. Only grow it when the proposal
-  genuinely splits into several parts that each need a verdict — and even then, lead with
-  a skimmable summary before the per-part detail. Acknowledge the need first; ground the
-  reason concretely (name the symbols / blast radius); make explicit they can push back
-  and reach a human. Warm, not exhaustive.
-- **A one-screen maintainer summary.** Verdict, the real need, blast radius, the smaller
+- **A contributor-facing reply — the pedagogical heart of the run.** Its job is to teach
+  the *why*, help the contributor reshape, and orient them to where CUBE is going — that's
+  worth real words, so don't cap length; let it scale with how much genuinely needs
+  explaining. What you cut is *padding, repetition, and exhaustiveness* — the enemy is the
+  unstructured wall, not the word count. Structure it so it's absorbable: lead with a
+  short gist (the need, the headline verdict, the smaller path in a few lines), then layer
+  the per-part depth a contributor can read as far as they care to. Always acknowledge the
+  need first, ground the reason concretely (name the symbols / blast radius), and make
+  explicit they can push back and reach a human. Warm and clear, as long as it needs to be.
+- **A one-screen maintainer summary — here brevity genuinely serves** (a human triaging a
+  queue wants the gist fast). Verdict, the real need, blast radius, the smaller
   alternative, escalate-to-human y/n + why, and — when relevant — the **prior-demand
   pattern** (links to related/recurring requests and how they were resolved).
 
