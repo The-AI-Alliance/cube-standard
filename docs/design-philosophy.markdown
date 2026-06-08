@@ -24,6 +24,13 @@ Most proposals to change the framework come from a real, local need — and most
 are better served by a smaller change that fits the existing schema. This page explains
 how we think about that, so you can find the smaller change yourself before opening a PR.
 
+That said — **CUBE is still forming, and we want to evolve it.** The standard is alpha;
+shaping it is a contribution we actively invite, not an imposition we tolerate. The bar
+below exists to *focus* the conversation on the real question, not to freeze the design.
+If you've internalized the trade-off and still believe a principle here is wrong for
+where CUBE is heading, that's a genuinely valuable argument — make it. The principles are
+current intent, not scripture.
+
 ## The mental model
 
 - **The framework defines _what_, not _how_.** It specifies the contracts — `Tool`,
