@@ -5,8 +5,8 @@ import json
 import pytest
 
 from cube.container import Container
-from cube.core import Action, EnvironmentOutput, Observation, StepError, TextContent
-from cube.task import STOP_ACTION, Task, TaskConfig, TaskExecutionInfo, TaskMetadata
+from cube.core import Action, EnvironmentOutput, Observation, TextContent
+from cube.task import STOP_ACTION, AgentStop, Task, TaskConfig, TaskExecutionInfo, TaskMetadata, TaskTool
 from cube.tool import Tool, ToolConfig, tool_action
 
 
@@ -83,11 +83,14 @@ def test_task_step_regular_action():
     assert out.obs.contents == [TextContent(data="Hello, World!")]
 
 
-def test_task_step_action_error_sets_done_and_error():
+def test_task_step_action_error_becomes_observation():
+    # New contract: a tool error is surfaced to the agent as an observation and is
+    # NOT terminal — only finished()/evaluate() decide termination.
     out = make_task().step(Action(name="fail", arguments={}))
-    assert out.done is True
-    assert isinstance(out.error, StepError)
-    assert out.error.error_type == "ValueError"
+    assert out.done is False
+    assert out.error is None
+    assert "ValueError" in out.obs.to_markdown()
+    assert "action failed" in out.obs.to_markdown()
 
 
 def test_task_validate_per_step_triggers_evaluate():
@@ -100,6 +103,51 @@ def test_task_validate_per_step_triggers_evaluate():
 def test_task_action_set_comes_from_tool():
     names = {a.name for a in make_task().action_set}
     assert names == {"greet", "fail", STOP_ACTION.name}
+
+
+# --- TaskTool (the agent-facing view) ---------------------------------------
+
+
+def test_agent_tools_default_is_single_agent():
+    task = make_task()
+    tools = task.agent_tools()
+    assert len(tools) == 1
+    assert isinstance(tools[0], TaskTool)
+    assert tools[0]._task is task  # one shared world
+
+
+def test_task_tool_action_set_mirrors_task():
+    task = make_task()
+    tool = task.agent_tools()[0]
+    assert {a.name for a in tool.action_set} == {a.name for a in task.action_set}
+
+
+def test_task_tool_execute_action_returns_observation_only():
+    tool = make_task().agent_tools()[0]
+    obs = tool.execute_action(Action(name="greet", arguments={"name": "World"}))
+    assert isinstance(obs, Observation)
+    assert obs.contents == [TextContent(data="Hello, World!")]
+
+
+def test_task_tool_error_becomes_observation():
+    obs = make_task().agent_tools()[0].execute_action(Action(name="fail", arguments={}))
+    assert isinstance(obs, Observation)
+    assert "ValueError" in obs.to_markdown()
+
+
+def test_task_tool_stop_raises_agent_stop():
+    tool = make_task().agent_tools()[0]
+    with pytest.raises(AgentStop) as excinfo:
+        tool.execute_action(Action(name=STOP_ACTION.name, arguments={}))
+    assert "finished" in excinfo.value.observation.to_markdown().lower()
+
+
+def test_step_and_tool_share_one_core():
+    # The two views must not diverge in per-action behavior: same action, same obs.
+    action = Action(name="greet", arguments={"name": "Bob"})
+    step_obs = make_task().step(action).obs
+    tool_obs = make_task().agent_tools()[0].execute_action(action)
+    assert step_obs.to_markdown() == tool_obs.to_markdown()
 
 
 def test_task_action_set_includes_stop_action_by_default() -> None:

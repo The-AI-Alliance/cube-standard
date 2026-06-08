@@ -69,6 +69,22 @@ STOP_ACTION = ActionSchema(
 )
 
 
+class AgentStop(BaseException):
+    """Raised by the per-action core when the agent emits the STOP action (``final_step``).
+
+    A ``BaseException`` (not ``Exception``) so an agent loop's ``except Exception``
+    around tool execution never swallows the stop signal. The gym ``Task.step`` view
+    catches it and sets ``done=True``; the agent-facing ``TaskTool`` view lets it
+    propagate to the runtime, which ends the episode. Carries the terminal observation.
+    """
+
+    def __init__(self, observation: "Observation | None" = None) -> None:
+        self.observation = (
+            observation if observation is not None else Observation.from_text("Task finished by the agent.")
+        )
+        super().__init__("Agent requested task stop")
+
+
 class TaskMetadata(TypedBaseModel):
     """
     Lightweight, eager-loaded metadata describing a task.
@@ -280,6 +296,17 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
             actions = [*actions, STOP_ACTION]
         return actions
 
+    def agent_tools(self) -> "list[TaskTool]":
+        """Return one :class:`TaskTool` view per agent over this (shared) Task.
+
+        This is how the runtime obtains an agent-facing surface without leaking the
+        Task's lifecycle. Default is **single-agent** (N=1). A multi-agent task
+        overrides this to return N tools — one per seat — over the *same* world;
+        ``evaluate()`` then sees the global state and attributes per-agent reward
+        from the joint outcome.
+        """
+        return [TaskTool(self)]
+
     def filter_actions(self, actions: list[ActionSchema]) -> list[ActionSchema]:
         """
         (Optional) Allows the task to whitelist a subset of the actions provided by the tool.
@@ -299,17 +326,45 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         """
         pass
 
-    def step(self, action: Action | List[Action]) -> EnvironmentOutput:
+    def _execute_action(self, action: Action) -> Observation:
+        """Run a SINGLE action and return its observation — the per-action core
+        shared by both the gym ``step`` view and the agent-facing ``TaskTool`` view.
+
+        - ``final_step`` (STOP) raises :class:`AgentStop` when ``accept_agent_stop``
+          is set; callers decide what to do with it (gym → ``done``; agent loop →
+          propagate to the runtime).
+        - a tool error becomes an observation (surfaced to the agent, never
+          terminal). Termination is decided only by ``finished()`` / ``evaluate()``,
+          which the caller runs on its own cadence (gym per batch, harness per action).
+
+        Both views go through this, so per-action behavior is identical by
+        construction; they differ only in eval cadence and ``AgentStop`` handling.
         """
-        Execute action, return next state.
-        - check if agent action is a STOP_ACTION
-        - if not, execute the action and get the observation (self.tool.execute_action(act))
-        - check if the task is done (self.finished(obs))
-        - if done or self.validate_per_step, evaluate state (self.evaluate(obs))
-        - return EnvironmentOutput with obs, reward, info, error, ...
+        if action.name == STOP_ACTION.name and self.accept_agent_stop:
+            raise AgentStop()
+        result = self.tool.execute_action(action)
+        if isinstance(result, Observation):
+            return result
+        if isinstance(result, StepError):
+            return result.to_observation()
+        raise ValueError(
+            f"Unknown result type from calling action '{action.name}' with args {action.arguments}: "
+            f"got {type(result).__name__}, expected Observation or StepError"
+        )
+
+    def step(self, action: Action | List[Action]) -> EnvironmentOutput:
+        """Execute an action (or a sequential batch) and return the next state.
+
+        This is the **gym-compatibility view** — FINALIZED; do NOT override. Each
+        action goes through the shared per-action core ``_execute_action``; the
+        agent-facing :class:`TaskTool` view runs the same core, so the two never
+        diverge in per-action behavior. Here the batch is run, then ``finished`` /
+        ``evaluate`` are applied once (per batch); a tool error becomes an
+        observation (non-terminal); ``final_step`` raises :class:`AgentStop`, caught
+        here to set ``done=True``.
 
         Args:
-            action: Agent action
+            action: Agent action (or list of actions, run sequentially).
         Returns EnvironmentOutput containing:
             observation: next state
             reward: reward signal (0.0 is not available)
@@ -320,34 +375,22 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
                     - "tool_execute": dict with "total", "avg_per_action", "n_actions"
                     - "evaluate": float (only present when evaluate() was called)
                     - "obs_postprocess": float
-            error: if there was an exception executing this step
         """
         actions = [action] if isinstance(action, Action) else action
         done = False
         reward = 0.0
         info = {}
-        error = None
         obs = Observation()  # will populate list of content after each action
         action_times: list[float] = []
         for action in actions:
-            if action.name == STOP_ACTION.name and self.accept_agent_stop:
-                obs += Observation.from_text("Task finished by the agent.")
-                done = True
-                break
             t0 = time.perf_counter()
-            result = self.tool.execute_action(action)
-            action_times.append(time.perf_counter() - t0)
-            if isinstance(result, Observation):
-                obs += result
-            elif isinstance(result, StepError):
-                error = result
+            try:
+                obs += self._execute_action(action)
+            except AgentStop as stop:
+                obs += stop.observation
                 done = True
                 break
-            else:
-                raise ValueError(
-                    f"Unknown result type from calling action '{action.name}' with args {action.arguments}: "
-                    f"got {type(result).__name__}, expected Observation or StepError"
-                )
+            action_times.append(time.perf_counter() - t0)
         done = done or self.finished(obs)
         # TODO: Add truncation logic based on step limits or time limits
         profiling: dict[str, Any] = (
@@ -369,7 +412,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         obs = self.obs_postprocess(obs)
         profiling["obs_postprocess"] = time.perf_counter() - t_post_start
         info["profiling"] = profiling
-        return EnvironmentOutput(obs=obs, reward=reward, done=done, info=info, error=error)
+        return EnvironmentOutput(obs=obs, reward=reward, done=done, info=info)
 
     def obs_postprocess(self, obs: Observation) -> Observation:
         """
@@ -430,6 +473,42 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         elif self._container is not None:
             self._container.stop()
             self._container = None
+
+
+class TaskTool:
+    """The agent-facing view of a :class:`Task` — the ONLY surface an agent holds.
+
+    Obs in, action out, no lifecycle. An agent gets exactly two things: ``action_set``
+    (what it may do *now*) and ``execute_action`` (do one thing, see the result). It
+    never sees ``reset`` / ``evaluate`` / ``close`` / ``step`` — the runtime drives
+    those on the Task. ``Task.agent_tools()`` hands out one ``TaskTool`` per agent over
+    a single shared Task: single-agent = one tool, multi-agent = N tools, one world.
+
+    Not a :class:`Tool` (it exposes no actions of its own) — it is a *facet* of a Task.
+    """
+
+    def __init__(self, task: "Task", agent_id: str = "agent") -> None:
+        self._task = task
+        self.agent_id = agent_id
+
+    @property
+    def action_set(self) -> List[ActionSchema]:
+        """The actions legal *right now* — recomputed on each access (legal-action
+        masking / phase gating / real-time observe-no-op). Delegates to the live Task,
+        which already appends STOP (``final_step``) when ``accept_agent_stop`` is set.
+        """
+        return self._task.action_set
+
+    def execute_action(self, action: Action) -> Observation:
+        """Run one action and return its (post-processed) observation.
+
+        Relays to the Task's per-action core — the *same* execution as the gym
+        ``step`` view — and returns the **observation only**: no reward, no ``done``.
+        The runtime decides when to call ``Task.finished`` / ``Task.evaluate`` (eval
+        cadence is the harness's concern, not the agent's). ``final_step`` raises
+        :class:`AgentStop`, which the runtime catches to end the episode.
+        """
+        return self._task.obs_postprocess(self._task._execute_action(action))
 
 
 class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):

@@ -477,6 +477,16 @@ class StepError(TypedBaseModel):
             stack_trace="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
         )
 
+    def to_observation(self) -> Observation:
+        """Render this error as an observation.
+
+        A failed action is fed back to the agent as a normal observation (so it can
+        read the error and retry), not as a terminal signal — only ``finished()`` /
+        ``evaluate()`` decide termination. The stack trace is omitted here; it stays
+        on the structured ``StepError`` for telemetry.
+        """
+        return Observation.from_text(f"Action failed — {self.error_type}: {self.exception_str}")
+
 
 class EnvironmentOutput(TypedBaseModel):
     """
