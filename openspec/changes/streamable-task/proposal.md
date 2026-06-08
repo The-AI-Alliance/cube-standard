@@ -42,16 +42,21 @@ class TaskTool:                           # the ONLY surface an agent holds
 
 ## One path — the cube can't be bypassed
 
-`step` is internally one **per-action sub-function** (tool dispatch + `obs_postprocess` +
-STOP) plus a gym wrapper (`evaluate` + `EnvironmentOutput` packaging). Both views share that
-sub-function — there is no second implementation:
+`step` is internally a small **per-action sub-function** — STOP recognition + tool dispatch +
+`obs_postprocess` — wrapped by the gym logic (`finished` + `evaluate` + `EnvironmentOutput`).
+**Both views call the *same* sub-function**, so the per-action behavior is identical **by
+construction** — that's the invariant that matters. The *only* thing the two views do
+differently is **when `evaluate` runs**, which is deliberate:
 
-- **`step()`** — the complete gym view: the sub-function (looped over a batch) + `evaluate` +
-  `EnvironmentOutput` (obs + reward + done). **Finalized, do-not-override.** Cubes that need
-  per-step logic use the optional `pre_step` / `post_step` hooks, not a `step` override.
-- **`TaskTool.execute_action()`** — the agent view: the **same sub-function**, returning the
-  **obs only** (no reward, no evaluate). The caller decides one action or a batch; the
-  harness evaluates separately.
+- **`step()`** — gym view: `pre_step` → loop the sub-function → `finished` → `evaluate` →
+  `post_step` → `EnvironmentOutput` (obs + reward + done). **Finalized, do-not-override.**
+  Cubes that need per-step logic use the optional `pre_step` / `post_step` hooks.
+- **`TaskTool.execute_action()`** — agent view: **just the sub-function** (obs only, no
+  evaluate). The harness brackets the agent's step with `pre_step` / `post_step` and calls
+  `evaluate` at its own cadence — so there's no double eval and the agent never sees reward.
+
+Calling the sub-function (not full `step`) is what avoids re-running `evaluate` / `finished`
+per action — the one behavioral difference you'd otherwise hit.
 
 So whatever a cube puts in `evaluate` / `finished` / `obs_postprocess` / `pre_step` /
 `post_step` runs identically under gym `step`, an in-process agent loop, or an external
@@ -131,8 +136,10 @@ flowchart TB
 ```
 
 **What stays cube-side** (surveyed ~20 multi-agent benchmarks — no standard primitives
-needed): **communication** = a `send_message(to, content)` action (observable, routable via
-the cube's delivery logic — broadcast / targeted / team-private / neighbor-graph);
+needed): **communication** = an ordinary cube `send_message(to, content)` **action** — *not*
+a standard primitive; cube-standard has no messaging concept. Executing it runs the cube's
+code, which writes to the shared world, so the recipient observes it next turn; topology
+(broadcast / targeted / team-private / neighbor-graph) is the cube's delivery logic.
 **teams / zero-sum / mixed-motive** = how `evaluate()` maps joint state → per-agent reward;
 **opponents & partners** = environment-internal agents the cube runs (`agent_tools()`
 returns only the seats under test); **multi-metric eval** = `evaluate()` returns a metrics
