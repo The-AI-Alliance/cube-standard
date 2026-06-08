@@ -29,46 +29,41 @@ class Task:                               # the world — runtime-driven; never 
     def step(self, action) -> EnvironmentOutput: ...   # gym-COMPATIBILITY view; FINALIZED, do-not-override
     def evaluate(...) -> tuple[float, dict]: ...        # EXISTING — reward; runtime-side only
     def agent_tools(self) -> list[TaskTool]: ...        # NEW: one view per agent (N=1 default)
-    def pre_step(self) -> None: ...                    # NEW, OPTIONAL hooks (default no-op):
-    def post_step(self) -> None: ...                   #   run before / after a step's actions
-                                                       #   (per-step setup/teardown — cache
-                                                       #    invalidation, phase / clock tick)
+    def _execute_action(self, action) -> Observation: ...  # NEW: the shared per-action CORE
+        # STOP -> AgentStop, tool dispatch, error -> observation. Both views run THIS.
 
 class TaskTool:                           # the ONLY surface an agent holds
     @property
-    def action_set(self) -> list[ActionSchema]: ...    # DYNAMIC — recomputed each step
+    def action_set(self) -> list[ActionSchema]: ...    # DYNAMIC — recomputed each access
         # (legal-action masking, phase gating, real-time observe/no-op). Agents re-read it.
-    def execute_action(self, action: Action | list[Action]) -> Observation | StepError: ...
-        # RELAYS to step's per-action sub-function (tool dispatch + obs_postprocess) and
-        # returns the OBS ONLY; final_step raises AgentStop. It does NOT evaluate (the
-        # harness does, at its own cadence — no double eval). Single vs batched is the
-        # caller's (agent/harness) choice. No reset / evaluate / close.
+    def execute_action(self, action: Action) -> Observation: ...
+        # Runs the SAME per-action core + obs_postprocess; returns the OBS ONLY (no reward,
+        # no done). final_step raises AgentStop. The runtime calls finished()/evaluate() at
+        # its own cadence (no double eval). No reset / evaluate / close.
 ```
 
 ## One path — the cube can't be bypassed
 
-`step` is internally a small **per-action sub-function** — STOP recognition + tool dispatch +
-`obs_postprocess` — wrapped by the gym logic (`finished` + `evaluate` + `EnvironmentOutput`).
-**Both views call the *same* sub-function**, so the per-action behavior is identical **by
-construction** — that's the invariant that matters. The *only* thing the two views do
-differently is **when `evaluate` runs**, which is deliberate:
+`step` is internally a small **per-action core** `_execute_action` — STOP → `AgentStop`,
+tool dispatch, error → observation — wrapped by the gym logic (`finished` + `evaluate` +
+`EnvironmentOutput`). **Both views run the *same* core**, so the per-action behavior is
+identical **by construction** — that's the invariant that matters. The *only* things the two
+views do differently are **when `evaluate` runs** and **how `AgentStop` is handled**:
 
-- **`TaskTool.execute_action()`** — the **default** agent view: **just the sub-function**
-  (obs only, no evaluate). The harness brackets the agent's step with `pre_step` /
-  `post_step` and calls `evaluate` at its own cadence — so there's no double eval and the
-  agent never sees reward.
-- **`step()`** — the **gym-compatibility** view: `pre_step` → loop the sub-function →
-  `finished` → `evaluate` → `post_step` → `EnvironmentOutput` (obs + reward + done).
-  **Finalized, do-not-override.** Cubes that need per-step logic use `pre_step` / `post_step`.
+- **`TaskTool.execute_action()`** — the **default** agent view: the core + `obs_postprocess`,
+  returning **obs only** (no reward, no done). The runtime calls `finished` / `evaluate` at
+  its own cadence (per-action for the agent path) — so the agent never sees reward and there's
+  no double eval. `final_step` raises `AgentStop`, which propagates to the runtime.
+- **`step()`** — the **gym-compatibility** view: loop the core over the batch → `finished` →
+  `evaluate` (per batch) → `obs_postprocess` → `EnvironmentOutput`. It **catches** `AgentStop`
+  → `done=True`. **Finalized, do-not-override.**
 
-Calling the sub-function (not full `step`) is what avoids re-running `evaluate` / `finished`
-per action — the one behavioral difference you'd otherwise hit.
-
-So whatever a cube puts in `evaluate` / `finished` / `obs_postprocess` / `pre_step` /
-`post_step` runs identically under gym `step`, an in-process agent loop, or an external
-agent — **cubes customize hooks, never the orchestration.** The one per-caller knob is the
-**`StepError` policy** (gym: error ⇒ done; agent loop: error ⇒ returned to the agent to
-recover).
+Running the core (not full `step`) is what avoids re-running `evaluate` / `finished` per
+action. Whatever a cube puts in `evaluate` / `finished` / `obs_postprocess` runs identically
+under gym `step`, an in-process agent loop, or an external agent — **cubes customize the
+existing hooks, never the orchestration.** A tool **error is always an observation** (gym
+included) — never terminal; only `finished` / `evaluate` decide termination. (No new
+`pre_step` / `post_step` hooks — the one cube that overrode `step` is fixed directly.)
 
 ## STOP — already an exception; the refactor just removes the sprawl
 
@@ -155,14 +150,14 @@ code, which writes to the shared world, so the recipient observes it next turn; 
 **teams / zero-sum / mixed-motive** = how `evaluate()` maps joint state → per-agent reward;
 **opponents & partners** = environment-internal agents the cube runs (`agent_tools()`
 returns only the seats under test); **multi-metric eval** = `evaluate()` returns a metrics
-dict; **chance** = sampled inside `execute_action` / `pre_step`.
+dict; **chance** = sampled inside `execute_action`.
 
 **Contracts the standard states explicitly:** the world may advance *between/without* an
 agent's action (real-time engines tick natively; observe/no-op is a valid action); one
 agent's action may mutate another's next observation (one shared task).
 
-**Scheduling vs legality:** the cube expresses *legality* (dynamic `action_set` +
-`pre_step` / `post_step`); the arena only decides *who acts next*. Timing variants
+**Scheduling vs legality:** the cube expresses *legality* (dynamic `action_set`); the
+arena only decides *who acts next*. Timing variants
 (turn-based first; `async` / `batch` / real-time later) are harness scheduler policies.
 
 **Non-goal:** JAX-vectorized MARL training libs (JaxMARL, CAMAR). GPU `vmap` over thousands
@@ -171,7 +166,7 @@ out rather than bending the standard.
 
 ## Forward extensions (add when needed — not in this change)
 
-- **Parallel tool calls within a step.** The per-action sub-function runs sequentially. Real
+- **Parallel tool calls within a step.** The per-action core runs sequentially. Real
   concurrent intra-step dispatch means running it concurrently — add only when an agent
   actually needs sub-step parallelism.
 - **External / black-box agent capture.** An in-process loop self-emits; a CLI / A2A agent
@@ -194,9 +189,8 @@ out rather than bending the standard.
   and the per-agent manual appends this change was working around all **go away**.
 - **`agent-owns-loop` (archived) — the baseline this revises.** It shipped
   `build_monitored_env_tool` + `agent.run(obs, env_tool)`. This RFC swaps the
-  `env_tool` / `MonitoredTool` surface for `TaskTool` + `agent_tools()` and adds the optional
-  `pre_step` / `post_step` hooks. Its "monitoring is not a cube-standard concern" invariant
-  is preserved (no `Streamer` in the standard).
+  `env_tool` / `MonitoredTool` surface for `TaskTool` + `agent_tools()`. Its "monitoring is
+  not a cube-standard concern" invariant is preserved (no `Streamer` in the standard).
 - **`primitive_toolbox()` + `tool-consolidation`** — orthogonal; `TaskTool` is defined
   against the consolidated `Tool` surface and coexists with the Pi-style primitive toolset.
 
@@ -205,47 +199,37 @@ out rather than bending the standard.
 Mostly specs/docs; **one** real cube break.
 
 - **cube-standard `openspec/specs/task/spec.md`** (load-bearing): re-word `step` as
-  *finalized = complete gym view*; add the optional **`pre_step` / `post_step`** hooks; add
-  `TaskTool` + `agent_tools()`; restate STOP as *an action that raises `AgentStop`* and keep
-  the auto-include on the dynamic `TaskTool.action_set`.
+  *finalized = gym-compatibility view*; add `TaskTool` + `agent_tools()` + the shared
+  per-action core; restate STOP as *an action that raises `AgentStop`* (keep the auto-include
+  on the dynamic `TaskTool.action_set`); state *tool error → observation*. ✅ **done** (code +
+  this change).
 - **Skills:** `new-cube` (`references/architecture.md`, `SKILL.md`, `todo-checklist.md`) +
-  `review-cube` (`references/checks.md`) — add `pre_step` / `post_step`; stop treating a
-  `step()` override as normal.
-- **`src/cube/_template/.../task.py`** — a commented `pre_step` stub (discoverability).
+  `review-cube` (`references/checks.md`) — document `TaskTool`; flag a `step()` override as a
+  smell (use the existing hooks instead).
 - **cube-harness `openspec/specs/{agent,episode}/spec.md`** — `make(action_set)`-once →
   per-step re-read; the loop hands a `TaskTool`, self-emits events, recovers reward via
   `task.evaluate()`, catches `AgentStop`.
 - **The one real break + the STOP cleanup:** `cubes/workarena/.../task.py` overrides `step()`
-  for per-step cache invalidation → migrate to `pre_step()`. And the STOP machinery is
-  **deleted**: `_dedup_stop_actions` + per-leaf STOP in `MonitoredTool`, and the manual
-  `STOP_ACTION` appends in `react` / `genny` / `legacy` agents.
+  for per-step cache invalidation → fix directly (drop the override; invalidate per action,
+  not per step). The STOP machinery is **deleted**: `_dedup_stop_actions` + per-leaf STOP in
+  `MonitoredTool`, and the manual `STOP_ACTION` appends in `react` / `genny` / `legacy` agents.
 
-## Open decisions
+## Decisions (resolved) & open gates
 
-**(1) `finished` / `evaluate` cadence — per-step vs per-action.**
-With `TaskTool` the agent path doesn't evaluate; the harness decides *when*. Gym `step`
-evaluates once per step; the old agent-loop (`MonitoredTool`) silently shifted it to
-per-action.
-- *per-step* (per agent turn) — one `evaluate` after the turn's actions: cheap, matches gym.
-- *per-action* — dense reward after every tool call: useful for RL dense scoring, but costly
-  (e.g. workarena's live `validate()` would run per action) and diverges from gym.
-- **Proposed:** default **per-step**; keep the existing `validate_per_step` flag as the
-  opt-in for per-action. No new surface — `validate_per_step` already expresses this.
+**(1) Eval cadence — RESOLVED.** There is no "turn" once tool calls can be parallel — only
+events. Eval runs **per `execute_action`** for the agent view and **per batch** for gym
+`step`; since most benchmarks score only at the end, terminal eval is the norm and the
+existing `validate_per_step` flag opts into mid-episode eval. No new surface. *(Implemented.)*
 
-**(2) `StepError` policy — error ⇒ done vs error ⇒ recover.**
-When a tool action returns a `StepError`:
-- gym `step` treats it as `done=True` (the gym contract);
-- the agent path hands it back so the agent can **recover** (a failed `bash` shouldn't end
-  the episode).
-- **Proposed:** per-caller — agent path = recover, gym = done. This is already how the
-  agent-owns-loop behaves; just make it explicit in the sub-function's two wrappers.
+**(2) `StepError` policy — RESOLVED.** A tool error **always becomes an observation**
+(non-terminal), gym included — "it should have been like that in the gym case." Only
+`finished` / `evaluate` decide termination. No per-caller knob. *(Implemented:
+`StepError.to_observation()`; gym `step` no longer sets `done` on error.)*
 
-**(3) Where `pre_step` / `post_step` + per-step `evaluate` fire (harness wiring).**
-The agent owns its loop (`agent.run`) and holds only a `TaskTool`, so it cannot call
-`task.pre_step()` itself — the harness must, at each agent-step boundary.
-- **Proposed:** reuse the existing boundary — `Agent.run` already calls `recorder.on_step()`
-  each turn; the harness fires `task.pre_step()` before and `task.post_step()` + per-step
-  `evaluate()` after, there. Concrete wiring lives in the harness companion (#497).
+**(3) `pre_step` / `post_step` — RESOLVED: not added.** The hooks existed only to generalize
+workarena's `step()` override; simpler to **fix workarena directly** (invalidate its validate
+cache per action, not per step) than to add a contract surface. The agent's per-action eval
+boundary is the harness's concern (companion #497).
 
 **(4) `core-extensions` reconciliation (agreement gate, not code).**
 `core-extensions` proposes `MultiAgentTask` + `per_agent_action_set`; this RFC's
@@ -253,8 +237,9 @@ The agent owns its loop (`agent.run`) and holds only a `TaskTool`, so it cannot 
 multi-agent ships in **this** change, the reconciliation **gates the whole landing** (not
 just a later phase) — get that change's author to agree up front.
 
-**(5) Multi-agent v1 specifics** — termination policy (global `finished` vs all-seats-retired),
-shared vs per-agent budget, and `AgentConfig.make(action_set, agent_id)` vs `make(task_tool)`
-— live in the harness companion (#497).
+**(5) Multi-agent v1 specifics (harness companion #497).** Decided: **joint budget**;
+episode ends when **all agents are done OR the budget is exhausted**. Still a first pass:
+`AgentConfig.make(action_set, agent_id)` vs `make(task_tool)`, and heterogeneous per-role
+configs — all in #497.
 
-`deltas.md` stays thin until (1)–(3) settle.
+Decisions (1)–(3) are settled and implemented; only gate (4) remains before the harness rewire.
