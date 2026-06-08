@@ -12,6 +12,14 @@ method, an abstract hook, or alter a protocol type. (If you only want to *wrap a
 benchmark*, you almost never need to touch the framework — see
 [Authoring a CUBE]({{site.baseurl}}/authoring-a-cube) instead.)
 
+> **This philosophy is project-wide.** It applies to both **cube-standard** (the
+> protocol) and **cube-harness** (the runtime) — anywhere you propose changing a shared
+> surface others depend on. The examples below are drawn from cube-standard, but the
+> principles transfer directly; cube-harness layers its own
+> [Constitution](https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/rules/constitution.md)
+> on top for runtime-specifics. Wherever you read "the framework" or "the core," read it
+> as *the shared surface you're proposing to change*.
+
 CUBE is a small, shared contract that many independent benchmarks and harnesses depend
 on. The whole value proposition is that the contract is **stable and uniform**: wrap
 once, run everywhere. That creates a tension every framework contributor should feel up
