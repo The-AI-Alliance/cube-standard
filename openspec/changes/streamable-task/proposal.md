@@ -121,6 +121,12 @@ out for free: its `evaluate()` sees the **global** state, so per-agent / general
 is attributable from the joint outcome; all tools mutate **one coherent world**; lifecycle
 runs **once**.
 
+**Scope — multi-agent ships in *this* change, not a follow-up.** Single-agent is just N=1 of
+the same `agent_tools()` seam, so cube-standard gets multi-agent for free (the N≥1 default of
+one method), and the harness arena (companion #497) lands **together** with the single-agent
+rewire. Timing variants beyond **turn-based** (`async` / `batch` / real-time) are the only
+multi-agent piece left for later.
+
 The harness drives it (companion RFC): an **arena** runs N agents under a **scheduler**
 (turn-based first), one agent per `TaskTool` from a single `AgentConfig` parameterized by
 each tool's identity + action set.
@@ -216,9 +222,39 @@ Mostly specs/docs; **one** real cube break.
 
 ## Open decisions
 
-- **(1)** `finished` / `evaluate` cadence: **per-step** (proposed) vs per-action.
-- **(2)** `StepError` policy default + whether it's a per-caller knob.
-- **(3)** Multi-agent v1 specifics (termination, budget, `AgentConfig.make()` signature)
-  live in the harness companion.
+**(1) `finished` / `evaluate` cadence — per-step vs per-action.**
+With `TaskTool` the agent path doesn't evaluate; the harness decides *when*. Gym `step`
+evaluates once per step; the old agent-loop (`MonitoredTool`) silently shifted it to
+per-action.
+- *per-step* (per agent turn) — one `evaluate` after the turn's actions: cheap, matches gym.
+- *per-action* — dense reward after every tool call: useful for RL dense scoring, but costly
+  (e.g. workarena's live `validate()` would run per action) and diverges from gym.
+- **Proposed:** default **per-step**; keep the existing `validate_per_step` flag as the
+  opt-in for per-action. No new surface — `validate_per_step` already expresses this.
 
-`deltas.md` stays thin until (1)–(2) settle.
+**(2) `StepError` policy — error ⇒ done vs error ⇒ recover.**
+When a tool action returns a `StepError`:
+- gym `step` treats it as `done=True` (the gym contract);
+- the agent path hands it back so the agent can **recover** (a failed `bash` shouldn't end
+  the episode).
+- **Proposed:** per-caller — agent path = recover, gym = done. This is already how the
+  agent-owns-loop behaves; just make it explicit in the sub-function's two wrappers.
+
+**(3) Where `pre_step` / `post_step` + per-step `evaluate` fire (harness wiring).**
+The agent owns its loop (`agent.run`) and holds only a `TaskTool`, so it cannot call
+`task.pre_step()` itself — the harness must, at each agent-step boundary.
+- **Proposed:** reuse the existing boundary — `Agent.run` already calls `recorder.on_step()`
+  each turn; the harness fires `task.pre_step()` before and `task.post_step()` + per-step
+  `evaluate()` after, there. Concrete wiring lives in the harness companion (#497).
+
+**(4) `core-extensions` reconciliation (agreement gate, not code).**
+`core-extensions` proposes `MultiAgentTask` + `per_agent_action_set`; this RFC's
+`agent_tools()` **supersedes** that seam (see *Relation to in-flight changes*). Because
+multi-agent ships in **this** change, the reconciliation **gates the whole landing** (not
+just a later phase) — get that change's author to agree up front.
+
+**(5) Multi-agent v1 specifics** — termination policy (global `finished` vs all-seats-retired),
+shared vs per-agent budget, and `AgentConfig.make(action_set, agent_id)` vs `make(task_tool)`
+— live in the harness companion (#497).
+
+`deltas.md` stays thin until (1)–(3) settle.
