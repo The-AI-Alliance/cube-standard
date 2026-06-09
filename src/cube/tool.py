@@ -64,7 +64,16 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, List
 
 from cube.container import Container
-from cube.core import Action, ActionSchema, Content, Observation, StepError, ValidatedConfig
+from cube.core import (
+    STOP_ACTION,
+    Action,
+    ActionSchema,
+    AgentStop,
+    Content,
+    Observation,
+    StepError,
+    ValidatedConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -381,8 +390,16 @@ class Tool(_ToolActionsMixin, AbstractTool):
         - Clear intent: Obvious which methods are actions
     """
 
-    def execute_action(self, action: Action) -> Observation | StepError:
-        """Execute an action by name."""
+    @tool_action
+    def final_step(self) -> str:
+        """Stop the task execution."""
+        # STOP is just an action that raises — no special-casing in the dispatch path.
+        raise AgentStop()
+
+    def execute_action(self, action: Action) -> Observation:
+        """Execute an action by name. Always returns an Observation: a tool error is
+        folded into the observation (non-terminal, structured error on `obs.error`);
+        ``final_step`` raises ``AgentStop`` (a BaseException, so it propagates here)."""
         method = self.get_action_method(action)
         invalid = self._validate_action_args(action, method)
         if invalid is not None:
@@ -390,9 +407,8 @@ class Tool(_ToolActionsMixin, AbstractTool):
         try:
             action_result = method(**action.arguments) or "Success"
         except Exception as e:
-            action_result = f"Error executing action {action.name}: {e}"
-            logger.exception(action_result)
-            return StepError.from_exception(e)
+            logger.exception(f"Error executing action {action.name}: {e}")
+            return StepError.from_exception(e).to_observation()
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
 
@@ -434,8 +450,14 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
                     f"AsyncTool requires all @tool_action methods to be 'async def'."
                 )
 
-    async def execute_action(self, action: Action) -> Observation | StepError:
-        """Execute an async action by name."""
+    @tool_action
+    async def final_step(self) -> str:
+        """Stop the task execution."""
+        raise AgentStop()
+
+    async def execute_action(self, action: Action) -> Observation:
+        """Execute an async action by name. Same contract as Tool.execute_action:
+        errors fold into the observation; ``final_step`` raises ``AgentStop``."""
         method = self.get_action_method(action)
         invalid = self._validate_action_args(action, method)
         if invalid is not None:
@@ -443,9 +465,8 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
         try:
             action_result = (await method(**action.arguments)) or "Success"
         except Exception as e:
-            action_result = f"Error executing action {action.name}: {e}"
-            logger.exception(action_result)
-            return StepError.from_exception(e)
+            logger.exception(f"Error executing action {action.name}: {e}")
+            return StepError.from_exception(e).to_observation()
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
 
@@ -457,6 +478,10 @@ class Toolbox(Tool):
         self._action_name_to_tool: dict[str, AbstractTool] = {}
         for tool in tools:
             for action in tool.action_set:
+                # final_step is universal (every Tool has it) — not routed to a leaf; the
+                # Toolbox handles it via its own inherited final_step (see execute_action).
+                if action.name == STOP_ACTION.name:
+                    continue
                 if action.name in self._action_name_to_tool:
                     previous_tool_name = self._action_name_to_tool[action.name].__class__.__name__
                     this_tool_name = tool.__class__.__name__
@@ -467,8 +492,17 @@ class Toolbox(Tool):
 
     @property
     def action_set(self) -> list[ActionSchema]:
-        """Returns the union of all action sets across contained tools."""
-        return [action for tool in self.tools for action in tool.action_set]
+        """Union of the leaves' action sets, deduped by name (so the universal
+        ``final_step`` appears exactly once)."""
+        seen: set[str] = set()
+        actions: list[ActionSchema] = []
+        for tool in self.tools:
+            for action in tool.action_set:
+                if action.name in seen:
+                    continue
+                seen.add(action.name)
+                actions.append(action)
+        return actions
 
     def find_tool(self, tool_cls: type) -> AbstractTool | None:
         """Find a tool of the given class in the toolbox."""
@@ -481,12 +515,13 @@ class Toolbox(Tool):
         for tool in self.tools:
             tool.reset()
 
-    def execute_action(self, action: Action) -> Observation | StepError:
-        if action.name not in self._action_name_to_tool:
-            raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
-        tool = self._action_name_to_tool[action.name]
-        assert isinstance(tool, AbstractTool)
-        return tool.execute_action(action)
+    def execute_action(self, action: Action) -> Observation:
+        tool = self._action_name_to_tool.get(action.name)
+        if tool is not None:
+            assert isinstance(tool, AbstractTool)
+            return tool.execute_action(action)
+        # Not a leaf action → the Toolbox's own (inherited) methods, e.g. final_step.
+        return super().execute_action(action)
 
     def close(self) -> None:
         for tool in self.tools:
@@ -511,6 +546,8 @@ class AsyncToolbox(AsyncTool):
         self._action_name_to_tool: dict[str, AbstractTool | AbstractAsyncTool] = {}
         for tool in tools:
             for action in tool.action_set:
+                if action.name == STOP_ACTION.name:  # universal — handled by fall-through
+                    continue
                 if action.name in self._action_name_to_tool:
                     previous_tool_name = self._action_name_to_tool[action.name].__class__.__name__
                     this_tool_name = tool.__class__.__name__
@@ -521,8 +558,17 @@ class AsyncToolbox(AsyncTool):
 
     @property
     def action_set(self) -> list[ActionSchema]:
-        """Returns the union of all action sets across contained tools."""
-        return [action for tool in self.tools for action in tool.action_set]
+        """Union of the leaves' action sets, deduped by name (universal ``final_step``
+        appears once)."""
+        seen: set[str] = set()
+        actions: list[ActionSchema] = []
+        for tool in self.tools:
+            for action in tool.action_set:
+                if action.name in seen:
+                    continue
+                seen.add(action.name)
+                actions.append(action)
+        return actions
 
     def find_tool(self, tool_cls: type) -> "AbstractTool | AbstractAsyncTool | None":
         """Find a tool of the given class in the toolbox."""
@@ -537,10 +583,11 @@ class AsyncToolbox(AsyncTool):
             if inspect.iscoroutine(r):
                 await r
 
-    async def execute_action(self, action: Action) -> Observation | StepError:
-        if action.name not in self._action_name_to_tool:
-            raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
-        return await self._action_name_to_tool[action.name].async_execute_action(action)
+    async def execute_action(self, action: Action) -> Observation:
+        tool = self._action_name_to_tool.get(action.name)
+        if tool is not None:
+            return await tool.async_execute_action(action)
+        return await super().execute_action(action)  # final_step etc.
 
     async def close(self) -> None:
         for tool in self.tools:

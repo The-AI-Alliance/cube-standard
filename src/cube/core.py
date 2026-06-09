@@ -443,6 +443,10 @@ class Observation(TypedBaseModel):
     """
 
     contents: list[SerializeAsAny[Content]] = Field(default_factory=list)
+    # Structured error when this observation reports a failed action. The error text is
+    # also in `contents` (the agent reads it); this is the machine-readable copy for
+    # telemetry / `EnvironmentOutput.error`. A failed action is NON-terminal.
+    error: "StepError | None" = None
 
     @classmethod
     def from_text(cls, text: str) -> Self:
@@ -478,14 +482,42 @@ class StepError(TypedBaseModel):
         )
 
     def to_observation(self) -> Observation:
-        """Render this error as an observation.
+        """Render this error as an observation — text for the agent + the structured
+        error attached (`Observation.error`) for the runtime. A failed action is fed back
+        as a normal observation (the agent reads it and retries), never terminal."""
+        return Observation(
+            contents=[TextContent(data=f"Action failed — {self.error_type}: {self.exception_str}")],
+            error=self,
+        )
 
-        A failed action is fed back to the agent as a normal observation (so it can
-        read the error and retry), not as a terminal signal — only ``finished()`` /
-        ``evaluate()`` decide termination. The stack trace is omitted here; it stays
-        on the structured ``StepError`` for telemetry.
-        """
-        return Observation.from_text(f"Action failed — {self.error_type}: {self.exception_str}")
+
+class AgentStop(BaseException):
+    """Raised when the agent ends the episode — by executing the STOP action
+    (``final_step``, see :data:`STOP_ACTION`), which simply raises this.
+
+    A ``BaseException`` (not ``Exception``) so a tool's / agent's ``except Exception``
+    never swallows it. The gym ``Task.step`` view catches it (``done=True``); the
+    agent-facing path lets it propagate to the runtime. Carries the terminal observation.
+    """
+
+    def __init__(self, observation: "Observation | None" = None) -> None:
+        self.observation = (
+            observation if observation is not None else Observation.from_text("Task finished by the agent.")
+        )
+        super().__init__("Agent requested task stop")
+
+
+# The STOP action every agent can take to end its episode. Implemented as a real tool
+# action (``Tool.final_step``) that raises ``AgentStop`` — so there is no special-casing
+# in the dispatch path; executing it just raises. Schema is Anthropic-safe (no args).
+STOP_ACTION = ActionSchema(
+    name="final_step",
+    description="Stop the task execution.",
+    parameters={"type": "object", "properties": {}},
+)
+
+# Resolve Observation.error now that StepError is defined (forward ref above).
+Observation.model_rebuild()
 
 
 class EnvironmentOutput(TypedBaseModel):

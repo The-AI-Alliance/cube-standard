@@ -31,10 +31,10 @@ from cube.container import Container
 from cube.core import (
     Action,
     ActionSchema,
+    AgentStop,
     Content,
     EnvironmentOutput,
     Observation,
-    StepError,
     StructuredContent,
     TypedBaseModel,
 )
@@ -61,28 +61,8 @@ example:
 
 logger = logging.getLogger(__name__)
 
-
-STOP_ACTION = ActionSchema(
-    name="final_step",
-    description="Stop the task execution.",
-    parameters={"type": "object", "properties": {}},
-)
-
-
-class AgentStop(BaseException):
-    """Raised by the per-action core when the agent emits the STOP action (``final_step``).
-
-    A ``BaseException`` (not ``Exception``) so an agent loop's ``except Exception``
-    around tool execution never swallows the stop signal. The gym ``Task.step`` view
-    catches it and sets ``done=True``; the agent-facing ``TaskTool`` view lets it
-    propagate to the runtime, which ends the episode. Carries the terminal observation.
-    """
-
-    def __init__(self, observation: "Observation | None" = None) -> None:
-        self.observation = (
-            observation if observation is not None else Observation.from_text("Task finished by the agent.")
-        )
-        super().__init__("Agent requested task stop")
+# STOP_ACTION + AgentStop now live in cube.core (STOP is a real tool action — Tool.final_step
+# — that raises AgentStop; there's no STOP special-casing here anymore).
 
 
 class TaskMetadata(TypedBaseModel):
@@ -208,19 +188,11 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         default=False,
         description="If True, evaluate() is called after every step instead of only when the task is done.",
     )
-    accept_agent_stop: bool = Field(
-        default=True, description="Whether the task accepts the agent emitting STOP_ACTION."
-    )
 
     # Non-serializable runtime state, set during model_post_init
     _tool: TTool | None = PrivateAttr(default=None)
     _container: Container | None = PrivateAttr(default=None)
     _resource_handle: ResourceHandle | None = PrivateAttr(default=None)
-    # Structured error from the most recent per-action dispatch (None if it returned
-    # an Observation). A tool error is surfaced to the agent as an observation
-    # (non-terminal); this preserves the *structured* error for the runtime to record
-    # on its ToolCallEvent (telemetry / error stats) without re-running dispatch.
-    _last_action_error: "StepError | None" = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
         """Called after Pydantic __init__. Launches the container (if configured), runs the
@@ -278,58 +250,10 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
 
     @property
     def action_set(self) -> List[ActionSchema]:
-        """
-        Returns tool.action_set filtered through self.filter_actions(), then with
-        STOP_ACTION appended when self.accept_agent_stop is True (dedup by name).
-        Cube authors should NOT add STOP_ACTION in filter_actions.
-
-        Tool definitions in litellm-compatible format.
-
-        Returns a JSON-serializable list of tool descriptors, each with:
-        - type: "function"
-        - function: {name, description, parameters (JSON Schema)}
-
-        This format is compatible with litellm/OpenAI function calling.
-        Agents use this to discover available actions without knowing
-        tool implementations in advance.
-
-        Example return value:
-        [
-            {
-                "type": "function",
-                "function": {
-                    "name": "click",
-                    "description": "Click on a web element",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "selector": {"type": "string", "description": "CSS selector"}
-                        },
-                        "required": ["selector"]
-                    }
-                }
-            }
-        ]
-        """
-        return self._action_set_for_tool(self._tool)
-
-    def _action_set_for_tool(self, tool: AbstractTool) -> List[ActionSchema]:
-        """``tool``'s actions filtered through ``filter_actions``, plus STOP when
-        ``accept_agent_stop``. Shared by ``Task.action_set`` (the no-role tool) and each
-        ``TaskTool.action_set`` (its seat's tool) — so per-role action sets just fall out
-        of each seat holding a different (role-bound) tool; no separate filter method."""
-        actions = self.filter_actions(tool.action_set)
-        if self.accept_agent_stop and not any(a.name == STOP_ACTION.name for a in actions):
-            actions = [*actions, STOP_ACTION]
-        return actions
-
-    def filter_actions(self, actions: list[ActionSchema]) -> list[ActionSchema]:
-        """
-        (Optional) Allows the task to whitelist a subset of the actions provided by the tool.
-        By default keeps all tool actions. STOP_ACTION is appended automatically by
-        action_set when accept_agent_stop=True — do not add it here.
-        """
-        return actions
+        """The task's tool's action set (litellm-compatible). Already includes
+        ``final_step`` (every Tool exposes it). No filtering / STOP-appending here —
+        per-role action sets fall out of each seat holding its own tool."""
+        return self._tool.action_set
 
     @abstractmethod
     def reset(self) -> Tuple[Observation, Dict]:
@@ -342,61 +266,14 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         """
         pass
 
-    def _execute_action(self, action: Action, tool: "AbstractTool | None" = None) -> Observation:
-        """Run a SINGLE action through ``tool`` (the acting seat's tool; defaults to the
-        task's own ``self.tool``) and return its observation — the per-action core shared
-        by the gym ``step`` view and the agent-facing ``TaskTool`` view.
-
-        - ``final_step`` (STOP) raises :class:`AgentStop` when ``accept_agent_stop``
-          is set; callers decide what to do with it (gym → ``done``; agent loop →
-          propagate to the runtime).
-        - a tool error becomes an observation (surfaced to the agent, never
-          terminal). Termination is decided only by ``finished()`` / ``evaluate()``,
-          which the caller runs on its own cadence (gym per batch, harness per action).
-
-        Both views go through this, so per-action behavior is identical by
-        construction; they differ only in eval cadence and ``AgentStop`` handling.
-        """
-        if action.name == STOP_ACTION.name and self.accept_agent_stop:
-            raise AgentStop()
-        result = (tool if tool is not None else self._tool).execute_action(action)
-        return self._coerce_action_result(action, result)
-
-    async def _aexecute_action(self, action: Action, tool: "AbstractTool | None" = None) -> Observation:
-        """Async twin of ``_execute_action`` — same contract, awaits the tool's
-        async dispatch. Used by the agent-facing view's ``async_execute_action``
-        (parallel tool calls); the sync ``step`` view never calls it.
-        """
-        if action.name == STOP_ACTION.name and self.accept_agent_stop:
-            raise AgentStop()
-        result = await (tool if tool is not None else self._tool).async_execute_action(action)
-        return self._coerce_action_result(action, result)
-
-    def _coerce_action_result(self, action: Action, result: Observation | StepError) -> Observation:
-        """Map a tool dispatch result to the per-action observation: pass an
-        ``Observation`` through; render a ``StepError`` as an observation (errors
-        are surfaced, never terminal)."""
-        if isinstance(result, Observation):
-            self._last_action_error = None
-            return result
-        if isinstance(result, StepError):
-            self._last_action_error = result
-            return result.to_observation()
-        raise ValueError(
-            f"Unknown result type from calling action '{action.name}' with args {action.arguments}: "
-            f"got {type(result).__name__}, expected Observation or StepError"
-        )
-
     def step(self, action: Action | List[Action]) -> EnvironmentOutput:
         """Execute an action (or a sequential batch) and return the next state.
 
-        This is the **gym-compatibility view** — FINALIZED; do NOT override. Each
-        action goes through the shared per-action core ``_execute_action``; the
-        agent-facing :class:`TaskTool` view runs the same core, so the two never
-        diverge in per-action behavior. Here the batch is run, then ``finished`` /
-        ``evaluate`` are applied once (per batch); a tool error becomes an
-        observation (non-terminal); ``final_step`` raises :class:`AgentStop`, caught
-        here to set ``done=True``.
+        This is the **gym-compatibility view** — FINALIZED; do NOT override. Each action
+        goes through ``self._tool.execute_action`` (the same dispatch the agent-facing
+        ``TaskTool`` uses). The batch is run, then ``finished`` / ``evaluate`` are applied
+        once (per batch); a tool error is folded into the observation (non-terminal);
+        ``final_step`` raises :class:`AgentStop`, caught here to set ``done=True``.
 
         Args:
             action: Agent action (or list of actions, run sequentially).
@@ -420,7 +297,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         for action in actions:
             t0 = time.perf_counter()
             try:
-                obs += self._execute_action(action)
+                obs += self._tool.execute_action(action)
             except AgentStop as stop:
                 obs += stop.observation
                 done = True
@@ -572,7 +449,7 @@ class TaskTool:
         available-but-uncommon. (Most agents also snapshot the set at construction today;
         re-reading it per turn is a forward extension for cubes that need it.)
         """
-        return self._task._action_set_for_tool(self._tool)
+        return self._tool.action_set
 
     def execute_action(self, action: Action) -> Observation:
         """Run one action through THIS seat's tool and return its (post-processed)
@@ -585,13 +462,13 @@ class TaskTool:
         — out-of-band, never in the returned obs. ``finished`` (episode termination) stays
         the runtime's call. ``final_step`` raises :class:`AgentStop`.
         """
-        obs = self._task.obs_postprocess(self._task._execute_action(action, self._tool))
+        obs = self._task.obs_postprocess(self._tool.execute_action(action))
         self._maybe_evaluate(obs)
         return obs
 
     async def async_execute_action(self, action: Action) -> Observation:
         """Async twin of ``execute_action`` — the parallel-tool-call call-site."""
-        obs = self._task.obs_postprocess(await self._task._aexecute_action(action, self._tool))
+        obs = self._task.obs_postprocess(await self._tool.async_execute_action(action))
         self._maybe_evaluate(obs)
         return obs
 
