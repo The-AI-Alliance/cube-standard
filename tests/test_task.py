@@ -176,6 +176,33 @@ def test_task_tracks_last_action_error_for_runtime_telemetry():
     assert task._last_action_error is None
 
 
+# --- per-step eval callback --------------------------------------------------
+
+
+def test_eval_callback_fires_on_validate_per_step():
+    tool = make_task(validate_per_step=True).agent_tools()[0]
+    got: list[tuple[float, dict]] = []
+    tool.set_eval_callback(lambda r, i: got.append((r, i)))
+    tool.execute_action(Action(name="greet", arguments={"name": "X"}))
+    assert len(got) == 1 and got[0][0] == 0.5  # SimpleTask.evaluate -> (0.5, {"score": 0.5})
+
+
+def test_eval_callback_silent_without_validate_per_step():
+    tool = make_task(validate_per_step=False).agent_tools()[0]
+    got: list[float] = []
+    tool.set_eval_callback(lambda r, i: got.append(r))
+    tool.execute_action(Action(name="greet", arguments={"name": "X"}))
+    assert got == []  # per-step eval only fires when validate_per_step is set
+
+
+def test_eval_skipped_when_no_callback_registered():
+    # validate_per_step set but no consumer → eval is skipped (no error).
+    obs = (
+        make_task(validate_per_step=True).agent_tools()[0].execute_action(Action(name="greet", arguments={"name": "X"}))
+    )
+    assert isinstance(obs, Observation)
+
+
 # --- multi-agent roles (agent_roles / get_task_tool / make_tool) -------------
 
 

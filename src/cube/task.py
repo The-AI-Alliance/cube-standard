@@ -21,7 +21,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, ClassVar, Dict, Generic, List, Literal, Tuple
+from typing import Any, Callable, ClassVar, Dict, Generic, List, Literal, Tuple
 
 from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
 from typing_extensions import TypeVar
@@ -597,6 +597,24 @@ class TaskTool:
         # the task's default tool for the no-role seat. Dispatch goes through THIS tool,
         # so "which agent acted" is implicit in which session ran the action.
         self._tool = tool if tool is not None else task.tool
+        self._eval_callback: "Callable[[float, dict], None] | None" = None
+
+    def set_eval_callback(self, callback: "Callable[[float, dict], None]") -> None:
+        """Register a runtime callback invoked with ``(reward, info)`` whenever a per-step
+        evaluation fires (i.e. when ``task.validate_per_step`` is set). This is how the
+        runtime *recuperates* the per-step eval that ``execute_action`` triggers — without
+        polling, and without the reward ever reaching the agent (the agent only sees obs).
+        With no callback registered, per-step eval is skipped (no consumer).
+        """
+        self._eval_callback = callback
+
+    def _maybe_evaluate(self, obs: Observation) -> None:
+        """Trigger the per-step evaluation in the agent path, mirroring what gym ``step``
+        does for ``validate_per_step`` — but surfaced out-of-band via the callback (reward
+        is not the agent's concern), not folded into the returned obs."""
+        if self._task.validate_per_step and self._eval_callback is not None:
+            reward, info = self._task.evaluate(obs)
+            self._eval_callback(float(reward), dict(info))
 
     @property
     def agent_id(self) -> str:
@@ -623,16 +641,21 @@ class TaskTool:
         observation.
 
         Relays to the Task's per-action core — the *same* execution as the gym ``step``
-        view — and returns the **observation only**: no reward, no ``done``. The runtime
-        decides when to call ``Task.finished`` / ``Task.evaluate`` (eval cadence is the
-        harness's concern, not the agent's). ``final_step`` raises :class:`AgentStop`,
-        which the runtime catches to end the episode.
+        view — and returns the **observation only**: no reward, no ``done``. When
+        ``task.validate_per_step`` is set it triggers the per-step ``evaluate`` here (like
+        ``step`` does) and surfaces ``(reward, info)`` through the registered eval callback
+        — out-of-band, never in the returned obs. ``finished`` (episode termination) stays
+        the runtime's call. ``final_step`` raises :class:`AgentStop`.
         """
-        return self._task.obs_postprocess(self._task._execute_action(action, self._tool))
+        obs = self._task.obs_postprocess(self._task._execute_action(action, self._tool))
+        self._maybe_evaluate(obs)
+        return obs
 
     async def async_execute_action(self, action: Action) -> Observation:
         """Async twin of ``execute_action`` — the parallel-tool-call call-site."""
-        return self._task.obs_postprocess(await self._task._aexecute_action(action, self._tool))
+        obs = self._task.obs_postprocess(await self._task._aexecute_action(action, self._tool))
+        self._maybe_evaluate(obs)
+        return obs
 
 
 class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
