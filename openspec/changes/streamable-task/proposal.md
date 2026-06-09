@@ -29,21 +29,23 @@ class Task:                               # the world — runtime-driven; never 
     def step(self, action) -> EnvironmentOutput: ...   # gym-COMPATIBILITY view; FINALIZED, do-not-override
     def evaluate(...) -> tuple[float, dict]: ...        # EXISTING — reward; runtime-side only
     def agent_roles(self) -> dict[str|None, int]: ...  # NEW: roster, role->seats (default {None:1})
-    def get_task_tool(self, role=None, seat=0): ...     # NEW: per-seat view factory
-    def action_set_for(self, role=None): ...            # NEW: per-role actions (default = action_set)
-    def agent_tools(self) -> list[TaskTool]: ...        # CONCRETE: expands agent_roles via get_task_tool
-    def _execute_action(self, action) -> Observation: ...  # NEW: the shared per-action CORE
-        # STOP -> AgentStop, tool dispatch, error -> observation. Both views run THIS.
-
-class TaskTool:                           # the ONLY surface an agent holds (carries role + seat)
+    def make_tool(self, role=None) -> Tool: ...         # NEW: the role/ACTOR seam — a fresh session per seat
+    def get_task_tool(self, role=None): ...             # NEW: per-seat view (role=None reuses self.tool)
+    def agent_tools(self) -> list[TaskTool]: ...        # CONCRETE: expands agent_roles, assigns seat index
+    def prepare_world(self): ...                        # NEW: eager once-per-task world setup (default no-op)
     @property
-    def action_set(self) -> list[ActionSchema]: ...    # = task.action_set_for(self.role); recomputed each access, so a cube MAY
-        # vary it (legal-action masking / phase gating / real-time). Rare — almost every cube is
-        # static; agents snapshot it at make() today. Per-turn re-read = forward extension.
+    def tool(self): ...                                 # LAZY + memoized: default no-role tool / admin handle
+    def _execute_action(self, action, tool=None): ...   # NEW: shared per-action CORE (STOP->AgentStop,
+        # dispatch through `tool`, error->observation). Both views run THIS. No action_set_for/tool_for —
+        # per-role actions fall out of each seat holding its own make_tool(role) tool.
+
+class TaskTool:                           # the ONLY surface an agent holds (carries role + seat + its tool)
+    @property
+    def action_set(self) -> list[ActionSchema]: ...    # = its tool's actions (filtered) + STOP; dynamic
     def execute_action(self, action: Action) -> Observation: ...
-        # Runs the SAME per-action core + obs_postprocess; returns the OBS ONLY (no reward,
-        # no done). final_step raises AgentStop. The runtime calls finished()/evaluate() at
-        # its own cadence (no double eval). No reset / evaluate / close.
+        # Runs the SAME core through ITS tool + obs_postprocess; returns the OBS ONLY. final_step raises
+        # AgentStop. When validate_per_step, triggers evaluate() and surfaces (reward,info) via the callback.
+    def set_eval_callback(self, fn): ...                # runtime recuperates per-step eval out-of-band (no reward to agent)
 ```
 
 ## One path — the cube can't be bypassed
@@ -118,12 +120,14 @@ The task declares a **roster** — `agent_roles() -> {role: seat_count}` (defaul
 single-agent) — and the runtime expands it (`agent_tools()`, concrete) into **one `TaskTool`
 per seat** over a **single shared `Task`**. `role=None` is the lone single-agent seat; every
 multi-agent seat carries a **role** (`"buyer"`/`"seller"`, or a symmetric `"player"`). A role
-is not just a label: `action_set_for(role)` gives each role its **own legal actions** (buyer ≠
-seller), and the role yields a stable `agent_id` (`"buyer-0"`). The runtime attributes the
-right seat to the right agent by role (heterogeneous per-role `AgentConfig`s = a forward
-extension; v1 is homogeneous). Multiplicity is **task-fixed** for now (concrete counts);
-experiment-chosen counts (ranges) can come later. Centralizing the world on one task is what
-makes the hard parts fall
+is not just a label: each seat holds **its own tool** from `make_tool(role)` — the **actor's
+session** (the SSH model: identity bound at session creation), so a buyer's tool exposes buyer
+actions and a seller's exposes seller actions, and "who acted" is implicit in *which* tool ran
+the action — nothing role-specific touches the `Action`. The role also yields a stable
+`agent_id` (`"buyer-0"`). The runtime attributes the right seat to the right agent by role
+(heterogeneous per-role `AgentConfig`s = a forward extension; v1 is homogeneous). Multiplicity
+is **task-fixed** for now (concrete counts); experiment-chosen counts (ranges) can come later.
+Centralizing the world on one task is what makes the hard parts fall
 out for free: its `evaluate()` sees the **global** state, so per-agent / general-sum reward
 is attributable from the joint outcome; all tools mutate **one coherent world**; lifecycle
 runs **once**.
