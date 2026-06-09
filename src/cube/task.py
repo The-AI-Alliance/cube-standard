@@ -223,10 +223,10 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     _last_action_error: "StepError | None" = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
-        """Called after Pydantic __init__. Launches the container (if configured), then
-        runs the eager world setup. Tools are created LAZILY (see ``make_tool`` / the
-        ``tool`` property), so cubes that must prepare the world before any tool touches
-        it do it in ``prepare_world``, not at construction.
+        """Called after Pydantic __init__. Launches the container (if configured), runs the
+        eager world setup (``prepare_world``), then builds the task's own tool ``_tool``
+        (the no-role / admin handle used by reset / evaluate / finished). Per-seat agent
+        tools are made on demand by ``get_task_tool(role)``.
         """
         cc = self.metadata.container_config
         if cc is not None and self.runtime_context is not None and "infra" in self.runtime_context:
@@ -241,28 +241,32 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
             )
 
         self.prepare_world()
+        self._tool = self.make_tool()  # the task's own tool; cube code uses self._tool
 
     def prepare_world(self) -> None:
         """(Optional) Eager, once-per-task setup of the shared world — runs after the
-        container launches and before any tool or agent touches it (relocate a read-only
-        working dir, fix permissions, write fixtures, …). Default: no-op. Separate from
-        tool creation, which is lazy (``make_tool`` / the ``tool`` property).
+        container launches and before the tool is built (relocate a read-only working dir,
+        fix permissions, write fixtures, …). Default: no-op.
         """
 
-    def make_tool(self) -> TTool:
-        """Create the task's tool — its session over the world. Override to customize
-        (e.g. apply a relocated working dir). Lazy: called once by the ``tool`` property.
-        (``MultiAgentTask`` widens this to ``make_tool(role)`` for per-seat sessions.)
-        """
+    def make_tool(self, role: "str | None" = None) -> TTool:
+        """Create a tool — a session over the world. Default ignores ``role`` (single-tool
+        case). A multi-agent cube overrides to bind the role (a role-specific tool / thread
+        ``role`` into a role-aware ``tool_config.make``). Called for the task's own
+        ``_tool`` (role=None) and per seat by ``get_task_tool``. Each call is fresh."""
         return self.tool_config.make(container=self._container)  # type: ignore[return-value]
 
-    @property
-    def tool(self) -> TTool:
-        """The task's tool — its own/admin handle for setup/evaluate/finished, and the
-        single-agent seat's tool. Created LAZILY on first access and memoized."""
-        if self._tool is None:
-            self._tool = self.make_tool()  # type: ignore[assignment]
-        return self._tool  # type: ignore[return-value]
+    def agent_roles(self) -> "dict[str | None, int]":
+        """The roster: role → seat count. Default ``{None: 1}`` (single-agent). A
+        multi-agent cube overrides, e.g. ``{"buyer": 2, "seller": 1}``."""
+        return {None: 1}
+
+    def get_task_tool(self, role: "str | None" = None, seat: int = 0) -> "TaskTool":
+        """The agent-facing view for a seat. ``role=None`` reuses the task's own ``_tool``
+        (single-agent); a named role gets a fresh role-bound session via ``make_tool(role)``
+        — the tool *is* the actor. The runtime calls this per seat (it sets the seat index)."""
+        tool = self._tool if role is None else self.make_tool(role)
+        return TaskTool(self, role=role, tool=tool, seat=seat)
 
     @property
     def container(self) -> Container | None:
@@ -307,7 +311,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
             }
         ]
         """
-        return self._action_set_for_tool(self.tool)
+        return self._action_set_for_tool(self._tool)
 
     def _action_set_for_tool(self, tool: AbstractTool) -> List[ActionSchema]:
         """``tool``'s actions filtered through ``filter_actions``, plus STOP when
@@ -331,7 +335,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     def reset(self) -> Tuple[Observation, Dict]:
         """
         Reset the task to its initial state.
-        Must call self.tool.reset() to reset the tool as well.
+        Must call self._tool.reset() to reset the tool as well.
 
         Returns:
             Tuple of (Observation, dict with additional task info)
@@ -355,7 +359,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         """
         if action.name == STOP_ACTION.name and self.accept_agent_stop:
             raise AgentStop()
-        result = (tool if tool is not None else self.tool).execute_action(action)
+        result = (tool if tool is not None else self._tool).execute_action(action)
         return self._coerce_action_result(action, result)
 
     async def _aexecute_action(self, action: Action, tool: "AbstractTool | None" = None) -> Observation:
@@ -365,7 +369,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         """
         if action.name == STOP_ACTION.name and self.accept_agent_stop:
             raise AgentStop()
-        result = await (tool if tool is not None else self.tool).async_execute_action(action)
+        result = await (tool if tool is not None else self._tool).async_execute_action(action)
         return self._coerce_action_result(action, result)
 
     def _coerce_action_result(self, action: Action, result: Observation | StepError) -> Observation:
@@ -487,7 +491,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
 
     def close(self) -> None:
         """
-        Cleanup task resources. Calls self.tool.close() automatically.
+        Cleanup task resources. Calls self._tool.close() automatically.
         Override to add task-specific cleanup, and call super().close() to
         ensure the tool is also cleaned up.
 
@@ -496,7 +500,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         - Remove temp files
         - Close network connections
         """
-        self.tool.close()
+        self._tool.close()
         if self._resource_handle is not None:
             self._resource_handle.close()
             self._resource_handle = None
@@ -506,45 +510,17 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
             self._container = None
 
 
-class MultiAgentTask(Task[TTMetadata, TTool], ABC):
-    """A task staffed by several agents over ONE shared world. Opt-in: a single-agent
-    cube author never sees any of this — it lives here, not on ``Task``.
-
-    The arena runtime reads :meth:`agent_roles` and builds one ``TaskTool`` per seat via
-    :meth:`make_tool` (``TaskTool(self, role, self.make_tool(role), seat)``). The
-    single-vs-multi choice is resolved by which runtime is configured (``Episode`` vs the
-    arena), so nothing needs ``isinstance`` in a shared loop.
-
-    ``evaluate()`` sees the global state and returns per-agent reward via
-    ``info["per_agent"] = {agent_id: reward}`` (scalar reward is the fallback for all).
-    """
-
-    @abstractmethod
-    def agent_roles(self) -> dict[str, int]:
-        """The roster: each role → how many seats it staffs, e.g. ``{"buyer": 2,
-        "seller": 1}`` or ``{"player": 2}``. Every multi-agent seat carries a role."""
-
-    def make_tool(self, role: "str | None" = None) -> TTool:  # type: ignore[override]
-        """Make a tool/session for a seat — the actor's identity (SSH model). ``role=None``
-        is the task's own admin handle (``self.tool``, used by evaluate/setup). Override to
-        bind the role (a role-specific tool, or thread ``role`` into a role-aware
-        ``tool_config.make``). Default ignores ``role``. Each call is a FRESH session."""
-        return self.tool_config.make(container=self._container)  # type: ignore[return-value]
-
-
 class TaskTool:
     """The agent-facing view of a :class:`Task` — the ONLY surface an agent holds.
 
     Obs in, action out, no lifecycle. An agent gets exactly two things: ``action_set``
-    (what it may do *now*) and ``execute_action`` (do one thing, see the result). It
-    never sees ``reset`` / ``evaluate`` / ``close`` / ``step`` — the runtime drives
-    those on the Task. The **runtime constructs** these: ``TaskTool(task)`` for
-    single-agent; ``TaskTool(task, role, task.make_tool(role), seat)`` per seat for a
-    :class:`MultiAgentTask` (one shared world, N tools).
+    (what it may do *now*) and ``execute_action`` (do one thing, see the result). It never
+    sees ``reset`` / ``evaluate`` / ``close`` / ``step`` — the runtime drives those on the
+    Task. Obtained from ``task.get_task_tool(role)``: ``role=None`` (single-agent) over the
+    task's own tool, or one per seat for a multi-agent task.
 
     Each tool carries its ``role`` (``None`` for single-agent; e.g. ``"buyer"``) and
-    ``seat`` index. The role drives the per-seat ``action_set`` (a buyer's actions may
-    differ from a seller's) and the stable ``agent_id``.
+    ``seat`` index — the role drives the per-seat ``action_set`` and the stable ``agent_id``.
 
     Not a :class:`Tool` (it exposes no actions of its own) — it is a *facet* of a Task.
     """
@@ -558,7 +534,7 @@ class TaskTool:
         # The actor's tool/session — its own (role-bound) instance for a named role, or
         # the task's default tool for the no-role seat. Dispatch goes through THIS tool,
         # so "which agent acted" is implicit in which session ran the action.
-        self._tool = tool if tool is not None else task.tool
+        self._tool = tool if tool is not None else task._tool
         self._eval_callback: "Callable[[float, dict], None] | None" = None
 
     def set_eval_callback(self, callback: "Callable[[float, dict], None]") -> None:
