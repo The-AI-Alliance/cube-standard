@@ -241,53 +241,27 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
             )
 
         self.prepare_world()
-        # Back-compat: a cube that still overrides the legacy eager `_build_tool` gets it
-        # run here (it builds `self._tool` itself). New cubes leave `_build_tool` alone and
-        # rely on lazy `make_tool` via the `tool` property + per-seat `get_task_tool`.
-        if type(self)._build_tool is not Task._build_tool:
-            self._build_tool()
 
     def prepare_world(self) -> None:
         """(Optional) Eager, once-per-task setup of the shared world — runs after the
         container launches and before any tool or agent touches it (relocate a read-only
-        working dir, fix permissions, write fixtures, …). Default: no-op.
-
-        This is the home for setup that MUST happen before ``reset()``. Per-seat tool
-        creation is separate and lazy (``make_tool``), so multi-agent seats open their own
-        sessions over the already-prepared world.
+        working dir, fix permissions, write fixtures, …). Default: no-op. Separate from
+        tool creation, which is lazy (``make_tool`` / the ``tool`` property).
         """
 
-    def make_tool(self, role: "str | None" = None) -> TTool:
-        """Create a tool instance for an agent seat — the actor's session over the world.
-
-        Called lazily by ``get_task_tool`` (per seat) and by the ``tool`` property (the
-        default no-role tool). The **default ignores ``role``** and just calls
-        ``tool_config.make(container)`` (the single-tool case). A multi-agent cube
-        **overrides** this to bind the role — return a role-specific tool, or thread
-        ``role`` into a role-aware ``tool_config.make``. Each call returns a FRESH instance
-        — a distinct session — so N seats don't share one tool. This is the role/actor
-        seam; ``role`` does not leak into the ``Action``.
+    def make_tool(self) -> TTool:
+        """Create the task's tool — its session over the world. Override to customize
+        (e.g. apply a relocated working dir). Lazy: called once by the ``tool`` property.
+        (``MultiAgentTask`` widens this to ``make_tool(role)`` for per-seat sessions.)
         """
-        # ToolConfig.make() returns AbstractTool; cubes that parameterize
-        # Task[Meta, TFooTool] vouch that their tool_config produces a TFooTool.
         return self.tool_config.make(container=self._container)  # type: ignore[return-value]
-
-    def _build_tool(self) -> None:
-        """DEPRECATED legacy eager tool builder. New cubes override ``make_tool`` (lazy
-        per-seat) and/or ``prepare_world`` (eager world setup) instead. Kept so cubes that
-        still override it — and run world prep + ``make`` together — keep working: their
-        override runs eagerly in ``model_post_init``.
-        """
-        self._tool = self.make_tool(None)  # type: ignore[assignment]
 
     @property
     def tool(self) -> TTool:
-        """The task's default (no-role) tool — and its own/admin handle for
-        setup/evaluate/finished. Created LAZILY on first access and memoized;
-        ``get_task_tool(None)`` reuses this instance, per-role seats make their own.
-        """
+        """The task's tool — its own/admin handle for setup/evaluate/finished, and the
+        single-agent seat's tool. Created LAZILY on first access and memoized."""
         if self._tool is None:
-            self._tool = self.make_tool(None)  # type: ignore[assignment]
+            self._tool = self.make_tool()  # type: ignore[assignment]
         return self._tool  # type: ignore[return-value]
 
     @property
@@ -344,45 +318,6 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         if self.accept_agent_stop and not any(a.name == STOP_ACTION.name for a in actions):
             actions = [*actions, STOP_ACTION]
         return actions
-
-    def agent_roles(self) -> "dict[str | None, int]":
-        """The agent roster: each role mapped to how many seats it staffs.
-
-        Default ``{None: 1}`` — single-agent. Multi-agent tasks override, e.g.
-        ``{"buyer": 2, "seller": 1}`` or ``{"player": 2}``. Use ``role=None`` ONLY for
-        the single-agent case (exactly one seat); give every multi-agent seat a role
-        (even a symmetric ``"player"``) so seats get stable, distinct ids.
-        """
-        return {None: 1}
-
-    def get_task_tool(self, role: "str | None" = None) -> "TaskTool":
-        """Build the agent-facing view for one ``role`` (the seat index is assigned by
-        ``agent_tools``, not passed here).
-
-        ``role=None`` reuses the task's default tool (single-agent / the task's own
-        handle); a named role gets a FRESH role-bound tool via ``make_tool(role)`` — a
-        distinct session, so two buyers are two sessions. The tool *is* the actor
-        identity and carries the role's actions; nothing role-specific touches the
-        ``Action``. Override to fully customize a seat's view.
-        """
-        tool = self.tool if role is None else self.make_tool(role)
-        return TaskTool(self, role=role, tool=tool)
-
-    def agent_tools(self) -> "list[TaskTool]":
-        """Expand :meth:`agent_roles` into one :class:`TaskTool` per seat over this
-        (shared) Task — single-agent = one tool. **Concrete; do not override** — override
-        :meth:`agent_roles` (the roster), :meth:`make_tool` (the per-role tool/actor), or
-        :meth:`get_task_tool` (the whole view) instead. The seat index is assigned here
-        (the cube's ``get_task_tool`` stays seat-free). ``evaluate()`` sees the global
-        state and attributes per-agent reward from the joint outcome.
-        """
-        tools: list[TaskTool] = []
-        for role, count in self.agent_roles().items():
-            for seat in range(count):
-                view = self.get_task_tool(role)
-                view.seat = seat
-                tools.append(view)
-        return tools
 
     def filter_actions(self, actions: list[ActionSchema]) -> list[ActionSchema]:
         """
@@ -571,14 +506,41 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
             self._container = None
 
 
+class MultiAgentTask(Task[TTMetadata, TTool], ABC):
+    """A task staffed by several agents over ONE shared world. Opt-in: a single-agent
+    cube author never sees any of this — it lives here, not on ``Task``.
+
+    The arena runtime reads :meth:`agent_roles` and builds one ``TaskTool`` per seat via
+    :meth:`make_tool` (``TaskTool(self, role, self.make_tool(role), seat)``). The
+    single-vs-multi choice is resolved by which runtime is configured (``Episode`` vs the
+    arena), so nothing needs ``isinstance`` in a shared loop.
+
+    ``evaluate()`` sees the global state and returns per-agent reward via
+    ``info["per_agent"] = {agent_id: reward}`` (scalar reward is the fallback for all).
+    """
+
+    @abstractmethod
+    def agent_roles(self) -> dict[str, int]:
+        """The roster: each role → how many seats it staffs, e.g. ``{"buyer": 2,
+        "seller": 1}`` or ``{"player": 2}``. Every multi-agent seat carries a role."""
+
+    def make_tool(self, role: "str | None" = None) -> TTool:  # type: ignore[override]
+        """Make a tool/session for a seat — the actor's identity (SSH model). ``role=None``
+        is the task's own admin handle (``self.tool``, used by evaluate/setup). Override to
+        bind the role (a role-specific tool, or thread ``role`` into a role-aware
+        ``tool_config.make``). Default ignores ``role``. Each call is a FRESH session."""
+        return self.tool_config.make(container=self._container)  # type: ignore[return-value]
+
+
 class TaskTool:
     """The agent-facing view of a :class:`Task` — the ONLY surface an agent holds.
 
     Obs in, action out, no lifecycle. An agent gets exactly two things: ``action_set``
     (what it may do *now*) and ``execute_action`` (do one thing, see the result). It
     never sees ``reset`` / ``evaluate`` / ``close`` / ``step`` — the runtime drives
-    those on the Task. ``Task.agent_tools()`` hands out one ``TaskTool`` per seat over
-    a single shared Task: single-agent = one tool, multi-agent = N tools, one world.
+    those on the Task. The **runtime constructs** these: ``TaskTool(task)`` for
+    single-agent; ``TaskTool(task, role, task.make_tool(role), seat)`` per seat for a
+    :class:`MultiAgentTask` (one shared world, N tools).
 
     Each tool carries its ``role`` (``None`` for single-agent; e.g. ``"buyer"``) and
     ``seat`` index. The role drives the per-seat ``action_set`` (a buyer's actions may
