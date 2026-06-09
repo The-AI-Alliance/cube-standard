@@ -176,7 +176,7 @@ def test_task_tracks_last_action_error_for_runtime_telemetry():
     assert task._last_action_error is None
 
 
-# --- multi-agent roles (agent_roles / get_task_tool / action_set_for) --------
+# --- multi-agent roles (agent_roles / get_task_tool / make_tool) -------------
 
 
 def test_agent_roles_default_single_agent():
@@ -184,9 +184,32 @@ def test_agent_roles_default_single_agent():
     assert make_task().get_task_tool().agent_id == "agent"  # single seat keeps "agent"
 
 
-def test_get_task_tool_carries_role_and_seat():
-    t = make_task().get_task_tool(role="buyer", seat=2)
-    assert (t.role, t.seat, t.agent_id) == ("buyer", 2, "buyer-2")
+def test_get_task_tool_carries_role():
+    t = make_task().get_task_tool(role="buyer")
+    assert (t.role, t.seat, t.agent_id) == ("buyer", 0, "buyer-0")
+
+
+def test_tool_is_lazy_and_memoized():
+    task = make_task()
+    assert task._tool is None  # not built at construction (lazy)
+    first = task.tool
+    assert task._tool is first and task.tool is first  # memoized
+    assert task.get_task_tool(None)._tool is first  # no-role seat reuses the task's tool
+
+
+def test_legacy_build_tool_override_still_runs_eagerly():
+    # Back-compat: a cube that still overrides the legacy _build_tool (world-prep + make
+    # together) gets it run eagerly at construction, so it isn't broken by lazy creation.
+    built: list[str] = []
+
+    class _Legacy(SimpleTask):
+        def _build_tool(self) -> None:
+            built.append("called")
+            self._tool = self.tool_config.make()
+
+    task = _Legacy(metadata=TaskMetadata(id="legacy"), tool_config=GreetToolConfig())
+    assert built == ["called"]  # ran eagerly in model_post_init
+    assert task._tool is not None  # eager, not lazy
 
 
 def test_agent_tools_expands_roster_in_order():
@@ -198,23 +221,26 @@ def test_agent_tools_expands_roster_in_order():
     assert [t.agent_id for t in task.agent_tools()] == ["buyer-0", "buyer-1", "seller-0"]
 
 
-def test_action_set_for_default_is_role_agnostic():
-    task = make_task()
-    assert {a.name for a in task.action_set_for("anything")} == {a.name for a in task.action_set}
+def test_per_role_tool_gives_per_role_actions():
+    # Per-role action sets fall out of make_tool(role) returning a role-bound tool.
+    class _SellerTool(Tool):
+        @tool_action
+        def sell(self, item: str) -> str:
+            """Sell an item."""
+            return f"sold {item}"
 
-
-def test_per_role_action_set_differs_per_seat():
-    class _RoleActions(SimpleTask):
+    class _Market(SimpleTask):
         def agent_roles(self):
             return {"buyer": 1, "seller": 1}
 
-        def action_set_for(self, role=None):
-            base = self.action_set
-            return [a for a in base if a.name != "greet"] if role == "seller" else base
+        def make_tool(self, role=None):
+            return _SellerTool() if role == "seller" else super().make_tool(role)
 
-    task = _RoleActions(metadata=TaskMetadata(id="ra"), tool_config=GreetToolConfig())
-    assert "greet" in {a.name for a in task.get_task_tool("buyer").action_set}
-    assert "greet" not in {a.name for a in task.get_task_tool("seller").action_set}
+    task = _Market(metadata=TaskMetadata(id="m"), tool_config=GreetToolConfig())
+    buyer = {a.name for a in task.get_task_tool("buyer").action_set}
+    seller = {a.name for a in task.get_task_tool("seller").action_set}
+    assert "greet" in buyer and "sell" not in buyer
+    assert "sell" in seller and "greet" not in seller
 
 
 def test_task_action_set_includes_stop_action_by_default() -> None:

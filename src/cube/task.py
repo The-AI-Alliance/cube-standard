@@ -223,7 +223,11 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     _last_action_error: "StepError | None" = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
-        """Called after Pydantic __init__. Launches container if configured, then creates tool."""
+        """Called after Pydantic __init__. Launches the container (if configured), then
+        runs the eager world setup. Tools are created LAZILY (see ``make_tool`` / the
+        ``tool`` property), so cubes that must prepare the world before any tool touches
+        it do it in ``prepare_world``, not at construction.
+        """
         cc = self.metadata.container_config
         if cc is not None and self.runtime_context is not None and "infra" in self.runtime_context:
             from cube.task_infra import launch_task_container  # local import avoids circular dep
@@ -236,21 +240,54 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
                 cpu_cores=cc.cpu_cores,
             )
 
-        self._build_tool()
+        self.prepare_world()
+        # Back-compat: a cube that still overrides the legacy eager `_build_tool` gets it
+        # run here (it builds `self._tool` itself). New cubes leave `_build_tool` alone and
+        # rely on lazy `make_tool` via the `tool` property + per-seat `get_task_tool`.
+        if type(self)._build_tool is not Task._build_tool:
+            self._build_tool()
 
-    def _build_tool(self) -> None:
-        """Create ``self._tool`` from ``self.tool_config``.
+    def prepare_world(self) -> None:
+        """(Optional) Eager, once-per-task setup of the shared world — runs after the
+        container launches and before any tool or agent touches it (relocate a read-only
+        working dir, fix permissions, write fixtures, …). Default: no-op.
 
-        Override in subclasses to run cube-specific setup (e.g. relocating a
-        read-only working directory) before calling ``tool_config.make()``.
-        ``self._container`` is already set when this is called.
+        This is the home for setup that MUST happen before ``reset()``. Per-seat tool
+        creation is separate and lazy (``make_tool``), so multi-agent seats open their own
+        sessions over the already-prepared world.
+        """
+
+    def make_tool(self, role: "str | None" = None) -> TTool:
+        """Create a tool instance for an agent seat — the actor's session over the world.
+
+        Called lazily by ``get_task_tool`` (per seat) and by the ``tool`` property (the
+        default no-role tool). The **default ignores ``role``** and just calls
+        ``tool_config.make(container)`` (the single-tool case). A multi-agent cube
+        **overrides** this to bind the role — return a role-specific tool, or thread
+        ``role`` into a role-aware ``tool_config.make``. Each call returns a FRESH instance
+        — a distinct session — so N seats don't share one tool. This is the role/actor
+        seam; ``role`` does not leak into the ``Action``.
         """
         # ToolConfig.make() returns AbstractTool; cubes that parameterize
         # Task[Meta, TFooTool] vouch that their tool_config produces a TFooTool.
-        self._tool = self.tool_config.make(container=self._container)  # type: ignore[assignment]
+        return self.tool_config.make(container=self._container)  # type: ignore[return-value]
+
+    def _build_tool(self) -> None:
+        """DEPRECATED legacy eager tool builder. New cubes override ``make_tool`` (lazy
+        per-seat) and/or ``prepare_world`` (eager world setup) instead. Kept so cubes that
+        still override it — and run world prep + ``make`` together — keep working: their
+        override runs eagerly in ``model_post_init``.
+        """
+        self._tool = self.make_tool(None)  # type: ignore[assignment]
 
     @property
     def tool(self) -> TTool:
+        """The task's default (no-role) tool — and its own/admin handle for
+        setup/evaluate/finished. Created LAZILY on first access and memoized;
+        ``get_task_tool(None)`` reuses this instance, per-role seats make their own.
+        """
+        if self._tool is None:
+            self._tool = self.make_tool(None)  # type: ignore[assignment]
         return self._tool  # type: ignore[return-value]
 
     @property
@@ -296,7 +333,14 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
             }
         ]
         """
-        actions = self.filter_actions(self.tool.action_set)
+        return self._action_set_for_tool(self.tool)
+
+    def _action_set_for_tool(self, tool: AbstractTool) -> List[ActionSchema]:
+        """``tool``'s actions filtered through ``filter_actions``, plus STOP when
+        ``accept_agent_stop``. Shared by ``Task.action_set`` (the no-role tool) and each
+        ``TaskTool.action_set`` (its seat's tool) — so per-role action sets just fall out
+        of each seat holding a different (role-bound) tool; no separate filter method."""
+        actions = self.filter_actions(tool.action_set)
         if self.accept_agent_stop and not any(a.name == STOP_ACTION.name for a in actions):
             actions = [*actions, STOP_ACTION]
         return actions
@@ -311,30 +355,34 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         """
         return {None: 1}
 
-    def get_task_tool(self, role: "str | None" = None, seat: int = 0) -> "TaskTool":
-        """Build the agent-facing view for one ``(role, seat)``.
+    def get_task_tool(self, role: "str | None" = None) -> "TaskTool":
+        """Build the agent-facing view for one ``role`` (the seat index is assigned by
+        ``agent_tools``, not passed here).
 
-        Override to customize the per-seat view; the per-role action set comes from
-        :meth:`action_set_for`. ``role=None, seat=0`` is the single-agent default.
+        ``role=None`` reuses the task's default tool (single-agent / the task's own
+        handle); a named role gets a FRESH role-bound tool via ``make_tool(role)`` — a
+        distinct session, so two buyers are two sessions. The tool *is* the actor
+        identity and carries the role's actions; nothing role-specific touches the
+        ``Action``. Override to fully customize a seat's view.
         """
-        return TaskTool(self, role=role, seat=seat)
+        tool = self.tool if role is None else self.make_tool(role)
+        return TaskTool(self, role=role, tool=tool)
 
     def agent_tools(self) -> "list[TaskTool]":
         """Expand :meth:`agent_roles` into one :class:`TaskTool` per seat over this
-        (shared) Task — single-agent = one tool. **Concrete; do not override** —
-        override :meth:`agent_roles` (the roster), :meth:`get_task_tool` (the per-seat
-        view), or :meth:`action_set_for` (per-role actions) instead. ``evaluate()``
-        sees the global state and attributes per-agent reward from the joint outcome.
+        (shared) Task — single-agent = one tool. **Concrete; do not override** — override
+        :meth:`agent_roles` (the roster), :meth:`make_tool` (the per-role tool/actor), or
+        :meth:`get_task_tool` (the whole view) instead. The seat index is assigned here
+        (the cube's ``get_task_tool`` stays seat-free). ``evaluate()`` sees the global
+        state and attributes per-agent reward from the joint outcome.
         """
-        return [self.get_task_tool(role, seat) for role, count in self.agent_roles().items() for seat in range(count)]
-
-    def action_set_for(self, role: "str | None" = None) -> List[ActionSchema]:
-        """The actions legal for ``role``. Default: role-agnostic (the full
-        :attr:`action_set`). Override to give different roles different action sets
-        (a buyer's actions vs a seller's). STOP is already included by ``action_set``
-        when ``accept_agent_stop`` is set.
-        """
-        return self.action_set
+        tools: list[TaskTool] = []
+        for role, count in self.agent_roles().items():
+            for seat in range(count):
+                view = self.get_task_tool(role)
+                view.seat = seat
+                tools.append(view)
+        return tools
 
     def filter_actions(self, actions: list[ActionSchema]) -> list[ActionSchema]:
         """
@@ -355,9 +403,10 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         """
         pass
 
-    def _execute_action(self, action: Action) -> Observation:
-        """Run a SINGLE action and return its observation — the per-action core
-        shared by both the gym ``step`` view and the agent-facing ``TaskTool`` view.
+    def _execute_action(self, action: Action, tool: "AbstractTool | None" = None) -> Observation:
+        """Run a SINGLE action through ``tool`` (the acting seat's tool; defaults to the
+        task's own ``self.tool``) and return its observation — the per-action core shared
+        by the gym ``step`` view and the agent-facing ``TaskTool`` view.
 
         - ``final_step`` (STOP) raises :class:`AgentStop` when ``accept_agent_stop``
           is set; callers decide what to do with it (gym → ``done``; agent loop →
@@ -371,17 +420,17 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         """
         if action.name == STOP_ACTION.name and self.accept_agent_stop:
             raise AgentStop()
-        result = self.tool.execute_action(action)
+        result = (tool if tool is not None else self.tool).execute_action(action)
         return self._coerce_action_result(action, result)
 
-    async def _aexecute_action(self, action: Action) -> Observation:
+    async def _aexecute_action(self, action: Action, tool: "AbstractTool | None" = None) -> Observation:
         """Async twin of ``_execute_action`` — same contract, awaits the tool's
         async dispatch. Used by the agent-facing view's ``async_execute_action``
         (parallel tool calls); the sync ``step`` view never calls it.
         """
         if action.name == STOP_ACTION.name and self.accept_agent_stop:
             raise AgentStop()
-        result = await self.tool.async_execute_action(action)
+        result = await (tool if tool is not None else self.tool).async_execute_action(action)
         return self._coerce_action_result(action, result)
 
     def _coerce_action_result(self, action: Action, result: Observation | StepError) -> Observation:
@@ -538,10 +587,16 @@ class TaskTool:
     Not a :class:`Tool` (it exposes no actions of its own) — it is a *facet* of a Task.
     """
 
-    def __init__(self, task: "Task", role: "str | None" = None, seat: int = 0) -> None:
+    def __init__(
+        self, task: "Task", role: "str | None" = None, tool: "AbstractTool | None" = None, seat: int = 0
+    ) -> None:
         self._task = task
         self.role = role
         self.seat = seat
+        # The actor's tool/session — its own (role-bound) instance for a named role, or
+        # the task's default tool for the no-role seat. Dispatch goes through THIS tool,
+        # so "which agent acted" is implicit in which session ran the action.
+        self._tool = tool if tool is not None else task.tool
 
     @property
     def agent_id(self) -> str:
@@ -551,37 +606,33 @@ class TaskTool:
 
     @property
     def action_set(self) -> List[ActionSchema]:
-        """The actions legal *right now* for this seat's ``role``. Delegates to
-        ``Task.action_set_for(self.role)``, which already appends STOP (``final_step``)
-        when ``accept_agent_stop`` is set.
+        """The actions legal *right now* for this seat — its tool's actions (filtered +
+        STOP). Per-role action sets fall out of each seat holding a different (role-bound)
+        tool, so there's no separate filtering method.
 
-        Recomputed on every access, so a cube *may* vary it over an episode
-        (legal-action masking / phase gating / real-time observe-no-op). In practice
-        this is **rare** — almost every cube returns a static set (its tool's actions +
-        STOP), so treat the dynamic capability as available-but-uncommon, not a contract
-        every cube must exercise. (Most agents also snapshot the set at construction
-        today; re-reading it per turn is a forward extension for cubes that need it.)
+        Recomputed on every access, so a cube *may* vary it over an episode (legal-action
+        masking / phase gating / real-time observe-no-op). In practice this is **rare** —
+        almost every cube returns a static set — so treat the dynamic capability as
+        available-but-uncommon. (Most agents also snapshot the set at construction today;
+        re-reading it per turn is a forward extension for cubes that need it.)
         """
-        return self._task.action_set_for(self.role)
+        return self._task._action_set_for_tool(self._tool)
 
     def execute_action(self, action: Action) -> Observation:
-        """Run one action and return its (post-processed) observation.
+        """Run one action through THIS seat's tool and return its (post-processed)
+        observation.
 
-        Relays to the Task's per-action core — the *same* execution as the gym
-        ``step`` view — and returns the **observation only**: no reward, no ``done``.
-        The runtime decides when to call ``Task.finished`` / ``Task.evaluate`` (eval
-        cadence is the harness's concern, not the agent's). ``final_step`` raises
-        :class:`AgentStop`, which the runtime catches to end the episode.
+        Relays to the Task's per-action core — the *same* execution as the gym ``step``
+        view — and returns the **observation only**: no reward, no ``done``. The runtime
+        decides when to call ``Task.finished`` / ``Task.evaluate`` (eval cadence is the
+        harness's concern, not the agent's). ``final_step`` raises :class:`AgentStop`,
+        which the runtime catches to end the episode.
         """
-        return self._task.obs_postprocess(self._task._execute_action(action))
+        return self._task.obs_postprocess(self._task._execute_action(action, self._tool))
 
     async def async_execute_action(self, action: Action) -> Observation:
-        """Async twin of ``execute_action`` — the parallel-tool-call call-site.
-
-        Same contract: runs the task's async per-action core + ``obs_postprocess``,
-        returns the observation only, raises :class:`AgentStop` on ``final_step``.
-        """
-        return self._task.obs_postprocess(await self._task._aexecute_action(action))
+        """Async twin of ``execute_action`` — the parallel-tool-call call-site."""
+        return self._task.obs_postprocess(await self._task._aexecute_action(action, self._tool))
 
 
 class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
