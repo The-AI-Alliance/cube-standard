@@ -71,7 +71,7 @@ heading_anchors: true
 # Aux links for the upper right navigation
 aux_links:
   "The AI Alliance":
-    - "https://aialliance.org"
+    - "https://thealliance.ai"
 
 nav_external_links:
   - title: "The AI Alliance repo for CUBE Standard"
