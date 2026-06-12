@@ -30,7 +30,7 @@ Read each subdir's `README.md` or `pyproject.toml` to understand what it provide
 1. Agent acts on web pages? → `cube-browser-tool` + `cube-browser-playwright`.
 2. Mouse + keyboard on a desktop? → `cube-computer-tool`, with the VM provisioned via a `VMResourceConfig` + `LocalInfraConfig` (local) or `cube-infra-aws/azure` (cloud).
 3. Chat-style task? → `cube-chat-tool` + `cube-chat`.
-4. None of the above? → custom tool. Subclass `Tool` (or `AsyncTool`); use `@tool_action`.
+4. None of the above? → custom tool. Subclass `Tool`; mark actions with `@tool_action` (sync `def` or `async def`, mixed freely on the one class).
 
 ## Subclassing patterns
 

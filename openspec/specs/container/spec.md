@@ -103,7 +103,8 @@ class ContainerStatus:
 - `port_from_url(url)` → int — extracts effective port (443 for https, 80 for http)
 - `relocate_if_readonly(container, working_dir, new_wd, *, extra_setup=None)` → str —
   copies `working_dir` to `new_wd` if it isn't writable by the runtime user;
-  returns the effective working directory. Used by cubes in `_build_tool()`.
+  returns the effective working directory. Used by cubes in `_make_tool()` (the container
+  reaches the tool via `tool_config.make(container=self._container)`).
 
 ## Invariants
 

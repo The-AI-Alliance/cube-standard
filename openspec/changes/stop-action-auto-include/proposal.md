@@ -1,5 +1,7 @@
 # Auto-include `STOP_ACTION` in `Task.action_set`
 
+> **Superseded by `streamable-task`** — STOP is now the universal `Tool.final_step` action (raises `AgentStop`); `filter_actions`-appending and `accept_agent_stop` were removed.
+
 **Status:** Proposed
 **Date:** 2026-05-13
 **Scope:** `cube.task`

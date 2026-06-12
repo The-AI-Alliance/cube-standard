@@ -4,10 +4,19 @@
 
 ## Purpose
 
-A `Task` is a single scoreable problem. It unifies gym-style dynamics
-(`reset`/`step`/`close`) with task-specific logic (`evaluate`, `filter_actions`,
-`obs_postprocess`). One class, one place for the benchmark author to define both
-what the agent can do and how it is scored.
+A `Task` is a single scoreable problem — **the Task is the world**. It unifies gym-style
+dynamics (`reset`/`step`/`close`) with task-specific logic (`evaluate`, `_filter_actions`,
+`obs_postprocess`). One class, one place for the benchmark author to define both what the
+agent can do and how it is scored.
+
+An agent never holds the Task. It holds an **`AgentView`** — the obs-in/action-out
+agent-facing facet — obtained via `task.get_agent_view(role)`. The Task supports
+single-agent (the default) and multi-agent benchmarks through the same `role` thread.
+
+**Two-audience `_` convention:** override points meant for *benchmark developers* only
+(not downstream harness users) are `_`-prefixed (`_make_tool`, `_filter_actions`); the
+public surface (`reset`, `evaluate`, `obs_postprocess`, `get_agent_view`, `agent_roles`)
+is not.
 
 ## Public API
 
@@ -78,15 +87,14 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     tool_config: SerializeAsAny[ToolConfig]
     runtime_context: RuntimeContext | None = None      # from Benchmark._setup()
     validate_per_step: bool = False                    # eval on every step, not just done
-    accept_agent_stop: bool = True                     # accept STOP_ACTION from agent
 
     # Runtime (PrivateAttr, set in model_post_init)
-    _tool: TTool | None
+    _tool: TTool | None                         # the task's own no-role tool
     _container: Container | None
     _resource_handle: ResourceHandle | None    # handle from InfraConfig.launch(); torn down by close()
 
     @property
-    def tool(self) -> TTool: ...
+    def tool(self) -> TTool: ...                # the no-role tool; raises if absent (see below)
 ```
 
 `Task` carries two type parameters:
@@ -117,34 +125,97 @@ Tasks read typed fields directly: `self.execution_info.problem_statement`,
    present, the container is provisioned via the injected `InfraConfig`
    (`cube.task_infra.launch_task_container`); the live `Container` and its
    `ResourceHandle` are stored in `_container` / `_resource_handle`.
-2. Call `_build_tool()` (default: `tool_config.make(container=self._container)`)
-   to build the tool.
+2. `self._tool = self._make_tool()` — build the task's own no-role tool.
 
 **Abstract methods (implementers MUST provide):**
 - `reset() -> (Observation, dict)` — set up initial state; also call `self.tool.reset()`
 - `evaluate(obs: Observation | None = None) -> (float, dict)` — score the current state
 
+**Tool lifecycle / multi-agent (benchmark-dev override points):**
+- `_make_tool(role: str | None = None) -> TTool` — the **single** tool-lifecycle hook
+  (replaces `make_tool` / `prepare_world` / `_build_tool`). Does any once-per-task world
+  prep AND builds the tool. Default: `tool_config.make(container=self._container)`, ignoring
+  `role`. Called once for the no-role `_tool` and once per seat by `get_agent_view`; each
+  call returns a fresh session. A *multi-agent* task whose tools are strictly per-role may
+  raise `NotImplementedError` for `role=None` (honored only for multi-agent — `_tool` stays
+  `None` and `tool` raises; for a single-agent task it propagates as a real bug).
+- `agent_roles() -> dict[str | None, int]` — the roster, role → seat count. Default
+  `{None: 1}` (single-agent). Multi-agent cubes override, e.g. `{"buyer": 2, "seller": 1}`.
+- `get_agent_view(role: str | None = None) -> AgentView` — the agent-facing view. Base
+  implements **only** the single-agent case (`role=None`, over the task's own tool) and
+  **raises `NotImplementedError`** for a named role. There is **no `seat` param**:
+  multi-agent benchmarks **override** this and own the per-role seat index internally (the
+  runtime calls it once per seat declared in `agent_roles()`).
+
 **Optional hooks (default: identity / no-op):**
-- `filter_actions(actions: list[ActionSchema]) -> list[ActionSchema]` — whitelist subset of tool actions
-- `obs_postprocess(obs: Observation) -> Observation` — transform observations before returning
+- `_filter_actions(actions: list[ActionSchema], role: str | None = None) -> list[ActionSchema]`
+  — advisory whitelist/mask of *advertised* actions. Applied in BOTH `Task.action_set` and
+  `AgentView.action_set` so the gym and agent paths never diverge. Recomputed each access
+  (may vary across an episode from task state). Advisory — shapes what the agent *sees*, not
+  execute-time enforcement.
+- `obs_postprocess(obs: Observation, role: str | None = None) -> Observation` — per-seat
+  observation post-processing (the twin of `_filter_actions`; `role` threads through both).
 - `finished(obs: Observation | None = None) -> bool` — early termination check
 - `get_privileged_info() -> Content` — solution, eval source, internal state (for debug/oracle agents)
 - `get_status() -> str` — free-form status string
 - `close()` — cleanup; default calls `self.tool.close()`. Override to add cleanup and call `super().close()`.
 
+`role` belongs on exactly the two per-seat view-shaping hooks (`_filter_actions`,
+`obs_postprocess`), never on the world-global `evaluate` / `reset` / `finished`.
+
+### `tool` property + `AgentView` (two distinct surfaces)
+
+```python
+@property
+def tool(self) -> TTool: ...                # the task's own no-role tool
+def get_agent_view(self, role=None) -> AgentView
+```
+
+- **`Task.tool`** is the task's own no-role tool — what the Task itself drives (reset /
+  evaluate / setup) and what cube-standard internals (server, nemogym, debug suite) use.
+  It is the raw environment tool, **not** an agent surface. Raises `RuntimeError` if the
+  task has no no-role tool (a multi-agent task whose `_make_tool(None)` raised
+  `NotImplementedError`) — drive each seat via `get_agent_view(role)` instead.
+- **`AgentView`** is the ONLY surface an agent holds (obs in, action out, no lifecycle) —
+  see below.
+
+### `AgentView`
+```python
+class AgentView:                                  # a facet of a Task, NOT a Tool
+    role: str | None                              # None for single-agent
+    seat: int
+    @property def agent_id(self) -> str           # "agent" (single) else "{role}-{seat}"
+    @property def action_set(self) -> list[ActionSchema]    # tool actions after _filter_actions(role)
+    def execute_action(self, action) -> Observation         # obs only — no reward, no done
+    async def async_execute_action(self, action) -> Observation
+    def set_eval_callback(self, cb: Callable[[float, dict], None]) -> None
+```
+
+The agent gets exactly `action_set` (what it may do now) and `execute_action` (do one
+thing, see the obs) — never `reset`/`evaluate`/`close`/`step`. `execute_action` relays to
+the same per-action core as gym `step`, applies `obs_postprocess(role)`, and returns the
+**observation only**. Dispatch goes through the seat's own tool, so "which agent acted" is
+implicit in which session ran the action.
+
+**Per-step eval:** when `task.validate_per_step` is set, `execute_action` fires the
+per-step `evaluate` and surfaces `(reward, info)` through the registered eval callback —
+out-of-band, never in the returned obs (reward is not the agent's concern). A
+`validate_per_step` task with **no** callback registered is a wiring bug, so it **raises**
+loudly rather than silently dropping the reward. `agent_id` is `"agent"` for the single
+default seat, else `"{role}-{seat}"` (e.g. `"buyer-0"`).
+
 ### `Task.step()` (concrete; do not override)
 
 Signature: `step(action: Action | list[Action]) -> EnvironmentOutput`
 
-Accepts single Action or list (atomic multi-action step). Logic:
+The **gym-compatibility view**. Accepts single Action or list (sequential multi-action
+step). Logic:
 
-1. Loop over actions:
-   - If `action.name == STOP_ACTION.name` and `self.accept_agent_stop`: append
-     `"Task finished by the agent."` observation, set `done=True`, break.
-   - Otherwise, call `self.tool.execute_action(action)`. Time it.
-   - If result is `Observation`: `obs += result`
-   - If result is `StepError`: set `error`, `done=True`, break
-   - Any other type → raise `ValueError`
+1. Loop over actions, each through `self._tool.execute_action(action)` (the same dispatch
+   `AgentView` uses), timed:
+   - `except AgentStop`: `obs += stop.observation`, `done=True`, break.
+   - Else `obs += result`; if `result.error is not None`, lift it onto `error` (the
+     `StepError` returned via `EnvironmentOutput.error`). A tool error is non-terminal.
 2. `done = done or self.finished(obs)`
 3. If `done` or `self.validate_per_step`: call `self.evaluate(obs)` → `(reward, info)`
 4. Apply `obs = self.obs_postprocess(obs)`
@@ -153,38 +224,22 @@ Accepts single Action or list (atomic multi-action step). Logic:
 Returns `EnvironmentOutput(obs, reward, done, info, error)`. `truncated` is always
 `False` — step/time-limit truncation is the harness's responsibility (TODO in code).
 
-### `STOP_ACTION` (module-level constant)
-```python
-STOP_ACTION = ActionSchema(
-    name="final_step",
-    description="Stop the task execution.",
-    parameters={"type": "object", "properties": {}},
-)
-```
-Protocol for agent-initiated termination. Tasks that reject it must set
-`accept_agent_stop = False` (e.g., tasks that require the agent to reach a terminal
-state via environment interaction, not a self-declaration).
-
-`Task.action_set` auto-appends `STOP_ACTION` whenever `accept_agent_stop=True`
-(deduping by name), so cube authors do not re-add it in `filter_actions`. The
-non-empty `parameters` schema is the minimal payload Anthropic accepts for
-`input_schema`; LiteLLM passes it through verbatim.
+`STOP_ACTION` (the `final_step` schema) and `AgentStop` live in [`cube.core`](../core/spec.md)
+(re-exported from `cube.task` for back-compat). STOP is a real tool action
+(`Tool.final_step`) that raises `AgentStop` — there is **no STOP special-casing** in this
+layer anymore.
 
 ### `Task.action_set` (concrete property)
 
 ```python
 @property
 def action_set(self) -> list[ActionSchema]:
-    actions = self.filter_actions(self.tool.action_set)
-    if self.accept_agent_stop and not any(a.name == STOP_ACTION.name for a in actions):
-        actions = [*actions, STOP_ACTION]
-    return actions
+    return self._filter_actions(self.tool.action_set)
 ```
 
-Returns the action schemas the agent should see. Runs `filter_actions()`
-first, then appends `STOP_ACTION` when `accept_agent_stop=True` unless an
-action with that name is already present. The dedup branch keeps legacy
-`filter_actions` overrides that still append `STOP_ACTION` working.
+The gym-view action set — the task's own tool's actions after `_filter_actions` (role=None).
+Already includes `final_step` (every Tool exposes it; nothing appends a STOP schema).
+Mirrors what an `AgentView` advertises so the gym and agent paths never diverge.
 
 ### `RuntimeContext`
 ```python
@@ -296,13 +351,15 @@ always retains the native un-prefixed id.
 
 1. `reset()` must call `self.tool.reset()` (implementer responsibility).
 2. `step()` is concrete — do not override. All task-specific behavior goes in
-   `evaluate`, `filter_actions`, `obs_postprocess`, `finished`.
-3. Tool is built eagerly in `model_post_init` — once a Task is constructed, its tool is live.
-4. `accept_agent_stop=True` (default) means the agent can self-terminate via
-   `Action(name="final_step")`. `Task.action_set` auto-appends `STOP_ACTION`
-   in this case (dedup by name); `step()` recognises it and calls
-   `evaluate()` on termination.
-5. `info["profiling"]` is always populated after `step()` unless no actions ran (empty list).
+   `evaluate`, `_filter_actions`, `obs_postprocess`, `finished`.
+3. Tool is built eagerly in `model_post_init` (`self._tool = self._make_tool()`) — once a
+   single-agent Task is constructed, its tool is live.
+4. The agent self-terminates via `Action(name="final_step")` — a real tool action that
+   raises `AgentStop`, caught by `step()` (→ `done=True`, then `evaluate()`). There is no
+   `accept_agent_stop` flag and no STOP schema injection: `final_step` is always present.
+5. `_filter_actions` and `obs_postprocess` are applied identically on the gym path
+   (`Task.action_set` / `step`) and the agent path (`AgentView`) — they never diverge.
+6. `info["profiling"]` is always populated after `step()` unless no actions ran (empty list).
 
 ## Contracts for implementers
 
@@ -336,14 +393,19 @@ always retains the native un-prefixed id.
   `TaskConfig` subclasses that have no owning `BenchmarkConfig` (direct test
   instantiation).
 - `validate_per_step=True` means `evaluate()` runs every step — expensive. Default is
-  only on termination.
-- `filter_actions` overrides MUST NOT append `STOP_ACTION` — `Task.action_set`
-  does it automatically when `accept_agent_stop=True`. Manual appends still
-  work (dedup by name) but are redundant and should be removed.
+  only on termination. On the agent path it requires `AgentView.set_eval_callback()` to be
+  wired, else `execute_action` raises (silent reward-drop is a bug).
+- `_filter_actions` must NOT append `STOP_ACTION` — `final_step` is always advertised by
+  the tool. Per-role action *sets* are better expressed by `_make_tool(role)` returning a
+  role-bound tool; use `_filter_actions` for task-state-dependent masking the tool can't see.
+- A multi-agent task that overrides `get_agent_view` owns the per-seat index internally;
+  the runtime never passes a seat. If its tools are strictly per-role, `_make_tool(None)`
+  may raise `NotImplementedError` and `Task.tool` then raises — drive seats via
+  `get_agent_view(role)`.
 - `runtime_context` is a dict, not a Pydantic model — no type safety. Document keys
   in your `Benchmark._setup()` docstring.
 - `model_post_init` launches the container (via the injected `InfraConfig`)
-  before building the tool. If your `ToolConfig.make()` / `_build_tool()` fails,
+  before building the tool. If your `ToolConfig.make()` / `_make_tool()` fails,
   the container is already running — it may leak unless the caller handles
   construction errors (e.g. wraps `spawn()`/`make()` and calls
   `_resource_handle.close()` on failure).
