@@ -138,7 +138,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     1. task logic:
         + evaluate(obs?) -> (float, dict)         abstract — score the current state
         - _filter_actions(actions, role?) -> actions  optional whitelist/mask of advertised actions
-        - obs_postprocess(obs) -> obs             optional observation post-processing
+        - obs_postprocess(obs, role?) -> obs      optional per-seat observation post-processing
         - finished(obs?) -> bool                  optional early-termination check
         - get_privileged_info() -> Content        optional privileged task info
 
@@ -386,10 +386,12 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         info["profiling"] = profiling
         return EnvironmentOutput(obs=obs, reward=reward, done=done, info=info, error=error)
 
-    def obs_postprocess(self, obs: Observation) -> Observation:
-        """
-        (Optional) Post-processing of observation before returning it to the agent.
-        By default does nothing.
+    def obs_postprocess(self, obs: Observation, role: "str | None" = None) -> Observation:
+        """(Optional) Post-process an observation before it reaches the agent. Default does
+        nothing. The seat's ``role`` is passed (``None`` for the gym/single-agent view) so a
+        shared-world multi-agent task can shape per-role views off the one tool — the twin of
+        :meth:`_filter_actions` (the two per-seat view-shaping hooks; ``role`` belongs on
+        exactly these, not on the world-global ``evaluate`` / ``reset`` / ``finished``).
         """
         return obs
 
@@ -536,13 +538,13 @@ class AgentView:
         — out-of-band, never in the returned obs. ``finished`` (episode termination) stays
         the runtime's call. ``final_step`` raises :class:`AgentStop`.
         """
-        obs = self._task.obs_postprocess(self._tool.execute_action(action))
+        obs = self._task.obs_postprocess(self._tool.execute_action(action), self.role)
         self._maybe_evaluate(obs)
         return obs
 
     async def async_execute_action(self, action: Action) -> Observation:
         """Async twin of ``execute_action`` — the parallel-tool-call call-site."""
-        obs = self._task.obs_postprocess(await self._tool.async_execute_action(action))
+        obs = self._task.obs_postprocess(await self._tool.async_execute_action(action), self.role)
         self._maybe_evaluate(obs)
         return obs
 

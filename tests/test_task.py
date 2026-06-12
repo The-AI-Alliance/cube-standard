@@ -258,6 +258,30 @@ def test_filter_actions_masks_both_gym_and_agent_views():
     assert "greet" in gym_names  # non-masked actions still advertised
 
 
+def test_obs_postprocess_receives_seat_role():
+    # The seat's role threads to obs_postprocess (twin of _filter_actions): None on the gym
+    # view, the named role on a multi-agent seat's view.
+    seen: list[str | None] = []
+
+    class _Tagged(SimpleTask):
+        def obs_postprocess(self, obs, role=None):
+            seen.append(role)
+            return obs
+
+        def agent_roles(self):
+            return {"watcher": 1}
+
+        def get_agent_view(self, role=None):
+            if role is None:
+                return super().get_agent_view(None)
+            return AgentView(self, role=role, tool=self._tool, seat=0)
+
+    task = _Tagged(metadata=TaskMetadata(id="t"), tool_config=GreetToolConfig())
+    task.step(Action(name="greet", arguments={"name": "X"}))  # gym view -> role None
+    task.get_agent_view("watcher").execute_action(Action(name="greet", arguments={"name": "X"}))
+    assert seen == [None, "watcher"]
+
+
 def test_tool_property_raises_when_no_no_role_tool():
     # A multi-agent task whose tools are strictly per-role opts out of the no-role tool.
     class _NoAdminTool(SimpleTask):
