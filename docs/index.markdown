@@ -14,5 +14,6 @@ has_children: false
 ## Get Started
 
 - **[Authoring a CUBE]({{site.baseurl}}/authoring-a-cube)** — How to wrap a benchmark as a CUBE: three starting paths, implementation order, validation, and submission
+- **[Design Philosophy]({{site.baseurl}}/design-philosophy)** — Read before proposing a change to the framework itself: the broader picture and the bar a change must clear
 - **[GitHub README](https://github.com/The-AI-Alliance/cube-standard#readme){:target="repo"}** — Installation, quick start, and contributing
 - **[DeepWiki](https://deepwiki.com/The-AI-Alliance/cube-standard){:target="deepwiki"}** — Full API reference and guides

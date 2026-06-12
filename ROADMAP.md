@@ -1,6 +1,6 @@
 # CUBE Standard — Roadmap
 
-> This roadmap reflects current priorities and is updated as the project evolves. Items are roughly ordered by priority within each phase. For detailed proposals, see the [`design/`](design/) folder and the [RFC process](#rfc-process) in [CONTRIBUTING.md](CONTRIBUTING.md).
+> This roadmap reflects current priorities and is updated as the project evolves. Items are roughly ordered by priority within each phase. Active proposals live in [`openspec/changes/`](openspec/changes/); the [`design/`](design/) folder holds long-form reference deep-dives. See the [contribution workflow](CONTRIBUTING.md#the-contribution-workflow-end-to-end) (including the RFC process) in CONTRIBUTING.md.
 
 ## Phase 1 — Alpha Stabilization (current)
 
@@ -29,10 +29,10 @@ Goal: integrate with major agent frameworks, grow to ~50 cubes.
 - [ ] AgentBeats integration — leaderboard and evaluation pipeline connected to CUBE
 - [ ] Other platform integrations — ongoing discussions with framework maintainers
 - [ ] ~50 cubes, growing across categories
-- [ ] RFC: streaming observations ([`design/rfc_core_extensions.md`](design/rfc_core_extensions.md))
-- [ ] RFC: better async task execution ([`design/rfc_core_extensions.md`](design/rfc_core_extensions.md))
-- [ ] RFC: multi-agent support ([`design/rfc_core_extensions.md`](design/rfc_core_extensions.md))
-- [ ] RFC: multi-dimensional rewards ([`design/rfc_core_extensions.md`](design/rfc_core_extensions.md))
+- [ ] RFC: streaming observations ([`openspec/changes/core-extensions/`](openspec/changes/core-extensions/))
+- [ ] RFC: better async task execution ([`openspec/changes/core-extensions/`](openspec/changes/core-extensions/))
+- [ ] RFC: multi-agent support ([`openspec/changes/core-extensions/`](openspec/changes/core-extensions/))
+- [ ] RFC: multi-dimensional rewards ([`openspec/changes/core-extensions/`](openspec/changes/core-extensions/))
 
 ## Phase 3 — Broad Ecosystem
 
@@ -47,12 +47,12 @@ Goal: CUBE becomes the default interoperability layer for agent benchmarks. Exac
 
 ## RFC Process
 
-Have an idea that changes the core protocol? Open a GitHub Discussion or file a PR against `design/`. See [CONTRIBUTING.md](CONTRIBUTING.md#rfc-process) for the full process.
+Have an idea that changes the core protocol? Open a GitHub Discussion or an `openspec/changes/<name>/` proposal PR. See the [contribution workflow](CONTRIBUTING.md#the-contribution-workflow-end-to-end) in CONTRIBUTING.md for the full process.
 
 ## How to Influence the Roadmap
 
 - Comment on existing [GitHub Issues](https://github.com/The-AI-Alliance/cube-standard/issues) or open a new one
 - Start a [GitHub Discussion](https://github.com/The-AI-Alliance/cube-standard/discussions)
-- Submit an RFC draft in `design/` via PR
+- Submit an RFC as an `openspec/changes/<name>/` proposal PR
 - [Propose a benchmark for wrapping](https://docs.google.com/forms/d/e/1FAIpQLSddMFyRXZJPpD0I2K27OEmIPUpj57w--u2NuMscrjNlkqy8rQ/viewform) — flag a benchmark you'd like to see as a CUBE, or contribute one yourself
 - [Apply as a core contributor](https://forms.gle/JFiBi4ynfVLMghAH8) to help shape priorities directly

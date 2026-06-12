@@ -78,7 +78,7 @@ Work through the layers top-down. Each file has `TODO` comments pointing at what
 
 **A note on task metadata.** If you have more than a handful of tasks, you'll load them from `task_metadata.csv` or `.json` rather than inlining them in `benchmark.py`. If your task data starts life in a different shape — scraped from a website, exported from an existing benchmark repo, hand-curated in a spreadsheet — expect to write a small one-off conversion script as a pre-step. The `/new-cube` skill walks you through this; following options 2 or 3 you'll handle it manually.
 
-Framework invariants (return types, serialization rules, reward semantics) are in [CONTRIBUTING.md § Key invariants](https://github.com/The-AI-Alliance/cube-standard/blob/main/CONTRIBUTING.md#key-invariants). Read them once before you're deep in the code.
+Framework invariants are in the layer specs — return types and action wrapping in [`tool/spec.md`](https://github.com/The-AI-Alliance/cube-standard/blob/main/openspec/specs/tool/spec.md), serialization and reward semantics in [`task/spec.md`](https://github.com/The-AI-Alliance/cube-standard/blob/main/openspec/specs/task/spec.md). Read them once before you're deep in the code.
 
 ## Validate
 

@@ -8,6 +8,9 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "cube-standard",
+    # container.py reaches a private SDK surface for the poll read-timeout
+    # (process._api_client + _request_timeout) — guarded with a fail-loud check;
+    # re-verify that path when bumping (see DaytonaContainer.__init__ / _POLL_READ_TIMEOUT_S).
     "daytona>=0.21",
     "tenacity>=8.5.0",
 ]

@@ -3,21 +3,31 @@
 # Called automatically by LocalInfraConfig.install() — safe to run multiple times.
 set -euo pipefail
 
+# QEMU is only needed by VM-backed cubes (osworld, windows-agent-arena). Its install
+# is therefore BEST-EFFORT: a failure (e.g. Homebrew's qemu bottle not building on
+# Apple Silicon) must NOT abort local-infra setup, or offline / Docker / browser cubes
+# — which need no qemu at all — become unrunnable on `local` infra. A VM cube then
+# fails later with a clear "qemu-system-x86_64 not found" when it actually boots a VM.
+# (Proper fix: scope provisioning to declared task capabilities — cube-standard #191.)
+qemu_warn() {
+  echo "WARNING: could not install qemu — VM-backed cubes (osworld, windows-agent-arena) " \
+       "won't run until you install it manually. Other cubes (offline / Docker / browser) " \
+       "are unaffected." >&2
+}
+
 case "$(uname)" in
   Linux)
     if ! command -v qemu-system-x86_64 &>/dev/null; then
-      sudo apt-get update -qq
-      sudo apt-get install -y qemu-system-x86 qemu-utils
+      { sudo apt-get update -qq && sudo apt-get install -y qemu-system-x86 qemu-utils; } || qemu_warn
     fi
     ;;
   Darwin)
     if ! command -v qemu-system-x86_64 &>/dev/null; then
-      brew install qemu
+      brew install qemu || qemu_warn
     fi
     ;;
   *)
-    echo "Unsupported platform: $(uname). Install qemu-system-x86_64 manually." >&2
-    exit 1
+    echo "Unsupported platform: $(uname). Install qemu-system-x86_64 manually if you need VM cubes." >&2
     ;;
 esac
 

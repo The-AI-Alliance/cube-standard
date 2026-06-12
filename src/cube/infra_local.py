@@ -491,7 +491,12 @@ class LocalInfraConfig(InfraConfig):
     # ── InfraConfig interface ─────────────────────────────────────────────────
 
     def install(self) -> None:
-        """Install qemu and docker system dependencies if not already present."""
+        """Install local system dependencies if not already present.
+
+        qemu (VM-backed cubes only) is best-effort: a failed qemu install warns but does
+        NOT abort, so offline / Docker / browser cubes stay runnable on `local` infra even
+        where qemu can't build (e.g. Homebrew on Apple Silicon). See the script's comment
+        and cube-standard #191 (scope provisioning to declared task capabilities)."""
         ref = importlib.resources.files("cube").joinpath("scripts/install_local_infra.sh")
         with importlib.resources.as_file(ref) as script:
             if script.exists():
