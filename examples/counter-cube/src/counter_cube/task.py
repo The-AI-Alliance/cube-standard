@@ -2,7 +2,7 @@
 
 Task owns a Tool and implements the episode loop (reset / step / evaluate / close).
 Must implement: reset() → (Observation, info), evaluate(obs) → (reward, info).
-Optional: finished() for early termination, filter_actions() to restrict actions.
+Optional: finished() for early termination, _filter_actions() to restrict advertised actions.
 
 For per-task state, prefer typed Pydantic fields over stringly-typed dicts.
 ``CounterTaskMetadata`` carries semantic task descriptors (target, difficulty).

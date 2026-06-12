@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import pytest
+from pydantic import PrivateAttr
 
 from cube.container import Container
 from cube.core import Action, EnvironmentOutput, Observation, TextContent
@@ -185,12 +186,12 @@ def test_eval_callback_silent_without_validate_per_step():
     assert got == []  # per-step eval only fires when validate_per_step is set
 
 
-def test_eval_skipped_when_no_callback_registered():
-    # validate_per_step set but no consumer → eval is skipped (no error).
-    obs = (
-        make_task(validate_per_step=True).get_agent_view().execute_action(Action(name="greet", arguments={"name": "X"}))
-    )
-    assert isinstance(obs, Observation)
+def test_eval_raises_when_validate_per_step_but_no_callback():
+    # validate_per_step set but no consumer → the per-step reward would be silently dropped,
+    # which is a wiring bug, so execute_action raises instead of discarding it.
+    view = make_task(validate_per_step=True).get_agent_view()
+    with pytest.raises(RuntimeError, match="no eval callback is registered"):
+        view.execute_action(Action(name="greet", arguments={"name": "X"}))
 
 
 # --- multi-agent roles (agent_roles / get_agent_view / _make_tool) -----------
@@ -201,9 +202,10 @@ def test_agent_roles_default_single_agent():
     assert make_task().get_agent_view().agent_id == "agent"  # single seat keeps "agent"
 
 
-def test_get_agent_view_carries_role_and_seat():
-    t = make_task().get_agent_view(role="buyer", seat=2)
-    assert (t.role, t.seat, t.agent_id) == ("buyer", 2, "buyer-2")
+def test_base_get_agent_view_raises_for_named_role():
+    # The base only handles single-agent; a multi-agent benchmark must override it.
+    with pytest.raises(NotImplementedError):
+        make_task().get_agent_view(role="buyer")
 
 
 def test_no_role_seat_reuses_task_tool():
@@ -211,8 +213,9 @@ def test_no_role_seat_reuses_task_tool():
     assert task.get_agent_view(None)._tool is task._tool  # no-role seat reuses the task's own tool
 
 
-def test_per_role_tool_gives_per_role_actions():
-    # Per-role action sets fall out of _make_tool(role) returning a role-bound tool.
+def test_multi_agent_override_builds_per_role_seats():
+    # A multi-agent benchmark overrides get_agent_view, owning the seat index + per-role
+    # tool internally; per-role action sets fall out of the role-bound tool.
     class _SellerTool(Tool):
         @tool_action
         def sell(self, item: str) -> str:
@@ -220,17 +223,65 @@ def test_per_role_tool_gives_per_role_actions():
             return f"sold {item}"
 
     class _Market(SimpleTask):
-        def agent_roles(self):
-            return {"buyer": 1, "seller": 1}
+        _seats: dict = PrivateAttr(default_factory=dict)  # internal per-role seat counter
 
-        def _make_tool(self, role=None):
-            return _SellerTool() if role == "seller" else super()._make_tool(role)
+        def agent_roles(self):
+            return {"buyer": 2, "seller": 1}
+
+        def get_agent_view(self, role=None):
+            if role is None:
+                return super().get_agent_view(None)
+            seat = self._seats.get(role, 0)
+            self._seats[role] = seat + 1
+            tool = _SellerTool() if role == "seller" else self.tool_config.make()
+            return AgentView(self, role=role, tool=tool, seat=seat)
 
     task = _Market(metadata=TaskMetadata(id="m"), tool_config=GreetToolConfig())
-    buyer = {a.name for a in task.get_agent_view("buyer").action_set}
-    seller = {a.name for a in task.get_agent_view("seller").action_set}
-    assert "greet" in buyer and "sell" not in buyer
-    assert "sell" in seller and "greet" not in seller
+    b0, b1 = task.get_agent_view("buyer"), task.get_agent_view("buyer")
+    seller = task.get_agent_view("seller")
+    assert (b0.agent_id, b1.agent_id, seller.agent_id) == ("buyer-0", "buyer-1", "seller-0")
+    assert "greet" in {a.name for a in b0.action_set} and "sell" not in {a.name for a in b0.action_set}
+    assert "sell" in {a.name for a in seller.action_set}
+
+
+def test_filter_actions_masks_both_gym_and_agent_views():
+    # _filter_actions is advisory: it shapes what's advertised, in BOTH views identically.
+    class _Restricted(SimpleTask):
+        def _filter_actions(self, actions, role=None):
+            return [a for a in actions if a.name != "fail"]
+
+    task = _Restricted(metadata=TaskMetadata(id="r"), tool_config=GreetToolConfig())
+    gym_names = {a.name for a in task.action_set}
+    agent_names = {a.name for a in task.get_agent_view().action_set}
+    assert "fail" not in gym_names and "fail" not in agent_names  # masked in both
+    assert gym_names == agent_names  # the gym and agent paths never diverge
+    assert "greet" in gym_names  # non-masked actions still advertised
+
+
+def test_tool_property_raises_when_no_no_role_tool():
+    # A multi-agent task whose tools are strictly per-role opts out of the no-role tool.
+    class _NoAdminTool(SimpleTask):
+        def agent_roles(self):
+            return {"player": 2}
+
+        def _make_tool(self, role=None):
+            if role is None:
+                raise NotImplementedError("per-role tools only")
+            return self.tool_config.make()
+
+    task = _NoAdminTool(metadata=TaskMetadata(id="n"), tool_config=GreetToolConfig())
+    assert task._tool is None  # never built
+    with pytest.raises(RuntimeError, match="no no-role tool"):
+        _ = task.tool
+
+
+def test_validate_per_step_with_callback_recuperates_reward():
+    task = make_task(validate_per_step=True)
+    view = task.get_agent_view()
+    seen: list[tuple[float, dict]] = []
+    view.set_eval_callback(lambda r, i: seen.append((r, i)))
+    view.execute_action(Action(name="greet", arguments={"name": "x"}))
+    assert seen == [(0.5, {"score": 0.5})]  # surfaced out-of-band, never in the obs
 
 
 def test_task_action_set_includes_stop_action_by_default() -> None:

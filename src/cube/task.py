@@ -4,7 +4,7 @@ Task management for CUBE.
 This module defines the Task base class, TaskMetadata, and TaskConfig for
 implementing and configuring individual benchmark tasks. By design, Task
 unifies gym-like environment dynamics (reset/step/close) and task-specific
-logic (evaluate/filter_actions/obs_postprocess) in a single class, so that
+logic (evaluate/_filter_actions/obs_postprocess) in a single class, so that
 benchmark authors have one coherent place to define both what the agent can
 do and how it is evaluated.
 
@@ -137,7 +137,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     This class contains:
     1. task logic:
         + evaluate(obs?) -> (float, dict)         abstract — score the current state
-        - filter_actions(actions) -> actions      optional whitelist of tool actions
+        - _filter_actions(actions, role?) -> actions  optional whitelist/mask of advertised actions
         - obs_postprocess(obs) -> obs             optional observation post-processing
         - finished(obs?) -> bool                  optional early-termination check
         - get_privileged_info() -> Content        optional privileged task info
@@ -216,7 +216,14 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
                 cpu_cores=cc.cpu_cores,
             )
 
-        self._tool = self._make_tool()  # the task's own tool; cube code uses self._tool
+        # The task's own no-role tool (single-agent's tool, or a shared-world admin tool).
+        # A multi-agent task whose tools are *strictly per-role* opts out by raising
+        # NotImplementedError in _make_tool(None); we leave _tool unset and `tool` raises a
+        # clear error pointing to get_agent_view(role).
+        try:
+            self._tool = self._make_tool()  # cube code uses self._tool
+        except NotImplementedError:
+            self._tool = None
 
     def _make_tool(self, role: "str | None" = None) -> TTool:
         """Create a tool — a session over the world. **The single tool-lifecycle hook**:
@@ -234,12 +241,20 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         multi-agent cube overrides, e.g. ``{"buyer": 2, "seller": 1}``."""
         return {None: 1}
 
-    def get_agent_view(self, role: "str | None" = None, seat: int = 0) -> "AgentView":
-        """The agent-facing view for a seat. ``role=None`` reuses the task's own ``_tool``
-        (single-agent); a named role gets a fresh role-bound session via ``_make_tool(role)``
-        — the tool *is* the actor. The runtime calls this per seat (it sets the seat index)."""
-        tool = self._tool if role is None else self._make_tool(role)
-        return AgentView(self, role=role, tool=tool, seat=seat)
+    def get_agent_view(self, role: "str | None" = None) -> "AgentView":
+        """The agent-facing view for an agent. The base implements **only** the single-agent
+        case (``role=None``, reusing the task's own tool). A multi-agent benchmark **must
+        override** this to build each seat's view — assigning the seat index and per-role
+        tool (``_make_tool(role)``) **internally**. The runtime never passes a seat: it calls
+        this once per seat declared in ``agent_roles()``, and the benchmark hands out the
+        right view (e.g. tracking an internal per-role counter).
+        """
+        if role is None:
+            return AgentView(self, role=None, tool=self._tool)
+        raise NotImplementedError(
+            f"{type(self).__name__} declares role {role!r} in agent_roles() but does not override "
+            "get_agent_view() to build that seat's view — multi-agent benchmarks must implement it."
+        )
 
     @property
     def tool(self) -> TTool:
@@ -248,9 +263,17 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
 
         This is the raw environment tool, NOT an agent surface: agents never hold it; they
         get an :class:`AgentView` from :meth:`get_agent_view` (which wraps a tool with the
-        per-agent identity + eval callback). Backed by the lazily-unneeded ``_tool`` built
-        in ``model_post_init``.
+        per-agent identity + eval callback). Backed by ``_tool``, built in ``model_post_init``.
+
+        Raises if the task has no no-role tool — a multi-agent task whose tools are strictly
+        per-role (its ``_make_tool(None)`` raises ``NotImplementedError``). Such a task has no
+        single ``tool``; drive each seat via ``get_agent_view(role)`` instead.
         """
+        if self._tool is None:
+            raise RuntimeError(
+                f"{type(self).__name__} has no no-role tool (its _make_tool(None) raised "
+                "NotImplementedError). Use get_agent_view(role) for each seat's tool."
+            )
         return self._tool  # type: ignore[return-value]
 
     @property
@@ -261,12 +284,30 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     def id(self) -> str:
         return self.metadata.id
 
+    def _filter_actions(self, actions: List[ActionSchema], role: "str | None" = None) -> List[ActionSchema]:
+        """(Optional benchmark-dev hook) Restrict which tool actions are *advertised* to an
+        agent — a whitelist / mask over the tool's ``action_set``. Default exposes everything.
+
+        Recomputed on every ``action_set`` access, so a cube can vary it across an episode
+        from task state (phase gating, legal-action masking). Applied to BOTH the agent view
+        (:meth:`AgentView.action_set`) and the gym view (:meth:`action_set`), so the two never
+        diverge. ``role`` is the seat's role (``None`` for the gym/single-agent view).
+
+        Advisory: it shapes what the agent *sees*, not execute-time enforcement — a tool still
+        runs whatever action reaches it. No cube needs hard rejection yet; if one does, the
+        single chokepoint is :meth:`AgentView.execute_action`. (Per-role action *sets* are
+        better expressed by ``_make_tool(role)`` returning a role-bound tool; use this hook
+        for task-state-dependent masking the tool itself can't see.)
+        """
+        return actions
+
     @property
     def action_set(self) -> List[ActionSchema]:
-        """The task's tool's action set (litellm-compatible). Already includes
-        ``final_step`` (every Tool exposes it). No filtering / STOP-appending here —
-        per-role action sets fall out of each seat holding its own tool."""
-        return self._tool.action_set
+        """The gym-view action set (litellm-compatible) — the task's own tool's actions after
+        ``_filter_actions`` (role=None). Already includes ``final_step`` (every Tool exposes
+        it). Mirrors what an :class:`AgentView` advertises, so the gym and agent paths never
+        diverge."""
+        return self._filter_actions(self.tool.action_set)
 
     @abstractmethod
     def reset(self) -> Tuple[Observation, Dict]:
@@ -438,17 +479,31 @@ class AgentView:
         evaluation fires (i.e. when ``task.validate_per_step`` is set). This is how the
         runtime *recuperates* the per-step eval that ``execute_action`` triggers — without
         polling, and without the reward ever reaching the agent (the agent only sees obs).
-        With no callback registered, per-step eval is skipped (no consumer).
+        A ``validate_per_step`` task with no callback registered is a wiring bug: the per-step
+        reward would be silently dropped, so ``execute_action`` raises instead (see
+        :meth:`_maybe_evaluate`).
         """
         self._eval_callback = callback
 
     def _maybe_evaluate(self, obs: Observation) -> None:
         """Trigger the per-step evaluation in the agent path, mirroring what gym ``step``
         does for ``validate_per_step`` — but surfaced out-of-band via the callback (reward
-        is not the agent's concern), not folded into the returned obs."""
-        if self._task.validate_per_step and self._eval_callback is not None:
-            reward, info = self._task.evaluate(obs)
-            self._eval_callback(float(reward), dict(info))
+        is not the agent's concern), not folded into the returned obs.
+
+        If the task sets ``validate_per_step`` but no callback is registered, the per-step
+        reward has nowhere to go — a silent drop. That's a runtime wiring bug, so we raise
+        loudly rather than discard it."""
+        if not self._task.validate_per_step:
+            return
+        if self._eval_callback is None:
+            raise RuntimeError(
+                f"{type(self._task).__name__} sets validate_per_step=True, but no eval callback is "
+                f"registered on this AgentView ({self.agent_id}). The runtime must call "
+                "set_eval_callback() so per-step rewards are recuperated (they never reach the "
+                "agent). See AgentView.set_eval_callback."
+            )
+        reward, info = self._task.evaluate(obs)
+        self._eval_callback(float(reward), dict(info))
 
     @property
     def agent_id(self) -> str:
@@ -458,9 +513,9 @@ class AgentView:
 
     @property
     def action_set(self) -> List[ActionSchema]:
-        """The actions legal *right now* for this seat — its tool's actions (filtered +
-        STOP). Per-role action sets fall out of each seat holding a different (role-bound)
-        tool, so there's no separate filtering method.
+        """The actions advertised to this seat *right now* — its tool's actions after the
+        task's ``_filter_actions(role)``. Per-role action sets mostly fall out of each seat
+        holding a different (role-bound) tool; the filter adds task-state-dependent masking.
 
         Recomputed on every access, so a cube *may* vary it over an episode (legal-action
         masking / phase gating / real-time observe-no-op). In practice this is **rare** —
@@ -468,7 +523,7 @@ class AgentView:
         available-but-uncommon. (Most agents also snapshot the set at construction today;
         re-reading it per turn is a forward extension for cubes that need it.)
         """
-        return self._tool.action_set
+        return self._task._filter_actions(self._tool.action_set, self.role)
 
     def execute_action(self, action: Action) -> Observation:
         """Run one action through THIS seat's tool and return its (post-processed)
