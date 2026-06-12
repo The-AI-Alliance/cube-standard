@@ -29,12 +29,16 @@ from typing_extensions import TypeVar
 from cube import get_cache_dir
 from cube.container import Container
 from cube.core import (
+    STOP_ACTION as STOP_ACTION,  # re-exported: `from cube.task import STOP_ACTION` keeps working
+)
+from cube.core import (
     Action,
     ActionSchema,
     AgentStop,
     Content,
     EnvironmentOutput,
     Observation,
+    StepError,
     StructuredContent,
     TypedBaseModel,
 )
@@ -198,7 +202,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         """Called after Pydantic __init__. Launches the container (if configured), runs the
         eager world setup (``prepare_world``), then builds the task's own tool ``_tool``
         (the no-role / admin handle used by reset / evaluate / finished). Per-seat agent
-        tools are made on demand by ``get_task_tool(role)``.
+        tools are made on demand by ``get_agent_view(role)``.
         """
         cc = self.metadata.container_config
         if cc is not None and self.runtime_context is not None and "infra" in self.runtime_context:
@@ -212,20 +216,17 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
                 cpu_cores=cc.cpu_cores,
             )
 
-        self.prepare_world()
-        self._tool = self.make_tool()  # the task's own tool; cube code uses self._tool
+        self._tool = self._make_tool()  # the task's own tool; cube code uses self._tool
 
-    def prepare_world(self) -> None:
-        """(Optional) Eager, once-per-task setup of the shared world — runs after the
-        container launches and before the tool is built (relocate a read-only working dir,
-        fix permissions, write fixtures, …). Default: no-op.
+    def _make_tool(self, role: "str | None" = None) -> TTool:
+        """Create a tool — a session over the world. **The single tool-lifecycle hook**:
+        a cube does any once-per-task world prep (relocate a read-only dir, fix perms) AND
+        builds the tool here. Default ignores ``role`` and just calls
+        ``tool_config.make(container)``. A multi-agent cube overrides to bind the role (a
+        role-specific tool, or thread ``role`` into a role-aware ``tool_config.make``).
+        Called once for the task's own ``_tool`` (role=None), and per seat by
+        ``get_agent_view``; each call returns a fresh session.
         """
-
-    def make_tool(self, role: "str | None" = None) -> TTool:
-        """Create a tool — a session over the world. Default ignores ``role`` (single-tool
-        case). A multi-agent cube overrides to bind the role (a role-specific tool / thread
-        ``role`` into a role-aware ``tool_config.make``). Called for the task's own
-        ``_tool`` (role=None) and per seat by ``get_task_tool``. Each call is fresh."""
         return self.tool_config.make(container=self._container)  # type: ignore[return-value]
 
     def agent_roles(self) -> "dict[str | None, int]":
@@ -233,12 +234,24 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         multi-agent cube overrides, e.g. ``{"buyer": 2, "seller": 1}``."""
         return {None: 1}
 
-    def get_task_tool(self, role: "str | None" = None, seat: int = 0) -> "TaskTool":
+    def get_agent_view(self, role: "str | None" = None, seat: int = 0) -> "AgentView":
         """The agent-facing view for a seat. ``role=None`` reuses the task's own ``_tool``
-        (single-agent); a named role gets a fresh role-bound session via ``make_tool(role)``
+        (single-agent); a named role gets a fresh role-bound session via ``_make_tool(role)``
         — the tool *is* the actor. The runtime calls this per seat (it sets the seat index)."""
-        tool = self._tool if role is None else self.make_tool(role)
-        return TaskTool(self, role=role, tool=tool, seat=seat)
+        tool = self._tool if role is None else self._make_tool(role)
+        return AgentView(self, role=role, tool=tool, seat=seat)
+
+    @property
+    def tool(self) -> TTool:
+        """The task's own underlying tool — what the task itself uses (reset / evaluate /
+        setup) and what cube-standard internals (server, nemogym, debug suite) drive.
+
+        This is the raw environment tool, NOT an agent surface: agents never hold it; they
+        get an :class:`AgentView` from :meth:`get_agent_view` (which wraps a tool with the
+        per-agent identity + eval callback). Backed by the lazily-unneeded ``_tool`` built
+        in ``model_post_init``.
+        """
+        return self._tool  # type: ignore[return-value]
 
     @property
     def container(self) -> Container | None:
@@ -271,7 +284,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
 
         This is the **gym-compatibility view** — FINALIZED; do NOT override. Each action
         goes through ``self._tool.execute_action`` (the same dispatch the agent-facing
-        ``TaskTool`` uses). The batch is run, then ``finished`` / ``evaluate`` are applied
+        ``AgentView`` uses). The batch is run, then ``finished`` / ``evaluate`` are applied
         once (per batch); a tool error is folded into the observation (non-terminal);
         ``final_step`` raises :class:`AgentStop`, caught here to set ``done=True``.
 
@@ -293,15 +306,21 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         reward = 0.0
         info = {}
         obs = Observation()  # will populate list of content after each action
+        error: StepError | None = None
         action_times: list[float] = []
         for action in actions:
             t0 = time.perf_counter()
             try:
-                obs += self._tool.execute_action(action)
+                result = self._tool.execute_action(action)
             except AgentStop as stop:
                 obs += stop.observation
                 done = True
                 break
+            # A tool error is folded into the action's obs (non-terminal); surface the
+            # structured error on EnvironmentOutput.error too (obs += merges only contents).
+            if result.error is not None:
+                error = result.error
+            obs += result
             action_times.append(time.perf_counter() - t0)
         done = done or self.finished(obs)
         # TODO: Add truncation logic based on step limits or time limits
@@ -324,7 +343,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         obs = self.obs_postprocess(obs)
         profiling["obs_postprocess"] = time.perf_counter() - t_post_start
         info["profiling"] = profiling
-        return EnvironmentOutput(obs=obs, reward=reward, done=done, info=info)
+        return EnvironmentOutput(obs=obs, reward=reward, done=done, info=info, error=error)
 
     def obs_postprocess(self, obs: Observation) -> Observation:
         """
@@ -387,13 +406,13 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
             self._container = None
 
 
-class TaskTool:
+class AgentView:
     """The agent-facing view of a :class:`Task` — the ONLY surface an agent holds.
 
     Obs in, action out, no lifecycle. An agent gets exactly two things: ``action_set``
     (what it may do *now*) and ``execute_action`` (do one thing, see the result). It never
     sees ``reset`` / ``evaluate`` / ``close`` / ``step`` — the runtime drives those on the
-    Task. Obtained from ``task.get_task_tool(role)``: ``role=None`` (single-agent) over the
+    Task. Obtained from ``task.get_agent_view(role)``: ``role=None`` (single-agent) over the
     task's own tool, or one per seat for a multi-agent task.
 
     Each tool carries its ``role`` (``None`` for single-agent; e.g. ``"buyer"``) and

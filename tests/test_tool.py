@@ -4,7 +4,7 @@ import inspect
 
 import pytest
 
-from cube.core import Action, ActionSchema, Observation, StepError, TextContent
+from cube.core import Action, ActionSchema, AgentStop, Observation, StepError, TextContent
 from cube.tool import AsyncTool, AsyncToolbox, Tool, Toolbox, tool_action
 
 
@@ -86,7 +86,19 @@ def test_tool_action_decorator_sets_flag():
 
 def test_tool_action_set_discovers_only_decorated_methods():
     action_names = {a.name for a in EchoTool().action_set}
-    assert action_names == {"echo", "add", "crash"}
+    assert action_names == {"echo", "add", "crash", "final_step"}  # final_step is universal
+
+
+def test_tool_action_set_always_includes_final_step():
+    # final_step is a real @tool_action on the Tool base — every tool exposes it.
+    names = {a.name for a in EchoTool().action_set}
+    assert "final_step" in names
+
+
+def test_tool_final_step_raises_agent_stop():
+    # Executing final_step raises AgentStop — no special-casing in the dispatch path.
+    with pytest.raises(AgentStop):
+        EchoTool().execute_action(Action(name="final_step", arguments={}))
 
 
 def test_tool_action_set_schemas_have_descriptions():
@@ -123,11 +135,15 @@ def test_tool_execute_action_non_action_method_raises():
         EchoTool().execute_action(Action(name="not_an_action", arguments={}))
 
 
-def test_tool_execute_action_exception_returns_step_error():
+def test_tool_execute_action_exception_folds_into_observation():
+    # A failed action is non-terminal: it returns an Observation with the structured
+    # error on obs.error and the error text in contents (the agent reads it and retries).
     result = EchoTool().execute_action(Action(name="crash", arguments={}))
-    assert isinstance(result, StepError)
-    assert result.error_type == "RuntimeError"
-    assert result.exception_str == "intentional error"
+    assert isinstance(result, Observation)
+    assert isinstance(result.error, StepError)
+    assert result.error.error_type == "RuntimeError"
+    assert result.error.exception_str == "intentional error"
+    assert "intentional error" in result.to_markdown()
 
 
 def test_tool_execute_action_unknown_kwarg_returns_observation():
@@ -156,7 +172,13 @@ def test_async_tool_action_decorator_sets_flag():
 
 def test_async_tool_action_set_discovers_only_decorated_methods():
     action_names = {a.name for a in AsyncEchoTool().action_set}
-    assert action_names == {"echo", "add", "crash"}
+    assert action_names == {"echo", "add", "crash", "final_step"}  # final_step is universal
+
+
+@pytest.mark.asyncio
+async def test_async_tool_final_step_raises_agent_stop():
+    with pytest.raises(AgentStop):
+        await AsyncEchoTool().execute_action(Action(name="final_step", arguments={}))
 
 
 def test_async_tool_action_set_schemas_have_descriptions():
@@ -198,11 +220,12 @@ async def test_async_tool_execute_action_non_action_method_raises():
 
 
 @pytest.mark.asyncio
-async def test_async_tool_execute_action_exception_returns_step_error():
+async def test_async_tool_execute_action_exception_folds_into_observation():
     result = await AsyncEchoTool().execute_action(Action(name="crash", arguments={}))
-    assert isinstance(result, StepError)
-    assert result.error_type == "RuntimeError"
-    assert result.exception_str == "intentional error"
+    assert isinstance(result, Observation)
+    assert isinstance(result.error, StepError)
+    assert result.error.error_type == "RuntimeError"
+    assert result.error.exception_str == "intentional error"
 
 
 @pytest.mark.asyncio
@@ -300,7 +323,14 @@ class AsyncUpperTool(AsyncTool):
 def test_toolbox_action_set_is_union_of_tools():
     box = Toolbox(tools=[EchoTool(), UpperTool()])
     names = {a.name for a in box.action_set}
-    assert names == {"echo", "add", "crash", "upper"}
+    assert names == {"echo", "add", "crash", "upper", "final_step"}
+
+
+def test_toolbox_dedups_universal_final_step():
+    # Both leaves inherit the identical final_step — the toolbox dedups it to one entry
+    # rather than raising on the shared name.
+    box = Toolbox(tools=[EchoTool(), UpperTool()])
+    assert sum(1 for a in box.action_set if a.name == "final_step") == 1
 
 
 def test_toolbox_execute_action_delegates_to_correct_tool():
@@ -316,9 +346,23 @@ def test_toolbox_execute_action_unknown_raises():
         box.execute_action(Action(name="nonexistent", arguments={}))
 
 
-def test_toolbox_duplicate_action_name_raises_on_construction():
-    with pytest.raises(ValueError, match="Duplicate action name"):
-        Toolbox(tools=[EchoTool(), EchoTool()])
+def test_toolbox_dedups_identical_same_named_actions():
+    # Two leaves exposing IDENTICAL same-named actions (here two EchoTools) dedup to the
+    # first — no collision, since the schemas match exactly.
+    box = Toolbox(tools=[EchoTool(), EchoTool()])
+    assert sum(1 for a in box.action_set if a.name == "echo") == 1
+
+
+def test_toolbox_conflicting_action_name_raises_on_construction():
+    # Same action NAME with a DIFFERENT schema is a real collision -> error.
+    class OtherEchoTool(Tool):
+        @tool_action
+        def echo(self, text: str, loud: bool) -> str:
+            """Echo with a different signature."""
+            return text
+
+    with pytest.raises(ValueError, match="Conflicting action"):
+        Toolbox(tools=[EchoTool(), OtherEchoTool()])
 
 
 def test_toolbox_find_tool_returns_correct_instance():
@@ -363,7 +407,7 @@ def test_toolbox_close_calls_close_on_all_tools():
 def test_async_toolbox_action_set_is_union_of_tools():
     box = AsyncToolbox(tools=[AsyncEchoTool(), AsyncUpperTool()])
     names = {a.name for a in box.action_set}
-    assert names == {"echo", "add", "crash", "upper"}
+    assert names == {"echo", "add", "crash", "upper", "final_step"}
 
 
 @pytest.mark.asyncio
@@ -381,9 +425,20 @@ async def test_async_toolbox_execute_action_unknown_raises():
         await box.execute_action(Action(name="nonexistent", arguments={}))
 
 
-def test_async_toolbox_duplicate_action_name_raises_on_construction():
-    with pytest.raises(ValueError, match="Duplicate action name"):
-        AsyncToolbox(tools=[AsyncEchoTool(), AsyncEchoTool()])
+def test_async_toolbox_dedups_identical_same_named_actions():
+    box = AsyncToolbox(tools=[AsyncEchoTool(), AsyncEchoTool()])
+    assert sum(1 for a in box.action_set if a.name == "echo") == 1
+
+
+def test_async_toolbox_conflicting_action_name_raises_on_construction():
+    class OtherAsyncEchoTool(AsyncTool):
+        @tool_action
+        async def echo(self, text: str, loud: bool) -> str:
+            """Echo with a different signature."""
+            return text
+
+    with pytest.raises(ValueError, match="Conflicting action"):
+        AsyncToolbox(tools=[AsyncEchoTool(), OtherAsyncEchoTool()])
 
 
 def test_async_toolbox_find_tool_returns_correct_instance():

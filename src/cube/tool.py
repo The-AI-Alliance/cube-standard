@@ -65,7 +65,6 @@ from typing import Any, Callable, List
 
 from cube.container import Container
 from cube.core import (
-    STOP_ACTION,
     Action,
     ActionSchema,
     AgentStop,
@@ -470,39 +469,53 @@ class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
 
+def _dedup_actions(tools: "list[AbstractTool | AbstractAsyncTool]") -> dict:
+    """Build name -> owning-tool for a toolbox, enforcing unique action names. Same-named
+    actions are deduped to the first ONLY when identical (e.g. the universal `final_step`
+    every Tool inherits); a same name with a different schema is a real collision -> error."""
+    name_to_tool: dict = {}
+    name_to_schema: dict = {}
+    for tool in tools:
+        for action in tool.action_set:
+            existing = name_to_schema.get(action.name)
+            if existing is not None:
+                if existing == action:
+                    continue  # identical action (e.g. inherited final_step) -> dedup
+                raise ValueError(
+                    f"Conflicting action '{action.name}': two tools expose the same name with "
+                    f"different schemas. Action names must be unique across a toolbox."
+                )
+            name_to_schema[action.name] = action
+            name_to_tool[action.name] = tool
+    return name_to_tool
+
+
+def _deduped_action_set(tools: "list[AbstractTool | AbstractAsyncTool]") -> list[ActionSchema]:
+    """Union of the leaves' action sets, deduped by name (universal `final_step` once)."""
+    seen: set[str] = set()
+    actions: list[ActionSchema] = []
+    for tool in tools:
+        for action in tool.action_set:
+            if action.name not in seen:
+                seen.add(action.name)
+                actions.append(action)
+    return actions
+
+
 class Toolbox(Tool):
     """Composite sync tool that delegates to a list of AbstractTool instances."""
 
     def __init__(self, tools: list[AbstractTool]):
         self.tools = tools
-        self._action_name_to_tool: dict[str, AbstractTool] = {}
-        for tool in tools:
-            for action in tool.action_set:
-                # final_step is universal (every Tool has it) — not routed to a leaf; the
-                # Toolbox handles it via its own inherited final_step (see execute_action).
-                if action.name == STOP_ACTION.name:
-                    continue
-                if action.name in self._action_name_to_tool:
-                    previous_tool_name = self._action_name_to_tool[action.name].__class__.__name__
-                    this_tool_name = tool.__class__.__name__
-                    raise ValueError(
-                        f"Duplicate action name '{action.name}' found in multiple tools ({previous_tool_name} and {this_tool_name}). Action names must be unique across all tools in the toolbox."
-                    )
-                self._action_name_to_tool[action.name] = tool
+        # A toolbox's actions must be unique by name. Same-named actions are allowed only
+        # when they are IDENTICAL (e.g. the universal `final_step` inherited by every
+        # Tool) — those dedup to the first; a same name with a DIFFERENT schema is a real
+        # collision and an error. No knowledge of `final_step` is needed.
+        self._action_name_to_tool: dict[str, AbstractTool] = _dedup_actions(tools)
 
     @property
     def action_set(self) -> list[ActionSchema]:
-        """Union of the leaves' action sets, deduped by name (so the universal
-        ``final_step`` appears exactly once)."""
-        seen: set[str] = set()
-        actions: list[ActionSchema] = []
-        for tool in self.tools:
-            for action in tool.action_set:
-                if action.name in seen:
-                    continue
-                seen.add(action.name)
-                actions.append(action)
-        return actions
+        return _deduped_action_set(self.tools)
 
     def find_tool(self, tool_cls: type) -> AbstractTool | None:
         """Find a tool of the given class in the toolbox."""
@@ -517,11 +530,10 @@ class Toolbox(Tool):
 
     def execute_action(self, action: Action) -> Observation:
         tool = self._action_name_to_tool.get(action.name)
-        if tool is not None:
-            assert isinstance(tool, AbstractTool)
-            return tool.execute_action(action)
-        # Not a leaf action → the Toolbox's own (inherited) methods, e.g. final_step.
-        return super().execute_action(action)
+        if tool is None:
+            raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
+        assert isinstance(tool, AbstractTool)
+        return tool.execute_action(action)
 
     def close(self) -> None:
         for tool in self.tools:
@@ -543,32 +555,11 @@ class AsyncToolbox(AsyncTool):
 
     def __init__(self, tools: list["AbstractTool | AbstractAsyncTool"]):
         self.tools = tools
-        self._action_name_to_tool: dict[str, AbstractTool | AbstractAsyncTool] = {}
-        for tool in tools:
-            for action in tool.action_set:
-                if action.name == STOP_ACTION.name:  # universal — handled by fall-through
-                    continue
-                if action.name in self._action_name_to_tool:
-                    previous_tool_name = self._action_name_to_tool[action.name].__class__.__name__
-                    this_tool_name = tool.__class__.__name__
-                    raise ValueError(
-                        f"Duplicate action name '{action.name}' found in multiple tools ({previous_tool_name} and {this_tool_name}). Action names must be unique across all tools in the toolbox."
-                    )
-                self._action_name_to_tool[action.name] = tool
+        self._action_name_to_tool: dict[str, AbstractTool | AbstractAsyncTool] = _dedup_actions(tools)
 
     @property
     def action_set(self) -> list[ActionSchema]:
-        """Union of the leaves' action sets, deduped by name (universal ``final_step``
-        appears once)."""
-        seen: set[str] = set()
-        actions: list[ActionSchema] = []
-        for tool in self.tools:
-            for action in tool.action_set:
-                if action.name in seen:
-                    continue
-                seen.add(action.name)
-                actions.append(action)
-        return actions
+        return _deduped_action_set(self.tools)
 
     def find_tool(self, tool_cls: type) -> "AbstractTool | AbstractAsyncTool | None":
         """Find a tool of the given class in the toolbox."""
@@ -585,9 +576,9 @@ class AsyncToolbox(AsyncTool):
 
     async def execute_action(self, action: Action) -> Observation:
         tool = self._action_name_to_tool.get(action.name)
-        if tool is not None:
-            return await tool.async_execute_action(action)
-        return await super().execute_action(action)  # final_step etc.
+        if tool is None:
+            raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
+        return await tool.async_execute_action(action)
 
     async def close(self) -> None:
         for tool in self.tools:

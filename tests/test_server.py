@@ -114,7 +114,7 @@ def _text_content(data: str, tool_call_id: str | None = None) -> dict:
 
 
 def _obs(data: str, tool_call_id: str | None = None) -> dict:
-    return {"_type": "cube.core.Observation", "contents": [_text_content(data, tool_call_id)]}
+    return {"_type": "cube.core.Observation", "contents": [_text_content(data, tool_call_id)], "error": None}
 
 
 _OBS_START = _obs("start")
