@@ -167,33 +167,6 @@ def test_agent_view_async_stop_raises_agent_stop():
         asyncio.run(view.async_execute_action(Action(name=STOP_ACTION.name, arguments={})))
 
 
-# --- per-step eval callback --------------------------------------------------
-
-
-def test_eval_callback_fires_on_validate_per_step():
-    view = make_task(validate_per_step=True).get_agent_view()
-    got: list[tuple[float, dict]] = []
-    view.set_eval_callback(lambda r, i: got.append((r, i)))
-    view.execute_action(Action(name="greet", arguments={"name": "X"}))
-    assert len(got) == 1 and got[0][0] == 0.5  # SimpleTask.evaluate -> (0.5, {"score": 0.5})
-
-
-def test_eval_callback_silent_without_validate_per_step():
-    view = make_task(validate_per_step=False).get_agent_view()
-    got: list[float] = []
-    view.set_eval_callback(lambda r, i: got.append(r))
-    view.execute_action(Action(name="greet", arguments={"name": "X"}))
-    assert got == []  # per-step eval only fires when validate_per_step is set
-
-
-def test_eval_raises_when_validate_per_step_but_no_callback():
-    # validate_per_step set but no consumer → the per-step reward would be silently dropped,
-    # which is a wiring bug, so execute_action raises instead of discarding it.
-    view = make_task(validate_per_step=True).get_agent_view()
-    with pytest.raises(RuntimeError, match="no eval callback is registered"):
-        view.execute_action(Action(name="greet", arguments={"name": "X"}))
-
-
 # --- multi-agent roles (agent_roles / get_agent_view / _make_tool) -----------
 
 
@@ -309,15 +282,6 @@ def test_single_agent_make_tool_notimplemented_propagates():
 
     with pytest.raises(NotImplementedError, match="forgot to implement"):
         _Broken(metadata=TaskMetadata(id="b"), tool_config=GreetToolConfig())
-
-
-def test_validate_per_step_with_callback_recuperates_reward():
-    task = make_task(validate_per_step=True)
-    view = task.get_agent_view()
-    seen: list[tuple[float, dict]] = []
-    view.set_eval_callback(lambda r, i: seen.append((r, i)))
-    view.execute_action(Action(name="greet", arguments={"name": "x"}))
-    assert seen == [(0.5, {"score": 0.5})]  # surfaced out-of-band, never in the obs
 
 
 def test_task_action_set_includes_stop_action_by_default() -> None:

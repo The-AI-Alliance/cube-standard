@@ -6,12 +6,13 @@
 
 - **`AgentView`** — the agent-facing view; the ONLY surface an agent holds. Carries its seat's
   `role` + `seat` and its own **tool/session** (the actor). `execute_action(action) -> Observation`
+  / `async_execute_action(action) -> Observation`
   (runs through *its* tool's `execute_action` + `obs_postprocess(role)`, returns the **obs
   only** — no reward, no done; `final_step` raises `AgentStop`); `action_set` (**dynamic**, =
   its tool's actions through `_filter_actions(role)`; `final_step` is already among them);
-  `agent_id` (`"agent"` for the single seat, else `"{role}-{seat}"`); `set_eval_callback(fn)`
-  (see eval callback below). **No** `reset` / `evaluate` / `close`. (Not a `Tool` — a *facet*
-  of a `Task`.)
+  `agent_id` (`"agent"` for the single seat, else `"{role}-{seat}"`). **No** `reset` /
+  `evaluate` / `close` / per-step eval callback (per-step eval is the runtime's concern —
+  see below). (Not a `Tool` — a *facet* of a `Task`.)
 - **Role-based multi-agent seam** — one agent surface per seat without leaking the task; the
   **tool instance is the actor** (SSH model: identity bound at session creation; nothing
   role-specific touches the `Action`):
@@ -46,12 +47,13 @@
 - **Role-aware `obs_postprocess`** — `Task.obs_postprocess(obs, role=None)` (existing hook) now
   takes the seat's `role`, so a shared-world multi-agent task can shape per-role views off the
   one tool (the twin of `_filter_actions`).
-- **Per-step eval callback** — `AgentView.set_eval_callback(fn)`. When `validate_per_step` is
-  set, `execute_action` triggers `evaluate(obs)` (like gym `step`) and surfaces `(reward, info)`
-  through `fn` — **out-of-band** (reward never reaches the agent; obs stays the only return).
-  A `validate_per_step` task with **no callback registered raises** (a silent-drop wiring bug),
-  not a skip. So `validate_per_step` is honored by any `AgentView` consumer, and the harness
-  stops reaching into `task.validate_per_step` / `task.evaluate`.
+- **Per-step eval is runtime-side** — cube-standard provides only the `validate_per_step` flag
+  and `task.evaluate()`; it does **not** push reward out of the `AgentView`. When
+  `validate_per_step` is set, the harness's `RecordingTaskTool` calls `task.evaluate()` after
+  each action and records the step-wise reward as an `EvaluationEvent`. `AgentView.execute_action`
+  returns the **obs only** — reward never reaches the agent. (Termination — `finished()` — is
+  likewise the runtime's call.) The gym `Task.step()` path keeps its own per-step `evaluate`
+  (unchanged), separate from the agent path.
 
 > No `pre_step` / `post_step` hooks (decision 3): the only cube that overrode `step()`
 > (workarena) is fixed directly, so the contract needs no new hook surface.
@@ -91,10 +93,10 @@
 ## NOT in this change (forward extensions — add when needed)
 
 - A full standard **`Streamer`** seam for capturing the *agent's* tool + LLM events — that
-  stays harness-side (the agent loop self-emits; the harness records). `set_eval_callback` is
-  the *minimal, focused* exception: a single hook to surface a **task computation**
-  (`evaluate`) the standard now triggers — not agent-behavior capture. Add a broader
-  `AgentView` capture hook only for external / black-box agents over `cube.server`.
+  stays harness-side (the agent loop self-emits; the harness records). Per-step eval is also
+  harness-side: the runtime's `RecordingTaskTool` calls `task.evaluate()` when `validate_per_step`
+  and records it — the standard exposes only the flag + `evaluate`, no `AgentView` eval hook. Add
+  a broader `AgentView` capture hook only for external / black-box agents over `cube.server`.
 - A shared Task-level per-action **core** exposed publicly — not needed (both views go through
   `Tool.execute_action`); only `async_execute_action` for real parallel tool calls within a
   step is a forward extension.
@@ -102,9 +104,9 @@
 ## RESOLVED
 
 1. **Eval cadence** — per-action for the agent view, per-batch for gym `step`. Terminal
-   eval is the norm; `validate_per_step` opts into mid-episode eval, triggered inside
-   `AgentView.execute_action` and surfaced via `set_eval_callback` (the harness no longer
-   polls `evaluate`). No "turn" concept.
+   eval is the norm; `validate_per_step` opts into mid-episode eval. On the agent path the
+   runtime drives it (the harness's `RecordingTaskTool` calls `task.evaluate()` per action and
+   records an `EvaluationEvent`); `AgentView.execute_action` returns obs only. No "turn" concept.
 2. **`StepError` policy** — a tool error always becomes an observation (non-terminal),
    gym included. No per-caller knob.
 3. **`pre_step`/`post_step`** — not added; workarena's `step()` override is fixed directly.
