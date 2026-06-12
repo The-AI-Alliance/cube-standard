@@ -217,12 +217,16 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
             )
 
         # The task's own no-role tool (single-agent's tool, or a shared-world admin tool).
-        # A multi-agent task whose tools are *strictly per-role* opts out by raising
+        # A *multi-agent* task whose tools are strictly per-role opts out by raising
         # NotImplementedError in _make_tool(None); we leave _tool unset and `tool` raises a
-        # clear error pointing to get_agent_view(role).
+        # clear error pointing to get_agent_view(role). For a single-agent task the no-role
+        # tool is mandatory, so we DON'T mask a NotImplementedError there — it's a real bug
+        # (e.g. an unimplemented abstract method) and should surface immediately.
         try:
             self._tool = self._make_tool()  # cube code uses self._tool
         except NotImplementedError:
+            if self.agent_roles() == {None: 1}:
+                raise
             self._tool = None
 
     def _make_tool(self, role: "str | None" = None) -> TTool:

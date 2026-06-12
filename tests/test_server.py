@@ -245,6 +245,17 @@ def test_tools_call_with_action_id(task_client):
     assert resp.json()["result"] == _obs("counter=1", tool_call_id="abc-123")
 
 
+def test_tools_call_final_step_returns_terminal_obs_not_500(task_client):
+    # final_step is a real advertised action now; calling it via tools/call raises AgentStop
+    # (a BaseException). The server must translate it into the terminal observation result,
+    # not let it escape as an unhandled 500.
+    resp = _rpc(task_client, "tools/call", {"name": "final_step"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "error" not in body  # NOT a JSON-RPC error / 500
+    assert "finished" in str(body["result"]).lower()
+
+
 def test_step_full_episode(task_client):
     _rpc(task_client, "cube/reset")
     _rpc(task_client, "cube/step", {"name": "increment"})

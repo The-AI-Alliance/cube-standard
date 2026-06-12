@@ -108,7 +108,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from cube.benchmark import Benchmark, BenchmarkConfig
-from cube.core import Action, Observation, TypedBaseModel
+from cube.core import Action, AgentStop, Observation, TypedBaseModel
 from cube.resource import InfraConfig
 from cube.task import Task, TaskConfig
 
@@ -455,6 +455,12 @@ def make_task_jsonrpc_app(task: Task) -> FastAPI:
             else:
                 return JSONResponse(_err(req_id, _METHOD_NOT_FOUND, f"Method not found: {method!r}"))
 
+        except AgentStop as stop:
+            # `final_step` is a real advertised action now, so a client may call it via
+            # tools/call. It raises AgentStop (a BaseException, so it slips past the
+            # `except Exception` below) — translate it into the terminal observation
+            # result instead of letting it escape as an unhandled 500.
+            return JSONResponse(_ok(req_id, stop.observation.model_dump(mode="json")))
         except Exception as exc:
             logger.exception("Error handling task method %r", method)
             return JSONResponse(_err(req_id, _INTERNAL_ERROR, str(exc)))

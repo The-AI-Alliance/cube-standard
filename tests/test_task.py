@@ -299,6 +299,18 @@ def test_tool_property_raises_when_no_no_role_tool():
         _ = task.tool
 
 
+def test_single_agent_make_tool_notimplemented_propagates():
+    # Single-agent: the no-role tool is mandatory, so a real NotImplementedError in
+    # _make_tool must surface at construction — NOT be masked as a roleless-tool opt-out
+    # (which only applies to multi-agent strictly-per-role tasks).
+    class _Broken(SimpleTask):
+        def _make_tool(self, role=None):
+            raise NotImplementedError("forgot to implement the tool")
+
+    with pytest.raises(NotImplementedError, match="forgot to implement"):
+        _Broken(metadata=TaskMetadata(id="b"), tool_config=GreetToolConfig())
+
+
 def test_validate_per_step_with_callback_recuperates_reward():
     task = make_task(validate_per_step=True)
     view = task.get_agent_view()

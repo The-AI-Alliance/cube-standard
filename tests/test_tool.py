@@ -181,6 +181,21 @@ async def test_async_tool_final_step_raises_agent_stop():
         await AsyncEchoTool().async_execute_action(Action(name="final_step", arguments={}))
 
 
+def test_sync_bridge_forwards_agent_stop_from_async_action():
+    # An async @tool_action that raises AgentStop, executed from a SYNC call-site, must
+    # propagate AgentStop through the thread-bridge — NOT deadlock. Regression: the bridge
+    # runner caught only Exception, so the AgentStop (a BaseException) was dropped and
+    # `fut.result()` blocked forever.
+    class _AsyncStopTool(Tool):
+        @tool_action
+        async def stop_async(self) -> str:
+            """Async action that ends the episode."""
+            raise AgentStop()
+
+    with pytest.raises(AgentStop):
+        _AsyncStopTool().execute_action(Action(name="stop_async", arguments={}))
+
+
 def test_async_tool_action_set_schemas_have_descriptions():
     for schema in AsyncEchoTool().action_set:
         assert schema.description != ""

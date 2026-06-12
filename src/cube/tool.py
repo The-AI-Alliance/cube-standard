@@ -411,13 +411,18 @@ class Tool(_ToolActionsMixin, AbstractTool):
         def runner() -> None:
             try:
                 fut.set_result(ctx.run(asyncio.run, method(**action.arguments)))
-            except Exception as e:
+            except BaseException as e:  # noqa: BLE001 - must forward AgentStop (BaseException) too
+                # Forward EVERYTHING — incl. AgentStop (a BaseException raised by `final_step`).
+                # Catching only Exception would drop AgentStop on the floor and leave
+                # `fut.result()` blocking forever (the worker thread is one-shot/daemon).
                 fut.set_exception(e)
 
         threading.Thread(target=runner, daemon=True).start()
         try:
             action_result = fut.result() or "Success"
         except Exception as e:
+            # AgentStop is a BaseException → not caught here → propagates to the caller
+            # (same as the sync dispatch path); a real error folds into the observation.
             action_result = f"Error executing action {action.name}: {e}"
             logger.exception(action_result)
             return StepError.from_exception(e).to_observation()
