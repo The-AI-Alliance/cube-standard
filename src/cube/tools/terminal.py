@@ -3,7 +3,7 @@
 ``TerminalTool`` is the abstract base for terminal-style tools. It extends
 ``cube.tool.Tool`` and declares only what *tasks* need from any terminal
 implementation — a single task-side primitive, ``bash_unlimited()``, used by
-``Task.reset()`` / ``Task.evaluate()`` / ``Task._build_tool()`` for setup and
+``Task.reset()`` / ``Task.evaluate()`` / ``Task._make_tool()`` for setup and
 validation. The abstract intentionally does NOT enumerate ``@tool_action``
 methods: the agent-facing action space is the concrete implementation's
 choice.
@@ -131,7 +131,7 @@ class TerminalTool(Tool):
     """Abstract base for terminal-style tools.
 
     Captures only the task-side contract — methods that ``Task.reset()``,
-    ``Task.evaluate()``, and ``Task._build_tool()`` need from any terminal
+    ``Task.evaluate()``, and ``Task._make_tool()`` need from any terminal
     implementation regardless of which concrete impl they got. Concrete
     implementations choose their own ``@tool_action`` surface; the abstract
     intentionally does NOT enumerate agent-facing actions.

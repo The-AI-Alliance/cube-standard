@@ -140,7 +140,7 @@ def relocate_if_readonly(
     (e.g. ``git config safe.directory``) can pass the commands as *extra_setup*
     — they are appended to the ``cp -a`` invocation with ``&&``.
 
-    Typical usage in a cube's ``_build_tool()``::
+    Typical usage in a cube's ``_make_tool()``::
 
         new_wd = relocate_if_readonly(
             self._container, self.tool_config.working_dir, "/tmp/testbed",
