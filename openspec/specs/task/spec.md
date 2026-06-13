@@ -188,6 +188,7 @@ class AgentView:                                  # a facet of a Task, NOT a Too
     @property def action_set(self) -> list[ActionSchema]    # tool actions after _filter_actions(role)
     def execute_action(self, action) -> Observation         # obs only — no reward, no done
     async def async_execute_action(self, action) -> Observation
+    def set_eval_callback(self, cb: Callable[[float, dict], None]) -> None
 ```
 
 The agent gets exactly `action_set` (what it may do now) and `execute_action` (do one
@@ -196,10 +197,14 @@ action through the seat's tool, applies `obs_postprocess(role)`, and returns the
 **observation only** — no reward, no `done`. Dispatch goes through the seat's own tool, so
 "which agent acted" is implicit in which session ran the action.
 
-**Scoring and termination are the runtime's concern, driven *around* `execute_action`, never
-folded into the obs.** When `task.validate_per_step` is set, the runtime calls
-`task.evaluate()` after each action and records the step-wise reward (the harness's
-`RecordingTaskTool` does this); the reward never reaches the agent. `finished()` likewise is
+**Per-step eval — what makes `AgentView` a self-sufficient equivalent of gym `step` for *any*
+harness.** When `task.validate_per_step` is set, `execute_action` fires the per-step
+`evaluate` and surfaces `(reward, info)` through the callback registered via
+`set_eval_callback` — out-of-band, never in the obs (reward is not the agent's concern). A
+harness gets the same per-step-eval cadence as `step` by driving `execute_action` + a
+callback, with no eval logic of its own (cube-harness's `MonitoredTool` records it as an
+`EvaluationEvent`). A `validate_per_step` task with **no** callback registered is a wiring
+bug, so `execute_action` **raises** rather than silently dropping the reward. `finished()` is
 the runtime's call. `agent_id` is `"agent"` for the single default seat, else
 `"{role}-{seat}"` (e.g. `"buyer-0"`).
 

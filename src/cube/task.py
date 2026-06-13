@@ -21,7 +21,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, ClassVar, Dict, Generic, List, Literal, Tuple
+from typing import Any, Callable, ClassVar, Dict, Generic, List, Literal, Tuple
 
 from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
 from typing_extensions import TypeVar
@@ -478,6 +478,37 @@ class AgentView:
         # the task's default tool for the no-role seat. Dispatch goes through THIS tool,
         # so "which agent acted" is implicit in which session ran the action.
         self._tool = tool if tool is not None else task._tool
+        self._eval_callback: "Callable[[float, dict], None] | None" = None
+
+    def set_eval_callback(self, callback: "Callable[[float, dict], None]") -> None:
+        """Register a callback invoked with ``(reward, info)`` whenever a per-step evaluation
+        fires (when ``task.validate_per_step`` is set). This is how a runtime *recuperates*
+        the per-step eval that ``execute_action`` triggers — out-of-band, so the reward never
+        reaches the agent (it only ever sees ``obs``).
+
+        It is what makes ``AgentView`` a self-sufficient equivalent of gym ``step``: any
+        harness (not just cube-harness) gets the same per-step-eval cadence by driving
+        ``execute_action`` + registering this callback, without re-implementing the eval
+        logic. A ``validate_per_step`` task with no callback registered is therefore a wiring
+        bug — ``execute_action`` raises rather than silently dropping the reward.
+        """
+        self._eval_callback = callback
+
+    def _maybe_evaluate(self, obs: Observation) -> None:
+        """Trigger the per-step evaluation in the agent path — the same cadence gym ``step``
+        applies for ``validate_per_step`` — and surface ``(reward, info)`` through the
+        registered callback (out-of-band, never folded into the returned obs)."""
+        if not self._task.validate_per_step:
+            return
+        if self._eval_callback is None:
+            raise RuntimeError(
+                f"{type(self._task).__name__} sets validate_per_step=True, but no eval callback is "
+                f"registered on this AgentView ({self.agent_id}). The runtime must call "
+                "set_eval_callback() so per-step rewards are recuperated (they never reach the "
+                "agent). See AgentView.set_eval_callback."
+            )
+        reward, info = self._task.evaluate(obs)
+        self._eval_callback(float(reward), dict(info))
 
     @property
     def agent_id(self) -> str:
@@ -501,15 +532,20 @@ class AgentView:
 
     def execute_action(self, action: Action) -> Observation:
         """Run one action through THIS seat's tool and return its (post-processed)
-        **observation only** — no reward, no ``done``. Same per-action execution as the gym
-        ``step`` view. Scoring (per-step ``evaluate``) and termination (``finished``) are the
-        runtime's concern, driven *around* this call, never folded into the obs.
-        ``final_step`` raises :class:`AgentStop`."""
-        return self._task.obs_postprocess(self._tool.execute_action(action), self.role)
+        **observation only** — no reward, no ``done``. Same per-action execution + per-step
+        eval cadence as the gym ``step`` view: when ``task.validate_per_step`` is set it fires
+        ``evaluate`` and surfaces ``(reward, info)`` via the registered callback (out-of-band,
+        never in the obs — reward is not the agent's concern). ``finished`` (termination) is
+        the runtime's call. ``final_step`` raises :class:`AgentStop`."""
+        obs = self._task.obs_postprocess(self._tool.execute_action(action), self.role)
+        self._maybe_evaluate(obs)
+        return obs
 
     async def async_execute_action(self, action: Action) -> Observation:
         """Async twin of ``execute_action`` — the parallel-tool-call call-site."""
-        return self._task.obs_postprocess(await self._tool.async_execute_action(action), self.role)
+        obs = self._task.obs_postprocess(await self._tool.async_execute_action(action), self.role)
+        self._maybe_evaluate(obs)
+        return obs
 
 
 class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):

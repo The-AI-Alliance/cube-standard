@@ -49,7 +49,11 @@ class AgentView:                          # the ONLY surface an agent holds (car
     def execute_action(self, action: Action) -> Observation: ...
     async def async_execute_action(self, action: Action) -> Observation: ...
         # Runs the action through ITS tool + obs_postprocess(role); returns the OBS ONLY (no reward, no done).
-        # `final_step` is a real tool action that raises AgentStop. Per-step eval is the runtime's concern.
+        # `final_step` is a real tool action that raises AgentStop. When validate_per_step is set, fires
+        # evaluate() and surfaces (reward, info) via the registered callback — out-of-band, never in the obs.
+    def set_eval_callback(self, callback) -> None: ...  # register a (reward, info) sink for per-step eval —
+        # how a harness recuperates the per-step reward out-of-band (the agent only ever sees obs). A
+        # validate_per_step task with no callback registered is a wiring bug → execute_action RAISES.
     agent_id  # "agent" (single seat) else "{role}-{seat}"
 ```
 
@@ -64,17 +68,19 @@ both go through the **same `Tool.execute_action`** — not a Task-level core.
 The per-action work — argument validation, dispatch, error → observation, `final_step` →
 `AgentStop` — lives in **`Tool.execute_action`**, the single chokepoint both views call. gym
 `step` wraps it with the batch loop + `finished` + `evaluate` + `EnvironmentOutput`; an
-`AgentView` wraps it with `obs_postprocess(role)`, returning the **obs only** (per-step eval is
-the runtime's concern). Because both
+`AgentView` wraps it with `obs_postprocess(role)`, returning the **obs only** (per-step eval
+fires inside `execute_action` and is surfaced via the registered callback, never in the obs).
+Because both
 funnel through the **same `Tool.execute_action`**, per-action behavior is identical **by
 construction**. The *only* things the two views do differently are **when `evaluate` runs**
 and **how `AgentStop` is handled**:
 
 - **`AgentView.execute_action()`** — the **default** agent view: `tool.execute_action` +
-  `obs_postprocess(role)`, returning **obs only** (no reward, no done). The runtime calls
-  `finished` / `evaluate` at its own cadence (per-action for the agent path) — so the agent
-  never sees reward and there's no double eval. `final_step` raises `AgentStop`, which
-  propagates to the runtime.
+  `obs_postprocess(role)`, returning **obs only** (no reward, no done). When
+  `task.validate_per_step` is set it fires `evaluate` per action and surfaces `(reward, info)`
+  through the registered callback (out-of-band) — so the agent never sees reward and there's
+  no double eval; `finished` (termination) stays the runtime's call. `final_step` raises
+  `AgentStop`, which propagates to the runtime.
 - **`step()`** — the **gym-compatibility** view: loop `self._tool.execute_action` over the
   batch → `finished` → `evaluate` (per batch) → `obs_postprocess` → `EnvironmentOutput`. It
   **catches** `AgentStop` → `done=True`. **Finalized, do-not-override.**
@@ -115,11 +121,13 @@ Trajectory capture needs nothing in the standard:
 
 - The agent loop already has each `(action, obs)` (it *called* `execute_action`), so it
   **emits its own tool + LLM events** through the recorder it already uses.
-- **Reward** is hidden from the agent; the harness holds the `Task` and **recovers it
-  directly** via `task.evaluate()` (per step / terminal). When `task.validate_per_step` is set,
-  the harness's `RecordingTaskTool` calls `task.evaluate()` after each action and records the
-  step-wise reward as an `EvaluationEvent` — `AgentView.execute_action` returns obs only, so
-  reward never reaches the agent.
+- **Reward** is hidden from the agent; per-step eval fires inside `execute_action` (when
+  `task.validate_per_step`) and is surfaced **out-of-band** via `set_eval_callback`. The
+  harness's `MonitoredTool` registers that callback and records each step-wise reward as an
+  `EvaluationEvent` (parented to the `ToolCallEvent`) — `AgentView.execute_action` returns obs
+  only, so reward never reaches the agent. This is what makes `AgentView` a self-sufficient
+  equivalent of gym `step` for any harness: drive `execute_action` + register a callback, and
+  you get the per-step-eval cadence without re-implementing eval.
 
 ```mermaid
 sequenceDiagram
@@ -127,13 +135,12 @@ sequenceDiagram
   participant AV as AgentView
   participant Tk as Task
   participant Rec as Recorder · harness
-  Ag->>AV: execute_action(a)
+  Ag->>AV: execute_action(a)  (callback registered via set_eval_callback)
   AV->>Tk: tool.execute_action + obs_postprocess(role)
-  AV-->>Ag: Observation (reward dropped)
+  AV->>Tk: evaluate()  (when validate_per_step)
+  AV-->>Rec: (reward, info) via eval callback → EvaluationEvent
+  AV-->>Ag: Observation (reward never reaches the agent)
   Ag->>Rec: emit ToolCallEvent(a, obs) + LLM events
-  Note over Ag,Tk: eval is runtime-only
-  Ag->>Tk: evaluate()  (harness holds the task)
-  Ag->>Rec: emit reward (per step / terminal)
 ```
 
 ## Multi-agent — one task, many tools, with roles
@@ -250,8 +257,9 @@ Mostly specs/docs; **one** real cube break.
   `review-cube` (`references/checks.md`) — document `AgentView`; flag a `step()` override as a
   smell (use the existing hooks instead).
 - **cube-harness `openspec/specs/{agent,episode}/spec.md`** — the loop hands an `AgentView`,
-  self-emits events, recovers reward via `task.evaluate()` (its `RecordingTaskTool` evaluates
-  per step when `validate_per_step` and records an `EvaluationEvent`),
+  self-emits events, recovers per-step reward via the eval callback (its `MonitoredTool`
+  registers `set_eval_callback`; `execute_action` fires `evaluate` per action when
+  `validate_per_step` and the callback records an `EvaluationEvent`),
   catches `AgentStop`. Agents keep taking `action_set` at `make()` (static today); per-turn
   re-read is a forward extension.
 - **The one real break + the STOP cleanup:** `cubes/workarena/.../task.py` overrides `step()`
@@ -263,11 +271,13 @@ Mostly specs/docs; **one** real cube break.
 ## Decisions (resolved) & open gates
 
 **(1) Eval cadence — RESOLVED.** There is no "turn" once tool calls can be parallel — only
-events. For the agent view eval is the **runtime's** concern (the harness calls `task.evaluate()`
-per action when `validate_per_step`); gym `step` evaluates **per batch**. Since most benchmarks
-score only at the end, terminal eval is the norm and the existing `validate_per_step` flag opts
-into mid-episode eval — `AgentView` just exposes the flag + `evaluate`, never the reward. No new
-surface. *(Implemented.)*
+events. For the agent view, `execute_action` fires `evaluate` per action when
+`validate_per_step` and surfaces `(reward, info)` via the registered `set_eval_callback`
+(out-of-band — the agent only ever sees `obs`); gym `step` evaluates **per batch**. Since most
+benchmarks score only at the end, terminal eval is the norm and the existing `validate_per_step`
+flag opts into mid-episode eval. This is what makes `AgentView` a self-sufficient gym-`step`
+equivalent for any harness — a `validate_per_step` task with no callback registered is a wiring
+bug and `execute_action` raises. No new surface. *(Implemented.)*
 
 **(2) `StepError` policy — RESOLVED.** A tool error **always becomes an observation**
 (non-terminal), gym included — "it should have been like that in the gym case." Only
