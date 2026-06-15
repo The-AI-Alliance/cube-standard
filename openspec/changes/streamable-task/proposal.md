@@ -91,8 +91,9 @@ runs identically under gym `step`, an in-process agent loop, or an external agen
 customize the existing hooks, never the orchestration.** A tool **error is always an
 observation** (gym included) — `Tool.execute_action` returns `StepError.to_observation()`
 (text for the agent + structured `Observation.error` for telemetry); never terminal, only
-`finished` / `evaluate` decide termination. (No new `pre_step` / `post_step` hooks — the one
-cube that overrode `step` is fixed directly.)
+`finished` / `evaluate` decide termination. (One new per-action hook, `_post_action(obs, role)`,
+fired on both the gym and agent paths — the honest home for per-action side effects like cache
+invalidation; see decision 3.)
 
 ## STOP — now a real base-class action; the special-casing is gone
 
@@ -262,9 +263,10 @@ Mostly specs/docs; **one** real cube break.
   `validate_per_step` and the callback records an `EvaluationEvent`),
   catches `AgentStop`. Agents keep taking `action_set` at `make()` (static today); per-turn
   re-read is a forward extension.
-- **The one real break + the STOP cleanup:** `cubes/workarena/.../task.py` overrides `step()`
-  for per-step cache invalidation → fix directly (drop the override; invalidate per action,
-  not per step). The STOP machinery is **deleted**: per-leaf STOP registration / dedup
+- **The one real break + the STOP cleanup:** `cubes/workarena/.../task.py` overrode `step()`
+  for cache invalidation (gym-path-only — broken on the agent path) → migrate it to the new
+  `_post_action` hook (fires per action on both paths; see decision 3). The STOP machinery is
+  **deleted**: per-leaf STOP registration / dedup
   band-aids and the manual `STOP_ACTION` appends in `react` / `genny` / `legacy` agents
   (`final_step` is now inherited from `Tool` and dedups via `Toolbox._dedup_actions`).
 
@@ -284,10 +286,18 @@ bug and `execute_action` raises. No new surface. *(Implemented.)*
 `finished` / `evaluate` decide termination. No per-caller knob. *(Implemented:
 `StepError.to_observation()`; gym `step` no longer sets `done` on error.)*
 
-**(3) `pre_step` / `post_step` — RESOLVED: not added.** The hooks existed only to generalize
-workarena's `step()` override; simpler to **fix workarena directly** (invalidate its validate
-cache per action, not per step) than to add a contract surface. The agent's per-action eval
-boundary is the harness's concern (companion #497).
+**(3) Per-action hook — RESOLVED: one hook, `_post_action(obs, role)`.** *(Updated: an earlier
+draft of this decision said "no hook — fix workarena directly via `obs_postprocess`." That was
+wrong and is superseded.)* workarena must invalidate its validate cache **per action so the next
+`finished`/`evaluate` re-checks the latest world** — and it must do so on **both** views. The
+direct fixes both fail: overriding `step()` only fires on the gym path (the agent path never
+calls `step`, so its cache silently never invalidates — a real dual-path bug); and
+`obs_postprocess` is the wrong host because it runs **once per batch** on the gym path and is
+semantically *transform-the-observation* (a side-effecting no-op there is a timing mismatch + a
+lie). So we add `_post_action(obs, role=None)` — the honest per-action lifecycle boundary, fired
+identically by gym `step` (per action in its loop) and `AgentView.execute_action`, default no-op.
+This is the *only* new lifecycle hook; per-step **reward** recuperation stays out-of-band via the
+eval callback (decision below), not here.
 
 **(4) `core-extensions` reconciliation (agreement gate, not code).**
 `core-extensions` proposes `MultiAgentTask` + `per_agent_action_set`; this RFC's

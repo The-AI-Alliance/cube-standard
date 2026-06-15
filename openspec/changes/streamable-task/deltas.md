@@ -62,8 +62,10 @@
   runtime's call.) The gym `Task.step()` path keeps its own per-step `evaluate` (unchanged),
   separate from the agent path.
 
-> No `pre_step` / `post_step` hooks (decision 3): the only cube that overrode `step()`
-> (workarena) is fixed directly, so the contract needs no new hook surface.
+> One new per-action hook `_post_action(obs, role=None)` (decision 3): fired per action by
+> BOTH gym `step` and `AgentView.execute_action`, default no-op. The home for per-action side
+> effects (workarena's validate-cache invalidation) that `obs_postprocess` can't host honestly
+> (it's once-per-batch on the gym path and is for transforming the obs, not lifecycle).
 
 ## MODIFIED
 
@@ -118,4 +120,5 @@
    an `EvaluationEvent`); the returned obs carries no reward. No "turn" concept.
 2. **`StepError` policy** — a tool error always becomes an observation (non-terminal),
    gym included. No per-caller knob.
-3. **`pre_step`/`post_step`** — not added; workarena's `step()` override is fixed directly.
+3. **Per-action hook** — one `_post_action(obs, role=None)` (both paths, default no-op); workarena's
+   gym-only `step()` override migrates to it. (Earlier draft said "no hook"; superseded.)
