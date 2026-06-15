@@ -201,7 +201,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
 
     def model_post_init(self, __context: Any) -> None:
         """Called after Pydantic __init__. Launches the container (if configured), runs the
-        eager world setup (``prepare_world``), then builds the task's own tool ``_tool``
+        world prep + tool build (``_make_tool``), setting the task's own tool ``_tool``
         (the no-role / admin handle used by reset / evaluate / finished). Per-seat agent
         tools are made on demand by ``get_agent_view(role)``.
         """
@@ -412,7 +412,9 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         ``finished`` / ``evaluate`` re-checks the latest state. (Don't put such side effects
         in ``obs_postprocess`` — that hook is for *transforming the observation*, runs once
         per batch on the gym path, and shouldn't moonlight as a lifecycle hook.) ``obs`` is
-        the observation from the action just executed; ``role`` is the acting seat's role.
+        the observation from the action just executed (the raw per-action obs on the gym
+        ``step`` path; the ``obs_postprocess``-ed obs on the agent path); ``role`` is the
+        acting seat's role.
         """
         return None
 
