@@ -155,6 +155,13 @@ Tasks read typed fields directly: `self.execution_info.problem_statement`,
   execute-time enforcement.
 - `obs_postprocess(obs: Observation, role: str | None = None) -> Observation` — per-seat
   observation post-processing (the twin of `_filter_actions`; `role` threads through both).
+- `_post_action(obs: Observation, role: str | None = None) -> None` — react after a single
+  action hit the world. The per-action boundary BOTH views share: gym `step` calls it once
+  per action in its loop, the agent path (`AgentView.execute_action`) after each action,
+  always *before* the next `finished`/`evaluate`. Home for per-action side effects that must
+  fire on both paths (e.g. invalidating an expensive world-state cache). Do NOT abuse
+  `obs_postprocess` for this — that hook is for *transforming the obs* and runs once per
+  batch on the gym path.
 - `finished(obs: Observation | None = None) -> bool` — early termination check
 - `get_privileged_info() -> Content` — solution, eval source, internal state (for debug/oracle agents)
 - `get_status() -> str` — free-form status string

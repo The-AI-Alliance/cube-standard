@@ -283,6 +283,27 @@ def test_obs_postprocess_receives_seat_role():
     assert seen == [None, "watcher"]
 
 
+def test_post_action_fires_before_eval_on_both_paths():
+    # _post_action is the per-action boundary both views share, and must fire BEFORE the
+    # next finished()/evaluate() (so a cube can invalidate world-state caches in time).
+    seq: list[str] = []
+
+    class _Tracked(SimpleTask):
+        def _post_action(self, obs, role=None):
+            seq.append("post_action")
+
+        def evaluate(self, obs=None):
+            seq.append("evaluate")
+            return 0.5, {}
+
+    task = _Tracked(metadata=TaskMetadata(id="p"), tool_config=GreetToolConfig(), validate_per_step=True)
+    task.step(Action(name="greet", arguments={"name": "A"}))  # gym path
+    view = task.get_agent_view()
+    view.set_eval_callback(lambda r, i: None)
+    view.execute_action(Action(name="greet", arguments={"name": "B"}))  # agent path
+    assert seq == ["post_action", "evaluate", "post_action", "evaluate"]
+
+
 def test_tool_property_raises_when_no_no_role_tool():
     # A multi-agent task whose tools are strictly per-role opts out of the no-role tool.
     class _NoAdminTool(SimpleTask):

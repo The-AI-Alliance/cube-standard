@@ -139,6 +139,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         + evaluate(obs?) -> (float, dict)         abstract — score the current state
         - _filter_actions(actions, role?) -> actions  optional whitelist/mask of advertised actions
         - obs_postprocess(obs, role?) -> obs      optional per-seat observation post-processing
+        - _post_action(obs, role?)                optional per-action hook (both views; cache invalidation)
         - finished(obs?) -> bool                  optional early-termination check
         - get_privileged_info() -> Content        optional privileged task info
 
@@ -366,6 +367,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
             if result.error is not None:
                 error = result.error
             obs += result
+            self._post_action(result)  # per-action hook (gym view: role=None)
             action_times.append(time.perf_counter() - t0)
         done = done or self.finished(obs)
         # TODO: Add truncation logic based on step limits or time limits
@@ -398,6 +400,21 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
         exactly these, not on the world-global ``evaluate`` / ``reset`` / ``finished``).
         """
         return obs
+
+    def _post_action(self, obs: Observation, role: "str | None" = None) -> None:
+        """(Optional benchmark-dev hook) React after a single action has hit the world —
+        the per-action boundary BOTH views share: gym ``step`` calls it once per action in
+        its loop, and the agent path (``AgentView.execute_action``) calls it after each
+        action, *before* the next ``finished`` / ``evaluate``. Default does nothing.
+
+        This is the home for per-action side effects that must fire on both paths — e.g.
+        invalidating a cache of expensive world-state validation so the next
+        ``finished`` / ``evaluate`` re-checks the latest state. (Don't put such side effects
+        in ``obs_postprocess`` — that hook is for *transforming the observation*, runs once
+        per batch on the gym path, and shouldn't moonlight as a lifecycle hook.) ``obs`` is
+        the observation from the action just executed; ``role`` is the acting seat's role.
+        """
+        return None
 
     @abstractmethod
     def evaluate(self, obs: Observation | None = None) -> Tuple[float, dict]:
@@ -538,12 +555,14 @@ class AgentView:
         never in the obs — reward is not the agent's concern). ``finished`` (termination) is
         the runtime's call. ``final_step`` raises :class:`AgentStop`."""
         obs = self._task.obs_postprocess(self._tool.execute_action(action), self.role)
+        self._task._post_action(obs, self.role)  # per-action hook — before the eval below
         self._maybe_evaluate(obs)
         return obs
 
     async def async_execute_action(self, action: Action) -> Observation:
         """Async twin of ``execute_action`` — the parallel-tool-call call-site."""
         obs = self._task.obs_postprocess(await self._tool.async_execute_action(action), self.role)
+        self._task._post_action(obs, self.role)  # per-action hook — before the eval below
         self._maybe_evaluate(obs)
         return obs
 
