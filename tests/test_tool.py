@@ -5,7 +5,7 @@ import inspect
 
 import pytest
 
-from cube.core import Action, ActionSchema, Observation, StepError, TextContent
+from cube.core import Action, ActionSchema, AgentStop, Observation, TextContent
 from cube.tool import Tool, Toolbox, tool_action
 
 
@@ -89,7 +89,15 @@ def test_tool_action_decorator_sets_flag():
 
 def test_tool_action_set_discovers_only_decorated_methods():
     action_names = {a.name for a in EchoTool().action_set}
-    assert action_names == {"echo", "add", "crash"}
+    assert action_names == {"echo", "add", "crash", "final_step"}  # final_step is universal
+
+
+def test_tool_final_step_is_universal_and_raises_agent_stop():
+    # final_step is a real @tool_action on the Tool base — every tool exposes it, and
+    # executing it raises AgentStop (no STOP special-casing in the dispatch path).
+    assert "final_step" in {a.name for a in EchoTool().action_set}
+    with pytest.raises(AgentStop):
+        EchoTool().execute_action(Action(name="final_step", arguments={}))
 
 
 def test_tool_action_set_schemas_have_descriptions():
@@ -126,11 +134,16 @@ def test_tool_execute_action_non_action_method_raises():
         EchoTool().execute_action(Action(name="not_an_action", arguments={}))
 
 
-def test_tool_execute_action_exception_returns_step_error():
+def test_tool_execute_action_exception_folds_into_observation():
+    # Errors-as-observations: a tool exception folds into the returned Observation — the
+    # structured StepError on obs.error, and the error text in contents (the agent reads
+    # it and retries; non-terminal).
     result = EchoTool().execute_action(Action(name="crash", arguments={}))
-    assert isinstance(result, StepError)
-    assert result.error_type == "RuntimeError"
-    assert result.exception_str == "intentional error"
+    assert isinstance(result, Observation)
+    assert result.error is not None
+    assert result.error.error_type == "RuntimeError"
+    assert result.error.exception_str == "intentional error"
+    assert "intentional error" in result.to_markdown()
 
 
 def test_tool_execute_action_unknown_kwarg_returns_observation():
@@ -159,7 +172,28 @@ def test_async_tool_action_decorator_sets_flag():
 
 def test_async_tool_action_set_discovers_only_decorated_methods():
     action_names = {a.name for a in AsyncEchoTool().action_set}
-    assert action_names == {"echo", "add", "crash"}
+    assert action_names == {"echo", "add", "crash", "final_step"}  # final_step is universal
+
+
+@pytest.mark.asyncio
+async def test_async_tool_final_step_raises_agent_stop():
+    with pytest.raises(AgentStop):
+        await AsyncEchoTool().async_execute_action(Action(name="final_step", arguments={}))
+
+
+def test_sync_bridge_forwards_agent_stop_from_async_action():
+    # An async @tool_action that raises AgentStop, executed from a SYNC call-site, must
+    # propagate AgentStop through the thread-bridge — NOT deadlock. Regression: the bridge
+    # runner caught only Exception, so the AgentStop (a BaseException) was dropped and
+    # `fut.result()` blocked forever.
+    class _AsyncStopTool(Tool):
+        @tool_action
+        async def stop_async(self) -> str:
+            """Async action that ends the episode."""
+            raise AgentStop()
+
+    with pytest.raises(AgentStop):
+        _AsyncStopTool().execute_action(Action(name="stop_async", arguments={}))
 
 
 def test_async_tool_action_set_schemas_have_descriptions():
@@ -201,11 +235,12 @@ async def test_async_tool_execute_action_non_action_method_raises():
 
 
 @pytest.mark.asyncio
-async def test_async_tool_execute_action_exception_returns_step_error():
+async def test_async_tool_execute_action_exception_folds_into_observation():
     result = await AsyncEchoTool().async_execute_action(Action(name="crash", arguments={}))
-    assert isinstance(result, StepError)
-    assert result.error_type == "RuntimeError"
-    assert result.exception_str == "intentional error"
+    assert isinstance(result, Observation)
+    assert result.error is not None
+    assert result.error.error_type == "RuntimeError"
+    assert result.error.exception_str == "intentional error"
 
 
 @pytest.mark.asyncio
@@ -291,8 +326,9 @@ class AsyncUpperTool(Tool):
 
 def test_toolbox_action_set_is_union_of_tools():
     box = Toolbox(tools=[EchoTool(), UpperTool()])
-    names = {a.name for a in box.action_set}
-    assert names == {"echo", "add", "crash", "upper"}
+    names = [a.name for a in box.action_set]
+    assert set(names) == {"echo", "add", "crash", "upper", "final_step"}
+    assert names.count("final_step") == 1  # the universal final_step dedups to one
 
 
 def test_toolbox_execute_action_delegates_to_correct_tool():
@@ -308,9 +344,26 @@ def test_toolbox_execute_action_unknown_raises():
         box.execute_action(Action(name="nonexistent", arguments={}))
 
 
-def test_toolbox_duplicate_action_name_raises_on_construction():
-    with pytest.raises(ValueError, match="Duplicate action name"):
-        Toolbox(tools=[EchoTool(), EchoTool()])
+def test_toolbox_identical_actions_dedup_on_construction():
+    # Two tools sharing identical actions (here every action, incl. the universal final_step)
+    # dedup to the first owner — NOT an error. This is what makes inherited final_step work
+    # across composed tools.
+    box = Toolbox(tools=[EchoTool(), EchoTool()])
+    names = [a.name for a in box.action_set]
+    assert sorted(set(names)) == ["add", "crash", "echo", "final_step"]
+    assert len(names) == len(set(names))  # no duplicates
+
+
+def test_toolbox_conflicting_action_schema_raises_on_construction():
+    # Same action name, DIFFERENT schema across tools is a real conflict.
+    class EchoIntTool(Tool):
+        @tool_action
+        def echo(self, count: int) -> str:
+            """A different 'echo' — incompatible schema."""
+            return str(count)
+
+    with pytest.raises(ValueError, match="Conflicting action 'echo'"):
+        Toolbox(tools=[EchoTool(), EchoIntTool()])
 
 
 def test_toolbox_find_tool_returns_correct_instance():

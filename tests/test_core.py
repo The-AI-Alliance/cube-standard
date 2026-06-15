@@ -7,8 +7,10 @@ from PIL import Image as PILImage
 from pydantic import BaseModel, ValidationError
 
 from cube.core import (
+    STOP_ACTION,
     Action,
     ActionSchema,
+    AgentStop,
     ConfigRegistry,
     Content,
     ImageContent,
@@ -255,6 +257,46 @@ def test_step_error_from_exception():
         err = StepError.from_exception(e)
     assert err.error_type == "ValueError"
     assert err.exception_str == "something went wrong"
+
+
+def test_step_error_to_observation_folds_error_and_text():
+    """A failed action renders as a non-terminal observation: the error text for the
+    agent in contents, plus the structured StepError attached on obs.error."""
+    err = StepError(error_type="ValueError", exception_str="boom", stack_trace="...")
+    obs = err.to_observation()
+    assert isinstance(obs, Observation)
+    assert obs.error is err
+    assert "ValueError" in obs.to_markdown()
+    assert "boom" in obs.to_markdown()
+
+
+def test_observation_error_defaults_none():
+    assert Observation.from_text("hi").error is None
+
+
+# --- STOP_ACTION / AgentStop (the agent-ends-episode primitives) ---
+
+
+def test_stop_action_schema():
+    assert STOP_ACTION.name == "final_step"
+    assert STOP_ACTION.parameters == {"type": "object", "properties": {}}
+
+
+def test_agent_stop_is_base_exception_not_swallowed_by_except_exception():
+    # AgentStop is a BaseException so a tool's `except Exception` never catches it.
+    assert issubclass(AgentStop, BaseException)
+    assert not issubclass(AgentStop, Exception)
+
+
+def test_agent_stop_carries_default_terminal_observation():
+    stop = AgentStop()
+    assert isinstance(stop.observation, Observation)
+    assert "finished" in stop.observation.to_markdown().lower()
+
+
+def test_agent_stop_carries_provided_observation():
+    obs = Observation.from_text("custom terminal state")
+    assert AgentStop(obs).observation is obs
 
 
 # --- ValidatedConfig ---

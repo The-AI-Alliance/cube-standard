@@ -78,12 +78,17 @@ Rejects raw `bytes` (audio vs video ambiguous — construct explicitly).
 ```python
 class Observation(TypedBaseModel):
     contents: list[Content] = []
+    error: StepError | None = None    # set when this obs reports a failed action
 
     @classmethod def from_text(cls, text: str) -> Observation
     def to_llm_messages(self) -> list[dict]          # one per content
     def to_markdown(self) -> str                      # joined with \n\n
-    def __add__(self, other: Observation) -> Observation  # appends contents
+    def __add__(self, other: Observation) -> Observation  # appends contents (NOT error)
 ```
+
+A failed action is **non-terminal**: the error text is in `contents` (the agent reads it
+and retries), and the structured `StepError` is also attached on `error` (machine-readable
+copy for telemetry / `EnvironmentOutput.error`). `__add__` merges only `contents`.
 
 ### `StepError`
 ```python
@@ -93,9 +98,34 @@ class StepError(TypedBaseModel):
     stack_trace: str
 
     @classmethod def from_exception(cls, exc: Exception) -> StepError
+    def to_observation(self) -> Observation    # error text in contents + self on .error
 ```
-Returned (not raised) from `Tool.execute_action()` when the action itself raises.
-Caught by `Task.step()` and embedded in `EnvironmentOutput.error`.
+Built (never raised) from an action exception inside `Tool.execute_action()` /
+`async_execute_action()`, which always return an `Observation`: the error folds in via
+`StepError.from_exception(e).to_observation()`. `Task.step()` lifts `obs.error` onto
+`EnvironmentOutput.error`.
+
+### `AgentStop` (exception)
+```python
+class AgentStop(BaseException):
+    observation: Observation    # terminal obs; default "Task finished by the agent."
+```
+Raised by the STOP action (`Tool.final_step`) to end the episode. A `BaseException` (not
+`Exception`) so a tool's / agent's `except Exception` never swallows it. The gym
+`Task.step()` catches it (→ `done=True`); the agent-facing path lets it propagate.
+
+### `STOP_ACTION` (module-level constant)
+```python
+STOP_ACTION = ActionSchema(
+    name="final_step",
+    description="Stop the task execution.",
+    parameters={"type": "object", "properties": {}},
+)
+```
+The schema of `Tool.final_step` — the universal STOP action every tool exposes. There is
+no STOP special-casing anywhere: executing it just raises `AgentStop`. The empty-but-typed
+`parameters` is the minimal payload Anthropic accepts for `input_schema`; LiteLLM passes
+it through verbatim.
 
 ### `EnvironmentOutput`
 ```python
@@ -105,7 +135,7 @@ class EnvironmentOutput(TypedBaseModel):
     done: bool = False
     truncated: bool = False        # time/step-limit termination
     info: dict = {}                # always includes "profiling" key post-step
-    error: StepError | None = None
+    error: StepError | None = None # the step's per-action StepError (lifted from obs.error)
 ```
 Follows Gymnasium API conventions. `done=True` means terminated; `truncated=True` means
 cut short by a harness-imposed limit.
@@ -119,8 +149,11 @@ cut short by a harness-imposed limit.
    `AudioContent` or `VideoContent` explicitly.
 4. `ImageContent` deserialization calls `img.load()` to prevent `BytesIO` GC issues
    (PIL is lazy by default).
-5. `Observation + Observation` mutates the left operand in-place (appends contents);
-   this is intentional for accumulation in `Task.step()`.
+5. `Observation + Observation` mutates the left operand in-place (appends `contents` only,
+   never `error`); this is intentional for accumulation in `Task.step()`.
+6. A failed action is non-terminal — it folds into the returned `Observation`
+   (`StepError.to_observation()`), never raised. Only `AgentStop` (a `BaseException`)
+   ends an episode.
 
 ## Gotchas
 

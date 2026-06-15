@@ -114,7 +114,7 @@ def _text_content(data: str, tool_call_id: str | None = None) -> dict:
 
 
 def _obs(data: str, tool_call_id: str | None = None) -> dict:
-    return {"_type": "cube.core.Observation", "contents": [_text_content(data, tool_call_id)]}
+    return {"_type": "cube.core.Observation", "contents": [_text_content(data, tool_call_id)], "error": None}
 
 
 _OBS_START = _obs("start")
@@ -222,8 +222,8 @@ def test_tools_list(task_client):
     resp = _rpc(task_client, "tools/list")
     assert resp.status_code == 200
     names = {t["name"] for t in resp.json()["result"]}
-    # `final_step` is STOP_ACTION, auto-appended by Task.action_set when
-    # accept_agent_stop=True (the default).
+    # `final_step` is the universal Tool.final_step action — discovered in every tool's
+    # action_set (raises AgentStop), not appended.
     assert names == {"increment", "get_value", "final_step"}
 
 
@@ -243,6 +243,17 @@ def test_tools_call_with_action_id(task_client):
     resp = _rpc(task_client, "tools/call", {"name": "increment", "action_id": "abc-123"})
     assert resp.status_code == 200
     assert resp.json()["result"] == _obs("counter=1", tool_call_id="abc-123")
+
+
+def test_tools_call_final_step_returns_terminal_obs_not_500(task_client):
+    # final_step is a real advertised action now; calling it via tools/call raises AgentStop
+    # (a BaseException). The server must translate it into the terminal observation result,
+    # not let it escape as an unhandled 500.
+    resp = _rpc(task_client, "tools/call", {"name": "final_step"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "error" not in body  # NOT a JSON-RPC error / 500
+    assert "finished" in str(body["result"]).lower()
 
 
 def test_step_full_episode(task_client):

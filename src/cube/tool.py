@@ -12,7 +12,7 @@ framework bridges the impedance mismatch when caller and method differ.
 
 Abstract classes:
     AbstractTool — subclasses must implement:
-        - execute_action(action: Action) -> Observation | StepError
+        - execute_action(action: Action) -> Observation
         - action_set (property) -> list[ActionSchema]
       and inherit a default `async_execute_action` that delegates to
       `execute_action`. Override it for async-native dispatch.
@@ -59,7 +59,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, List
 
 from cube.container import Container
-from cube.core import Action, ActionSchema, Content, Observation, StepError, ValidatedConfig
+from cube.core import Action, ActionSchema, AgentStop, Content, Observation, StepError, ValidatedConfig
 
 logger = logging.getLogger(__name__)
 
@@ -332,8 +332,17 @@ class Tool(_ToolActionsMixin, AbstractTool):
         ```
     """
 
-    def execute_action(self, action: Action) -> Observation | StepError:
-        """Execute an action from a sync call-site.
+    @tool_action
+    def final_step(self) -> str:
+        """Stop the task execution."""
+        # STOP is just an action that raises — no special-casing in the dispatch path.
+        # AgentStop is a BaseException, so the dispatch's `except Exception` lets it through.
+        raise AgentStop()
+
+    def execute_action(self, action: Action) -> Observation:
+        """Execute an action from a sync call-site. Always returns an Observation: a tool
+        error is folded into it (non-terminal, structured error on ``obs.error``);
+        ``final_step`` raises :class:`AgentStop` (a BaseException, so it propagates here).
 
         Sync action → direct call.
         Async action → bridge via one-shot daemon thread + new event loop
@@ -348,7 +357,7 @@ class Tool(_ToolActionsMixin, AbstractTool):
             return self._bridge_async_to_sync(action, method)
         return self._dispatch_sync(action, method)
 
-    async def async_execute_action(self, action: Action) -> Observation | StepError:
+    async def async_execute_action(self, action: Action) -> Observation:
         """Execute an action from an async call-site.
 
         Async action → direct await.
@@ -370,12 +379,12 @@ class Tool(_ToolActionsMixin, AbstractTool):
         except Exception as e:
             action_result = f"Error executing action {action.name}: {e}"
             logger.exception(action_result)
-            return StepError.from_exception(e)
+            return StepError.from_exception(e).to_observation()
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
     # ── Internals ──
 
-    def _dispatch_sync(self, action: Action, method: Callable) -> Observation | StepError:
+    def _dispatch_sync(self, action: Action, method: Callable) -> Observation:
         """Execute a sync `@tool_action` method directly, with the standard
         success/error wrapping. Shared between `execute_action` (sync) and
         the bridge runner."""
@@ -384,10 +393,10 @@ class Tool(_ToolActionsMixin, AbstractTool):
         except Exception as e:
             action_result = f"Error executing action {action.name}: {e}"
             logger.exception(action_result)
-            return StepError.from_exception(e)
+            return StepError.from_exception(e).to_observation()
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
-    def _bridge_async_to_sync(self, action: Action, method: Callable) -> Observation | StepError:
+    def _bridge_async_to_sync(self, action: Action, method: Callable) -> Observation:
         """Run an async `@tool_action` from a sync call-site.
 
         Implementation: spawn a daemon thread, run a new event loop in
@@ -402,17 +411,57 @@ class Tool(_ToolActionsMixin, AbstractTool):
         def runner() -> None:
             try:
                 fut.set_result(ctx.run(asyncio.run, method(**action.arguments)))
-            except Exception as e:
+            except BaseException as e:  # noqa: BLE001 - must forward AgentStop (BaseException) too
+                # Forward EVERYTHING — incl. AgentStop (a BaseException raised by `final_step`).
+                # Catching only Exception would drop AgentStop on the floor and leave
+                # `fut.result()` blocking forever (the worker thread is one-shot/daemon).
                 fut.set_exception(e)
 
         threading.Thread(target=runner, daemon=True).start()
         try:
             action_result = fut.result() or "Success"
         except Exception as e:
+            # AgentStop is a BaseException → not caught here → propagates to the caller
+            # (same as the sync dispatch path); a real error folds into the observation.
             action_result = f"Error executing action {action.name}: {e}"
             logger.exception(action_result)
-            return StepError.from_exception(e)
+            return StepError.from_exception(e).to_observation()
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
+
+
+def _dedup_actions(tools: list["AbstractTool"]) -> dict[str, "AbstractTool"]:
+    """Map action name -> owning tool, deduping identical actions. Same name with an
+    *identical* schema (e.g. the universal ``final_step`` every Tool inherits) dedups to the
+    first owner; same name with a *different* schema is a real conflict and raises."""
+    name_to_tool: dict[str, AbstractTool] = {}
+    name_to_schema: dict[str, ActionSchema] = {}
+    for tool in tools:
+        for action in tool.action_set:
+            existing = name_to_schema.get(action.name)
+            if existing is not None:
+                if existing == action:
+                    continue  # identical -> dedup to the first owner
+                raise ValueError(
+                    f"Conflicting action '{action.name}' across tools "
+                    f"({name_to_tool[action.name].__class__.__name__} and {tool.__class__.__name__}): "
+                    "same name, different schema. Action names must be unique unless identical."
+                )
+            name_to_schema[action.name] = action
+            name_to_tool[action.name] = tool
+    return name_to_tool
+
+
+def _deduped_action_set(tools: list["AbstractTool"]) -> list[ActionSchema]:
+    """Union of all leaves' action sets, deduped by name (first wins). Conflicts are already
+    rejected by :func:`_dedup_actions` at construction, so first-wins is safe here."""
+    seen: set[str] = set()
+    actions: list[ActionSchema] = []
+    for tool in tools:
+        for action in tool.action_set:
+            if action.name not in seen:
+                seen.add(action.name)
+                actions.append(action)
+    return actions
 
 
 class Toolbox(Tool):
@@ -424,25 +473,20 @@ class Toolbox(Tool):
     (sync or async). The toolbox is transparent: `execute_action`
     and `async_execute_action` delegate to the matching leaf's
     same-named dispatch method.
+
+    Identical actions across leaves dedup (e.g. the ``final_step`` every Tool
+    inherits); same name with a different schema raises (see `_dedup_actions`).
     """
 
     def __init__(self, tools: list[AbstractTool]):
         self.tools = tools
-        self._action_name_to_tool: dict[str, AbstractTool] = {}
-        for tool in tools:
-            for action in tool.action_set:
-                if action.name in self._action_name_to_tool:
-                    previous_tool_name = self._action_name_to_tool[action.name].__class__.__name__
-                    this_tool_name = tool.__class__.__name__
-                    raise ValueError(
-                        f"Duplicate action name '{action.name}' found in multiple tools ({previous_tool_name} and {this_tool_name}). Action names must be unique across all tools in the toolbox."
-                    )
-                self._action_name_to_tool[action.name] = tool
+        self._action_name_to_tool = _dedup_actions(tools)
 
     @property
     def action_set(self) -> list[ActionSchema]:
-        """Returns the union of all action sets across contained tools."""
-        return [action for tool in self.tools for action in tool.action_set]
+        """Union of all leaves' action sets, deduped (identical actions like the inherited
+        ``final_step`` collapse to one)."""
+        return _deduped_action_set(self.tools)
 
     def find_tool(self, tool_cls: type) -> AbstractTool | None:
         """Find a tool of the given class in the toolbox."""
@@ -471,14 +515,14 @@ class Toolbox(Tool):
         for tool in self.tools:
             tool.close()
 
-    def execute_action(self, action: Action) -> Observation | StepError:
+    def execute_action(self, action: Action) -> Observation:
         """Sync dispatch — delegates to leaf's `execute_action`.
         Bridging for async actions happens inside the leaf."""
         if action.name not in self._action_name_to_tool:
             raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
         return self._action_name_to_tool[action.name].execute_action(action)
 
-    async def async_execute_action(self, action: Action) -> Observation | StepError:
+    async def async_execute_action(self, action: Action) -> Observation:
         """Async dispatch — delegates to leaf's `async_execute_action`.
         Sync leaves hop through `asyncio.to_thread` automatically."""
         if action.name not in self._action_name_to_tool:

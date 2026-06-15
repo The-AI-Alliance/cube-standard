@@ -5,7 +5,7 @@ Preempt these during interview (phase 2) and implementation (phase 4).
 ## Top 5 — most frequent bugs
 
 ### 1. Forgetting `@tool_action`
-Method runs, tests pass, but the agent never sees the action. Symptom: "my agent is doing nothing." Every agent-facing method needs the decorator.
+Method runs, tests pass, but the agent never sees the action. Symptom: "my agent is doing nothing." Every agent-facing method needs the decorator. (Methods may be sync `def` or `async def` on the same `Tool` — `@tool_action` works for both.)
 
 ### 2. `Task.evaluate()` mutating state
 `evaluate()` runs many times per episode (after each step) and must be pure. If it clicks, writes, or mutates, you get non-reproducible runs.
@@ -17,6 +17,15 @@ Episodes carry state across runs. Reproducibility check in `cube test` will fail
 The compliance suite is strict: every debug task must reach full reward. Off-by-one in the action sequence ⇒ failure.
 
 ## Subtler traps
+
+### Redefining `final_step` or hand-rolling a STOP action
+Every `Tool` already exposes `final_step` (raises `AgentStop` → ends the episode). Defining your own `final_step` — especially one that *returns* instead of raising — breaks termination. Don't add a STOP schema via `_filter_actions` either; it's already advertised. To end an episode the agent calls `final_step`; the task can also end it via `finished()`.
+
+### try/except inside an action just to report an error
+A `@tool_action` that raises is already caught — `execute_action` returns an `Observation` with the error text plus a structured `StepError` on `obs.error` (non-terminal; the agent retries). Only catch inside an action when you want to convert the error into a *specific* observation; otherwise let it propagate.
+
+### Building the tool in the wrong place
+The single tool-lifecycle hook is `_make_tool(self, role=None) -> Tool` — it RETURNS the tool (the base does `self._tool = self._make_tool()`). Put once-per-task world prep (dir relocation, perms) there and `return` the resulting tool. `make_tool`, `prepare_world`, and `_build_tool` no longer exist.
 
 ### Heavy data inlined into task_metadata
 Keep the shipped JSON lean (~1 KB per task average — ~1 MB for 1000 tasks, ~2 MB for 2000 tasks). If you need more than that, declare a typed `TaskExecutionInfo` subclass for it, populate the on-disk cache one-time per worker environment via `BenchmarkConfig.install()` (writing one JSON per task to `cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"`), and hydrate `Task.execution_info` inside `TaskConfig.make()` by validating `self.load_task_execution_info()` against the subclass. See `cube-harness/cubes/swebench-live-cube` for the canonical pattern; operators run `cube install <bench>` (Dockerfile / init container / shared volume) so workers never download lazily.
@@ -52,7 +61,7 @@ Use `config.subset_from_list([...])` — returns `self.model_copy(update={"task_
 
 | Signal | Say |
 |--------|-----|
-| "each task needs its own Docker image" | Supported — set `container_config: ContainerConfig` on each `TaskMetadata` with the task-specific image, RAM, and CPU. `infra` flows from `BenchmarkConfig.make(infra)` into `runtime_context["infra"]`; `Task.model_post_init` picks it up and calls `launch_task_container()` automatically. Cubes override `_build_tool()` for any image-specific setup after the container is up. |
+| "each task needs its own Docker image" | Supported — set `container_config: ContainerConfig` on each `TaskMetadata` with the task-specific image, RAM, and CPU. `infra` flows from `BenchmarkConfig.make(infra)` into `runtime_context["infra"]`; `Task.model_post_init` picks it up and calls `launch_task_container()` automatically. Cubes override `_make_tool()` for any image-specific setup after the container is up (and `return` the tool). |
 | "streaming audio / video" | Streaming actions and observations are not in the current protocol. Flag as extension work. |
-| "multiple agents cooperating" | Multi-agent is on the `core-extensions` RFC roadmap but not landed. Can you model as a single agent with a richer action set? |
-| "async tool actions" | `AsyncTool` exists but coverage is partial. Check `openspec/changes/core-extensions/` before committing. |
+| "multiple agents cooperating" | Supported, but only reach for it if a single richer action set genuinely won't do. Declare the roster with `agent_roles() -> {role: count}` and override `get_agent_view(role)` to build each seat (per-role tool via `_make_tool(role)`; the cube owns the seat index). |
+| "async tool actions" | Just write `async def` methods with `@tool_action` on your `Tool` — sync and async actions coexist on one class and `Tool` dispatches per keyword. No separate `AsyncTool`. |
