@@ -215,6 +215,7 @@ class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
                 image=cc.image,
                 ram_gb=cc.ram_gb,
                 cpu_cores=cc.cpu_cores,
+                requires=cc.requirements(),
             )
 
         # The task's own no-role tool (single-agent's tool, or a shared-world admin tool).

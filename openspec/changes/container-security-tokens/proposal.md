@@ -1,10 +1,24 @@
 # Container security capability tokens
 
-**Status:** Proposed
+**Status:** Proposed + implemented in this PR
 **Date:** 2026-06-13
-**Scope:** `cube.resource` (token vocabulary + apply contract), `cube-resources` infra drivers.
+**Scope:** `cube.resource` (token vocabulary + apply contract), `cube.task_infra`, `cube.task`,
+`cube.infra_local`.
 **Targets:** `dev`
 **Related:** extends `task-permission-requirements` (the `container:root` handshake).
+
+## Implementation (this PR)
+
+- `task_infra.build_docker_run_script(..., requires)` maps gate+apply tokens to `docker run`
+  flags (`--privileged`, `--cgroupns=host`); `launch_task_container(..., requires)` threads
+  them and re-declares them on the task `DockerServiceConfig`.
+- `task.model_post_init` passes `container_config.requirements()`, so every standard-path
+  cube gets it automatically just by declaring `requires` on its `ContainerConfig`.
+- `LocalInfraConfig.capabilities()` advertises both tokens when Docker is present (single
+  tenant); shared infra (Toolkit) advertises neither — unchanged. Cloud infras (AWS/Daytona/
+  Modal/Azure) are left unadvertised pending per-backend verification, so `can_serve`
+  safely rejects requiring tasks there.
+- Spec (`resource/spec.md`) + docstrings updated; unit tests in `tests/test_resource_lifecycle.py`.
 
 ## Problem
 

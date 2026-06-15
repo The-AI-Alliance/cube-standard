@@ -45,7 +45,16 @@ class ResourceConfig(TypedBaseModel):
 
 Standard capability tokens: `"kvm"`, `"docker"`, `"gpu:nvidia"`, `"network:egress"`,
 `"container:root"` (container processes run as uid 0 — needed by tasks that `apt`-install
-or write to `/etc`, `/var`; absent on infras that pin a non-root uid, e.g. EAI Toolkit).
+or write to `/etc`, `/var`; absent on infras that pin a non-root uid, e.g. EAI Toolkit),
+`"container:privileged"` (`--privileged`), `"container:cgroupns-host"` (`--cgroupns=host`).
+
+A token plays one of two roles. **Gate-only** (`container:root`): the capability is the
+infra's default behaviour, so the token only lets `can_serve` exclude infras that lack it —
+no launch logic. **Gate+apply** (`container:privileged`, `container:cgroupns-host`): the
+capability is opt-in per container, so an infra advertising the token MUST also translate it
+into the launch flag (in `build_docker_run_script` for the single-container path, and each
+infra's `launch()`). Only single-tenant/trusted infra should advertise gate+apply security
+tokens; shared multi-tenant infra (Toolkit) must not.
 
 `requires` is the declarative escape hatch: any resource adds tokens here and every
 subclass folds them via `super().requirements()`, so `requirements()` is the single
@@ -183,6 +192,9 @@ benchmark.close()                           # tears down L2 resource
    environments can fully isolate from production without renaming resources.
 7. `ResourceHandle` is not serializable — never pass across process boundaries. Pass
    `run_id` instead and have the target process call `infra.cleanup(run_id)`.
+8. A gate+apply token must never be silently dropped: an infra that advertises it MUST
+   apply the launch flag; one that does not advertise it MUST fail `can_serve` for a
+   requiring resource (no run-as-unprivileged downgrade).
 
 ## Gotchas
 
