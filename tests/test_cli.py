@@ -12,9 +12,11 @@ from cube import cli
 from cube.cli import (
     _DEFAULT_NAME,
     _build_registry_yaml,
+    _detect_dev_install_url,
     _guess_display_name,
     _guess_entry_id,
     _parse_pyproject_license,
+    _pip_invisible_git_deps,
     _resolve_debug_module,
     cmd_init,
     cmd_install,
@@ -797,3 +799,66 @@ def test_build_registry_yaml_missing_license_produces_todo():
 def test_build_registry_yaml_contains_tags_placeholder():
     content = _make_yaml()
     assert "tags:" in content
+
+
+# ── pip-invisible git deps (registry CI installs with pip, ignores uv.sources) ──
+
+
+def _write_pyproject(tmp_path, body: str) -> Path:
+    (tmp_path / "pyproject.toml").write_text(body)
+    return tmp_path
+
+
+def test_pip_invisible_git_deps_flags_uv_git_source(tmp_path):
+    _write_pyproject(
+        tmp_path,
+        '[project]\nname = "x"\nversion = "0.1.0"\n'
+        "[tool.uv.sources]\n"
+        'cube-standard = { git = "https://github.com/The-AI-Alliance/cube-standard", branch = "dev" }\n',
+    )
+    assert _pip_invisible_git_deps(tmp_path) == ["cube-standard"]
+
+
+def test_pip_invisible_git_deps_empty_without_git_source(tmp_path):
+    _write_pyproject(tmp_path, '[project]\nname = "x"\nversion = "0.1.0"\ndependencies = ["cube-standard>=0.1.0"]\n')
+    assert _pip_invisible_git_deps(tmp_path) == []
+
+
+def test_pip_invisible_git_deps_missing_pyproject(tmp_path):
+    assert _pip_invisible_git_deps(tmp_path) == []
+
+
+# ── dev_install_url pins the current branch when it isn't the default ──────────
+
+
+def _git(tmp_path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+
+def _init_repo_with_remote(tmp_path) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t.t")
+    _git(tmp_path, "config", "user.name", "t")
+    _git(tmp_path, "remote", "add", "origin", "https://github.com/org/cube-harness.git")
+    # Make origin/HEAD resolve to main so _git_default_branch returns "main".
+    (tmp_path / ".git" / "refs" / "remotes" / "origin").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".git" / "refs" / "remotes" / "origin" / "HEAD").write_text("ref: refs/remotes/origin/main\n")
+    (tmp_path / "f").write_text("x")
+    _git(tmp_path, "add", "f")
+    _git(tmp_path, "commit", "-qm", "init")
+
+
+def test_dev_install_url_pins_feature_branch(tmp_path):
+    _init_repo_with_remote(tmp_path)
+    _git(tmp_path, "checkout", "-q", "-b", "feat/my-cube")
+    url = _detect_dev_install_url(tmp_path)
+    assert url == "git+https://github.com/org/cube-harness@feat/my-cube"
+
+
+def test_dev_install_url_no_ref_on_default_branch(tmp_path):
+    _init_repo_with_remote(tmp_path)  # stays on main (the default)
+    url = _detect_dev_install_url(tmp_path)
+    assert url == "git+https://github.com/org/cube-harness"
+    assert "@" not in url
