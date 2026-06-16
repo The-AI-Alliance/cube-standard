@@ -62,7 +62,7 @@ The scaffold at `src/cube/_template/new_cube_package/` is normal Python — edit
 
 ## Releases & dev versioning
 
-Releases are tag-driven and per-package: pushing a `cube-standard/v*`, `cube-tools/*/v*`, or `cube-resources/*/v*` tag triggers [`release.yml`](.github/workflows/release.yml) to build and publish that package to PyPI.
+Releases are tag-driven and per-package: pushing a `cube-standard/v*`, `cube-tools/*/v*`, or `cube-resources/*/v*` tag triggers [`release.yml`](.github/workflows/release.yml) to build and publish that package to PyPI. The full maintainer runbook — promoting `dev`→`main`, the cross-repo dependency tiers, and the `scripts/release.py` driver — is in [`RELEASING.md`](RELEASING.md).
 
 **The `dev` branch always carries the *next* unreleased version**, never the last published one — immediately after a release, bump `dev` to the next pre-release (publish `0.1.0rc8` → bump `dev` to `0.1.0rc9`). This matters because cubes and cube-harness pin `cube-standard>=<rcN>`: if `dev` kept a published version string while diverging, `uv` would treat the dev build and the PyPI wheel as the same version and silently swap them during cross-repo CI. See [#167](https://github.com/The-AI-Alliance/cube-standard/pull/167) for the full rationale.
 
