@@ -108,7 +108,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from cube.benchmark import Benchmark, BenchmarkConfig
-from cube.core import Action, Observation, TypedBaseModel
+from cube.core import Action, AgentStop, Observation, TypedBaseModel
 from cube.resource import InfraConfig
 from cube.task import Task, TaskConfig
 
@@ -202,11 +202,8 @@ def _spawn_task_subprocess(
     endpoint and future Ray / storage dispatch already rely on) and catches
     non-portable state at development time instead of silently corrupting it at
     scale.  The task is created *inside* the subprocess so live resources
-    (tool instances, containers, …) are owned by the worker.
-
-    ``container_backend`` is intentionally not forwarded — it is a legacy
-    parameter being replaced by the ``infra`` / ``resource`` pattern.  Infra
-    state is passed via ``runtime_context`` instead (see TaskConfig.make()).
+    (tool instances, containers, …) are owned by the worker.  Infra state is
+    passed via ``runtime_context`` (see ``TaskConfig.make()``).
     """
     task_config = TaskConfig.model_validate_json(task_config_json)
     runtime_ctx = _load_runtime_context(runtime_ctx_json)
@@ -458,6 +455,12 @@ def make_task_jsonrpc_app(task: Task) -> FastAPI:
             else:
                 return JSONResponse(_err(req_id, _METHOD_NOT_FOUND, f"Method not found: {method!r}"))
 
+        except AgentStop as stop:
+            # `final_step` is a real advertised action now, so a client may call it via
+            # tools/call. It raises AgentStop (a BaseException, so it slips past the
+            # `except Exception` below) — translate it into the terminal observation
+            # result instead of letting it escape as an unhandled 500.
+            return JSONResponse(_ok(req_id, stop.observation.model_dump(mode="json")))
         except Exception as exc:
             logger.exception("Error handling task method %r", method)
             return JSONResponse(_err(req_id, _INTERNAL_ERROR, str(exc)))

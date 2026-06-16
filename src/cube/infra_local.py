@@ -22,6 +22,7 @@ System requirements (Docker):
 from __future__ import annotations
 
 import fcntl
+import importlib.resources
 import json
 import logging
 import os
@@ -33,6 +34,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from cube.infra_utils import build_volume_setup_script
 from cube.resource import (
@@ -49,6 +51,97 @@ logger = logging.getLogger(__name__)
 
 _IMAGE_DIR = Path(os.environ.get("CUBE_LOCAL_IMAGE_DIR", str(Path.home() / ".cube" / "images")))
 _ACTIVE_JSON = Path(os.environ.get("CUBE_CACHE_DIR", str(Path.home() / ".cube"))) / "active.json"
+
+
+_RATE_LIMIT_MARKERS = ("toomanyrequests", "rate limit", "429")
+# Docker Hub rate-limits anonymous pulls (100/6 h per IP; 200/6 h authenticated).
+# Workers that share an IP back off (6 attempts, 30 s → 5 min capped) so a burst
+# clears instead of every worker failing at once.
+_PULL_MAX_ATTEMPTS = 6
+_PULL_BACKOFF_BASE = 30.0
+_PULL_BACKOFF_CAP = 300.0
+
+
+# auto-fix(174)↓
+def _active_docker_context_host() -> str | None:
+    """Best-effort daemon endpoint of the active ``docker context``, or ``None``.
+
+    The Docker SDK honours ``DOCKER_HOST`` but NOT ``docker context``; shelling
+    out to the CLI is the only reliable way to recover the endpoint on
+    Colima / Docker-Desktop, whose socket is not ``/var/run/docker.sock``.
+    """
+    try:
+        out = subprocess.run(
+            ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    host = out.stdout.strip()
+    return host or None
+
+
+def _make_docker_client(docker: Any) -> Any:
+    """Construct a Docker SDK client robustly across Podman / Colima / Docker Desktop.
+
+    Resolution order:
+
+    1. ``DOCKER_HOST`` if it names a real socket — normalising Podman's
+       ``http+unix://<path>`` to the ``unix://<path>`` the SDK accepts. A bare
+       ``http+unix://`` / ``unix://`` (no path) is malformed and treated as unset.
+    2. The active ``docker context`` endpoint (covers Colima / Docker-Desktop).
+    3. ``docker.from_env()``.
+
+    Raises an actionable ``RuntimeError`` if the client cannot reach the daemon,
+    instead of the SDK's opaque ``FileNotFoundError``.
+    """
+    host = os.environ.get("DOCKER_HOST", "").strip()
+    if host.startswith("http+unix://"):
+        host = host[len("http+") :]  # podman advertises http+unix://; SDK wants unix://
+    if host in ("", "unix://", "tcp://"):  # unset or malformed (scheme without a path)
+        host = _active_docker_context_host() or ""
+
+    try:
+        client = docker.DockerClient(base_url=host) if host else docker.from_env()
+        client.ping()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Cannot reach the Docker daemon (tried base_url="
+            f"{host or '(docker.from_env)'!r}). Set DOCKER_HOST to a valid socket "
+            "or check `docker context ls` — Colima / Docker-Desktop use a "
+            "non-default socket the Docker SDK does not auto-discover."
+        ) from exc
+    return client
+
+
+# /auto-fix(174)
+
+
+def _docker_pull(image: str) -> None:
+    """``docker pull`` with exponential backoff on registry rate limits.
+
+    Non-rate-limit failures are raised immediately (no retry); the worker
+    should not spin on a genuinely missing or unauthorized image.
+    """
+    for attempt in range(1, _PULL_MAX_ATTEMPTS + 1):
+        proc = subprocess.run(["docker", "pull", image], capture_output=True, text=True)
+        if proc.returncode == 0:
+            return
+        combined = f"{proc.stdout}\n{proc.stderr}".lower()
+        rate_limited = any(marker in combined for marker in _RATE_LIMIT_MARKERS)
+        if not rate_limited or attempt == _PULL_MAX_ATTEMPTS:
+            raise RuntimeError(f"docker pull {image!r} failed (exit {proc.returncode}): {proc.stderr.strip()}")
+        delay = min(_PULL_BACKOFF_BASE * 2 ** (attempt - 1), _PULL_BACKOFF_CAP)
+        logger.warning(
+            "docker pull %r rate-limited (attempt %d/%d); retrying in %.0fs",
+            image,
+            attempt,
+            _PULL_MAX_ATTEMPTS,
+            delay,
+        )
+        time.sleep(delay)
 
 
 # ── Active resource store (PID-based, file-backed) ────────────────────────────
@@ -345,19 +438,12 @@ class LocalDockerServiceHandle(ResourceHandle):
                 f"LocalDockerServiceHandle.container is only defined for single-container "
                 f"resources (got {len(self._container_ids)} containers)."
             )
-        # Import lazily to avoid circular import (backends.local imports resource).
+        # Import lazily to avoid a hard ``docker`` dependency for VM-only usage.
         import docker  # type: ignore
 
-        from cube.backends.local import LocalContainer
+        from cube.local_container import LocalContainer
 
-        # Podman advertises DOCKER_HOST with http+unix:// but the Docker SDK
-        # only accepts unix://. Normalize locally rather than mutating os.environ
-        # (which would be a process-global side effect visible to other workers).
-        _host = os.environ.get("DOCKER_HOST", "")
-        if _host.startswith("http+unix://"):
-            client = docker.DockerClient(base_url=_host[len("http+") :])
-        else:
-            client = docker.from_env()
+        client = _make_docker_client(docker)
         docker_container = client.containers.get(self._container_ids[0])
         # remove_on_close=False — this handle, not the wrapper, owns the lifecycle.
         self._container_cache = LocalContainer(docker_container, client, remove_on_close=False)
@@ -404,6 +490,18 @@ class LocalInfraConfig(InfraConfig):
 
     # ── InfraConfig interface ─────────────────────────────────────────────────
 
+    def install(self) -> None:
+        """Install local system dependencies if not already present.
+
+        qemu (VM-backed cubes only) is best-effort: a failed qemu install warns but does
+        NOT abort, so offline / Docker / browser cubes stay runnable on `local` infra even
+        where qemu can't build (e.g. Homebrew on Apple Silicon). See the script's comment
+        and cube-standard #191 (scope provisioning to declared task capabilities)."""
+        ref = importlib.resources.files("cube").joinpath("scripts/install_local_infra.sh")
+        with importlib.resources.as_file(ref) as script:
+            if script.exists():
+                subprocess.run(["bash", str(script)], check=True)
+
     def fingerprint(self) -> str:
         return "local"
 
@@ -420,6 +518,11 @@ class LocalInfraConfig(InfraConfig):
                 pass
         if shutil.which("docker"):
             caps.add("docker")
+            caps.add("container:root")  # local Docker containers run as uid 0
+            # Single-tenant dev box: privileged exec and host namespaces are permitted.
+            # Shared multi-tenant infra (e.g. Toolkit) must NOT advertise these.
+            caps.add("container:privileged")
+            caps.add("container:cgroupns-host")
         return caps
 
     def provision(self, resource: ResourceConfig) -> None:
@@ -611,7 +714,7 @@ class LocalInfraConfig(InfraConfig):
 
         for image in resource.docker_images:
             logger.info("Pulling Docker image %r…", image)
-            subprocess.run(["docker", "pull", image], check=True)
+            _docker_pull(image)
 
         volume_script = build_volume_setup_script(resource.volumes)
         if volume_script:
@@ -886,3 +989,17 @@ def _kill_entry(entry: dict) -> None:
         if p.exists():
             p.unlink()
             logger.debug("Removed overlay %s", p)
+
+
+# === auto-fix notes ===  (spec: openspec/specs/auto-fix/spec.md)
+# auto-fix-note(174) {class=L1 issue=174 hash=PENDING ctx=colima/macos-arm64/n-a/cube-standard@0e91ae1}
+#   symptoms:  tbench2 Auto-CUBE shakeout on a macOS/arm64 Colima box; malformed
+#              DOCKER_HOST=http+unix:// (no socket path) -> broken unix:// client,
+#              and from_env() missed Colima's non-default socket. Infra-specific:
+#              docker backend + OS + DOCKER_HOST are the load-bearing context.
+#   invariant: a Docker SDK client is built that reaches the daemon across
+#              Podman/Colima/Docker-Desktop, or fails with an actionable error.
+#   why:       single construction site; normalize http+unix only with a real
+#              path -> docker context endpoint -> from_env -> actionable error.
+#   tested:    tests/test_infra_local.py docker-client cases.
+#   hash=PENDING: stamped by scripts/auto_fix_lint.py (Tier-1) on first run.

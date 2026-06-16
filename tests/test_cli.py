@@ -1,5 +1,6 @@
 """Tests for cube.cli — covers cmd_init, cmd_list, cmd_test, _resolve_debug_module, main(), and registry helpers."""
 
+import logging
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -11,8 +12,11 @@ from cube import cli
 from cube.cli import (
     _DEFAULT_NAME,
     _build_registry_yaml,
+    _detect_dev_install_url,
     _guess_display_name,
+    _guess_entry_id,
     _parse_pyproject_license,
+    _pip_invisible_git_deps,
     _resolve_debug_module,
     cmd_init,
     cmd_install,
@@ -550,6 +554,7 @@ def test_main_test_dispatches_with_default_max_steps():
         demo_reset_repro=False,
         stress_test=False,
         reset_check=True,
+        verbose=False,
     )
 
 
@@ -565,6 +570,7 @@ def test_main_test_dispatches_with_custom_max_steps():
         demo_reset_repro=False,
         stress_test=False,
         reset_check=True,
+        verbose=False,
     )
 
 
@@ -580,7 +586,50 @@ def test_main_test_dispatches_demo_reset_repro():
         demo_reset_repro=True,
         stress_test=False,
         reset_check=True,
+        verbose=False,
     )
+
+
+def test_main_test_dispatches_verbose_short_flag():
+    with patch("cube.cli.cmd_test") as mock_test:
+        with patch.object(sys, "argv", ["cube", "test", "counter-cube", "-v"]):
+            main()
+    mock_test.assert_called_once_with(
+        "counter-cube",
+        max_steps=20,
+        output_path=None,
+        ci_mode=False,
+        demo_reset_repro=False,
+        stress_test=False,
+        reset_check=True,
+        verbose=True,
+    )
+
+
+def test_main_test_dispatches_verbose_long_flag():
+    with patch("cube.cli.cmd_test") as mock_test:
+        with patch.object(sys, "argv", ["cube", "test", "counter-cube", "--verbose"]):
+            main()
+    assert mock_test.call_args.kwargs["verbose"] is True
+
+
+def test_enable_verbose_logging_raises_cube_logger_to_info():
+    cube_logger = logging.getLogger("cube")
+    root = logging.getLogger()
+    saved_level = cube_logger.level
+    saved_root_level = root.level
+    saved_root_handlers = root.handlers[:]
+    try:
+        cube_logger.setLevel(logging.WARNING)
+        cli._enable_verbose_logging()
+        assert cube_logger.level == logging.INFO
+        # An INFO record from a cube-namespaced logger is now emittable
+        # (not filtered out by the logger's effective level).
+        assert cube_logger.isEnabledFor(logging.INFO)
+    finally:
+        cube_logger.setLevel(saved_level)
+        root.setLevel(saved_root_level)
+        root.handlers[:] = saved_root_handlers
 
 
 def test_cmd_test_demo_reset_repro_shows_reset_error_panel(fake_debug_in_sys_modules):
@@ -613,11 +662,34 @@ def test_cmd_test_demo_reset_repro_shows_reset_error_panel(fake_debug_in_sys_mod
     assert "demo token" in spy.call_args.kwargs["reset_diff"]
 
 
+# ── _guess_entry_id ───────────────────────────────────────────────────────────
+
+
+def test_guess_entry_id_strips_cube_suffix():
+    assert _guess_entry_id("swebench-verified-cube") == "swebench-verified"
+
+
+def test_guess_entry_id_strips_only_trailing_suffix():
+    # Substring "cube" mid-name must be preserved.
+    assert _guess_entry_id("counter-cube-extras") == "counter-cube-extras"
+
+
+def test_guess_entry_id_passthrough_without_suffix():
+    assert _guess_entry_id("miniwob") == "miniwob"
+
+
+def test_guess_entry_id_short_suffix_only():
+    # Edge case: package literally named "-cube" collapses to empty; document
+    # the behavior (callers should never see this, but be explicit).
+    assert _guess_entry_id("-cube") == ""
+
+
 # ── _guess_display_name ───────────────────────────────────────────────────────
 
 
 def test_guess_display_name_hyphenated():
-    assert _guess_display_name("arithmetic-cube") == "Arithmetic Cube"
+    # `-cube` suffix is stripped so the display name refers to the benchmark.
+    assert _guess_display_name("arithmetic-cube") == "Arithmetic"
 
 
 def test_guess_display_name_single_word():
@@ -628,8 +700,8 @@ def test_guess_display_name_underscores_treated_as_hyphens():
     assert _guess_display_name("my_bench_cube") == "My Bench Cube"
 
 
-def test_guess_display_name_mixed_separators():
-    assert _guess_display_name("my_bench-cube") == "My Bench Cube"
+def test_guess_display_name_mixed_separators_strips_trailing_cube():
+    assert _guess_display_name("my_bench-cube") == "My Bench"
 
 
 # ── _parse_pyproject_license ─────────────────────────────────────────────────
@@ -727,3 +799,66 @@ def test_build_registry_yaml_missing_license_produces_todo():
 def test_build_registry_yaml_contains_tags_placeholder():
     content = _make_yaml()
     assert "tags:" in content
+
+
+# ── pip-invisible git deps (registry CI installs with pip, ignores uv.sources) ──
+
+
+def _write_pyproject(tmp_path, body: str) -> Path:
+    (tmp_path / "pyproject.toml").write_text(body)
+    return tmp_path
+
+
+def test_pip_invisible_git_deps_flags_uv_git_source(tmp_path):
+    _write_pyproject(
+        tmp_path,
+        '[project]\nname = "x"\nversion = "0.1.0"\n'
+        "[tool.uv.sources]\n"
+        'cube-standard = { git = "https://github.com/The-AI-Alliance/cube-standard", branch = "dev" }\n',
+    )
+    assert _pip_invisible_git_deps(tmp_path) == ["cube-standard"]
+
+
+def test_pip_invisible_git_deps_empty_without_git_source(tmp_path):
+    _write_pyproject(tmp_path, '[project]\nname = "x"\nversion = "0.1.0"\ndependencies = ["cube-standard>=0.1.0"]\n')
+    assert _pip_invisible_git_deps(tmp_path) == []
+
+
+def test_pip_invisible_git_deps_missing_pyproject(tmp_path):
+    assert _pip_invisible_git_deps(tmp_path) == []
+
+
+# ── dev_install_url pins the current branch when it isn't the default ──────────
+
+
+def _git(tmp_path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+
+def _init_repo_with_remote(tmp_path) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t.t")
+    _git(tmp_path, "config", "user.name", "t")
+    _git(tmp_path, "remote", "add", "origin", "https://github.com/org/cube-harness.git")
+    # Make origin/HEAD resolve to main so _git_default_branch returns "main".
+    (tmp_path / ".git" / "refs" / "remotes" / "origin").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".git" / "refs" / "remotes" / "origin" / "HEAD").write_text("ref: refs/remotes/origin/main\n")
+    (tmp_path / "f").write_text("x")
+    _git(tmp_path, "add", "f")
+    _git(tmp_path, "commit", "-qm", "init")
+
+
+def test_dev_install_url_pins_feature_branch(tmp_path):
+    _init_repo_with_remote(tmp_path)
+    _git(tmp_path, "checkout", "-q", "-b", "feat/my-cube")
+    url = _detect_dev_install_url(tmp_path)
+    assert url == "git+https://github.com/org/cube-harness@feat/my-cube"
+
+
+def test_dev_install_url_no_ref_on_default_branch(tmp_path):
+    _init_repo_with_remote(tmp_path)  # stays on main (the default)
+    url = _detect_dev_install_url(tmp_path)
+    assert url == "git+https://github.com/org/cube-harness"
+    assert "@" not in url

@@ -14,9 +14,10 @@ from pathlib import Path
 
 import pytest
 
+from cube.infra_local import LocalInfraConfig
 from cube.provision_store import ProvisionStore
 from cube.resource import (
-    DockerImageConfig,
+    ContainerConfig,
     DockerServiceConfig,
     InfraConfig,
     ResourceConfig,
@@ -25,6 +26,7 @@ from cube.resource import (
     UnsupportedResourceType,
     VMResourceConfig,
 )
+from cube.task_infra import build_docker_run_script
 
 # ── Minimal concrete InfraConfig for testing ──────────────────────────────────
 
@@ -167,8 +169,8 @@ class TestResourceConfig:
         r = DockerServiceConfig(name="webarena", compose_url="http://example.com/compose.yml")
         assert r.requirements() == {"docker"}
 
-    def test_docker_image_requires_docker(self) -> None:
-        r = DockerImageConfig(name="swebench", image="swebench/swe-bench:latest")
+    def test_container_config_requires_docker(self) -> None:
+        r = ContainerConfig(name="swebench", image="swebench/swe-bench:latest")
         assert r.requirements() == {"docker"}
 
     def test_default_ttl_is_one_hour(self) -> None:
@@ -178,6 +180,146 @@ class TestResourceConfig:
     def test_scope_defaults_to_task(self) -> None:
         r = VMResourceConfig(name="vm")
         assert r.scope == "task"
+
+
+# ── ContainerConfig is a ResourceConfig (unification) ─────────────────────────
+
+
+class TestContainerConfigUnification:
+    """ContainerConfig was folded into the ResourceConfig family (it absorbed the
+    deleted DockerImageConfig). These guard the capability handshake and the
+    backward-compatible deserialization of metadata serialized before the change."""
+
+    def test_is_a_resource_config(self) -> None:
+        assert issubclass(ContainerConfig, ResourceConfig)
+        assert isinstance(ContainerConfig(image="img"), ResourceConfig)
+
+    def test_requirements_adds_gpu_token(self) -> None:
+        assert ContainerConfig(image="img").requirements() == {"docker"}
+        assert ContainerConfig(image="img", gpu=True).requirements() == {"docker", "gpu:nvidia"}
+
+    def test_scope_defaults_to_task(self) -> None:
+        assert ContainerConfig(image="img").scope == "task"
+
+    def test_can_serve_against_capabilities(self) -> None:
+        cc = ContainerConfig(image="img")
+        assert _StubInfra(name="x", caps=["docker"]).can_serve(cc) is True
+        assert _StubInfra(name="x", caps=["kvm"]).can_serve(cc) is False
+
+    def test_type_tag_is_cube_resource_path(self) -> None:
+        # Canonical home after the move is cube.resource.
+        assert ContainerConfig(image="img").model_dump()["_type"] == "cube.resource.ContainerConfig"
+
+    def test_legacy_cube_container_import_is_same_class(self) -> None:
+        # Back-compat re-export: the old import path resolves to the same class object,
+        # so `_type: cube.container.ContainerConfig` blobs still deserialize via it.
+        from cube.container import ContainerConfig as LegacyContainerConfig
+
+        assert LegacyContainerConfig is ContainerConfig
+
+    def test_legacy_metadata_without_name_deserializes(self) -> None:
+        # Entry serialized before the move AND before the (now-required, inherited)
+        # name field — both the legacy cube.container _type and the missing name must
+        # still load, defaulting name to "". Exercises the re-export shim.
+        legacy = {
+            "_type": "cube.container.ContainerConfig",
+            "image": "python:3.12-slim",
+            "ram_gb": 1.0,
+            "cpu_cores": 1.0,
+            "gpu": False,
+            "disk_gb": 10.0,
+            "ports": None,
+        }
+        obj = ResourceConfig.model_validate(legacy)
+        assert isinstance(obj, ContainerConfig)
+        assert obj.name == ""
+        assert obj.image == "python:3.12-slim"
+        assert obj.requirements() == {"docker"}
+
+    def test_polymorphic_roundtrip_through_resource_config(self) -> None:
+        cc = ContainerConfig(image="img", ram_gb=2.0, gpu=True, ports=[8080])
+        reloaded = ResourceConfig.model_validate(cc.model_dump())
+        assert isinstance(reloaded, ContainerConfig)
+        assert reloaded == cc
+        assert reloaded.requirements() == {"docker", "gpu:nvidia"}
+
+
+# ── requires folding + container:root handshake (RFC #191) ────────────────────
+
+
+class TestResourceRequires:
+    """Every ResourceConfig folds its explicit ``requires`` tokens into ``requirements()``,
+    and ``container:root`` participates in the ``can_serve`` capability handshake."""
+
+    def test_base_requires_is_the_requirements(self) -> None:
+        assert ResourceConfig(name="x", requires={"container:root"}).requirements() == {"container:root"}
+
+    def test_container_requires_unions_with_docker(self) -> None:
+        assert ContainerConfig(image="i", requires={"container:root"}).requirements() == {
+            "docker",
+            "container:root",
+        }
+
+    def test_container_requires_composes_with_gpu(self) -> None:
+        cc = ContainerConfig(image="i", gpu=True, requires={"container:root"})
+        assert cc.requirements() == {"docker", "gpu:nvidia", "container:root"}
+
+    def test_vm_requires_unions_with_kvm(self) -> None:
+        assert VMResourceConfig(name="v", requires={"extra"}).requirements() == {"kvm", "extra"}
+
+    def test_empty_requires_changes_nothing(self) -> None:
+        assert ContainerConfig(image="i").requirements() == {"docker"}
+
+    def test_can_serve_respects_container_root(self) -> None:
+        cc = ContainerConfig(image="i", requires={"container:root"})
+        assert _StubInfra(name="root", caps=["docker", "container:root"]).can_serve(cc) is True
+        assert _StubInfra(name="nonroot", caps=["docker"]).can_serve(cc) is False
+
+
+# ── container security gate+apply tokens ──────────────────────────────────────
+
+
+class TestContainerSecurityTokens:
+    """`container:privileged` / `container:cgroupns-host`: declared via `requires`, gated by
+    `can_serve`, and applied as `docker run` flags by `build_docker_run_script`."""
+
+    def test_requirements_fold_security_tokens(self) -> None:
+        cc = ContainerConfig(image="i", requires={"container:privileged", "container:cgroupns-host"})
+        assert cc.requirements() == {"docker", "container:privileged", "container:cgroupns-host"}
+
+    def test_can_serve_gates_privileged(self) -> None:
+        cc = ContainerConfig(image="i", requires={"container:privileged"})
+        assert _StubInfra(name="priv", caps=["docker", "container:privileged"]).can_serve(cc) is True
+        assert _StubInfra(name="nopriv", caps=["docker"]).can_serve(cc) is False
+
+    def test_build_script_emits_flags_in_order(self) -> None:
+        script = build_docker_run_script(
+            "c", "img", 4.0, 2.0, requires={"container:privileged", "container:cgroupns-host"}
+        )
+        assert "--privileged" in script
+        assert "--cgroupns=host" in script
+        # deterministic order: privileged before cgroupns, both before the image
+        assert script.index("--privileged") < script.index("--cgroupns=host") < script.index("img")
+
+    def test_build_script_no_flags_without_tokens(self) -> None:
+        for requires in (None, set(), {"container:root"}):
+            script = build_docker_run_script("c", "img", 4.0, 2.0, requires=requires)
+            assert "--privileged" not in script
+            assert "--cgroupns=host" not in script
+
+    def test_local_advertises_security_tokens_with_docker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "cube.infra_local.shutil.which",
+            lambda name: "/usr/bin/docker" if name == "docker" else None,
+        )
+        caps = LocalInfraConfig().capabilities()
+        assert {"container:privileged", "container:cgroupns-host"} <= caps
+
+    def test_local_omits_security_tokens_without_docker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("cube.infra_local.shutil.which", lambda name: None)
+        caps = LocalInfraConfig().capabilities()
+        assert "container:privileged" not in caps
+        assert "container:cgroupns-host" not in caps
 
 
 # ── InfraConfig base: register / provision_status / can_serve ─────────────────

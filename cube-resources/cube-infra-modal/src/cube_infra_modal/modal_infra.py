@@ -18,7 +18,6 @@ from typing import Any
 
 import modal
 
-from cube.backends.modal import ModalContainer
 from cube.container import ContainerLaunchError
 from cube.resource import (
     DockerServiceConfig,
@@ -26,6 +25,7 @@ from cube.resource import (
     ResourceConfig,
     UnsupportedResourceType,
 )
+from cube_infra_modal.container import ModalContainer
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class ModalInfraConfig(InfraConfig):
         return f"modal:{self.app_name}"
 
     def capabilities(self) -> set[str]:
-        return {"docker", "network:egress", "gpu:nvidia"}
+        return {"docker", "network:egress", "gpu:nvidia", "container:root"}
 
     def provision(self, resource: ResourceConfig) -> None:
         """Record a ProvisionStore entry.  Modal pulls images on-demand at Sandbox creation."""

@@ -4,7 +4,7 @@ Task management for CUBE.
 This module defines the Task base class, TaskMetadata, and TaskConfig for
 implementing and configuring individual benchmark tasks. By design, Task
 unifies gym-like environment dynamics (reset/step/close) and task-specific
-logic (evaluate/filter_actions/obs_postprocess) in a single class, so that
+logic (evaluate/_filter_actions/obs_postprocess) in a single class, so that
 benchmark authors have one coherent place to define both what the agent can
 do and how it is evaluated.
 
@@ -21,15 +21,20 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Literal, Tuple
+from typing import Any, Callable, ClassVar, Dict, Generic, List, Literal, Tuple
 
 from pydantic import ConfigDict, Field, PrivateAttr, SerializeAsAny
+from typing_extensions import TypeVar
 
 from cube import get_cache_dir
-from cube.container import Container, ContainerBackend, ContainerConfig
+from cube.container import Container
+from cube.core import (
+    STOP_ACTION as STOP_ACTION,  # re-exported: `from cube.task import STOP_ACTION` keeps working
+)
 from cube.core import (
     Action,
     ActionSchema,
+    AgentStop,
     Content,
     EnvironmentOutput,
     Observation,
@@ -37,8 +42,18 @@ from cube.core import (
     StructuredContent,
     TypedBaseModel,
 )
-from cube.resource import ResourceHandle
+from cube.resource import ContainerConfig, ResourceHandle
 from cube.tool import AbstractTool, ToolConfig
+
+# Type parameters for ``Task``. ``TTMetadata`` narrows ``self.metadata``; ``TTool``
+# narrows ``self.tool`` so cubes that bind to a specific tool surface (e.g.
+# ``TerminalTool``, ``BrowserTool``) can drop ``isinstance`` asserts and
+# per-cube property overrides. Defaults keep ``Task[Meta]`` working as before
+# — ``TTool`` resolves to ``AbstractTool``. ``typing_extensions.TypeVar`` is
+# used (not the stdlib) because ``default=`` on a ``TypeVar`` is PEP 696,
+# which the stdlib added in Python 3.13; we still support 3.12.
+TTMetadata = TypeVar("TTMetadata", bound="TaskMetadata")
+TTool = TypeVar("TTool", bound=AbstractTool, default=AbstractTool)
 
 RuntimeContext = dict[str, Any]
 """
@@ -50,8 +65,8 @@ example:
 
 logger = logging.getLogger(__name__)
 
-
-STOP_ACTION = ActionSchema(name="final_step", description="Stop the task execution.")
+# STOP_ACTION + AgentStop now live in cube.core (STOP is a real tool action — Tool.final_step
+# — that raises AgentStop; there's no STOP special-casing here anymore).
 
 
 class TaskMetadata(TypedBaseModel):
@@ -111,7 +126,7 @@ class TaskExecutionInfo(TypedBaseModel):
     """
 
 
-class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
+class Task(TypedBaseModel, Generic[TTMetadata, TTool], ABC):
     """
     Represents a task that an agent must complete in an environment.
 
@@ -122,8 +137,9 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     This class contains:
     1. task logic:
         + evaluate(obs?) -> (float, dict)         abstract — score the current state
-        - filter_actions(actions) -> actions      optional whitelist of tool actions
-        - obs_postprocess(obs) -> obs             optional observation post-processing
+        - _filter_actions(actions, role?) -> actions  optional whitelist/mask of advertised actions
+        - obs_postprocess(obs, role?) -> obs      optional per-seat observation post-processing
+        - _post_action(obs, role?)                optional per-action hook (both views; cache invalidation)
         - finished(obs?) -> bool                  optional early-termination check
         - get_privileged_info() -> Content        optional privileged task info
 
@@ -132,16 +148,27 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         - step(action) -> EnvironmentOutput        execute action via tool, evaluate if done
         - close()                                  optional resource cleanup
 
-    Type parameter ``TTMetadata`` (bound to ``TaskMetadata``) lets cubes
-    statically narrow ``self.metadata`` to a ``TaskMetadata`` subclass without
-    re-annotating the field. Two equivalent forms at runtime:
+    Type parameters:
+        ``TTMetadata`` (bound ``TaskMetadata``) narrows ``self.metadata`` so
+        cubes don't have to re-annotate the field.
 
-        # Unparametrised — ``self.metadata`` typed as ``TaskMetadata``.
+        ``TTool`` (bound ``AbstractTool``, default ``AbstractTool``) narrows
+        ``self.tool`` to a specific tool surface (e.g. ``TerminalTool``).
+        Cubes that bind it drop the ``isinstance(self.tool, FooTool)`` asserts
+        and per-cube property overrides — ``self.tool`` is the right type by
+        construction. Omitting the parameter is equivalent to
+        ``Task[Meta, AbstractTool]``; existing cubes keep working unchanged.
+
+    Three equivalent forms at runtime:
+
+        # Bare — ``self.metadata: TaskMetadata``, ``self.tool: AbstractTool``.
         class FooTask(Task): ...
 
-        # Parametrised — ``self.metadata`` typed as ``FooTaskMetadata``,
-        # autocomplete and static checking work for subclass-specific fields.
+        # Metadata only — ``self.tool`` stays ``AbstractTool``.
         class FooTask(Task[FooTaskMetadata]): ...
+
+        # Both — ``self.tool: FooTool``, no property override needed.
+        class FooTask(Task[FooTaskMetadata, FooTool]): ...
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -159,9 +186,6 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         ),
     )
     tool_config: SerializeAsAny[ToolConfig] = Field(description="Tool configuration used to instantiate the tool.")
-    container_backend: ContainerBackend | None = Field(
-        default=None, description="Optional backend used to launch a container during model_post_init."
-    )
     runtime_context: RuntimeContext | None = Field(
         default=None, description="Optional shared infrastructure references from Benchmark._setup()."
     )
@@ -169,45 +193,93 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         default=False,
         description="If True, evaluate() is called after every step instead of only when the task is done.",
     )
-    accept_agent_stop: bool = Field(
-        default=True, description="Whether the task accepts the agent emitting STOP_ACTION."
-    )
 
     # Non-serializable runtime state, set during model_post_init
-    _tool: AbstractTool | None = PrivateAttr(default=None)
+    _tool: TTool | None = PrivateAttr(default=None)
     _container: Container | None = PrivateAttr(default=None)
     _resource_handle: ResourceHandle | None = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
-        """Called after Pydantic __init__. Launches container if configured, then creates tool."""
-        cc = self.metadata.container_config
-        if self.runtime_context is not None and "infra" in self.runtime_context:
-            if cc is not None:
-                from cube.task_infra import launch_task_container  # local import avoids circular dep
-
-                self._resource_handle, self._container = launch_task_container(
-                    self.runtime_context,
-                    name=self.metadata.id,
-                    image=cc.image,
-                    ram_gb=cc.ram_gb,
-                    cpu_cores=cc.cpu_cores,
-                )
-        elif self.container_backend is not None and cc is not None:
-            self._container = self.container_backend.launch(cc)
-
-        self._build_tool()
-
-    def _build_tool(self) -> None:
-        """Create ``self._tool`` from ``self.tool_config``.
-
-        Override in subclasses to run cube-specific setup (e.g. relocating a
-        read-only working directory) before calling ``tool_config.make()``.
-        ``self._container`` is already set when this is called.
+        """Called after Pydantic __init__. Launches the container (if configured), runs the
+        world prep + tool build (``_make_tool``), setting the task's own tool ``_tool``
+        (the no-role / admin handle used by reset / evaluate / finished). Per-seat agent
+        tools are made on demand by ``get_agent_view(role)``.
         """
-        self._tool = self.tool_config.make(container=self._container)
+        cc = self.metadata.container_config
+        if cc is not None and self.runtime_context is not None and "infra" in self.runtime_context:
+            from cube.task_infra import launch_task_container  # local import avoids circular dep
+
+            self._resource_handle, self._container = launch_task_container(
+                self.runtime_context,
+                name=self.metadata.id,
+                image=cc.image,
+                ram_gb=cc.ram_gb,
+                cpu_cores=cc.cpu_cores,
+                requires=cc.requirements(),
+            )
+
+        # The task's own no-role tool (single-agent's tool, or a shared-world admin tool).
+        # A *multi-agent* task whose tools are strictly per-role opts out by raising
+        # NotImplementedError in _make_tool(None); we leave _tool unset and `tool` raises a
+        # clear error pointing to get_agent_view(role). For a single-agent task the no-role
+        # tool is mandatory, so we DON'T mask a NotImplementedError there — it's a real bug
+        # (e.g. an unimplemented abstract method) and should surface immediately.
+        try:
+            self._tool = self._make_tool()  # cube code uses self._tool
+        except NotImplementedError:
+            if self.agent_roles() == {None: 1}:
+                raise
+            self._tool = None
+
+    def _make_tool(self, role: "str | None" = None) -> TTool:
+        """Create a tool — a session over the world. **The single tool-lifecycle hook**:
+        a cube does any once-per-task world prep (relocate a read-only dir, fix perms) AND
+        builds the tool here. Default ignores ``role`` and just calls
+        ``tool_config.make(container)``. A multi-agent cube overrides to bind the role (a
+        role-specific tool, or thread ``role`` into a role-aware ``tool_config.make``).
+        Called once for the task's own ``_tool`` (role=None), and per seat by
+        ``get_agent_view``; each call returns a fresh session.
+        """
+        return self.tool_config.make(container=self._container)  # type: ignore[return-value]
+
+    def agent_roles(self) -> "dict[str | None, int]":
+        """The roster: role → seat count. Default ``{None: 1}`` (single-agent). A
+        multi-agent cube overrides, e.g. ``{"buyer": 2, "seller": 1}``."""
+        return {None: 1}
+
+    def get_agent_view(self, role: "str | None" = None) -> "AgentView":
+        """The agent-facing view for an agent. The base implements **only** the single-agent
+        case (``role=None``, reusing the task's own tool). A multi-agent benchmark **must
+        override** this to build each seat's view — assigning the seat index and per-role
+        tool (``_make_tool(role)``) **internally**. The runtime never passes a seat: it calls
+        this once per seat declared in ``agent_roles()``, and the benchmark hands out the
+        right view (e.g. tracking an internal per-role counter).
+        """
+        if role is None:
+            return AgentView(self, role=None, tool=self._tool)
+        raise NotImplementedError(
+            f"{type(self).__name__} declares role {role!r} in agent_roles() but does not override "
+            "get_agent_view() to build that seat's view — multi-agent benchmarks must implement it."
+        )
 
     @property
-    def tool(self) -> AbstractTool:
+    def tool(self) -> TTool:
+        """The task's own underlying tool — what the task itself uses (reset / evaluate /
+        setup) and what cube-standard internals (server, nemogym, debug suite) drive.
+
+        This is the raw environment tool, NOT an agent surface: agents never hold it; they
+        get an :class:`AgentView` from :meth:`get_agent_view` (which wraps a tool with the
+        per-agent identity + eval callback). Backed by ``_tool``, built in ``model_post_init``.
+
+        Raises if the task has no no-role tool — a multi-agent task whose tools are strictly
+        per-role (its ``_make_tool(None)`` raises ``NotImplementedError``). Such a task has no
+        single ``tool``; drive each seat via ``get_agent_view(role)`` instead.
+        """
+        if self._tool is None:
+            raise RuntimeError(
+                f"{type(self).__name__} has no no-role tool (its _make_tool(None) raised "
+                "NotImplementedError). Use get_agent_view(role) for each seat's tool."
+            )
         return self._tool  # type: ignore[return-value]
 
     @property
@@ -218,52 +290,36 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     def id(self) -> str:
         return self.metadata.id
 
-    @property
-    def action_set(self) -> List[ActionSchema]:
-        """
-        Returns tool.action_set filtered if self.filter_actions() is implemented.
-        Tool definitions in litellm-compatible format.
+    def _filter_actions(self, actions: List[ActionSchema], role: "str | None" = None) -> List[ActionSchema]:
+        """(Optional benchmark-dev hook) Restrict which tool actions are *advertised* to an
+        agent — a whitelist / mask over the tool's ``action_set``. Default exposes everything.
 
-        Returns a JSON-serializable list of tool descriptors, each with:
-        - type: "function"
-        - function: {name, description, parameters (JSON Schema)}
+        Recomputed on every ``action_set`` access, so a cube can vary it across an episode
+        from task state (phase gating, legal-action masking). Applied to BOTH the agent view
+        (:meth:`AgentView.action_set`) and the gym view (:meth:`action_set`), so the two never
+        diverge. ``role`` is the seat's role (``None`` for the gym/single-agent view).
 
-        This format is compatible with litellm/OpenAI function calling.
-        Agents use this to discover available actions without knowing
-        tool implementations in advance.
-
-        Example return value:
-        [
-            {
-                "type": "function",
-                "function": {
-                    "name": "click",
-                    "description": "Click on a web element",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "selector": {"type": "string", "description": "CSS selector"}
-                        },
-                        "required": ["selector"]
-                    }
-                }
-            }
-        ]
-        """
-        return self.filter_actions(self.tool.action_set)
-
-    def filter_actions(self, actions: list[ActionSchema]) -> list[ActionSchema]:
-        """
-        (Optional) Allows the task to whitelist subset of all the actions provided by the tool.
-        By default filters nothing, keep all tool actions.
+        Advisory: it shapes what the agent *sees*, not execute-time enforcement — a tool still
+        runs whatever action reaches it. No cube needs hard rejection yet; if one does, the
+        single chokepoint is :meth:`AgentView.execute_action`. (Per-role action *sets* are
+        better expressed by ``_make_tool(role)`` returning a role-bound tool; use this hook
+        for task-state-dependent masking the tool itself can't see.)
         """
         return actions
+
+    @property
+    def action_set(self) -> List[ActionSchema]:
+        """The gym-view action set (litellm-compatible) — the task's own tool's actions after
+        ``_filter_actions`` (role=None). Already includes ``final_step`` (every Tool exposes
+        it). Mirrors what an :class:`AgentView` advertises, so the gym and agent paths never
+        diverge."""
+        return self._filter_actions(self.tool.action_set)
 
     @abstractmethod
     def reset(self) -> Tuple[Observation, Dict]:
         """
         Reset the task to its initial state.
-        Must call self.tool.reset() to reset the tool as well.
+        Must call self._tool.reset() to reset the tool as well.
 
         Returns:
             Tuple of (Observation, dict with additional task info)
@@ -271,16 +327,16 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         pass
 
     def step(self, action: Action | List[Action]) -> EnvironmentOutput:
-        """
-        Execute action, return next state.
-        - check if agent action is a STOP_ACTION
-        - if not, execute the action and get the observation (self.tool.execute_action(act))
-        - check if the task is done (self.finished(obs))
-        - if done or self.validate_per_step, evaluate state (self.evaluate(obs))
-        - return EnvironmentOutput with obs, reward, info, error, ...
+        """Execute an action (or a sequential batch) and return the next state.
+
+        This is the **gym-compatibility view** — FINALIZED; do NOT override. Each action
+        goes through ``self._tool.execute_action`` (the same dispatch the agent-facing
+        ``AgentView`` uses). The batch is run, then ``finished`` / ``evaluate`` are applied
+        once (per batch); a tool error is folded into the observation (non-terminal);
+        ``final_step`` raises :class:`AgentStop`, caught here to set ``done=True``.
 
         Args:
-            action: Agent action
+            action: Agent action (or list of actions, run sequentially).
         Returns EnvironmentOutput containing:
             observation: next state
             reward: reward signal (0.0 is not available)
@@ -291,34 +347,29 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
                     - "tool_execute": dict with "total", "avg_per_action", "n_actions"
                     - "evaluate": float (only present when evaluate() was called)
                     - "obs_postprocess": float
-            error: if there was an exception executing this step
         """
         actions = [action] if isinstance(action, Action) else action
         done = False
         reward = 0.0
         info = {}
-        error = None
         obs = Observation()  # will populate list of content after each action
+        error: StepError | None = None
         action_times: list[float] = []
         for action in actions:
-            if action.name == STOP_ACTION.name and self.accept_agent_stop:
-                obs += Observation.from_text("Task finished by the agent.")
-                done = True
-                break
             t0 = time.perf_counter()
-            result = self.tool.execute_action(action)
-            action_times.append(time.perf_counter() - t0)
-            if isinstance(result, Observation):
-                obs += result
-            elif isinstance(result, StepError):
-                error = result
+            try:
+                result = self._tool.execute_action(action)
+            except AgentStop as stop:
+                obs += stop.observation
                 done = True
                 break
-            else:
-                raise ValueError(
-                    f"Unknown result type from calling action '{action.name}' with args {action.arguments}: "
-                    f"got {type(result).__name__}, expected Observation or StepError"
-                )
+            # A tool error is folded into the action's obs (non-terminal); surface the
+            # structured error on EnvironmentOutput.error too (obs += merges only contents).
+            if result.error is not None:
+                error = result.error
+            obs += result
+            self._post_action(result)  # per-action hook (gym view: role=None)
+            action_times.append(time.perf_counter() - t0)
         done = done or self.finished(obs)
         # TODO: Add truncation logic based on step limits or time limits
         profiling: dict[str, Any] = (
@@ -342,12 +393,31 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         info["profiling"] = profiling
         return EnvironmentOutput(obs=obs, reward=reward, done=done, info=info, error=error)
 
-    def obs_postprocess(self, obs: Observation) -> Observation:
-        """
-        (Optional) Post-processing of observation before returning it to the agent.
-        By default does nothing.
+    def obs_postprocess(self, obs: Observation, role: "str | None" = None) -> Observation:
+        """(Optional) Post-process an observation before it reaches the agent. Default does
+        nothing. The seat's ``role`` is passed (``None`` for the gym/single-agent view) so a
+        shared-world multi-agent task can shape per-role views off the one tool — the twin of
+        :meth:`_filter_actions` (the two per-seat view-shaping hooks; ``role`` belongs on
+        exactly these, not on the world-global ``evaluate`` / ``reset`` / ``finished``).
         """
         return obs
+
+    def _post_action(self, obs: Observation, role: "str | None" = None) -> None:
+        """(Optional benchmark-dev hook) React after a single action has hit the world —
+        the per-action boundary BOTH views share: gym ``step`` calls it once per action in
+        its loop, and the agent path (``AgentView.execute_action``) calls it after each
+        action, *before* the next ``finished`` / ``evaluate``. Default does nothing.
+
+        This is the home for per-action side effects that must fire on both paths — e.g.
+        invalidating a cache of expensive world-state validation so the next
+        ``finished`` / ``evaluate`` re-checks the latest state. (Don't put such side effects
+        in ``obs_postprocess`` — that hook is for *transforming the observation*, runs once
+        per batch on the gym path, and shouldn't moonlight as a lifecycle hook.) ``obs`` is
+        the observation from the action just executed (the raw per-action obs on the gym
+        ``step`` path; the ``obs_postprocess``-ed obs on the agent path); ``role`` is the
+        acting seat's role.
+        """
+        return None
 
     @abstractmethod
     def evaluate(self, obs: Observation | None = None) -> Tuple[float, dict]:
@@ -384,7 +454,7 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
 
     def close(self) -> None:
         """
-        Cleanup task resources. Calls self.tool.close() automatically.
+        Cleanup task resources. Calls self._tool.close() automatically.
         Override to add task-specific cleanup, and call super().close() to
         ensure the tool is also cleaned up.
 
@@ -393,7 +463,7 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         - Remove temp files
         - Close network connections
         """
-        self.tool.close()
+        self._tool.close()
         if self._resource_handle is not None:
             self._resource_handle.close()
             self._resource_handle = None
@@ -401,6 +471,103 @@ class Task[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         elif self._container is not None:
             self._container.stop()
             self._container = None
+
+
+class AgentView:
+    """The agent-facing view of a :class:`Task` — the ONLY surface an agent holds.
+
+    Obs in, action out, no lifecycle. An agent gets exactly two things: ``action_set``
+    (what it may do *now*) and ``execute_action`` (do one thing, see the result). It never
+    sees ``reset`` / ``evaluate`` / ``close`` / ``step`` — the runtime drives those on the
+    Task. Obtained from ``task.get_agent_view(role)``: ``role=None`` (single-agent) over the
+    task's own tool, or one per seat for a multi-agent task.
+
+    Each tool carries its ``role`` (``None`` for single-agent; e.g. ``"buyer"``) and
+    ``seat`` index — the role drives the per-seat ``action_set`` and the stable ``agent_id``.
+
+    Not a :class:`Tool` (it exposes no actions of its own) — it is a *facet* of a Task.
+    """
+
+    def __init__(
+        self, task: "Task", role: "str | None" = None, tool: "AbstractTool | None" = None, seat: int = 0
+    ) -> None:
+        self._task = task
+        self.role = role
+        self.seat = seat
+        # The actor's tool/session — its own (role-bound) instance for a named role, or
+        # the task's default tool for the no-role seat. Dispatch goes through THIS tool,
+        # so "which agent acted" is implicit in which session ran the action.
+        self._tool = tool if tool is not None else task._tool
+        self._eval_callback: "Callable[[float, dict], None] | None" = None
+
+    def set_eval_callback(self, callback: "Callable[[float, dict], None]") -> None:
+        """Register a callback invoked with ``(reward, info)`` whenever a per-step evaluation
+        fires (when ``task.validate_per_step`` is set). This is how a runtime *recuperates*
+        the per-step eval that ``execute_action`` triggers — out-of-band, so the reward never
+        reaches the agent (it only ever sees ``obs``).
+
+        It is what makes ``AgentView`` a self-sufficient equivalent of gym ``step``: any
+        harness (not just cube-harness) gets the same per-step-eval cadence by driving
+        ``execute_action`` + registering this callback, without re-implementing the eval
+        logic. A ``validate_per_step`` task with no callback registered is therefore a wiring
+        bug — ``execute_action`` raises rather than silently dropping the reward.
+        """
+        self._eval_callback = callback
+
+    def _maybe_evaluate(self, obs: Observation) -> None:
+        """Trigger the per-step evaluation in the agent path — the same cadence gym ``step``
+        applies for ``validate_per_step`` — and surface ``(reward, info)`` through the
+        registered callback (out-of-band, never folded into the returned obs)."""
+        if not self._task.validate_per_step:
+            return
+        if self._eval_callback is None:
+            raise RuntimeError(
+                f"{type(self._task).__name__} sets validate_per_step=True, but no eval callback is "
+                f"registered on this AgentView ({self.agent_id}). The runtime must call "
+                "set_eval_callback() so per-step rewards are recuperated (they never reach the "
+                "agent). See AgentView.set_eval_callback."
+            )
+        reward, info = self._task.evaluate(obs)
+        self._eval_callback(float(reward), dict(info))
+
+    @property
+    def agent_id(self) -> str:
+        """Stable per-seat id: ``"agent"`` for the single default seat, else
+        ``"{role}-{seat}"`` (e.g. ``"buyer-0"``)."""
+        return "agent" if self.role is None else f"{self.role}-{self.seat}"
+
+    @property
+    def action_set(self) -> List[ActionSchema]:
+        """The actions advertised to this seat *right now* — its tool's actions after the
+        task's ``_filter_actions(role)``. Per-role action sets mostly fall out of each seat
+        holding a different (role-bound) tool; the filter adds task-state-dependent masking.
+
+        Recomputed on every access, so a cube *may* vary it over an episode (legal-action
+        masking / phase gating / real-time observe-no-op). In practice this is **rare** —
+        almost every cube returns a static set — so treat the dynamic capability as
+        available-but-uncommon. (Most agents also snapshot the set at construction today;
+        re-reading it per turn is a forward extension for cubes that need it.)
+        """
+        return self._task._filter_actions(self._tool.action_set, self.role)
+
+    def execute_action(self, action: Action) -> Observation:
+        """Run one action through THIS seat's tool and return its (post-processed)
+        **observation only** — no reward, no ``done``. Same per-action execution + per-step
+        eval cadence as the gym ``step`` view: when ``task.validate_per_step`` is set it fires
+        ``evaluate`` and surfaces ``(reward, info)`` via the registered callback (out-of-band,
+        never in the obs — reward is not the agent's concern). ``finished`` (termination) is
+        the runtime's call. ``final_step`` raises :class:`AgentStop`."""
+        obs = self._task.obs_postprocess(self._tool.execute_action(action), self.role)
+        self._task._post_action(obs, self.role)  # per-action hook — before the eval below
+        self._maybe_evaluate(obs)
+        return obs
+
+    async def async_execute_action(self, action: Action) -> Observation:
+        """Async twin of ``execute_action`` — the parallel-tool-call call-site."""
+        obs = self._task.obs_postprocess(await self._tool.async_execute_action(action), self.role)
+        self._task._post_action(obs, self.role)  # per-action hook — before the eval below
+        self._maybe_evaluate(obs)
+        return obs
 
 
 class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
@@ -472,23 +639,20 @@ class TaskConfig[TTMetadata: TaskMetadata](ABC, TypedBaseModel):
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
     ) -> Task:
         """Instantiate a Task from this config. Called on a worker after deserialization.
 
         Args:
             runtime_context: Shared infrastructure references created by
-                Benchmark._setup() (e.g. server URLs, database connections).
+                Benchmark._setup() (e.g. server URLs, database connections,
+                the injected ``InfraConfig`` under the ``"infra"`` key).
                 Passed from Benchmark.spawn().
-            container_backend: HOW to run containers (local, Modal, ...) —
-                read from the owning BenchmarkConfig by Benchmark.spawn().
 
         Example:
         >>> return MyTask(
         ...     metadata=self.metadata,
         ...     tool_config=self.tool_config or MyDefaultToolConfig(),
         ...     runtime_context=runtime_context,
-        ...     container_backend=container_backend,
         ... )
 
         Cubes with heavy execution data (problem statements, patches, …)

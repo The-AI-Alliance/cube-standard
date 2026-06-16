@@ -47,11 +47,13 @@ Detect which the cube uses by grepping the benchmark module for the ClassVar ass
 - Heavy per-task data (problem statements, patches, archives, evaluator scripts, …) appears as fields on a `TaskMetadata` subclass instead of on a typed `TaskExecutionInfo` subclass surfaced via `Task.execution_info`. Heavy data must live on `TaskExecutionInfo`, not `TaskMetadata`.
 
 **Suggestions:**
+- S-75: `tool.py` reimplements a surface an existing `cube-tools/*` package already provides — import/subclass it instead. See [tool/spec.md § Packaging conventions](../../../../openspec/specs/tool/spec.md#packaging-conventions).
 - S-75: `Task.reset()` has no visible call to `self.tool.reset()`.
 - S-75: `Task.evaluate()` appears to mutate state (writes to `self.tool._env.*`, calls tool action methods, writes to `self._runtime_context`). `evaluate()` must be pure.
 - S-75: `_setup()` / `install()` / `close()` appear non-idempotent (no early-return guard, no `if self._already_setup: return`, destructive ops unconditionally).
 - S-75: Option B with `task_metadata.json` committed but no metadata generator script at the repo root (`scripts/create_task_metadata.py` or `scripts/generate_task_metadata.py`). Without one, the metadata can't be regenerated if the upstream source changes.
 - S-75: Bulk data files committed inside the package source (e.g. `src/<pkg>/data/`, `src/<pkg>/assets/`). Heavy data should be auto-downloaded by the generator script into `benchmark.cache_dir()` (typically `~/.cube/<benchmark-id>/`), not shipped in-tree — committing bloats wheels and makes the regeneration path opaque.
+- S-50: `tool` property override or `isinstance(self.tool, FooTool)` asserts — drop via `class FooTask(Task[FooMeta, FooTool])`. See [task/spec.md](../../../../openspec/specs/task/spec.md).
 - S-50: If Option B, the generator script (`scripts/create_task_metadata.py` or `scripts/generate_task_metadata.py`) exists but has no `--force` flag or no idempotency guard.
 - S-50: Metadata-generation logic is inlined in `benchmark.py` (or another package module) rather than living in `scripts/*.py` at the repo root. Move it to the script so regeneration is explicit and reproducible.
 - S-50: Multiple "split"-like fields or values appear in `TaskMetadata` but `BenchmarkMetadata.named_subsets` isn't declared.
@@ -84,6 +86,29 @@ Detect which the cube uses by grepping the benchmark module for the ClassVar ass
 - S-50: No `README.md` at the repo / package root.
 - S-25: `authors` list empty in `pyproject.toml`.
 - S-25: No SPDX `LICENSE` file at the repo root, even though `legal.wrapper_license` is declared in the YAML.
+
+## 5. Registry LLM-review preview (advisory)
+
+When `/review-cube` runs pre-submission, surface the five semantic checks
+that `scripts/entry_review.py` in cube-registry will run on the PR. This
+is not a Blocking section — the registry's review is the source of truth
+— but it warns the user about likely-CONCERN paths before they submit.
+
+For each check, walk it mentally against the cube + entry YAML and add a
+**Suggestion** if you see a likely-CONCERN signal:
+
+| Registry check | Common failure mode → suggest |
+|---|---|
+| `description_matches_package` | S-75 if PyPI page for `package` is empty (package not published yet) — the registry can't verify the description from PyPI metadata; verdict will likely be CONCERN. Recommend publishing to PyPI or telling the user the PR will land at `ready-for-review`. |
+| `authors_consistent_with_git` | S-50 if no `authors[].github` handle appears in `git log -- <cube-subdir>/` of the linked `dev_install_url` repo. Recommend either adding the author to the cube subdir's history or noting the discrepancy. |
+| `no_id_squat_vs_existing` | S-50 if `id` is a one-character variant of an existing registry id (e.g. `swe-bench-verified` vs `swebench-verified`). |
+| `no_brand_impersonation` | S-50 if `name` matches a famous benchmark but the description / code looks unrelated. Faithful ports of the same name are fine — flag only if it reads as impersonation. |
+| `wrapper_license_plausible` | S-25 if `legal.wrapper_license` is declared but no `LICENSE` file exists at the cube package root or the SPDX id doesn't match the file's contents. |
+
+For each Suggestion in this section, mark it `[registry preview]` in the
+report so the user can distinguish "this skill flagged it" from "the
+registry will flag it." None of these are Blocking — the registry's LLM
+review is advisory + a maintainer can override on the PR.
 
 ## Finding format
 

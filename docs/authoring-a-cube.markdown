@@ -11,6 +11,16 @@ So you want to wrap a benchmark as a CUBE. This guide walks through what that in
 
 The short version: you implement four Python classes (tool, task, benchmark, debug agent), run `cube test` to prove it works, and submit one YAML file to the registry. Most benchmarks fit this shape naturally once it clicks.
 
+**Three Claude Code skills cover the workflow end to end:**
+
+| Skill | Phase | What it does |
+|---|---|---|
+| `/new-cube` | Scaffold | Interviews you and writes the four classes + registry entry. ([skill](https://github.com/The-AI-Alliance/cube-standard/tree/main/.claude/skills/new-cube)) |
+| `/review-cube` | Audit | Installs the package, runs `cube test`, audits against invariants, produces a Blocking/Suggestions report. ([skill](https://github.com/The-AI-Alliance/cube-standard/tree/main/.claude/skills/review-cube)) |
+| `/auto-cube` | Iterate | Runs real LLMs against the cube, classifies failures (infra / scaffold / model / **benchmark**), ships fixes — the deep-debug pass `cube test` cannot do. ([skill](https://github.com/The-AI-Alliance/cube-harness/tree/dev/.claude/skills/auto-cube), [README](https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/skills/auto-cube/README.md)) |
+
+`/auto-cube` lives in [cube-harness](https://github.com/The-AI-Alliance/cube-harness) (the runtime); the other two live here. Each phase has its own section below.
+
 ## What you're building
 
 A CUBE package exposes a benchmark through a uniform protocol so any CUBE-compatible harness can run it without custom integration. You implement four things:
@@ -68,7 +78,7 @@ Work through the layers top-down. Each file has `TODO` comments pointing at what
 
 **A note on task metadata.** If you have more than a handful of tasks, you'll load them from `task_metadata.csv` or `.json` rather than inlining them in `benchmark.py`. If your task data starts life in a different shape — scraped from a website, exported from an existing benchmark repo, hand-curated in a spreadsheet — expect to write a small one-off conversion script as a pre-step. The `/new-cube` skill walks you through this; following options 2 or 3 you'll handle it manually.
 
-Framework invariants (return types, serialization rules, reward semantics) are in [CONTRIBUTING.md § Key invariants](https://github.com/The-AI-Alliance/cube-standard/blob/main/CONTRIBUTING.md#key-invariants). Read them once before you're deep in the code.
+Framework invariants are in the layer specs — return types and action wrapping in [`tool/spec.md`](https://github.com/The-AI-Alliance/cube-standard/blob/main/openspec/specs/tool/spec.md), serialization and reward semantics in [`task/spec.md`](https://github.com/The-AI-Alliance/cube-standard/blob/main/openspec/specs/task/spec.md). Read them once before you're deep in the code.
 
 ## Validate
 
@@ -86,6 +96,75 @@ Every debug task must hit `reward == 1.0`. If one doesn't, either the debug acti
 
 `/review-cube` installs your package, runs pytest, runs `cube test`, audits against cube-standard invariants, and produces a Blocking / Suggestions report. Resolve everything in the Blocking section before submitting. Registry CI catches the same issues later, but locally is faster and less public.
 
+## Prompt hints and per-task clarifications
+
+A benchmark may *organize* two optional, agent-facing prompt strings to steer
+how harnesses present it — without rewriting the benchmark itself. The
+benchmark only stores them; `cube-standard` loads them and a harness folds them
+into the agent config at experiment-design time.
+
+Both live in an optional **`benchmark_clarifications.py` sidecar next to the
+benchmark's module** (mirroring the `task_metadata` "files next to the module"
+convention), exposing two module-level names:
+
+```python
+# my_cube/benchmark_clarifications.py
+BENCHMARK_HINT = "Submit your final answer with final_step."
+
+_SLIDER_TASKS = ["slider-1", "slider-2", "slider-3"]
+TASK_CLARIFICATION = {tid: "After setting the values, click submit." for tid in _SLIDER_TASKS}
+```
+
+**`BENCHMARK_HINT`** — one concise paragraph for conventions a first-time reader
+would miss but that aren't specific to any single task: a high-level workflow,
+the shape of a verifier, a recurring ambiguity. Keep it short and generic — a
+generalist agent should remain competitive without it; it exists so opt-in
+evaluations report on a level playing field, not so authors engineer prompts
+for one model.
+
+**`TASK_CLARIFICATION`** — a `{task_id: text}` dict for individually brittle
+tasks whose original wording omits a step a reasonable LLM would not infer.
+Canonical example: a miniwob task whose objective reads "set slider to 32 and
+string value to 'foo'" but whose verifier only rewards if the agent then clicks
+submit — a competent LLM would not click submit unprompted, and that is not
+really the LLM's fault. Because it's a `.py`, one clarification can be reused
+across many task ids (above) — that reuse is a deliberate **regularizer**,
+pushing clarifications to generalize rather than overfit per task.
+
+A harness loads both via `BenchmarkConfig.load_benchmark_clarifications()`
+(returns `(benchmark_hint, task_clarification)`; empty when no sidecar exists),
+then folds them into the agent config at experiment-design time — e.g.:
+
+```python
+overlay = MyBenchmarkConfig.load_benchmark_clarifications()
+agent = GennyConfig(
+    benchmark_hint_prompt=overlay.benchmark_hint,
+    task_clarification=overlay.task_clarification,  # pass {} to run without clarifications
+    ...,
+)
+```
+
+Applying the overlay is the recipe's explicit choice — to run a clean baseline,
+simply don't pass it. There is no separate on/off flag.
+
+Because both fields are metadata, third-party harnesses see them through
+the same serialization the rest of `TaskMetadata` / `BenchmarkMetadata`
+uses — no extra plumbing on the cube side.
+
+## Iterate (real LLMs find what the debug suite can't)
+
+`cube test` validates with the **Debug** agent — deterministic action sequences, no LLM. Real LLMs find a different class of issue: infra flakes, scaffold bugs, tasks that are *technically* solvable but practically impossible, scoring that's too strict or too lenient, hidden environmental assumptions, and sometimes problems in the benchmark itself (ambiguous prompts, broken ground truth, contaminated training data leaking into the task description).
+
+```
+/auto-cube
+```
+
+`/auto-cube` lives in [cube-harness](https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/skills/auto-cube/README.md). It runs an iterative experiment loop: sweep models × tool configs across a task subset, dispatch the **Investigator** sub-agent on every trajectory, classify failures (infra / scaffold / model / **benchmark**), and ship fixes via the [auto-fix methodology](https://github.com/The-AI-Alliance/cube-harness/blob/dev/openspec/specs/auto-fix/spec.md). You get back a `REPORT.md` session rollup, one Fix Report PR per issue, and `design-debt` issues for systemic signals.
+
+![Auto-CUBE outer loop: dispatch → per-experiment Investigator on each trajectory → analysis → interventions](https://raw.githubusercontent.com/The-AI-Alliance/cube-harness/dev/.claude/skills/auto-cube/diagram.png)
+
+Recommended once before registry submission, even if `cube test` and `/review-cube` are green — at least one real-LLM session against a fresh cube usually surfaces something. See the [Auto-CUBE skill README](https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/skills/auto-cube/README.md) for the prompt template and setup.
+
 ## Publish
 
 Once `cube test` and `/review-cube` both pass, submit to the registry with one command:
@@ -94,7 +173,7 @@ Once `cube test` and `/review-cube` both pass, submit to the registry with one c
 cube registry add --submit
 ```
 
-This generates a `cube-registry-entry.yaml` from your `pyproject.toml`, forks [cube-registry](https://github.com/The-AI-Alliance/cube-registry), commits the entry, and opens a PR. Registry CI validates and auto-merges the happy path — no human review required.
+This generates a `cube-registry-entry.yaml` from your `pyproject.toml`, forks [cube-registry](https://github.com/The-AI-Alliance/cube-registry), commits the entry, and opens a PR. Registry CI runs three hard gates (ownership-check, quick-compliance, LLM semantic review) plus an informational pre-merge slow-check. On hard gates green and a path-isolated diff, the PR auto-merges. If the LLM review flags a `CONCERN` (typical causes: package not yet on PyPI so the page is empty, README doesn't cover the cube subdirectory, author handles can't be confirmed against the linked repo's git history), the PR is labeled `ready-for-review` for a maintainer.
 
 Run `cube registry add` without `--submit` first if you want to generate the YAML locally, edit it, and review the entry before opening the PR.
 
@@ -119,4 +198,6 @@ Ways to reach us:
 - [cube-registry](https://github.com/The-AI-Alliance/cube-registry) — submission YAML template and compliance tiers
 - [cube-tools/](https://github.com/The-AI-Alliance/cube-standard/tree/main/cube-tools) — reusable tool packages (browser, computer, chat)
 - [cube-resources/](https://github.com/The-AI-Alliance/cube-standard/tree/main/cube-resources) — reusable resource packages (playwright browser, chat sessions, AWS/Azure infra, VM backend)
+- [Auto-CUBE skill (cube-harness)](https://github.com/The-AI-Alliance/cube-harness/blob/dev/.claude/skills/auto-cube/README.md) — iterate-and-fix loop for hardening a cube against real LLMs
+- [auto-fix methodology (cube-harness)](https://github.com/The-AI-Alliance/cube-harness/blob/dev/openspec/specs/auto-fix/spec.md) — what a Fix Report PR looks like and why
 - [DeepWiki](https://deepwiki.com/The-AI-Alliance/cube-standard) — full API reference

@@ -515,8 +515,8 @@ class AWSInfraConfig(InfraConfig):
         return f"aws:{self.region}"
 
     def capabilities(self) -> set[str]:
-        """EC2 HVM instances support KVM workloads and Docker-host provisioning."""
-        return {"kvm", "docker"}
+        """EC2 HVM instances support KVM workloads and Docker-host provisioning (root)."""
+        return {"kvm", "docker", "container:root"}
 
     def provision(self, resource: ResourceConfig) -> None:
         """Bootstrap a resource into an EC2 AMI.

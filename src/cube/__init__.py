@@ -23,7 +23,6 @@ __all__ = ["__version__", "get_cache_dir"]
 from cube.infra_local import LocalInfraConfig  # noqa: E402
 from cube.provision_store import ProvisionStore  # noqa: E402
 from cube.resource import (  # noqa: E402
-    DockerImageConfig,
     DockerServiceConfig,
     InfraConfig,
     ResourceConfig,
@@ -38,7 +37,6 @@ __all__ += [
     "ResourceConfig",
     "VMResourceConfig",
     "DockerServiceConfig",
-    "DockerImageConfig",
     "VolumeSpec",
     "InfraConfig",
     "ResourceHandle",

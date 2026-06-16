@@ -292,10 +292,9 @@ def check_reset_reproducibility(module: types.ModuleType, *, infra: InfraConfig 
             return False, "no debug task configs", ""
         tc = configs[0]
         runtime_context = getattr(benchmark, "_runtime_context", None)
-        container_backend = getattr(config, "container_backend", None)
 
         def _reset_once() -> object:
-            t = tc.make(runtime_context=runtime_context, container_backend=container_backend)
+            t = tc.make(runtime_context=runtime_context)
             try:
                 obs, _ = t.reset()
                 return obs.model_dump() if hasattr(obs, "model_dump") else str(obs)
@@ -456,10 +455,7 @@ def run_debug_suite(
 
         def _episode_for_config(tc):
             try:
-                task = tc.make(
-                    runtime_context=benchmark._runtime_context,
-                    container_backend=config.container_backend,
-                )
+                task = tc.make(runtime_context=benchmark._runtime_context)
             except ImportError as exc:
                 raise ImportError(
                     f"{exc}\n\n"
@@ -488,9 +484,20 @@ def run_debug_suite(
             for tc in task_configs:
                 if on_episode_start is not None:
                     on_episode_start(tc.task_id)
-                results.append(_episode_for_config(tc))
+                # auto-fix(175)↓
+                try:
+                    report = _episode_for_config(tc)
+                except Exception as exc:
+                    logger.exception(
+                        "[run_debug_suite] benchmark=%r serial episode failed task_id=%r",
+                        benchmark_name,
+                        tc.task_id,
+                    )
+                    report = _make_error_report(tc, exc)
+                results.append(report)
+                # /auto-fix(175)
                 if on_episode_done is not None:
-                    on_episode_done(results[-1])
+                    on_episode_done(report)
         else:
             # Snapshot _runtime_context key→value-identity before parallel run.
             # Any mutation (new key, deleted key, or reassigned value) during
@@ -670,3 +677,17 @@ def assert_debug_tasks_reward_one(
         assert not report["error"], f"[{task_id}] Episode error: {report['error']}"
         assert report["done"], f"[{task_id}] Episode did not complete: {report}"
         assert report["reward"] == 1.0, f"[{task_id}] Expected reward=1.0, got {report['reward']}: {report}"
+
+
+# === auto-fix notes ===  (spec: openspec/specs/auto-fix/spec.md)
+# auto-fix-note(175) {class=L0 issue=175 hash=PENDING ctx=logic/cube-standard@0e91ae1}
+#   symptoms:  tbench2 shakeout; a DockerException in task 1 of the SERIAL
+#              branch (effective_workers<=1, what `cube test` uses) escaped,
+#              tasks 2..N never ran, empty results -> success reported on a
+#              crash. Pure control-flow; benchmark-/OS-/infra-agnostic.
+#   invariant: a per-task crash becomes a structured error report so later
+#              tasks still run -- it never escapes run_debug_suite.
+#   why:       serial branch now mirrors the parallel branch's existing
+#              try/except -> _make_error_report (restores symmetry).
+#   tested:    tests/test_testing.py::test_suite_serial_collects_all_episode_results_when_first_task_raises
+#   hash=PENDING: stamped by scripts/auto_fix_lint.py (Tier-1) on first run.

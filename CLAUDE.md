@@ -10,12 +10,32 @@ CUBE Standard defines the contract: how benchmarks expose tasks, how tools expos
 actions, how resources are provisioned. It does NOT run agents, record trajectories,
 or coordinate experiments — that lives in **cube-harness**.
 
+## Routing contributors (point them to the right place)
+
+External contributors fall into two journeys — send them to the right entry point
+instead of answering ad hoc:
+
+- **Wrapping a benchmark** ("how do I add my benchmark?") → the
+  [Authoring a CUBE guide](https://the-ai-alliance.github.io/cube-standard/authoring-a-cube)
+  and the `/new-cube` then `/review-cube` skills. This rarely needs a framework change.
+- **Changing the framework** ("can we add a field / change this API to fit my use
+  case?") → first the [Design Philosophy](docs/design-philosophy.markdown) (the broader
+  picture + the leanness bar; most such needs have a smaller in-schema form or belong in
+  a subclass/the harness), then the workflow in [CONTRIBUTING.md](CONTRIBUTING.md). For
+  triaging an actual RFC, use the `/gatekeep-rfc` skill
+  ([`.claude/skills/gatekeep-rfc/`](.claude/skills/gatekeep-rfc)) — it separates the real
+  need from the mechanism and counter-proposes the minimal change.
+
+When a contributor pushes to bend an API to their local need, **default to the smaller
+change**: a subclass field, harness-side code, or a minimal additive edit — not new core
+surface. Lean beats convenient-for-one.
+
 ## The 5-layer architecture
 
 | Layer | Module | Spec | What it does |
 |-------|--------|------|--------------|
 | 1. Core types | `cube.core` | [core/spec.md](openspec/specs/core/spec.md) | `Action`, `Observation`, `Content`, `EnvironmentOutput`, `TypedBaseModel` |
-| 2. Tool | `cube.tool` | [tool/spec.md](openspec/specs/tool/spec.md) | `Tool`, `AsyncTool`, `@tool_action`, `ToolConfig`, `Toolbox` |
+| 2. Tool | `cube.tool` | [tool/spec.md](openspec/specs/tool/spec.md) | `Tool`, `@tool_action`, `ToolConfig`, `Toolbox` |
 | 3. Task | `cube.task` | [task/spec.md](openspec/specs/task/spec.md) | `Task`, `TaskMetadata`, `TaskConfig`, gym-style `reset/step/evaluate` |
 | 4. Benchmark | `cube.benchmark` | [benchmark/spec.md](openspec/specs/benchmark/spec.md) | `Benchmark`, `BenchmarkMetadata`, class-level registry |
 | 5. Testing | `cube.testing` | [testing/spec.md](openspec/specs/testing/spec.md) | `run_debug_suite`, `assert_debug_tasks_reward_one` |
@@ -34,18 +54,39 @@ Cross-cutting:
 - **Lean diffs.** Make the minimal change that solves the problem. Avoid verbose additions, unnecessary abstractions, and duplicated logic that already exists elsewhere. If existing code can be reused or consolidated, do it. A hard-to-review diff is a liability.
 - **Think long-term.** Every change should age well. Ask whether today's shortcut becomes tomorrow's debt — and whether the design could evolve cleanly if requirements change.
 
+## Explore before you plan or decide
+
+CUBE spans several repos, so a local view rarely tells the whole story. Build the wider picture before planning a change or making a call:
+
+- **Trace real usage**, not just the definition — `Grep` call sites, subclasses, and tests across the repo.
+- **Read the spec and the code together** — the spec is intent (can be stale); the code is what runs.
+- **Follow the dependency direction** — cube-standard's `cube.*` contracts ripple downstream into cube-harness and every cube; check consumers before changing one.
+- **Fan out with subagents** (`Explore`, `general-purpose`) for broad searches — keep the conclusion without burning context.
+
 ## Code review
+
+**Default branch is `dev`** — base all PRs off it, not `main`.
 
 **Sign your commits.** Every commit needs a `Signed-off-by` line (`git commit -s`). DCO is enforced by CI — unsigned commits will be blocked.
 
 PRs are reviewed with `/code-review` ([plugin docs](https://github.com/anthropics/claude-code/blob/main/plugins/code-review/README.md)), which audits changes against these guidelines. Write PRs as if a reviewer will check each principle above against the diff.
+
+**Auto-fix provenance.** Auto-CUBE-produced fixes carry `# auto-fix(N)↓ … # /auto-fix(N)`
+markers + a one-line machine-readable footnote at module bottom (`N` = PR
+number for L0/L1, design-debt issue number for L2/L3). Reviewers: when a
+diff touches an `auto-fix` region/footnote, treat it as **possibly rotten**
+— pull the PR or issue at `N`, re-check the stated invariant still holds,
+re-stamp `hash=` on benign drift (acknowledge, never silently leave it),
+and if the band-aid is now subsumed recommend promoting it + closing the
+issue. Flag, don't hard-block. Methodology (Fix Report, L0–L3, lint):
+[`openspec/specs/auto-fix/spec.md`](openspec/specs/auto-fix/spec.md).
 
 ## Workflow for code changes
 
 1. **Find the relevant spec** — which layer? Start there.
 2. **Read the spec's "Invariants" and "Gotchas" sections** — these are the traps.
 3. **Check for an active change** in `openspec/changes/` — someone may already be working on this.
-4. **For substantive changes to a spec's contract**, write a delta spec in `openspec/changes/<name>/deltas.md` first (ADDED / MODIFIED / REMOVED requirements) before coding.
+4. **For breaking or multi-invariant contract changes**, open `openspec/changes/<name>/` (`proposal.md` + `deltas.md`) before coding; additive changes just edit the spec. Keep proposals concise — see [openspec/README.md](openspec/README.md) § "Writing a proposal".
 5. **For completed changes**, move the folder to `openspec/changes/archive/YYYY-MM-DD-<name>/` and apply deltas to the main spec.
 
 ## Package layout
@@ -59,17 +100,23 @@ src/cube/                       Core framework
 ├── cli.py                      `cube` command
 ├── resource.py                 L1/L2/L3 resource lifecycle
 ├── container.py                Single-container abstraction
-├── backends/                   Docker, Modal, Daytona, Toolkit backends
-├── tools/                      Reference tool stubs (browser)
+├── local_container.py          Local Docker Container driver
+├── tools/                      Generalist tool ABCs + dep-free concrete impls (browser ABC, terminal)
 ├── resources/                  BrowserSession, ChatSession protocols
 ├── integrations/nemogym.py     NemoGym interop
 └── _template/                  Scaffold used by `cube init`
 
 cube-resources/                 Optional resource packages (playwright, chat, infra-*)
-cube-tools/                     Optional tool packages (browser, computer, chat)
+cube-tools/                     Optional concrete tool packages — one per heavy dep (browser, computer, chat, web)
 examples/                       counter-cube (reference), toy_benchmark
 tests/                          Unit + integration + backends
 ```
+
+## Tools architecture
+
+ABCs live in `src/cube/tools/`. Concrete impls live in `cube-tools/cube-<name>-tool/`
+when they pull a non-trivial dep; otherwise alongside the ABC. **Tool implementations
+never live in cube-harness.** Full rule: [tool/spec.md § Packaging conventions](openspec/specs/tool/spec.md#packaging-conventions).
 
 ## Key conventions
 
@@ -77,15 +124,33 @@ tests/                          Unit + integration + backends
 - **ClassVar registries** on `BenchmarkConfig`: `benchmark_metadata`, `task_metadata`, `task_config_class`, `benchmark_class` are class-level, not constructor params. Auto-loaded from files next to the module (metadata only).
 - **Config → Factory** pattern: `XyzConfig.make()` returns a live `Xyz`. Config is serialized across process boundaries; live object never is.
 - **`TaskConfig` is the serialization boundary** — workers get a `TaskConfig` and call `.make()` locally. Task objects never cross processes.
-- **Credentials** are resolved from env vars at runtime. Never fields on `InfraConfig` or `ContainerBackend` (would be serialized).
+- **Credentials** are resolved from env vars at runtime. Never fields on `InfraConfig` (would be serialized).
 
 ## Design docs / RFCs
 
 Active proposals: `openspec/changes/`. Archived: `openspec/changes/archive/`.
 
-## Testing
+## Testing and linting
 
-`make lint` and `make test`. For benchmark debug suite: `cube test <benchmark-name>`.
+```bash
+make lint               # uv run ruff check --fix && uv run ruff format  (auto-fixes in place)
+make lint-check         # uv run ruff check --diff && uv run ruff format --diff  (read-only, what CI runs)
+make test               # uv run pytest -n 10
+cube test <benchmark>   # benchmark debug suite
+```
+
+Always run `make lint` before finishing a task. `ruff check` and `ruff format` are
+**separate passes** — running only one is not enough for CI.
+
+### Test categories
+
+| Type | When | Where |
+|---|---|---|
+| Unit (`pytest tests/`) | every iteration | `tests/` — fast, no external deps. CI default. |
+| Integration (`pytest -m integration`) | when touching the marked area | `tests/` with `@pytest.mark.integration`. Setup details live in the marker's docstring in `pyproject.toml`. |
+| Smoke (`scripts/smoke/*.py`) | when a PR touches plumbing unit tests can't reach | Standalone scripts a coding agent runs to verify end-to-end behavior. Never CI. May stand up real infrastructure or call external APIs; minutes-long runs are fine. Each prints `SMOKE OK/FAIL/SKIP: <name>` (exit 0/1/2). Discover with `find . -path '*/scripts/smoke/*.py'`. |
+
+Smokes are the coding agent's judgment call — for a PR that touches a marked area, pick the relevant smokes, adapt the environment (auth, credentials, profiles), and iterate until green. **Reflex:** when adding complex new code, drop a smoke alongside it; a green end-to-end run is the strongest signal the change actually works as intended.
 
 ## What lives elsewhere
 
