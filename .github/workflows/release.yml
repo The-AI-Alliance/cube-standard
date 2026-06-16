@@ -107,8 +107,10 @@ jobs:
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       - name: Build package
-        working-directory: ${{ steps.pkg.outputs.dir }}
-        run: uv build
+        # cube-resources/* are uv workspace members, so a plain `uv build` in the
+        # member dir writes artifacts to the workspace-root dist/, not the member's.
+        # Build the specific member explicitly and output into its own dist/.
+        run: uv build --package ${{ steps.pkg.outputs.name }} --out-dir ${{ steps.pkg.outputs.dir }}/dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e  # release/v1
