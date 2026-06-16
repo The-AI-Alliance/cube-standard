@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from cube.infra_local import LocalInfraConfig
 from cube.provision_store import ProvisionStore
 from cube.resource import (
     ContainerConfig,
@@ -25,6 +26,7 @@ from cube.resource import (
     UnsupportedResourceType,
     VMResourceConfig,
 )
+from cube.task_infra import build_docker_run_script
 
 # ── Minimal concrete InfraConfig for testing ──────────────────────────────────
 
@@ -272,6 +274,52 @@ class TestResourceRequires:
         cc = ContainerConfig(image="i", requires={"container:root"})
         assert _StubInfra(name="root", caps=["docker", "container:root"]).can_serve(cc) is True
         assert _StubInfra(name="nonroot", caps=["docker"]).can_serve(cc) is False
+
+
+# ── container security gate+apply tokens ──────────────────────────────────────
+
+
+class TestContainerSecurityTokens:
+    """`container:privileged` / `container:cgroupns-host`: declared via `requires`, gated by
+    `can_serve`, and applied as `docker run` flags by `build_docker_run_script`."""
+
+    def test_requirements_fold_security_tokens(self) -> None:
+        cc = ContainerConfig(image="i", requires={"container:privileged", "container:cgroupns-host"})
+        assert cc.requirements() == {"docker", "container:privileged", "container:cgroupns-host"}
+
+    def test_can_serve_gates_privileged(self) -> None:
+        cc = ContainerConfig(image="i", requires={"container:privileged"})
+        assert _StubInfra(name="priv", caps=["docker", "container:privileged"]).can_serve(cc) is True
+        assert _StubInfra(name="nopriv", caps=["docker"]).can_serve(cc) is False
+
+    def test_build_script_emits_flags_in_order(self) -> None:
+        script = build_docker_run_script(
+            "c", "img", 4.0, 2.0, requires={"container:privileged", "container:cgroupns-host"}
+        )
+        assert "--privileged" in script
+        assert "--cgroupns=host" in script
+        # deterministic order: privileged before cgroupns, both before the image
+        assert script.index("--privileged") < script.index("--cgroupns=host") < script.index("img")
+
+    def test_build_script_no_flags_without_tokens(self) -> None:
+        for requires in (None, set(), {"container:root"}):
+            script = build_docker_run_script("c", "img", 4.0, 2.0, requires=requires)
+            assert "--privileged" not in script
+            assert "--cgroupns=host" not in script
+
+    def test_local_advertises_security_tokens_with_docker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "cube.infra_local.shutil.which",
+            lambda name: "/usr/bin/docker" if name == "docker" else None,
+        )
+        caps = LocalInfraConfig().capabilities()
+        assert {"container:privileged", "container:cgroupns-host"} <= caps
+
+    def test_local_omits_security_tokens_without_docker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("cube.infra_local.shutil.which", lambda name: None)
+        caps = LocalInfraConfig().capabilities()
+        assert "container:privileged" not in caps
+        assert "container:cgroupns-host" not in caps
 
 
 # ── InfraConfig base: register / provision_status / can_serve ─────────────────

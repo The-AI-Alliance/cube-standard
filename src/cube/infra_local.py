@@ -519,6 +519,10 @@ class LocalInfraConfig(InfraConfig):
         if shutil.which("docker"):
             caps.add("docker")
             caps.add("container:root")  # local Docker containers run as uid 0
+            # Single-tenant dev box: privileged exec and host namespaces are permitted.
+            # Shared multi-tenant infra (e.g. Toolkit) must NOT advertise these.
+            caps.add("container:privileged")
+            caps.add("container:cgroupns-host")
         return caps
 
     def provision(self, resource: ResourceConfig) -> None:

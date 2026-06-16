@@ -161,7 +161,8 @@ class ResourceConfig(TypedBaseModel):
         Checked against ``InfraConfig.capabilities()`` (via ``InfraConfig.can_serve``)
         before provisioning or launch. Subclasses union their structural needs onto the
         explicit ``requires`` tokens via ``super().requirements()``.
-        Standard tokens: "kvm", "docker", "gpu:nvidia", "network:egress", "container:root".
+        Standard tokens: "kvm", "docker", "gpu:nvidia", "network:egress", "container:root",
+        "container:privileged", "container:cgroupns-host".
         """
         return set(self.requires)
 
@@ -516,7 +517,10 @@ class InfraConfig(ValidatedConfig, ABC):
         Checked against resource.requirements() before provisioning or launch.
         Standard tokens: "kvm", "docker", "gpu:nvidia", "network:egress",
         "container:root" (container processes run as uid 0 — needed by tasks that
-        apt-install or write to /etc, /var; absent on infras that pin a non-root uid).
+        apt-install or write to /etc, /var; absent on infras that pin a non-root uid),
+        "container:privileged" (--privileged) and "container:cgroupns-host"
+        (--cgroupns=host) — gate+apply tokens an infra both advertises and applies at
+        launch; only single-tenant/trusted infra should publish them.
         """
         ...
 
