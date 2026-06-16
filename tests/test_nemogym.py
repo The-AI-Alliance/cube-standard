@@ -3,7 +3,7 @@
 from fastapi.testclient import TestClient
 
 from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata, RuntimeContext
-from cube.container import Container, ContainerBackend
+from cube.container import Container
 from cube.core import Observation
 from cube.integrations.nemogym import CubeResourcesServer
 from cube.task import Task, TaskConfig, TaskMetadata
@@ -36,12 +36,11 @@ class _Task(Task):
 
 
 class _TaskConfig(TaskConfig):
-    def make(self, runtime_context: RuntimeContext | None = None, container_backend: ContainerBackend | None = None):
+    def make(self, runtime_context: RuntimeContext | None = None):
         return _Task(
             metadata=self.metadata,
             tool_config=self.tool_config or _ToolConfig(),
             runtime_context=runtime_context,
-            container_backend=container_backend,
         )
 
 

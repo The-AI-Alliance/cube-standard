@@ -313,7 +313,7 @@ wheels = [
 
 [[package]]
 name = "cube-browser-tool"
-version = "0.1.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -326,6 +326,7 @@ dependencies = [
 [package.optional-dependencies]
 bgym = [
     { name = "browsergym-core" },
+    { name = "numpy" },
 ]
 dev = [
     { name = "pytest" },
@@ -338,6 +339,7 @@ requires-dist = [
     { name = "browsergym-core", marker = "extra == 'bgym'" },
     { name = "cube-browser-playwright" },
     { name = "cube-standard" },
+    { name = "numpy", marker = "extra == 'bgym'" },
     { name = "pillow", specifier = ">=9.0" },
     { name = "playwright" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },

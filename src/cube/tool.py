@@ -1,27 +1,26 @@
 """
 Tool configuration for CUBE benchmarks.
 
-This module defines AbstractTool, Tool, AsyncTool, ToolConfig, and the @tool_action decorator
-for implementing and configuring agent action interfaces. ToolConfig allows researchers
-to swap tool implementations for experimentation, enabling research on different tool
-sets and configurations without modifying benchmark code.
+This module defines `AbstractTool`, `Tool`, `ToolConfig`, `Toolbox`, and the
+`@tool_action` decorator. `ToolConfig` lets researchers swap tool
+implementations for experimentation without modifying benchmark code.
+
+`Tool` carries a dual call surface — `execute_action` (sync) and
+`async_execute_action` (async) — and routes per the `@tool_action` method's
+own `def` keyword. Sync and async methods may coexist on one class; the
+framework bridges the impedance mismatch when caller and method differ.
 
 Abstract classes:
     AbstractTool — subclasses must implement:
-        - execute_action(action: Action) -> Observation | StepError
+        - execute_action(action: Action) -> Observation
         - action_set (property) -> list[ActionSchema]
-    AbstractAsyncTool — same contract but fully async:
-        - async execute_action(action: Action) -> Observation | StepError
-        - action_set (property) -> list[ActionSchema]
-    Tool is a concrete subclass of AbstractTool that implements both automatically
-    via the @tool_action decorator — subclass Tool instead of AbstractTool directly.
-    AsyncTool is a concrete subclass of AbstractAsyncTool — all @tool_action methods
-    must be async def. A TypeError is raised at class definition time otherwise.
+      and inherit a default `async_execute_action` that delegates to
+      `execute_action`. Override it for async-native dispatch.
 
     ToolConfig — subclasses must implement:
-        - make(container) -> AbstractTool | AbstractAsyncTool
+        - make(container) -> AbstractTool
 
-Example — defining a custom sync tool and its config:
+Example — defining a tool and its config:
 
     from cube.tool import Tool, ToolConfig, tool_action
     from cube.container import Container
@@ -30,13 +29,13 @@ Example — defining a custom sync tool and its config:
         base_url: str
 
         @tool_action
-        def navigate(self, url: str) -> str:
-            '''Navigate to a URL and return the page title.'''
+        def screenshot(self) -> bytes:
+            '''Capture a screenshot of the current page.'''
             ...
 
         @tool_action
-        def click(self, selector: str) -> str:
-            '''Click on an element identified by a CSS selector.'''
+        async def navigate(self, url: str) -> str:
+            '''Navigate to a URL and return the page title.'''
             ...
 
     class BrowserToolConfig(ToolConfig):
@@ -46,25 +45,21 @@ Example — defining a custom sync tool and its config:
             url = container.get_url(port=9222) if container else self.base_url
             return BrowserTool(base_url=url)
 
-Example — defining an async tool:
-
-    class AsyncBrowserTool(AsyncTool):
-        @tool_action
-        async def navigate(self, url: str) -> str:
-            '''Navigate to a URL and return the page title.'''
-            ...
-
 The BrowserToolConfig can then be passed to a Task or Benchmark, letting
 harness users swap browser backends without touching benchmark logic.
 """
 
+import asyncio
+import concurrent.futures
+import contextvars
 import inspect
 import logging
+import threading
 from abc import ABC, abstractmethod
 from typing import Any, Callable, List
 
 from cube.container import Container
-from cube.core import Action, ActionSchema, Content, Observation, StepError, TypedBaseModel
+from cube.core import Action, ActionSchema, AgentStop, Content, Observation, StepError, ValidatedConfig
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +82,16 @@ class AbstractTool(ABC):
     def execute_action(self, action: Action) -> Any:
         """Execute a single action and return the result."""
         pass
+
+    async def async_execute_action(self, action: Action) -> Any:
+        """Async call-site for executing an action.
+
+        Default: delegate to sync `execute_action` on the current thread
+        (no thread hop). Subclasses with native async dispatch — most
+        commonly `Tool`, which routes per the action method's own
+        `def`/`async def` keyword — override this method.
+        """
+        return self.execute_action(action)
 
     @property
     @abstractmethod
@@ -124,35 +129,7 @@ class AbstractTool(ABC):
         pass
 
 
-class AbstractAsyncTool(ABC):
-    """
-    Async variant of AbstractTool. All execution is async.
-
-    Subclass AsyncTool (not this class directly) to get automatic action
-    discovery via @tool_action. All @tool_action methods must be async def.
-    """
-
-    async def reset(self) -> None:
-        """Optional: reset the tool to its initial state."""
-        pass
-
-    async def close(self) -> None:
-        """Optional: clean up tool resources (connections, processes, files, etc.)."""
-        pass
-
-    @abstractmethod
-    async def execute_action(self, action: Action) -> Any:
-        """Execute a single action and return the result."""
-        pass
-
-    @property
-    @abstractmethod
-    def action_set(self) -> List[ActionSchema]:
-        """Returns list of actions supported by that tool (same format as AbstractTool)."""
-        pass
-
-
-class ToolConfig(TypedBaseModel, ABC):
+class ToolConfig(ValidatedConfig, ABC):
     """
     Configuration for creating task-specific tools.
 
@@ -178,29 +155,25 @@ class ToolConfig(TypedBaseModel, ABC):
         pass
 
 
-class AsyncToolConfig(TypedBaseModel, ABC):
-    """Configuration for creating async task-specific tools.
-
-    Mirrors ToolConfig but make() is a coroutine, allowing async resource
-    acquisition (browser launch, network connections, etc.) before the tool
-    is handed to the caller.
+class AsyncToolConfig(ValidatedConfig, ABC):
+    """Configuration for creating task-specific tools whose `make()`
+    needs to be a coroutine (async resource acquisition: browser launch,
+    network connections, etc.) before the tool is handed to the caller.
     """
 
     @abstractmethod
-    async def make(self, container: Container | None = None) -> AbstractAsyncTool:
-        """Instantiate AsyncTool from configuration data."""
+    async def make(self, container: Container | None = None) -> AbstractTool:
+        """Instantiate a Tool from configuration data."""
         pass
 
 
 def tool_action(func: Callable) -> Callable:
     """
-    Decorator to mark a method as an action in a Tool or AsyncTool.
+    Decorator to mark a method as an action on a Tool.
 
-    This decorator automatically registers methods as actions that will be
-    discovered by the tool's action_set property.
-
-    For AsyncTool subclasses, the decorated method must be async def —
-    a TypeError is raised at class definition time otherwise.
+    Decorated methods are discovered by the tool's `action_set` property.
+    Methods may be sync `def` or `async def` — `Tool` dispatches per the
+    method's own keyword.
 
     Usage:
         class MyTool(Tool):
@@ -209,10 +182,10 @@ def tool_action(func: Callable) -> Callable:
                 '''Action description.'''
                 return f"Result: {param}"
 
-        class MyAsyncTool(AsyncTool):
             @tool_action
-            async def my_action(self, param: str) -> str:
-                '''Action description.'''
+            async def my_slow_action(self, param: str) -> str:
+                '''Async action on the same class.'''
+                await some_io()
                 return f"Result: {param}"
     """
     func._is_action = True  # type: ignore[attr-defined]
@@ -221,9 +194,8 @@ def tool_action(func: Callable) -> Callable:
 
 class _ToolActionsMixin:
     """
-    Shared action discovery and dispatch logic for Tool and AsyncTool.
-
-    Not intended to be subclassed directly.
+    Shared action discovery logic for `Tool`. Not intended to be subclassed
+    directly.
     """
 
     def get_action_method(self, action: Action) -> Callable:
@@ -250,6 +222,26 @@ class _ToolActionsMixin:
                 f"Action {action.name} exists in {self.__class__.__name__} but is not decorated with @tool_action. Add @tool_action to expose it as an action."
             )
         return method
+
+    def _validate_action_args(self, action: Action, method: Callable) -> Observation | None:
+        """Pre-validate action.arguments against the bound method's signature.
+
+        Returns an error Observation when the agent passed unknown / mismatched
+        kwargs (so the agent can correct itself on the next step), or None when
+        the args bind cleanly.
+
+        This is necessary because raising would surface as a fatal StepError
+        upstream (Task.step terminates the episode), and a single LLM-side typo
+        like ``write_file(path=…, content=…, timeout=120)`` shouldn't end an
+        episode — the agent should see the mistake and retry.
+        """
+        try:
+            inspect.signature(method).bind(**action.arguments)
+            return None
+        except TypeError as e:
+            params = list(inspect.signature(method).parameters)
+            msg = f"Invalid arguments for {action.name}: {e}. Expected parameters: {params}."
+            return Observation(contents=[Content.from_data(msg, tool_call_id=action.id)])
 
     @property
     def action_set(self) -> List[ActionSchema]:
@@ -296,127 +288,205 @@ class _ToolActionsMixin:
 
 class Tool(_ToolActionsMixin, AbstractTool):
     """
-    Base class for sync tools with automatic action discovery via decorators.
+    Base class for tools with automatic action discovery via decorators.
 
-    Tool subclasses should mark their action methods with the @tool_action decorator.
-    The action_set property will automatically discover and expose these methods.
+    `@tool_action` methods can be **sync OR async** on the same class —
+    dispatch routes per the method's `def` keyword. The tool exposes a
+    dual call surface so callers can pick the shape that matches their
+    own call-site:
+
+      * `tool.execute_action(action)` — sync caller. Sync actions run
+        directly (no overhead). Async actions are bridged via a
+        one-shot thread with its own event loop (~2-5 ms / call).
+
+      * `await tool.async_execute_action(action)` — async caller. Async
+        actions are awaited directly. Sync actions hop through
+        `asyncio.to_thread` (pooled worker, enables real OS-thread
+        parallelism inside `asyncio.gather`).
+
+    Tools that wrap thread-affine resources (sync Playwright, some DB
+    drivers) should override `async_execute_action` to dispatch through
+    a per-instance single-threaded executor.
 
     Example:
         ```python
         from cube.tool import Tool, tool_action, Action
 
         class CalculatorTool(Tool):
-            '''Calculator tool with basic arithmetic operations.'''
-
             @tool_action
             def add(self, a: float, b: float) -> str:
-                '''Add two numbers together.'''
                 return f"Result: {a + b}"
 
-        # Usage
+            @tool_action
+            async def slow_add(self, a: float, b: float) -> str:
+                await some_io()
+                return f"Result: {a + b}"
+
         calc = CalculatorTool()
-
-        # Automatic discovery of actions
-        print("Available actions:")
-        for action_schema in calc.action_set:
-            print(f"  - {action_schema.name}: {action_schema.description}")
-        # Output: - add: Add two numbers together.
-
-        # Execute an action
-        action = Action(name="add", arguments={"a": 5.0, "b": 3.0})
-        result = calc.execute_action(action)
-        print(result.contents[0].data)  # "Result: 8.0"
+        # Sync caller, sync action: direct call.
+        calc.execute_action(Action(name="add", arguments={"a": 5, "b": 3}))
+        # Sync caller, async action: bridge via thread+loop.
+        calc.execute_action(Action(name="slow_add", arguments={"a": 5, "b": 3}))
+        # Async caller, both action kinds: works through async_execute_action.
+        await calc.async_execute_action(Action(name="slow_add", arguments={"a": 5, "b": 3}))
         ```
-
-    Benefits:
-        - Zero boilerplate: Just add @tool_action decorator
-        - Single source of truth: Method signature and docstring define the action
-        - No duplication: Each function defined exactly once
-        - Clear intent: Obvious which methods are actions
     """
 
-    def execute_action(self, action: Action) -> Observation | StepError:
-        """Execute an action by name."""
+    @tool_action
+    def final_step(self) -> str:
+        """Stop the task execution."""
+        # STOP is just an action that raises — no special-casing in the dispatch path.
+        # AgentStop is a BaseException, so the dispatch's `except Exception` lets it through.
+        raise AgentStop()
+
+    def execute_action(self, action: Action) -> Observation:
+        """Execute an action from a sync call-site. Always returns an Observation: a tool
+        error is folded into it (non-terminal, structured error on ``obs.error``);
+        ``final_step`` raises :class:`AgentStop` (a BaseException, so it propagates here).
+
+        Sync action → direct call.
+        Async action → bridge via one-shot daemon thread + new event loop
+        (~2-5 ms overhead; `contextvars.copy_context()` propagates the
+        caller's tracing/OTel context into the worker).
+        """
         method = self.get_action_method(action)
+        invalid = self._validate_action_args(action, method)
+        if invalid is not None:
+            return invalid
+        if inspect.iscoroutinefunction(method):
+            return self._bridge_async_to_sync(action, method)
+        return self._dispatch_sync(action, method)
+
+    async def async_execute_action(self, action: Action) -> Observation:
+        """Execute an action from an async call-site.
+
+        Async action → direct await.
+        Sync action → `asyncio.to_thread(method)` — pooled worker, no
+        per-call thread spawn, enables real OS-thread parallelism when
+        wrapped in `asyncio.gather`. Override this method to route
+        through a per-instance single-threaded executor for tools that
+        wrap thread-affine resources.
+        """
+        method = self.get_action_method(action)
+        invalid = self._validate_action_args(action, method)
+        if invalid is not None:
+            return invalid
+        try:
+            if inspect.iscoroutinefunction(method):
+                action_result = (await method(**action.arguments)) or "Success"
+            else:
+                action_result = (await asyncio.to_thread(method, **action.arguments)) or "Success"
+        except Exception as e:
+            action_result = f"Error executing action {action.name}: {e}"
+            logger.exception(action_result)
+            return StepError.from_exception(e).to_observation()
+        return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
+
+    # ── Internals ──
+
+    def _dispatch_sync(self, action: Action, method: Callable) -> Observation:
+        """Execute a sync `@tool_action` method directly, with the standard
+        success/error wrapping. Shared between `execute_action` (sync) and
+        the bridge runner."""
         try:
             action_result = method(**action.arguments) or "Success"
         except Exception as e:
             action_result = f"Error executing action {action.name}: {e}"
             logger.exception(action_result)
-            return StepError.from_exception(e)
+            return StepError.from_exception(e).to_observation()
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
 
+    def _bridge_async_to_sync(self, action: Action, method: Callable) -> Observation:
+        """Run an async `@tool_action` from a sync call-site.
 
-class AsyncTool(_ToolActionsMixin, AbstractAsyncTool):
-    """
-    Base class for async tools with automatic action discovery via decorators.
-
-    All @tool_action methods must be async def. A TypeError is raised at class
-    definition time if a sync method is decorated with @tool_action.
-
-    Example:
-        ```python
-        from cube.tool import AsyncTool, tool_action, Action
-
-        class AsyncCalculatorTool(AsyncTool):
-            '''Async calculator tool.'''
-
-            @tool_action
-            async def add(self, a: float, b: float) -> str:
-                '''Add two numbers together.'''
-                return f"Result: {a + b}"
-
-        # Usage
-        calc = AsyncCalculatorTool()
-        action = Action(name="add", arguments={"a": 5.0, "b": 3.0})
-        result = await calc.execute_action(action)
-        ```
-    """
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
+        Implementation: spawn a daemon thread, run a new event loop in
+        it, block on the result. ~2-5 ms overhead per call. The
+        thread is one-shot (not pooled). `contextvars.copy_context()`
+        propagates the caller's context (OTel spans, logging state)
+        into the worker so cross-thread observability is preserved.
         """
-        Validate that all @tool_action methods in AsyncTool subclasses are async def.
-        """
-        super().__init_subclass__(**kwargs)
-        for name, attr in cls.__dict__.items():
-            if getattr(attr, "_is_action", False) and not inspect.iscoroutinefunction(attr):
-                raise TypeError(
-                    f"{cls.__name__}.{name} is decorated with @tool_action but is not async. "
-                    f"AsyncTool requires all @tool_action methods to be 'async def'."
-                )
+        ctx = contextvars.copy_context()
+        fut: concurrent.futures.Future = concurrent.futures.Future()
 
-    async def execute_action(self, action: Action) -> Observation | StepError:
-        """Execute an async action by name."""
-        method = self.get_action_method(action)
+        def runner() -> None:
+            try:
+                fut.set_result(ctx.run(asyncio.run, method(**action.arguments)))
+            except BaseException as e:  # noqa: BLE001 - must forward AgentStop (BaseException) too
+                # Forward EVERYTHING — incl. AgentStop (a BaseException raised by `final_step`).
+                # Catching only Exception would drop AgentStop on the floor and leave
+                # `fut.result()` blocking forever (the worker thread is one-shot/daemon).
+                fut.set_exception(e)
+
+        threading.Thread(target=runner, daemon=True).start()
         try:
-            action_result = (await method(**action.arguments)) or "Success"
+            action_result = fut.result() or "Success"
         except Exception as e:
+            # AgentStop is a BaseException → not caught here → propagates to the caller
+            # (same as the sync dispatch path); a real error folds into the observation.
             action_result = f"Error executing action {action.name}: {e}"
             logger.exception(action_result)
-            return StepError.from_exception(e)
+            return StepError.from_exception(e).to_observation()
         return Observation(contents=[Content.from_data(action_result, tool_call_id=action.id)])
+
+
+def _dedup_actions(tools: list["AbstractTool"]) -> dict[str, "AbstractTool"]:
+    """Map action name -> owning tool, deduping identical actions. Same name with an
+    *identical* schema (e.g. the universal ``final_step`` every Tool inherits) dedups to the
+    first owner; same name with a *different* schema is a real conflict and raises."""
+    name_to_tool: dict[str, AbstractTool] = {}
+    name_to_schema: dict[str, ActionSchema] = {}
+    for tool in tools:
+        for action in tool.action_set:
+            existing = name_to_schema.get(action.name)
+            if existing is not None:
+                if existing == action:
+                    continue  # identical -> dedup to the first owner
+                raise ValueError(
+                    f"Conflicting action '{action.name}' across tools "
+                    f"({name_to_tool[action.name].__class__.__name__} and {tool.__class__.__name__}): "
+                    "same name, different schema. Action names must be unique unless identical."
+                )
+            name_to_schema[action.name] = action
+            name_to_tool[action.name] = tool
+    return name_to_tool
+
+
+def _deduped_action_set(tools: list["AbstractTool"]) -> list[ActionSchema]:
+    """Union of all leaves' action sets, deduped by name (first wins). Conflicts are already
+    rejected by :func:`_dedup_actions` at construction, so first-wins is safe here."""
+    seen: set[str] = set()
+    actions: list[ActionSchema] = []
+    for tool in tools:
+        for action in tool.action_set:
+            if action.name not in seen:
+                seen.add(action.name)
+                actions.append(action)
+    return actions
 
 
 class Toolbox(Tool):
-    """Composite sync tool that delegates to a list of AbstractTool instances."""
+    """Composite tool that holds a list of `Tool` instances and routes
+    actions by name. Both sync and async dispatch supported — leaf
+    Tools handle the per-method bridging.
+
+    `@tool_action` methods on member tools may be of either kind
+    (sync or async). The toolbox is transparent: `execute_action`
+    and `async_execute_action` delegate to the matching leaf's
+    same-named dispatch method.
+
+    Identical actions across leaves dedup (e.g. the ``final_step`` every Tool
+    inherits); same name with a different schema raises (see `_dedup_actions`).
+    """
 
     def __init__(self, tools: list[AbstractTool]):
         self.tools = tools
-        self._action_name_to_tool: dict[str, AbstractTool] = {}
-        for tool in tools:
-            for action in tool.action_set:
-                if action.name in self._action_name_to_tool:
-                    previous_tool_name = self._action_name_to_tool[action.name].__class__.__name__
-                    this_tool_name = tool.__class__.__name__
-                    raise ValueError(
-                        f"Duplicate action name '{action.name}' found in multiple tools ({previous_tool_name} and {this_tool_name}). Action names must be unique across all tools in the toolbox."
-                    )
-                self._action_name_to_tool[action.name] = tool
+        self._action_name_to_tool = _dedup_actions(tools)
 
     @property
     def action_set(self) -> list[ActionSchema]:
-        """Returns the union of all action sets across contained tools."""
-        return [action for tool in self.tools for action in tool.action_set]
+        """Union of all leaves' action sets, deduped (identical actions like the inherited
+        ``final_step`` collapse to one)."""
+        return _deduped_action_set(self.tools)
 
     def find_tool(self, tool_cls: type) -> AbstractTool | None:
         """Find a tool of the given class in the toolbox."""
@@ -426,61 +496,38 @@ class Toolbox(Tool):
         return None
 
     def reset(self) -> None:
+        """Sync reset — calls `reset` on every leaf."""
         for tool in self.tools:
             tool.reset()
 
-    def execute_action(self, action: Action) -> Observation | StepError:
-        if action.name not in self._action_name_to_tool:
-            raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
-        tool = self._action_name_to_tool[action.name]
-        assert isinstance(tool, AbstractTool)
-        return tool.execute_action(action)
+    async def async_reset(self) -> None:
+        """Async reset. Same body as `reset` — leaves' `reset` is sync."""
+        for tool in self.tools:
+            tool.reset()
 
     def close(self) -> None:
+        """Sync close — calls `close` on every leaf."""
         for tool in self.tools:
             tool.close()
 
-
-class AsyncToolbox(AsyncTool):
-    """Composite async tool that delegates to a list of AbstractAsyncTool instances."""
-
-    def __init__(self, tools: list[AbstractAsyncTool]):
-        self.tools = tools
-        self._action_name_to_tool: dict[str, AbstractAsyncTool] = {}
-        for tool in tools:
-            for action in tool.action_set:
-                if action.name in self._action_name_to_tool:
-                    previous_tool_name = self._action_name_to_tool[action.name].__class__.__name__
-                    this_tool_name = tool.__class__.__name__
-                    raise ValueError(
-                        f"Duplicate action name '{action.name}' found in multiple tools ({previous_tool_name} and {this_tool_name}). Action names must be unique across all tools in the toolbox."
-                    )
-                self._action_name_to_tool[action.name] = tool
-
-    @property
-    def action_set(self) -> list[ActionSchema]:
-        """Returns the union of all action sets across contained tools."""
-        return [action for tool in self.tools for action in tool.action_set]
-
-    def find_tool(self, tool_cls: type) -> AbstractAsyncTool | None:
-        """Find a tool of the given class in the toolbox."""
+    async def async_close(self) -> None:
+        """Async close. Same body as `close` — leaves' `close` is sync."""
         for tool in self.tools:
-            if isinstance(tool, tool_cls):
-                return tool
-        return None
+            tool.close()
 
-    async def reset(self) -> None:
-        for tool in self.tools:
-            await tool.reset()
-
-    async def execute_action(self, action: Action) -> Observation | StepError:
+    def execute_action(self, action: Action) -> Observation:
+        """Sync dispatch — delegates to leaf's `execute_action`.
+        Bridging for async actions happens inside the leaf."""
         if action.name not in self._action_name_to_tool:
             raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
-        return await self._action_name_to_tool[action.name].execute_action(action)
+        return self._action_name_to_tool[action.name].execute_action(action)
 
-    async def close(self) -> None:
-        for tool in self.tools:
-            await tool.close()
+    async def async_execute_action(self, action: Action) -> Observation:
+        """Async dispatch — delegates to leaf's `async_execute_action`.
+        Sync leaves hop through `asyncio.to_thread` automatically."""
+        if action.name not in self._action_name_to_tool:
+            raise ValueError(f"Action '{action.name}' is not supported by any tool in the toolbox.")
+        return await self._action_name_to_tool[action.name].async_execute_action(action)
 
 
 class ToolboxConfig(ToolConfig):
@@ -500,10 +547,10 @@ class ToolboxConfig(ToolConfig):
 
 
 class AsyncToolboxConfig(AsyncToolConfig):
-    """Configuration for a list of async only tools."""
+    """Configuration for a list of tools whose `make()` is async."""
 
     tool_configs: list[AsyncToolConfig] = []
 
-    async def make(self, container: Container | None = None) -> AsyncToolbox:
+    async def make(self, container: Container | None = None) -> Toolbox:
         tools = [await tc.make(container) for tc in self.tool_configs]
-        return AsyncToolbox(tools=tools)
+        return Toolbox(tools=tools)

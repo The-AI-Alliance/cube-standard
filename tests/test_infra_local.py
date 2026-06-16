@@ -404,21 +404,96 @@ class TestPodmanDockerHostNormalisation:
         assert os.environ.get("DOCKER_HOST") == original
 
 
-# ── Regression: _pull_image creates a fresh DockerClient per retry ────────────
+# ── docker pull rate-limit backoff ────────────────────────────────────────────
 
 
-class TestPullImageFreshClient:
-    """Verify _pull_image does not accept an external client that could be stale."""
+class TestDockerPull:
+    """_docker_pull retries only on registry rate limits, never on hard errors."""
 
-    def test_pull_image_signature_takes_no_client(self) -> None:
-        import inspect
+    @staticmethod
+    def _proc(returncode: int, stderr: str = "") -> MagicMock:
+        p = MagicMock()
+        p.returncode = returncode
+        p.stdout = ""
+        p.stderr = stderr
+        return p
 
-        from cube.backends.local import LocalContainerBackend
+    def test_success_no_retry(self) -> None:
+        with (
+            patch.object(_mod.subprocess, "run", return_value=self._proc(0)) as run,
+            patch.object(_mod.time, "sleep") as sleep,
+        ):
+            _mod._docker_pull("python:3.12-slim")
+        assert run.call_count == 1
+        sleep.assert_not_called()
 
-        sig = inspect.signature(LocalContainerBackend._pull_image)
-        param_names = list(sig.parameters.keys())
-        # Only 'self' and 'image' — no 'client' parameter.
-        assert "client" not in param_names, (
-            "_pull_image must not accept an external client; it should create one internally "
-            "so each retry attempt gets a fresh connection."
-        )
+    def test_non_rate_limit_failure_raises_immediately(self) -> None:
+        with (
+            patch.object(_mod.subprocess, "run", return_value=self._proc(1, "manifest unknown")) as run,
+            patch.object(_mod.time, "sleep") as sleep,
+        ):
+            with pytest.raises(RuntimeError, match="manifest unknown"):
+                _mod._docker_pull("nope:latest")
+        assert run.call_count == 1
+        sleep.assert_not_called()
+
+    def test_rate_limited_then_succeeds(self) -> None:
+        results = [self._proc(1, "toomanyrequests: rate limit"), self._proc(0)]
+        with (
+            patch.object(_mod.subprocess, "run", side_effect=results) as run,
+            patch.object(_mod.time, "sleep") as sleep,
+        ):
+            _mod._docker_pull("python:3.12-slim")
+        assert run.call_count == 2
+        assert sleep.call_count == 1
+
+    def test_persistent_rate_limit_exhausts_attempts(self) -> None:
+        with (
+            patch.object(_mod.subprocess, "run", return_value=self._proc(1, "429 Too Many Requests")) as run,
+            patch.object(_mod.time, "sleep") as sleep,
+        ):
+            with pytest.raises(RuntimeError, match="failed"):
+                _mod._docker_pull("python:3.12-slim")
+        assert run.call_count == _mod._PULL_MAX_ATTEMPTS
+        assert sleep.call_count == _mod._PULL_MAX_ATTEMPTS - 1
+
+
+# ── _make_docker_client — robust client construction (#1/#3) ──────────────────
+
+
+class TestMakeDockerClient:
+    def test_malformed_bare_http_unix_falls_back_to_from_env(self, monkeypatch) -> None:
+        """A bare ``http+unix://`` (no socket path) is malformed — must be
+        treated as unset, not turned into a broken ``unix://`` client."""
+        monkeypatch.setenv("DOCKER_HOST", "http+unix://")
+        docker = MagicMock()
+        with patch.object(_mod, "_active_docker_context_host", return_value=None):
+            client = _mod._make_docker_client(docker)
+        docker.from_env.assert_called_once()
+        docker.DockerClient.assert_not_called()
+        assert client is docker.from_env.return_value
+
+    def test_podman_http_unix_with_path_is_normalised(self, monkeypatch) -> None:
+        monkeypatch.setenv("DOCKER_HOST", "http+unix:///run/user/1000/podman/podman.sock")
+        docker = MagicMock()
+        _mod._make_docker_client(docker)
+        docker.DockerClient.assert_called_once_with(base_url="unix:///run/user/1000/podman/podman.sock")
+
+    def test_unset_host_uses_docker_context_endpoint(self, monkeypatch) -> None:
+        monkeypatch.delenv("DOCKER_HOST", raising=False)
+        docker = MagicMock()
+        with patch.object(_mod, "_active_docker_context_host", return_value="unix:///x/colima.sock"):
+            _mod._make_docker_client(docker)
+        docker.DockerClient.assert_called_once_with(base_url="unix:///x/colima.sock")
+
+    def test_unreachable_daemon_raises_actionable_error(self, monkeypatch) -> None:
+        monkeypatch.delenv("DOCKER_HOST", raising=False)
+        docker = MagicMock()
+        docker.from_env.return_value.ping.side_effect = OSError("No such file or directory")
+        with patch.object(_mod, "_active_docker_context_host", return_value=None):
+            with pytest.raises(RuntimeError, match=r"Cannot reach the Docker daemon.*docker context ls"):
+                _mod._make_docker_client(docker)
+
+    def test_active_docker_context_host_swallows_missing_cli(self) -> None:
+        with patch.object(_mod.subprocess, "run", side_effect=FileNotFoundError("docker")):
+            assert _mod._active_docker_context_host() is None

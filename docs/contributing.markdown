@@ -27,7 +27,7 @@ The link is used by the default docs/_includes/header_buttons_custom.html, for e
 <a name="join-this-project"></a>
 ## Join the Alliance or This Project Work Group
 
-Want to help us drive the evolution of this project? Please join our work group or the Alliance as a whole. See [this page](https://www.aialliance.org/join){:target="aia-join"} for more information.
+Want to help us drive the evolution of this project? Please join our work group or the Alliance as a whole. See [this page](https://www.thealliance.ai/join){:target="aia-join"} for more information.
 
 ## Other Notes on Contributing
 

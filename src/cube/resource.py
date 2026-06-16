@@ -76,7 +76,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
-from cube.core import TypedBaseModel
+from cube.core import TypedBaseModel, ValidatedConfig
 
 if TYPE_CHECKING:
     pass
@@ -111,6 +111,15 @@ class UnsupportedResourceType(NotImplementedError):
         )
 
 
+class IncompatibleInfraError(RuntimeError):
+    """Raised at ``BenchmarkConfig.make`` — before any provisioning or episode — when an
+    infra cannot serve one or more of a benchmark's resources and its ``on_incompatible``
+    policy is ``"raise"``.
+
+    Setup-time and pre-launch by construction: nothing is provisioned and no retry budget
+    is consumed, so the same request will not be re-attempted."""
+
+
 # ── ResourceConfig ────────────────────────────────────────────────────────────
 
 
@@ -141,14 +150,21 @@ class ResourceConfig(TypedBaseModel):
     source_hash: str | None = None
     default_ttl_seconds: int | None = 3600
     bootstrap_script_extra: str | None = None
+    requires: set[str] = Field(default_factory=set)
+    """Explicit capability tokens this resource needs beyond what its subclass implies,
+    e.g. ``{"container:root"}``. Folded into ``requirements()``; empty (default) adds
+    nothing, so existing resources are unaffected."""
 
     def requirements(self) -> set[str]:
         """Declare what the infra must support to run this resource.
 
-        Checked against InfraConfig.capabilities() before provisioning or launch.
-        Standard tokens: "kvm", "docker", "gpu:nvidia", "network:egress".
+        Checked against ``InfraConfig.capabilities()`` (via ``InfraConfig.can_serve``)
+        before provisioning or launch. Subclasses union their structural needs onto the
+        explicit ``requires`` tokens via ``super().requirements()``.
+        Standard tokens: "kvm", "docker", "gpu:nvidia", "network:egress", "container:root",
+        "container:privileged", "container:cgroupns-host".
         """
-        return set()
+        return set(self.requires)
 
 
 class VMResourceConfig(ResourceConfig):
@@ -184,7 +200,7 @@ class VMResourceConfig(ResourceConfig):
     parallel workers can share a host without colliding on a fixed local port."""
 
     def requirements(self) -> set[str]:
-        return {"kvm"} if self.requires_kvm else set()
+        return super().requirements() | ({"kvm"} if self.requires_kvm else set())
 
 
 class VolumeSpec(TypedBaseModel):
@@ -251,26 +267,36 @@ class DockerServiceConfig(ResourceConfig):
     volumes: list[VolumeSpec] = []
 
     def requirements(self) -> set[str]:
-        return {"docker"}
+        return super().requirements() | {"docker"}
 
 
-class DockerImageConfig(ResourceConfig):
-    """Single Docker image per task (SWE-bench, MLE-bench, CTF...).
+class ContainerConfig(ResourceConfig):
+    """Serializable description of *what* single-container resource a task needs.
 
-    Resource requirements (ram_gb, cpu_cores, disk_gb, ports) are read by
-    DockerInfraConfig.launch() to configure the container. gpu=True maps to
-    the "gpu:nvidia" capability requirement token via requirements().
+    A ``ResourceConfig`` (one Docker image, ``scope="task"``), so it shares the
+    capability handshake — ``requirements()`` / ``InfraConfig.can_serve`` — with
+    every other resource. Declared on ``TaskMetadata.container_config`` and consumed
+    by the ``InfraConfig`` path in ``Task.model_post_init`` (via
+    ``cube.task_infra.launch_task_container``).  *How* the container is
+    provisioned is owned by the injected ``InfraConfig`` (see below).
+
+    Re-exported from ``cube.container`` for backward compatibility (its original home).
     """
 
+    # ResourceConfig.name is required; task containers are keyed by the task id at
+    # launch (launch_task_container(name=task.metadata.id, ...)), so the field is
+    # unused here and defaults to "" — which keeps legacy metadata (serialized
+    # before ContainerConfig carried a name) loadable without regeneration.
+    name: str = ""
     image: str
     ram_gb: float = 4.0
     cpu_cores: float = 2.0
-    disk_gb: float = 10.0
     gpu: bool = False
+    disk_gb: float = 10.0
     ports: list[int] | None = None
 
     def requirements(self) -> set[str]:
-        reqs = {"docker"}
+        reqs = super().requirements() | {"docker"}
         if self.gpu:
             reqs.add("gpu:nvidia")
         return reqs
@@ -359,9 +385,9 @@ class ResourceHandle(ABC):
     itself is not serializable and must not be passed to workers.
     """
 
-    # All fields default so subclasses (notably ``cube.container.Container``
-    # living in deprecated-ContainerBackend paths) can construct without
-    # bookkeeping — the new ``InfraConfig.launch()`` path still populates them.
+    # All fields default so ``cube.container.Container`` subclasses (e.g.
+    # ``LocalContainer``) can construct without bookkeeping — the
+    # ``InfraConfig.launch()`` path still populates them.
     run_id: str = ""
     resource: ResourceConfig | None = None
     infra: InfraConfig | None = None
@@ -395,14 +421,16 @@ class ResourceHandle(ABC):
 
 # ── InfraConfig ───────────────────────────────────────────────────────────────
 
+OnIncompatible = Literal["raise", "force"]
 
-class InfraConfig(TypedBaseModel, ABC):
+
+class InfraConfig(ValidatedConfig, ABC):
     """Harness-owned config + executor for resource provisioning and lifecycle.
 
     Extends TypedBaseModel for serializability (polymorphic via _type field —
     subclasses declare no _type field, it is injected automatically).
-    Also carries launch/cleanup methods — instantiating the config IS the backend,
-    following the existing VMBackend pattern in vm.py.
+    Also carries launch/cleanup methods — instantiating the config IS the
+    provisioner (config + executor unified in one serializable object).
 
     Credentials are never stored in fields; resolved from env vars at runtime.
 
@@ -440,6 +468,34 @@ class InfraConfig(TypedBaseModel, ABC):
     the resource name.  E.g. image_name_suffix="-test" and resource.name="foo"
     → image named "foo-test", store key "foo-test@<fingerprint>"."""
 
+    on_incompatible: OnIncompatible = "raise"
+    """Policy when a resource needs a capability this infra lacks — checked at
+    ``BenchmarkConfig.make`` (before provisioning) by running ``can_serve`` over each
+    task's container and the benchmark's declared resources:
+
+    - ``"raise"`` (default) — abort with ``IncompatibleInfraError`` if ANY resource is
+      incompatible. No provisioning, no episodes, no spend.
+    - ``"force"`` — attempt everything anyway; the escape hatch to probe whether a stale
+      requirement still holds.
+
+    Future: a per-task mode (``"per-task-raise"``) will let the benchmark proceed while each
+    incompatible task raises at episode start, so the incompatible tasks are recorded as
+    terminal per-task errors rather than vanishing. (A silent ``"skip"`` was deliberately
+    not kept — silently dropping tasks is the failure mode this gate exists to remove.)"""
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def install(self) -> None:
+        """Install system dependencies required by this infra backend. No-op by default.
+
+        Called by ``BenchmarkConfig.make()`` before provisioning. Must be idempotent —
+        it is invoked every time ``make()`` is called, so it must be fast when
+        dependencies are already satisfied.
+
+        Override in subclasses that require system packages (e.g. qemu-system-x86_64
+        for LocalInfraConfig, docker for container-based infras).
+        """
+
     # ── Abstract interface ────────────────────────────────────────────────────
 
     @abstractmethod
@@ -459,7 +515,12 @@ class InfraConfig(TypedBaseModel, ABC):
         """Declare what this infra supports.
 
         Checked against resource.requirements() before provisioning or launch.
-        Standard tokens: "kvm", "docker", "gpu:nvidia", "network:egress".
+        Standard tokens: "kvm", "docker", "gpu:nvidia", "network:egress",
+        "container:root" (container processes run as uid 0 — needed by tasks that
+        apt-install or write to /etc, /var; absent on infras that pin a non-root uid),
+        "container:privileged" (--privileged) and "container:cgroupns-host"
+        (--cgroupns=host) — gate+apply tokens an infra both advertises and applies at
+        launch; only single-tenant/trusted infra should publish them.
         """
         ...
 

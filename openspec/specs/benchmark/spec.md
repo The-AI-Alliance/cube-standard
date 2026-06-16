@@ -79,15 +79,43 @@ time — `install()` MUST NOT mutate it.
 **Instance fields (Pydantic, serializable):**
 ```python
 task_ids: list[str] | None = None          # None = all; populated by subset_from_*
+subset_name: str | None = None             # registered named_subsets key, set by named_subset(); None for full / subset_from_list / raw subset_from_glob
 resources: list[ResourceConfig] = []       # resource dependencies (L2/L3)
-container_backend: ContainerBackend | None # forwarded to each Task; DEPRECATED
 tool_config: ToolConfig | None             # applied to every task by the default get_task_configs(); override get_task_configs() for per-task variation
 seed_generator: AbstractSeedGenerator | None # yields seeds per TaskMetadata
 ```
 
-`container_backend` is deprecated (`Field(deprecated=True)`) and slated for
-removal once all in-tree benchmarks migrate to declaring container needs via
-`resources`. Setting it still works and is forwarded to every spawned task.
+### Prompt overlay (`load_benchmark_clarifications`)
+
+A benchmark may *organize* two optional, agent-facing prompt strings without
+acting on them itself:
+
+- a benchmark-wide **hint** (orientation for a generalist agent), and
+- a **`{task_id: clarification}`** dict for individually under-specified tasks.
+
+These live in an optional `benchmark_clarifications.py` sidecar **next to the
+benchmark's module** (the same "files next to the module" convention used for
+`task_metadata`), exposing `BENCHMARK_HINT: str | None` and
+`TASK_CLARIFICATION: dict[str, str]`. A `.py` (not a data file) lets one
+clarification be reused across many task ids — that reuse is a deliberate
+**regularizer**, pushing clarifications to generalize rather than overfit.
+
+```python
+@classmethod
+def load_benchmark_clarifications(cls) -> BenchmarkClarifications:
+    # (benchmark_hint, task_clarification); empty when no sidecar exists.
+```
+
+The framework only loads and returns these — nothing is delivered to the agent
+automatically. A harness reads them at experiment-design time and folds them
+into the agent config (e.g. `GennyConfig.benchmark_hint_prompt` /
+`task_clarification`).
+
+Per-task container needs are declared via `TaskMetadata.container_config`
+(`ContainerConfig`) and provisioned through the injected `InfraConfig` — see
+[resource/spec.md](../resource/spec.md) and
+[container/spec.md](../container/spec.md). The legacy `container_backend` field
+has been removed.
 
 `seed_generator` accepts any `AbstractSeedGenerator` subclass. Note that
 `AbstractSeedGenerator` is itself a `TypedBaseModel` (changed from a plain
@@ -160,16 +188,19 @@ encoded as their own columns; complex types in subclass fields go through
 JSON-encoded strings as well.
 
 **The factory:**
-- `make(infra: InfraConfig | None = None) -> Benchmark` — for every
-  resource whose `infra.provision_status(resource) != "ready"`, call
-  `infra.provision(resource)` (idempotent), then instantiate
-  `type(self).benchmark_class(config=self, infra=infra)`, call
-  `benchmark.setup()`, and return the live `Benchmark`. `infra` is
-  forwarded to the runtime constructor so subclasses can reach it via
-  `self._infra` from `_setup()`. When `infra` is None and `resources` is
-  non-empty, provisioning is skipped with a debug log — benchmarks that use
-  only task-scoped (L3) resources launched per-task can legitimately pass
-  `infra=None` at `make` time.
+- `make(infra: InfraConfig | None = None) -> Benchmark` — runs the **capability
+  gate** first (when `infra` is set and `infra.on_incompatible != "force"`):
+  `can_serve` is checked over every task's `container_config` and the benchmark's
+  declared `resources`, applying `infra.on_incompatible` (`"raise"` →
+  `IncompatibleInfraError` before any provisioning if any resource is incompatible).
+  This is metadata-only and launch-free, so it stays cheap. Then, for every resource whose
+  `infra.provision_status(resource) != "ready"`, call `infra.provision(resource)`
+  (idempotent), instantiate `type(self).benchmark_class(config=self, infra=infra)`, call
+  `benchmark.setup()`, and return the live `Benchmark`. `infra` is forwarded to the
+  runtime constructor so subclasses can reach it via `self._infra` from `_setup()`. When
+  `infra` is None the gate is skipped (and, if `resources` is non-empty, provisioning is
+  skipped with a debug log) — benchmarks that use only task-scoped (L3) resources
+  launched per-task can legitimately pass `infra=None` at `make` time.
 
 ### `Benchmark` (abstract, plain Python class — not serializable)
 
@@ -197,11 +228,18 @@ per-task container launches can do so from `_setup()` without overriding
 - `close()` — tear down what `_setup()` created.
 
 **Concrete methods:**
-- `setup()` — public wrapper. Calls `_setup()`. Emits a debug log listing
-  unset optional config fields. Called exactly once by `make()`.
+- `setup()` — public wrapper. Owns the "harness startup" hook: if `self._infra`
+  is set, calls `self._infra.cleanup_stale()` to reclaim TTL-expired resources
+  from prior crashed runs *before* dispatching to `_setup()`. Cube authors do
+  not call `cleanup_stale()` themselves — the base handles it for every
+  benchmark. `cleanup_stale` failures are logged at WARNING and never block
+  setup. Concurrent benchmarks in the same resource group are unaffected
+  because only resources with `cube:expires_at` in the past are deleted.
+  Then calls `_setup()`. Emits a debug log listing unset optional config
+  fields. Called exactly once by `make()`.
 - `spawn(task_config)` — validate `task_config.task_id` against
   `self.config.tasks()`, then call
-  `task_config.make(runtime_context=self._runtime_context, container_backend=self.config.container_backend)`.
+  `task_config.make(runtime_context=self._runtime_context)`.
 - `__enter__` / `__exit__` — context-manager wrappers. Use
   `with config.make(infra) as bench:` to guarantee cleanup.
 
@@ -339,7 +377,7 @@ routes via `task_config.sub_bench_name`, which is a `"/"`-joined path for
 nested composites (e.g. `"inner-suite/bench-a"`). Each level peels the first
 component, looks it up in `sub_benchmarks`, and either delegates to the
 inner `CompositeBenchmark.spawn()` (nested case) or calls
-`task_config.make(runtime_context=sub_bench._runtime_context, container_backend=sub_bench.config.container_backend)`
+`task_config.make(runtime_context=sub_bench._runtime_context)`
 directly at the leaf — bypassing the leaf's own `spawn()` validation, which
 would reject the composite-prefixed `task_id`. A TaskConfig with
 `sub_bench_name=None` or an unknown first component raises `ValueError`.
@@ -374,10 +412,6 @@ with suite.make(infra) as bench:
   silently does nothing. Declare ClassVars explicitly in those cases.
 - `named_subsets` values are `(glob_key, glob_pattern)` tuples. JSON-from-file
   loads them as lists — the `TypedBaseModel` will coerce to tuple.
-- `BenchmarkConfig` carries `arbitrary_types_allowed=True` because
-  `ContainerBackend` may hold non-roundtrippable handles. In practice the
-  config is JSON-serializable when `container_backend` is either None or a
-  concrete `TypedBaseModel` subclass with serializable fields.
 - `install()` never populates `task_metadata`. That registry is declared at
   class-definition time (directly or via file auto-load). `install()` writes
   heavy execution-time data to the per-task cache under

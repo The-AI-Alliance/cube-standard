@@ -2,7 +2,7 @@
 
 Task owns a Tool and implements the episode loop (reset / step / evaluate / close).
 Must implement: reset() → (Observation, info), evaluate(obs) → (reward, info).
-Optional: finished() for early termination, filter_actions() to restrict actions.
+Optional: finished() for early termination, _filter_actions() to restrict advertised actions.
 
 For per-task state, prefer typed Pydantic fields over stringly-typed dicts.
 ``CounterTaskMetadata`` carries semantic task descriptors (target, difficulty).
@@ -14,7 +14,6 @@ to run it.
 from typing import Any, Literal
 
 from cube.benchmark import RuntimeContext
-from cube.container import ContainerBackend
 from cube.core import Observation
 from cube.task import Task, TaskConfig, TaskMetadata
 from counter_cube.tool import CounterToolConfig
@@ -72,7 +71,6 @@ class CounterTaskConfig(TaskConfig):
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
     ) -> ReachTargetTask:
         """Build the task.
 
@@ -84,5 +82,4 @@ class CounterTaskConfig(TaskConfig):
             metadata=self.metadata,
             tool_config=tool_cfg,
             runtime_context=runtime_context,
-            container_backend=container_backend,
         )

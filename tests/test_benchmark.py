@@ -7,8 +7,21 @@ from typing import Literal
 
 import pytest
 
-from cube.benchmark import Benchmark, BenchmarkConfig, BenchmarkMetadata
+from cube.benchmark import (
+    Benchmark,
+    BenchmarkClarifications,
+    BenchmarkConfig,
+    BenchmarkMetadata,
+    _load_benchmark_clarifications,
+)
 from cube.core import Observation
+from cube.resource import (
+    ContainerConfig,
+    IncompatibleInfraError,
+    InfraConfig,
+    ResourceConfig,
+    ResourceHandle,
+)
 from cube.seed import AbstractSeedGenerator
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
@@ -37,7 +50,7 @@ class _Task(Task):
 
 
 class _TaskConfig(TaskConfig):
-    def make(self, runtime_context=None, container_backend=None):
+    def make(self, runtime_context=None):
         return _Task(
             metadata=self.metadata,
             tool_config=self.tool_config or _ToolConfig(),
@@ -93,6 +106,28 @@ def test_benchmark_metadata_defaults():
         named_subsets={},
         reset_isolation=None,
     )
+
+
+def test_load_benchmark_clarifications_from_sidecar():
+    """A benchmark whose package ships ``benchmark_clarifications.py`` loads both
+    the benchmark hint and the per-task clarification dict from it."""
+    overlay = _load_benchmark_clarifications("tests.clarif_fixture")
+    assert overlay.benchmark_hint == "Submit your final answer with final_step."
+    assert overlay.task_clarification["slider-2"] == "After setting the values, click Submit."
+    assert len(overlay.task_clarification) == 3
+
+
+def test_load_benchmark_clarifications_absent_returns_empty():
+    overlay = _load_benchmark_clarifications("tests")  # no sidecar next to the tests package
+    assert overlay == BenchmarkClarifications()
+    assert overlay.benchmark_hint is None
+    assert overlay.task_clarification == {}
+
+
+def test_benchmark_config_load_clarifications_empty_by_default():
+    """The classmethod resolves the sidecar from the config's own module; the test
+    benchmark has none, so it returns an empty overlay."""
+    assert MyBenchmarkConfig.load_benchmark_clarifications() == BenchmarkClarifications()
 
 
 # ── __init_subclass__ validation ──────────────────────────────────────────────
@@ -175,7 +210,7 @@ def test_init_subclass_back_stamps_benchmark_cache_dir():
     directly under ``BenchmarkConfig.cache_dir()``."""
 
     class _StampTaskConfig(TaskConfig):
-        def make(self, runtime_context=None, container_backend=None):
+        def make(self, runtime_context=None):
             return _Task(metadata=self.metadata, tool_config=_ToolConfig())
 
     class _StampBenchmarkConfig(BenchmarkConfig):
@@ -200,7 +235,7 @@ def test_init_subclass_rejects_shared_task_config_class():
     would silently overwrite each other's stamp. Class definition must fail loudly."""
 
     class _SharedTaskConfig(TaskConfig):
-        def make(self, runtime_context=None, container_backend=None):
+        def make(self, runtime_context=None):
             return _Task(metadata=self.metadata, tool_config=_ToolConfig())
 
     class _OwnerOne(BenchmarkConfig):
@@ -224,7 +259,7 @@ def test_task_execution_cache_dir_does_not_inherit_via_mro():
     stamp through the MRO."""
 
     class _OwnedTaskConfig(TaskConfig):
-        def make(self, runtime_context=None, container_backend=None):
+        def make(self, runtime_context=None):
             return _Task(metadata=self.metadata, tool_config=_ToolConfig())
 
     class _OwningBenchmarkConfig(BenchmarkConfig):  # noqa: F841
@@ -406,6 +441,46 @@ def test_named_subsets_and_named_subset():
 
     sub = ConfigWithNamed().named_subset("easy")
     assert set(sub.task_ids or ()) == {"t1", "t3"}
+    # named_subset records which official subset this config represents.
+    assert sub.subset_name == "easy"
+
+
+def test_subset_name_is_none_for_full_list_and_raw_glob():
+    """Only named_subset records subset_name; full / subset_from_list / subset_from_glob don't."""
+    assert MyBenchmarkConfig().subset_name is None
+    assert MyBenchmarkConfig().subset_from_list(["t1", "t2"]).subset_name is None
+    assert MyBenchmarkConfig().subset_from_glob("split", "train").subset_name is None
+
+
+def test_subset_name_survives_serialization():
+    """subset_name round-trips through JSON so it reaches workers / storage intact."""
+    cfg = MyBenchmarkConfig().model_copy(update={"subset_name": "lite-gold"})
+    restored = MyBenchmarkConfig.model_validate_json(cfg.model_dump_json())
+    assert restored.subset_name == "lite-gold"
+
+
+def test_subset_name_cleared_when_named_subset_is_further_narrowed():
+    """Narrowing a named subset yields a different (hand-picked) set, so subset_name is dropped."""
+
+    class _NTaskConfig(_TaskConfig):
+        pass
+
+    class ConfigWithNamed(BenchmarkConfig):
+        benchmark_metadata = BenchmarkMetadata(
+            name="Named",
+            version="1",
+            description="x",
+            num_tasks=4,
+            named_subsets={"easy": ("difficulty", "easy")},
+        )
+        task_metadata = MyBenchmarkConfig.task_metadata
+        task_config_class = _NTaskConfig
+        benchmark_class = MyBenchmark
+
+    easy = ConfigWithNamed().named_subset("easy")
+    assert easy.subset_name == "easy"
+    assert easy.subset_from_list(["t1"]).subset_name is None
+    assert easy.subset_from_glob("split", "train").subset_name is None
 
 
 def test_named_subset_unknown_raises():
@@ -615,3 +690,163 @@ class _BenchWithRichDefaults(BenchmarkConfig):
     task_metadata = {"t1": TaskMetadata(id="t1")}
     task_config_class = _RichTaskConfig
     benchmark_class = MyBenchmark
+
+
+# ── Benchmark.setup() owns the cleanup_stale hook ─────────────────────────────
+
+
+def test_setup_calls_cleanup_stale_when_infra_set() -> None:
+    """Base ``Benchmark.setup()`` must call ``infra.cleanup_stale()`` before
+    dispatching to the subclass's ``_setup()``. Owns the "harness startup"
+    hook so cube authors don't have to remember it in every cube."""
+    from unittest.mock import MagicMock
+
+    from cube.resource import InfraConfig
+
+    infra = MagicMock(spec=InfraConfig)
+    infra.on_incompatible = "force"  # spec'd mocks don't expose pydantic fields; skip the gate here
+    infra.cleanup_stale.return_value = []
+
+    bench = MyBenchmarkConfig().make(infra=infra)
+    try:
+        infra.cleanup_stale.assert_called_once_with()
+    finally:
+        bench.close()
+
+
+def test_setup_skips_cleanup_stale_when_infra_none() -> None:
+    """No infra → no sweep. Local-only / Docker benchmarks must not require a
+    cloud API roundtrip at setup."""
+    bench = MyBenchmarkConfig().make()
+    bench.close()
+    # No assertion needed beyond "did not raise" — there is no infra to inspect.
+
+
+def test_setup_cleanup_stale_failure_does_not_block_setup() -> None:
+    """A transient cloud error from ``cleanup_stale`` must not block the
+    benchmark setup. The base logs at WARNING and proceeds to ``_setup()``."""
+    from unittest.mock import MagicMock
+
+    from cube.resource import InfraConfig
+
+    infra = MagicMock(spec=InfraConfig)
+    infra.on_incompatible = "force"  # spec'd mocks don't expose pydantic fields; skip the gate here
+    infra.cleanup_stale.side_effect = RuntimeError("transient cloud 503")
+
+    # Must not raise — failure is swallowed and logged.
+    bench = MyBenchmarkConfig().make(infra=infra)
+    bench.close()
+    infra.cleanup_stale.assert_called_once_with()
+
+
+def test_setup_cleanup_stale_called_before_subclass_setup() -> None:
+    """Ordering invariant: ``cleanup_stale()`` runs *before* ``_setup()``,
+    not after. New work must not be launched until prior orphans are reaped."""
+    from unittest.mock import MagicMock
+
+    from cube.resource import InfraConfig
+
+    call_order: list[str] = []
+    infra = MagicMock(spec=InfraConfig)
+    infra.on_incompatible = "force"  # spec'd mocks don't expose pydantic fields; skip the gate here
+    infra.cleanup_stale.side_effect = lambda: call_order.append("cleanup_stale") or []
+
+    class _OrderingTaskConfig(_TaskConfig):
+        """Per-benchmark TaskConfig (cube-standard requires each
+        BenchmarkConfig to declare its own subclass)."""
+
+    class _OrderingBench(Benchmark):
+        def _setup(self) -> None:
+            call_order.append("_setup")
+
+        def close(self) -> None:
+            pass
+
+    class _OrderingBenchConfig(BenchmarkConfig):
+        benchmark_metadata = BenchmarkMetadata(name="ordering", version="1", description="x")
+        task_metadata = {"t": TaskMetadata(id="t")}
+        task_config_class = _OrderingTaskConfig
+        benchmark_class = _OrderingBench
+
+    bench = _OrderingBenchConfig().make(infra=infra)
+    try:
+        assert call_order == ["cleanup_stale", "_setup"]
+    finally:
+        bench.close()
+
+
+# ── make() capability gate: on_incompatible raise / force ─────────────────────
+
+
+class _GateInfra(InfraConfig):
+    """Minimal concrete infra whose capabilities are set per-test."""
+
+    caps: list[str] = []
+
+    def fingerprint(self) -> str:
+        return "gate"
+
+    def capabilities(self) -> set[str]:
+        return set(self.caps)
+
+    def provision(self, resource: ResourceConfig) -> None:
+        pass
+
+    def launch(self, resource: ResourceConfig, run_id: str, ttl_seconds: int | None = None) -> ResourceHandle:
+        raise NotImplementedError
+
+    def list_active(self, run_id: str | None = None) -> list[ResourceHandle]:
+        return []
+
+    def cleanup(self, run_id: str) -> None:
+        pass
+
+    def cleanup_stale(self, max_age_seconds: int | None = None) -> list[str]:
+        return []
+
+
+class _GateTaskConfig(TaskConfig):
+    def make(self, runtime_context=None):
+        return _Task(metadata=self.metadata, tool_config=self.tool_config or _ToolConfig())
+
+
+class _GateBench(Benchmark):
+    def _setup(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class _GateBenchConfig(BenchmarkConfig):
+    benchmark_metadata = BenchmarkMetadata(name="gate-bench", version="1", description="x")
+    task_metadata = {
+        "root": TaskMetadata(id="root", container_config=ContainerConfig(image="img", requires={"container:root"})),
+        "plain": TaskMetadata(id="plain", container_config=ContainerConfig(image="img")),
+    }
+    task_config_class = _GateTaskConfig
+    benchmark_class = _GateBench
+
+
+def test_make_raise_aborts_when_a_task_is_incompatible() -> None:
+    infra = _GateInfra(caps=["docker"], on_incompatible="raise")  # no container:root
+    with pytest.raises(IncompatibleInfraError, match="cannot serve"):
+        _GateBenchConfig().make(infra=infra)
+
+
+def test_make_force_keeps_every_task() -> None:
+    infra = _GateInfra(caps=["docker"], on_incompatible="force")
+    bench = _GateBenchConfig().make(infra=infra)
+    try:
+        assert set(bench.config.tasks()) == {"root", "plain"}
+    finally:
+        bench.close()
+
+
+def test_make_passes_when_infra_serves_root() -> None:
+    infra = _GateInfra(caps=["docker", "container:root"], on_incompatible="raise")
+    bench = _GateBenchConfig().make(infra=infra)
+    try:
+        assert set(bench.config.tasks()) == {"root", "plain"}
+    finally:
+        bench.close()

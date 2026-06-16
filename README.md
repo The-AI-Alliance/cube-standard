@@ -98,6 +98,15 @@ See the **[Authoring a CUBE guide](https://the-ai-alliance.github.io/cube-standa
 > [!NOTE]
 > `cube test` discovers benchmarks via the `cube.benchmarks` entry point group. Install the package (`uv sync` or `pip install -e .`) before running.
 
+## For framework contributors
+
+Want to change CUBE *itself* — a field, a method, a protocol type — rather than wrap a benchmark? CUBE is a small contract many cubes depend on, so we hold framework changes to a high bar (lean and general beats convenient-for-one). Start here:
+
+- **[Design Philosophy](https://the-ai-alliance.github.io/cube-standard/design-philosophy)** — the broader picture and the bar a change must clear. **Read this before proposing an API change.** Most needs have a smaller in-schema form.
+- **[Contribution workflow](CONTRIBUTING.md#the-contribution-workflow-end-to-end)** — branch → RFC → code → smoke → review, end to end.
+- **[ROADMAP.md](ROADMAP.md)** — where the project is heading, so your change rides with it.
+- **`/gatekeep-rfc`** ([skill](.claude/skills/gatekeep-rfc)) — run it locally and iteratively *while shaping* your idea (on a rough sketch, not just a finished draft); it reads it the way a maintainer will and points at the smallest change that fits. Converge locally before opening a PR — don't polish a full proposal only to get reshaped.
+
 ## Getting Involved
 
 All contributions are welcome — open an issue, submit a PR, or wrap a new benchmark. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development guide and RFC process.

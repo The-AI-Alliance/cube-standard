@@ -20,7 +20,7 @@ from collections.abc import Generator
 from typing import Any, ClassVar, Dict, Literal, Tuple
 
 from cube.benchmark import Benchmark, BenchmarkConfig, RuntimeContext
-from cube.container import Container, ContainerBackend
+from cube.container import Container
 from cube.core import Action, ActionSchema, Observation
 from cube.task import Task, TaskConfig, TaskMetadata
 from cube.tool import Tool, ToolConfig, tool_action
@@ -102,14 +102,12 @@ class CounterTaskConfig(TaskConfig):
     def make(
         self,
         runtime_context: RuntimeContext | None = None,
-        container_backend: ContainerBackend | None = None,
     ) -> ReachTargetTask:
         tool_cfg = self.tool_config or CounterToolConfig()
         return ReachTargetTask(
             metadata=self.metadata,
             tool_config=tool_cfg,
             runtime_context=runtime_context,
-            container_backend=container_backend,
         )
 
 

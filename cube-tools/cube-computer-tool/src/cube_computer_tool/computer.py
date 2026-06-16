@@ -5,9 +5,11 @@ Two variants selected by ComputerConfig.action_space:
     Computer13        — 13 mouse/keyboard primitives + wait/done/fail
     PyAutoGUIComputer — run_pyautogui() code execution + wait/done/fail
 
-The tool receives a live VM handle (cube.vm.VM) at construction time.
-VM lifecycle management (launch, reset, stop) is the caller's responsibility —
-typically OSWorldTask or another benchmark-specific Task subclass.
+The tool connects to a running guest agent via its endpoint URL
+(``attach_endpoint(endpoint)``). VM lifecycle (launch, reset, stop) is the
+caller's responsibility — it is provisioned through the ``InfraConfig`` /
+``ResourceHandle`` API by the benchmark-specific Task subclass, which passes
+the resulting ``ResourceHandle.endpoint`` to the tool.
 """
 
 import logging
@@ -20,7 +22,6 @@ from urllib.parse import urlparse
 from cube.container import Container
 from cube.core import Action, Content, ImageContent, Observation, StepError, TextContent
 from cube.tool import Tool, ToolConfig, tool_action
-from cube.vm import VM
 from PIL import Image
 
 from cube_computer_tool.guest_agent import GuestAgent
@@ -53,9 +54,10 @@ class ComputerConfig(ToolConfig):
       "computer_13" → Computer13 (13 mouse/keyboard primitives + wait/done/fail)
       "pyautogui"   → PyAutoGUIComputer (run_pyautogui + wait/done/fail)
 
-    VM lifecycle (launch/reset/stop) is managed externally and passed in via
-    ComputerConfig.make(vm=...). The config itself holds only tool-behaviour
-    settings: observation options and action space selection.
+    VM lifecycle (launch/reset/stop) is managed externally; the live guest
+    agent endpoint is attached after construction via
+    ``ComputerBase.attach_endpoint(endpoint)``. The config itself holds only
+    tool-behaviour settings: observation options and action space selection.
     """
 
     action_space: ActionSpace = ActionSpace.COMPUTER_13
@@ -65,15 +67,16 @@ class ComputerConfig(ToolConfig):
     require_obs_winagent: bool = False
     observe_after_action: bool = True
 
-    def make(self, container: Container | None = None, vm: VM | None = None) -> "ComputerBase":
+    def make(self, container: Container | None = None) -> "ComputerBase":
         if container is not None:
             logger.warning(
                 "ComputerConfig.make() received a cube Container, but the Computer tool "
-                "uses a VM handle (cube.vm.VM). The container argument will be ignored."
+                "connects to a guest agent endpoint (attach_endpoint). The container "
+                "argument will be ignored."
             )
         if self.action_space == ActionSpace.PYAUTOGUI:
-            return PyAutoGUIComputer(self, vm=vm)
-        return Computer13(self, vm=vm)
+            return PyAutoGUIComputer(self)
+        return Computer13(self)
 
 
 # ---------------------------------------------------------------------------
@@ -91,32 +94,25 @@ class ComputerBase(Tool):
 
     Subclasses add the action-space-specific @tool_action methods.
 
-    The VM is passed in at construction time (vm: VM). If vm is None,
-    the tool can still be constructed but will fail when attempting to
-    observe or act — useful for deferred VM launch patterns.
+    The tool is constructed without a live connection; the caller attaches
+    the guest agent endpoint after the VM is launched via
+    ``attach_endpoint(endpoint)`` — a deferred-launch pattern that fits the
+    ``InfraConfig`` / ``ResourceHandle`` lifecycle.
     """
 
-    def __init__(self, config: ComputerConfig, vm: VM | None = None) -> None:
+    def __init__(self, config: ComputerConfig) -> None:
         self.config = config
-        self._vm: VM | None = vm
         self._guest: GuestAgent | None = None
         self._current_task_config: dict | None = None
         self._last_marks: list[list[int]] = []
         self._is_done: bool = False
         self._action_history: list = []
 
-        if vm is not None:
-            self._connect_guest(vm)
-
-    def attach_vm(self, vm: VM) -> None:
-        """Attach a live VM handle after construction (for deferred-launch patterns)."""
-        self._vm = vm
-        self._connect_guest(vm.endpoint)
-
     def attach_endpoint(self, endpoint: str) -> None:
-        """Attach a guest agent endpoint URL directly (for InfraConfig-based launch).
+        """Attach a guest agent endpoint URL.
 
-        Preferred over attach_vm() when using the new InfraConfig/ResourceHandle API.
+        Called once the VM is launched through the ``InfraConfig`` /
+        ``ResourceHandle`` API — pass ``ResourceHandle.endpoint``.
         """
         self._connect_guest(endpoint)
 
@@ -129,9 +125,24 @@ class ComputerBase(Tool):
 
     def execute_action(self, action: Action) -> Observation | StepError:
         """Execute action; append full VM observation if observe_after_action=True."""
-        action_obs = super().execute_action(action)
+        try:
+            action_obs = super().execute_action(action)
+        except Exception as e:
+            # Tool.get_action_method raises ValueError for unknown actions before the
+            # try/except in Tool.execute_action can catch it. Convert to StepError here
+            # so unknown actions are handled as recoverable errors, not episode crashes.
+            action_obs = StepError.from_exception(e)
 
         if self.config.observe_after_action and action.name not in ("done", "fail"):
+            if isinstance(action_obs, StepError):
+                # Action failed but VM is still alive — take a screenshot so the agent
+                # can see the current state and retry, and include the error message.
+                screen = self.get_observation()
+                error_content = TextContent(
+                    data=f"{action_obs.error_type} executing action '{action.name}': {action_obs.exception_str}",
+                    tool_call_id=action.id,
+                )
+                return Observation(contents=[error_content]) + screen
             action_obs += self.get_observation()
 
         return action_obs
@@ -139,9 +150,15 @@ class ComputerBase(Tool):
     def get_observation(self) -> Observation:
         """Read current screen state from the VM and return as Observation."""
         if self._guest is None:
-            raise RuntimeError("No VM attached — call attach_vm() or pass vm= to ComputerConfig.make()")
+            raise RuntimeError("No guest agent attached — call attach_endpoint(endpoint) first")
+        screenshot = self._guest.get_screenshot()
+        if screenshot is None:
+            raise RuntimeError(
+                "VM guest agent is unreachable — screenshot returned None after retries. "
+                "The guest agent process may have crashed or the VM is unresponsive."
+            )
         raw_obs: dict[str, Any] = {
-            "screenshot": self._guest.get_screenshot(),
+            "screenshot": screenshot,
             "accessibility_tree": self._guest.get_accessibility_tree() if self.config.require_a11y_tree else None,
             "terminal": self._guest.get_terminal_output() if self.config.require_terminal else None,
         }
@@ -181,7 +198,7 @@ class ComputerBase(Tool):
     def _execute_desktop_action(self, action_dict: dict | str) -> str:
         """Send an action to the guest VM and return a success string."""
         if self._guest is None:
-            raise RuntimeError("No VM attached — call attach_vm() or pass vm= to ComputerConfig.make()")
+            raise RuntimeError("No guest agent attached — call attach_endpoint(endpoint) first")
         if isinstance(action_dict, dict):
             self._guest.execute_action(action_dict)
         else:
@@ -440,7 +457,7 @@ class PyAutoGUIComputer(ComputerBase):
             prepended as center coordinates (e.g. "pyautogui.click(*tag_3)").
         """
         if self._guest is None:
-            raise RuntimeError("No VM attached — call attach_vm() or pass vm= to ComputerConfig.make()")
+            raise RuntimeError("No guest agent attached — call attach_endpoint(endpoint) first")
 
         tag_vars = ""
         for i, mark in enumerate(self._last_marks):

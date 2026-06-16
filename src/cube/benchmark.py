@@ -51,20 +51,22 @@ from __future__ import annotations
 import csv
 import enum
 import fnmatch
+import importlib.resources
+import importlib.util
 import json
 import logging
+import subprocess
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter
 from pathlib import Path
-from typing import Any, ClassVar, Generator, Mapping, Self, Sequence, cast
+from typing import Any, ClassVar, Generator, Mapping, NamedTuple, Self, Sequence, cast
 
 from pydantic import Field, SerializeAsAny
 
 from cube import get_cache_dir
-from cube.container import ContainerBackend
-from cube.core import TypedBaseModel
-from cube.resource import InfraConfig, ResourceConfig
+from cube.core import TypedBaseModel, ValidatedConfig
+from cube.resource import IncompatibleInfraError, InfraConfig, ResourceConfig
 from cube.seed import AbstractSeedGenerator
 from cube.task import RuntimeContext, Task, TaskConfig, TaskMetadata
 from cube.tool import ToolConfig
@@ -130,7 +132,48 @@ class BenchmarkMetadata(TypedBaseModel):
     )
 
 
-class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
+#: Sidecar module (next to the benchmark module) that carries the optional prompt
+#: overlay — a benchmark-wide ``BENCHMARK_HINT`` string and a ``TASK_CLARIFICATION``
+#: ``{task_id: text}`` dict. A ``.py`` (rather than data file) lets one clarification
+#: be reused across many task ids, which keeps clarifications general — a regularizer.
+_CLARIFICATIONS_MODULE = "benchmark_clarifications"
+
+
+class BenchmarkClarifications(NamedTuple):
+    """Optional prompt overlay loaded from a benchmark's sidecar module.
+
+    The framework only loads and carries these; nothing is delivered to the
+    agent automatically. A harness reads them at experiment-design time and
+    folds them into the agent config (e.g. ``GennyConfig.benchmark_hint_prompt``
+    / ``task_clarification``).
+    """
+
+    benchmark_hint: str | None = None
+    task_clarification: dict[str, str] = {}  # noqa: RUF012 — NamedTuple default, never mutated
+
+
+def _load_benchmark_clarifications(package: str | None) -> BenchmarkClarifications:
+    """Load the ``benchmark_clarifications`` sidecar from ``package``.
+
+    Returns an empty overlay when ``package`` is falsy or has no sidecar. Import
+    errors *inside* an existing sidecar propagate — only absence is silent.
+    """
+    if not package:
+        return BenchmarkClarifications()
+    module_name = f"{package}.{_CLARIFICATIONS_MODULE}"
+    try:
+        if importlib.util.find_spec(module_name) is None:
+            return BenchmarkClarifications()
+    except ModuleNotFoundError:
+        return BenchmarkClarifications()
+    module = importlib.import_module(module_name)
+    return BenchmarkClarifications(
+        benchmark_hint=getattr(module, "BENCHMARK_HINT", None),
+        task_clarification=dict(getattr(module, "TASK_CLARIFICATION", {}) or {}),
+    )
+
+
+class BenchmarkConfig[TTMetadata: TaskMetadata](ValidatedConfig, ABC):
     """Serializable description of a benchmark. Safe to copy, serialize, and ship.
 
     Subclasses declare four class-level attributes:
@@ -185,6 +228,17 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
             "``named_subset`` to narrow the set without touching the ClassVar."
         ),
     )
+    subset_name: str | None = Field(
+        default=None,
+        description=(
+            "Registered ``named_subsets`` key this config was produced by, set by "
+            "``named_subset(name)`` (e.g. 'lite-gold'). None for the full benchmark, an "
+            "ad-hoc ``subset_from_list``, or a raw ``subset_from_glob``. Records which "
+            "official subset the config represents, so reproducibility tooling can treat a "
+            "complete run of it as a first-class, reproducible subset rather than a "
+            "hand-picked task list — without re-deriving the membership."
+        ),
+    )
     # ``SerializeAsAny`` on every polymorphic field so subclass-specific state
     # survives JSON round-trip. Without it Pydantic dumps only the declared
     # base type's fields — subclass extras are silently stripped and the
@@ -197,11 +251,6 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
             "Declared resource dependencies. ``make(infra)`` calls ``infra.provision(r)`` "
             "for each entry whose ``provision_status`` is not ``ready`` before setup runs."
         ),
-    )
-    container_backend: SerializeAsAny[ContainerBackend] | None = Field(
-        default=None,
-        description="Optional container backend passed through to every spawned task.",
-        deprecated=True,
     )
     tool_config: SerializeAsAny[ToolConfig] | None = Field(
         default=None,
@@ -289,6 +338,46 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
                     data["recommended_max_steps"] = int(data["recommended_max_steps"])
                 tasks.append(TaskMetadata.model_validate(data))
         return {t.id: t for t in tasks}
+
+    @classmethod
+    def load_benchmark_clarifications(cls) -> BenchmarkClarifications:
+        """Load this benchmark's optional prompt overlay from its sidecar module.
+
+        Reads a ``benchmark_clarifications.py`` next to the benchmark's module
+        (the same "files next to the module" convention used for
+        ``task_metadata``), exposing ``BENCHMARK_HINT: str | None`` and
+        ``TASK_CLARIFICATION: dict[str, str]``; returns an empty overlay when no
+        sidecar exists. The benchmark only *organizes* these strings — nothing
+        is applied automatically. A harness reads them at experiment-design time
+        and folds them into the agent config (e.g.
+        ``GennyConfig.benchmark_hint_prompt`` / ``task_clarification``); to run a
+        clean baseline it simply does not.
+
+        Purpose and when to use each:
+
+        ``BENCHMARK_HINT`` — one concise paragraph orienting a generalist agent
+        on conventions a first-time reader would miss but that are not specific
+        to any single task: a high-level workflow, the shape of the verifier, a
+        recurring ambiguity in the wording. Keep it short and generic — a
+        generalist agent should remain competitive without it. It exists so
+        evaluations that opt in can report a number on a level playing field,
+        not so authors can engineer prompts for one model.
+
+        ``TASK_CLARIFICATION`` — per-task fixes for individually brittle tasks
+        whose original wording omits a step a reasonable LLM would not infer.
+        Canonical example: a miniwob task whose objective reads "set slider to 32
+        and string value to 'foo'" but whose verifier only rewards if the agent
+        then clicks submit — a competent LLM would not click submit unprompted,
+        and that is not really the LLM's fault. Mapping that task id to "After
+        setting the values, click submit." keeps the original benchmark wording
+        intact while letting an evaluation opt the fix in. Because the overlay is
+        a ``.py``, one clarification can be reused across many task ids — that
+        reuse is a deliberate regularizer, pushing clarifications to generalize
+        rather than overfit. Leave a task out when its wording is unambiguous;
+        the dict grows over time as the auto-cube workflow detects brittle tasks.
+        """
+        package = cls.__module__.rpartition(".")[0]
+        return _load_benchmark_clarifications(package)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Subclass validation / file auto-load
@@ -507,6 +596,8 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         self,
         tasks: Sequence[str] | Sequence[TaskMetadata],
         benchmark_name_suffix: str = "custom",  # noqa: ARG002 — accepted for call-site compat
+        *,
+        subset_name: str | None = None,
     ) -> Self:
         """Return a new ``BenchmarkConfig`` restricted to the given tasks.
 
@@ -521,6 +612,12 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         has no effect in the new design; subsets inherit their name from the
         parent class's ``benchmark_metadata``. Use a display-layer convention
         if you need a distinct label.
+
+        ``subset_name`` records the registered named-subset key this selection
+        represents; ``named_subset`` threads it through so a single ``model_copy``
+        sets both ``task_ids`` and the provenance. It defaults to None — an
+        explicit hand-picked list is not a named subset, and any ``subset_name``
+        inherited from a parent ``named_subset`` is dropped.
         """
         current = self.tasks()
         existing_ids = set(current.keys())
@@ -541,15 +638,18 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         ordered = list(dict.fromkeys(task_ids))
         if not ordered:
             raise ValueError("The resulting task list cannot be empty.")
-        return self.model_copy(update={"task_ids": ordered})
+        return self.model_copy(update={"task_ids": ordered, "subset_name": subset_name})
 
-    def subset_from_glob(self, glob_key: str, glob_pattern: str) -> Self:
+    def subset_from_glob(self, glob_key: str, glob_pattern: str, *, subset_name: str | None = None) -> Self:
         """Return a new ``BenchmarkConfig`` containing only tasks whose ``glob_key`` matches ``glob_pattern``.
 
         ``glob_key`` is any top-level field on the (subclassed) ``TaskMetadata``
         — built-ins like ``id`` / ``split`` / ``abstract_description``, or any
         named field declared by a ``TaskMetadata`` subclass.
         ``glob_pattern`` is a standard Unix shell wildcard.
+
+        ``subset_name`` is forwarded to the recorded provenance — ``named_subset``
+        passes the registered key; a raw glob leaves it None (not an official subset).
         """
         current = self.tasks()
         matches = [
@@ -559,7 +659,9 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         ]
         if not matches:
             raise ValueError(f"No tasks found matching glob pattern '{glob_pattern}' on key '{glob_key}'")
-        return self.subset_from_list(tasks=matches, benchmark_name_suffix=f"[{glob_key}={glob_pattern}]")
+        return self.subset_from_list(
+            tasks=matches, benchmark_name_suffix=f"[{glob_key}={glob_pattern}]", subset_name=subset_name
+        )
 
     @classmethod
     def named_subsets(cls) -> list[str]:
@@ -569,13 +671,16 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
     def named_subset(self, name: str) -> Self:
         """Return a filtered config for a pre-defined named subset.
 
-        Equivalent to ``subset_from_glob(*benchmark_metadata.named_subsets[name])``.
+        Equivalent to ``subset_from_glob(*benchmark_metadata.named_subsets[name])``,
+        and additionally records ``subset_name=name`` so the config carries which
+        official subset it represents (read by reproducibility tooling without
+        re-deriving the membership).
         """
         named = type(self).benchmark_metadata.named_subsets
         if name not in named:
             raise KeyError(f"Unknown subset {name!r}. Available: {list(named.keys())}")
         glob_key, glob_pattern = named[name]
-        return self.subset_from_glob(glob_key, glob_pattern)
+        return self.subset_from_glob(glob_key, glob_pattern, subset_name=name)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Data lifecycle (class-level; shared across all instances of a subclass)
@@ -583,12 +688,14 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
 
     @classmethod
     def install(cls) -> None:
-        """Populate the per-task execution cache with heavy data needed at task-run time.
+        """Install system dependencies and populate the per-task execution cache.
 
-        Override in subclasses that ship minimal ``task_metadata.json`` and
-        need to download or compute heavier per-task execution data (e.g.
-        SWE-bench problem statements, OSWorld evaluator configs). The default
-        is a no-op.
+        The base implementation runs ``scripts/install.sh`` from the cube's
+        package data if present (idempotent system dependency setup — e.g.
+        installing playwright browsers or qemu). Subclasses that need to
+        populate the per-task execution cache should call ``super().install()``
+        then write each task's processed data as a JSON file at
+        ``cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"``.
 
         Convention: write each task's processed data as a JSON file at
         ``cls.task_config_class.task_execution_cache_dir() / f"{task_id}.json"``
@@ -602,6 +709,19 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
 
         Must be idempotent.
         """
+        cls._run_install_script()
+
+    @classmethod
+    def _run_install_script(cls) -> None:
+        """Run ``scripts/install.sh`` from the cube package if present."""
+        package = cls.__module__.split(".")[0]
+        try:
+            ref = importlib.resources.files(package).joinpath("scripts/install.sh")
+            with importlib.resources.as_file(ref) as script:
+                if script.exists():
+                    subprocess.run(["bash", str(script)], check=True)
+        except (ModuleNotFoundError, TypeError):
+            pass
 
     @classmethod
     def uninstall(cls) -> None:
@@ -640,6 +760,13 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         for per-task container launches can do so from ``_setup()`` without
         overriding ``make``.
         """
+        # 0. Capability gate: fail fast before any install / provisioning or episode.
+        if infra is not None and infra.on_incompatible != "force":
+            self._gate_infra_compatibility(infra)
+
+        if infra is not None:
+            infra.install()
+
         if self.resources:
             if infra is None:
                 logger.debug(
@@ -660,6 +787,30 @@ class BenchmarkConfig[TTMetadata: TaskMetadata](TypedBaseModel, ABC):
         benchmark = type(self).benchmark_class(config=self, infra=infra)
         benchmark.setup()
         return benchmark
+
+    def _gate_infra_compatibility(self, infra: InfraConfig) -> None:
+        """Raise ``IncompatibleInfraError`` if ``infra`` cannot serve every resource this
+        benchmark needs — each task's container plus the benchmark's declared resources.
+        Metadata-only and launch-free, so it stays cheap even for large benchmarks. Only
+        called when ``infra.on_incompatible == "raise"`` (``"force"`` skips the gate).
+        """
+        bad_shared = [r for r in self.resources if not infra.can_serve(r)]
+        incompatible = {
+            tid: sorted(tm.container_config.requirements())
+            for tid, tm in self.tasks().items()
+            if tm.container_config is not None and not infra.can_serve(tm.container_config)
+        }
+        if not bad_shared and not incompatible:
+            return
+
+        detail = {r.name: sorted(r.requirements()) for r in bad_shared}
+        detail.update(dict(list(incompatible.items())[:5]))
+        more = "" if len(incompatible) <= 5 else f" (+{len(incompatible) - 5} more tasks)"
+        raise IncompatibleInfraError(
+            f"{type(infra).__name__} (capabilities={sorted(infra.capabilities())}) cannot "
+            f"serve {len(bad_shared) + len(incompatible)} resource(s) of benchmark "
+            f"{self.benchmark_metadata.name!r}: {detail}{more}"
+        )
 
 
 class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
@@ -722,15 +873,41 @@ class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
     def setup(self) -> None:
         """Public wrapper around ``_setup``. Called automatically by ``BenchmarkConfig.make``.
 
+        Before dispatching to the subclass's ``_setup()``, sweeps TTL-expired
+        cloud resources via ``self._infra.cleanup_stale()`` so prior-run
+        orphans (from crashes, SIGKILLs, machine reboots, etc.) are reclaimed
+        before this run launches new work. This is the "harness startup"
+        hook documented in ``resource/spec.md``. Concurrent benchmarks in
+        the same resource group are unaffected because ``cleanup_stale``
+        only deletes resources whose ``cube:expires_at`` tag is in the past.
+
+        Safe on any failure path: ``cleanup_stale`` exceptions are logged at
+        WARNING and not propagated — a transient cloud error must not block
+        benchmark setup.
+
         Emits a debug line listing optional config fields left unset — useful
         sanity signal for minimal benchmarks.
         """
+        if self._infra is not None:
+            try:
+                deleted = self._infra.cleanup_stale()
+                if deleted:
+                    logger.info(
+                        "%s.setup: cleanup_stale reclaimed %d expired resource(s) from prior runs",
+                        type(self).__name__,
+                        len(deleted),
+                    )
+            except Exception:
+                logger.warning(
+                    "%s.setup: cleanup_stale failed — continuing with setup",
+                    type(self).__name__,
+                    exc_info=True,
+                )
+
         self._setup()
         missing: list[str] = []
         if not self._runtime_context:
             missing.append("_runtime_context")
-        if self.config.container_backend is None:
-            missing.append("container_backend")
         if self.config.tool_config is None:
             missing.append("tool_config")
         if self.config.seed_generator is None:
@@ -755,10 +932,7 @@ class Benchmark[TBenchConfig: BenchmarkConfig](ABC):
                 f"Task '{task_config.task_id}' not found in benchmark "
                 f"{self.config.name!r} (current view has {self.config.num_tasks} tasks)"
             )
-        return task_config.make(
-            runtime_context=self._runtime_context,
-            container_backend=self.config.container_backend,
-        )
+        return task_config.make(runtime_context=self._runtime_context)
 
     # ── Context-manager sugar ─────────────────────────────────────────────────
 
@@ -852,10 +1026,7 @@ class CompositeBenchmark(Benchmark["CompositeBenchmarkConfig"]):
             # CompositeBenchmark can continue routing.
             return sub_bench.spawn(task_config.model_copy(update={"sub_bench_name": remaining_path}))
         # Leaf: call make() directly to bypass sub_bench.spawn() validation.
-        return task_config.make(
-            runtime_context=sub_bench._runtime_context,
-            container_backend=sub_bench.config.container_backend,
-        )
+        return task_config.make(runtime_context=sub_bench._runtime_context)
 
 
 class CompositeBenchmarkConfig(BenchmarkConfig):
