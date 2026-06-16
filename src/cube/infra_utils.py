@@ -522,20 +522,28 @@ def build_volume_setup_script(volumes: list) -> str:
         if vol.source_url:
             basename = vol.source_url.rsplit("/", 1)[-1]
             filename = f"{vol.name}_{basename}"
-            # Skip extraction if volume already has data
+            # Skip population if volume already has data
             lines.append(
                 f'if ! docker run --rm -v "{vol.name}:/vol:ro" alpine sh -c "ls -A /vol | head -1" | grep -q .; then'
             )
-            tar_cmd = f"tar -xf /tar/{filename}"
-            if vol.strip_components > 0:
-                tar_cmd += f" --strip-components={vol.strip_components}"
-            tar_cmd += " -C /vol"
-            if vol.tar_subpath:
-                tar_cmd += f" {vol.tar_subpath}"
-            lines.append(f'  echo "[bootstrap] Extracting {basename} into {vol.name} ..."')
-            lines.append(
-                f'  docker run --rm -v "$VOLUME_DATA_DIR:/tar:ro" -v "{vol.name}:/vol" alpine sh -c "{tar_cmd}"'
-            )
+            if vol.extract:
+                tar_cmd = f"tar -xf /tar/{filename}"
+                if vol.strip_components > 0:
+                    tar_cmd += f" --strip-components={vol.strip_components}"
+                tar_cmd += " -C /vol"
+                if vol.tar_subpath:
+                    tar_cmd += f" {vol.tar_subpath}"
+                lines.append(f'  echo "[bootstrap] Extracting {basename} into {vol.name} ..."')
+                lines.append(
+                    f'  docker run --rm -v "$VOLUME_DATA_DIR:/tar:ro" -v "{vol.name}:/vol" alpine sh -c "{tar_cmd}"'
+                )
+            else:
+                # Raw file: copy verbatim into the volume under its basename.
+                lines.append(f'  echo "[bootstrap] Copying {basename} into {vol.name} ..."')
+                lines.append(
+                    f'  docker run --rm -v "$VOLUME_DATA_DIR:/tar:ro" -v "{vol.name}:/vol" '
+                    f'alpine cp "/tar/{filename}" "/vol/{basename}"'
+                )
             lines.append("fi")
 
     lines.append('echo "[bootstrap] Volume setup complete"')

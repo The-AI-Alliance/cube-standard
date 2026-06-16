@@ -47,6 +47,19 @@ class TestBuildVolumeSetupScript:
         assert "https://example.com/data.tar" in script
         assert "tar -xf" in script
 
+    def test_raw_file_volume_is_copied_not_extracted(self) -> None:
+        vol = VolumeSpec(
+            name="wiki",
+            mount_path="/data",
+            source_url="https://example.com/wikipedia_en_all_maxi_2022-05.zim",
+            extract=False,
+        )
+        script = build_volume_setup_script([vol])
+        assert "curl" in script  # still downloaded
+        assert "tar -xf" not in script  # but NOT extracted
+        # copied verbatim into the volume under its basename
+        assert 'cp "/tar/wiki_wikipedia_en_all_maxi_2022-05.zim" "/vol/wikipedia_en_all_maxi_2022-05.zim"' in script
+
     def test_vol_name_is_quoted_in_all_docker_commands(self) -> None:
         vol = VolumeSpec(name="my-vol", mount_path="/data", source_url="https://example.com/a.tar")
         script = build_volume_setup_script([vol])
