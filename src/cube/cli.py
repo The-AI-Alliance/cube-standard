@@ -1064,8 +1064,22 @@ def _guess_display_name(package_name: str) -> str:
     return " ".join(p.capitalize() for p in base.replace("_", "-").split("-"))
 
 
+def _git_default_branch(path: Path) -> str | None:
+    """Best-effort origin default branch name (e.g. ``main`` / ``dev``); None if unknown."""
+    r = subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=path, capture_output=True, text=True)
+    return r.stdout.strip().rsplit("/", 1)[-1] if r.returncode == 0 and r.stdout.strip() else None
+
+
 def _detect_dev_install_url(path: Path) -> str | None:
-    """Construct a git+ install URL from the directory's git remote and relative path."""
+    """Construct a git+ install URL from the directory's git remote and relative path.
+
+    When the current checkout is on a non-default branch — the usual state for a cube
+    that hasn't been merged yet — the URL is pinned to that branch with ``@<branch>`` so
+    the registry's compliance check (which installs from this URL with ``pip``) can
+    actually reach the not-yet-merged cube. Without the ref, ``pip`` would clone the
+    default branch, which doesn't contain the cube yet, and the check would fail. The
+    ``@<branch>`` ref should be dropped once the cube lands on the default branch.
+    """
     r = subprocess.run(["git", "remote", "get-url", "origin"], cwd=path, capture_output=True, text=True)
     if r.returncode != 0:
         return None
@@ -1082,9 +1096,13 @@ def _detect_dev_install_url(path: Path) -> str | None:
     git_root = Path(root_r.stdout.strip())
     try:
         subdir = path.resolve().relative_to(git_root)
-        return f"git+{remote}" if str(subdir) == "." else f"git+{remote}#subdirectory={subdir}"
     except ValueError:
         return None
+    cur_r = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=path, capture_output=True, text=True)
+    cur = cur_r.stdout.strip() if cur_r.returncode == 0 else ""
+    ref = f"@{cur}" if cur and cur != "HEAD" and cur != _git_default_branch(path) else ""
+    base = f"git+{remote}{ref}"
+    return base if str(subdir) == "." else f"{base}#subdirectory={subdir}"
 
 
 def _parse_pyproject_license(project: dict) -> str | None:
@@ -1298,8 +1316,38 @@ def _manual_submit_commands(entry_id: str, yaml_path: Path, registry: str) -> st
 # ── cmd_registry_add ──────────────────────────────────────────────────────────
 
 
+def _pip_invisible_git_deps(path: Path) -> list[str]:
+    """Dependencies pinned to a git source via ``[tool.uv.sources]``.
+
+    pip — used by the registry's compliance check — ignores ``[tool.uv.sources]`` and
+    resolves these from PyPI instead. If the package imports an API newer than the latest
+    PyPI release of such a dep, the registry install/import check fails (the cube installs
+    fine locally under uv but not under pip). Returns the dep names so the CLI can warn.
+    """
+    pyproject_path = path / "pyproject.toml"
+    if not pyproject_path.exists():
+        return []
+    try:
+        with open(pyproject_path, "rb") as f:
+            pyproject = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return []
+    sources = pyproject.get("tool", {}).get("uv", {}).get("sources", {})
+    return [name for name, src in sources.items() if isinstance(src, dict) and "git" in src]
+
+
 def cmd_registry_add(path: Path, submit: bool, registry: str) -> None:
     out_path = path / "cube-registry-entry.yaml"
+
+    git_deps = _pip_invisible_git_deps(path)
+    if git_deps:
+        console.print(
+            f"[warning]⚠ {', '.join(git_deps)} pinned to a git source in [tool.uv.sources].[/warning]\n"
+            "[dim]pip (used by the registry compliance check) ignores [tool.uv.sources] and resolves\n"
+            "these from PyPI. If your package imports an API not yet in the latest PyPI release of these\n"
+            "deps, the registry install/import check will FAIL even though the cube installs locally under\n"
+            "uv. Publish the needed versions to PyPI and lower-bound them in [project.dependencies].[/dim]\n"
+        )
 
     if submit and out_path.exists():
         # --submit with an existing file: the user already edited the TODOs — use it as-is.
@@ -1336,6 +1384,7 @@ def cmd_registry_add(path: Path, submit: bool, registry: str) -> None:
         raw_authors = project.get("authors", [])
         authors = [{"github": None, "name": a.get("name")} for a in raw_authors] or [{}]
 
+        dev_url = _detect_dev_install_url(path)
         yaml_text = _build_registry_yaml(
             id=entry_id,
             name=_guess_display_name(package),
@@ -1343,13 +1392,19 @@ def cmd_registry_add(path: Path, submit: bool, registry: str) -> None:
             version=version,
             description=description,
             package=package,
-            dev_install_url=_detect_dev_install_url(path),
+            dev_install_url=dev_url,
             authors=authors,
             wrapper_license=_parse_pyproject_license(project),
         )
 
         out_path.write_text(yaml_text)
         console.print(f"[success]✓[/success] Generated [file]{out_path}[/file]")
+        if dev_url and "@" in dev_url:
+            console.print(
+                "[warning]Note:[/warning] [dim]dev_install_url is pinned to the current (non-default) "
+                "branch so the unmerged cube is installable. Drop the @<branch> ref once it lands on the "
+                "default branch.[/dim]"
+            )
 
     todos = [ln.strip() for ln in yaml_text.splitlines() if "<TODO:" in ln and not ln.strip().startswith("#")]
 
