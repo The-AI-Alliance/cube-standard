@@ -1,6 +1,6 @@
 [project]
 name = "cube-browser-playwright"
-version = "0.2.0"
+version = "0.2.1"
 description = "Concrete browser session implementations for cube-standard"
 requires-python = ">=3.12"
 dependencies = [
