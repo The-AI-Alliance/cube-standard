@@ -212,6 +212,11 @@ class VolumeSpec(TypedBaseModel):
 
     Volumes without a ``source_url`` are created empty (populated at container runtime).
 
+    By default the downloaded ``source_url`` is treated as a tar archive and
+    extracted into the volume. Set ``extract=False`` when the source is a single
+    raw file (e.g. a ``.zim``); it is then copied into the volume verbatim under
+    its basename (``tar_subpath`` / ``strip_components`` do not apply).
+
     Example — pre-populated from a tarball::
 
         VolumeSpec(
@@ -220,6 +225,15 @@ class VolumeSpec(TypedBaseModel):
             source_url="https://example.com/osm_tile_server.tar",
             tar_subpath="projects/ogma3/docker/volumes/osm-data/_data",
             strip_components=6,
+        )
+
+    Example — pre-populated from a single raw file (copied, not extracted)::
+
+        VolumeSpec(
+            name="webarena_wikipedia_data",
+            mount_path="/data",
+            source_url="https://example.com/wikipedia_en_all_maxi_2022-05.zim",
+            extract=False,
         )
 
     Example — empty volume::
@@ -232,6 +246,7 @@ class VolumeSpec(TypedBaseModel):
     source_url: str | None = None
     tar_subpath: str | None = None
     strip_components: int = 0
+    extract: bool = True
 
 
 class DockerServiceConfig(ResourceConfig):
