@@ -12,7 +12,7 @@ from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
-from cube.core import Action, Observation, StepError
+from cube.core import Action, Content, Observation, StepError
 from cube.tools.browser import AsyncBrowserTool, BrowserTool
 from cube_browser_playwright import PlaywrightSessionConfig, Viewport
 
@@ -116,6 +116,35 @@ def test_async_max_wait_validator_rejects_zero() -> None:
 def test_async_max_wait_validator_rejects_negative() -> None:
     with pytest.raises(Exception, match="max_wait must be positive"):
         AsyncPlaywrightConfig(max_wait=-1)
+
+
+def test_async_tool_overrides_async_execute_action_not_sync() -> None:
+    """Async callers (Task.step, the harness parallel-tool path, the MCP server)
+    enter through ``async_execute_action`` — the page_obs override must live there,
+    not on the sync ``execute_action`` bridge, or async browser actions silently
+    return a bare "Success" (regression guard, needs no browser)."""
+    assert "async_execute_action" in AsyncPlaywrightTool.__dict__
+    assert "execute_action" not in AsyncPlaywrightTool.__dict__
+
+
+@pytest.mark.asyncio
+async def test_async_execute_action_returns_page_obs_not_success() -> None:
+    """``async_execute_action`` must discard the spurious "Success" item that
+    null-returning browser actions produce and return the page observation,
+    with ``tool_call_id`` propagated. Exercises the real dispatch override with
+    a stubbed ``page_obs`` — no browser required."""
+    tool = object.__new__(AsyncPlaywrightTool)  # skip __init__; no live session needed
+    sentinel = Observation(contents=[Content.from_data("PAGE_OBS_SENTINEL")])
+
+    async def fake_page_obs() -> Observation:
+        return sentinel
+
+    tool.page_obs = fake_page_obs  # type: ignore[method-assign]
+    result = await tool.async_execute_action(Action(name="noop", arguments={}, id="call-1"))
+    assert isinstance(result, Observation)
+    datas = [c.data for c in result.contents if hasattr(c, "data")]
+    assert "PAGE_OBS_SENTINEL" in datas and "Success" not in datas
+    assert result.contents[0].tool_call_id == "call-1"
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +370,7 @@ async def test_async_page_obs_contains_html(async_tool) -> None:
 @pytest.mark.asyncio
 async def test_async_execute_action_appends_page_obs(async_tool) -> None:
     await async_tool.goto(SIMPLE_PAGE)
-    result = await async_tool.execute_action(Action(name="noop", arguments={}))
+    result = await async_tool.async_execute_action(Action(name="noop", arguments={}))
     assert isinstance(result, Observation)
     assert len(result.contents) >= 1
 
@@ -350,7 +379,9 @@ async def test_async_execute_action_appends_page_obs(async_tool) -> None:
 @pytest.mark.asyncio
 async def test_async_execute_action_returns_step_error_on_bad_selector(async_tool) -> None:
     await async_tool.goto(SIMPLE_PAGE)
-    result = await async_tool.execute_action(Action(name="browser_click", arguments={"selector": "#does-not-exist"}))
+    result = await async_tool.async_execute_action(
+        Action(name="browser_click", arguments={"selector": "#does-not-exist"})
+    )
     assert isinstance(result, StepError)
 
 
@@ -369,7 +400,7 @@ async def test_async_browser_select_option() -> None:
     tool = await AsyncPlaywrightConfig(use_html=True, use_screenshot=False, use_axtree=False).make()
     try:
         await tool.goto(SELECT_PAGE)
-        result = await tool.execute_action(
+        result = await tool.async_execute_action(
             Action(name="browser_select_option", arguments={"selector": "#sel", "value": "b"})
         )
         assert isinstance(result, Observation)
@@ -387,7 +418,7 @@ async def test_async_browser_wait_is_capped_at_max_wait() -> None:
     tool = await AsyncPlaywrightConfig(use_html=False, use_screenshot=False, use_axtree=False, max_wait=1).make()
     try:
         start = time.monotonic()
-        await tool.execute_action(Action(name="browser_wait", arguments={"seconds": 9999}))
+        await tool.async_execute_action(Action(name="browser_wait", arguments={"seconds": 9999}))
         elapsed = time.monotonic() - start
         assert elapsed < 3.0  # capped at max_wait=1, with 2s slack for CI
     finally:
