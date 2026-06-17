@@ -447,14 +447,20 @@ class AsyncPlaywrightTool(AsyncBrowserTool, AsyncBrowserActionSpace):
         """Release all Playwright resources via the session."""
         await self._session.stop()
 
-    async def execute_action(self, action: Action) -> Observation | StepError:
-        result = await super().execute_action(action)
+    async def async_execute_action(self, action: Action) -> Observation | StepError:
+        """Dispatch an action, then return the page observation as its result.
+
+        Async callers — ``Task.step``, the harness parallel-tool path, and the
+        MCP server — enter through ``async_execute_action`` (the base's native
+        async entry), not the sync ``execute_action`` bridge. Browser actions
+        return ``None``, so the base yields a spurious "Success" content item;
+        discard it and return ``page_obs()`` — the real result for browser
+        tools — with ``tool_call_id`` propagated.
+        """
+        result = await super().async_execute_action(action)
         if isinstance(result, StepError):
             return result
         try:
-            # All browser actions return None, so super() always produces a
-            # spurious "Success" content item. Discard it and return the page
-            # observation directly — that is the real result for browser tools.
             obs = await self.page_obs()
             # Propagate tool_call_id so the observation maps back to the
             # assistant's tool_call, keeping the message sequence valid for
