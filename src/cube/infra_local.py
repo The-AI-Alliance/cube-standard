@@ -264,6 +264,23 @@ def _download(url: str, dest: Path) -> None:
     logger.info("Downloaded %s (%.1f GB)", dest.name, dest.stat().st_size / 1024**3)
 
 
+def _ensure_qemu() -> None:
+    """Best-effort install of qemu, run lazily when a VM resource is provisioned/launched.
+
+    qemu (qemu-img, qemu-system-x86_64) is needed only by VMResourceConfig, so installing
+    it here — rather than in a blanket install() that runs for every cube — keeps
+    Docker/browser cubes from paying for it (cube-standard #191). No-op when qemu is
+    already present; a failed install warns but does not raise, so a VM cube fails later
+    with a clear "qemu-system-x86_64 not found" instead of aborting setup.
+    """
+    if shutil.which("qemu-system-x86_64"):
+        return
+    ref = importlib.resources.files("cube").joinpath("scripts/install_qemu.sh")
+    with importlib.resources.as_file(ref) as script:
+        if script.exists():
+            subprocess.run(["bash", str(script)], check=False)
+
+
 def _convert_to_qcow2(src: Path, dst: Path) -> None:
     """Convert src image to qcow2 format using qemu-img."""
     if dst.exists():
@@ -490,17 +507,10 @@ class LocalInfraConfig(InfraConfig):
 
     # ── InfraConfig interface ─────────────────────────────────────────────────
 
-    def install(self) -> None:
-        """Install local system dependencies if not already present.
-
-        qemu (VM-backed cubes only) is best-effort: a failed qemu install warns but does
-        NOT abort, so offline / Docker / browser cubes stay runnable on `local` infra even
-        where qemu can't build (e.g. Homebrew on Apple Silicon). See the script's comment
-        and cube-standard #191 (scope provisioning to declared task capabilities)."""
-        ref = importlib.resources.files("cube").joinpath("scripts/install_local_infra.sh")
-        with importlib.resources.as_file(ref) as script:
-            if script.exists():
-                subprocess.run(["bash", str(script)], check=True)
+    # No install() override: system deps are installed lazily per resource type
+    # (qemu via _ensure_qemu() in the VM provision/launch path), so Docker/browser
+    # cubes never pay for qemu. Scoping provisioning to declared capabilities is
+    # cube-standard #191; this is the local-backend slice of it.
 
     def fingerprint(self) -> str:
         return "local"
@@ -542,6 +552,7 @@ class LocalInfraConfig(InfraConfig):
         if not isinstance(resource, VMResourceConfig):
             raise UnsupportedResourceType(resource, self)
 
+        _ensure_qemu()  # qemu-img is needed for the qcow2 convert below
         image_dir = Path(self.image_dir)
         image_dir.mkdir(parents=True, exist_ok=True)
         dest = image_dir / f"{resource.name}.qcow2"
@@ -578,6 +589,7 @@ class LocalInfraConfig(InfraConfig):
         if not isinstance(resource, VMResourceConfig):
             raise UnsupportedResourceType(resource, self)
 
+        _ensure_qemu()  # qemu-system-x86_64 boots the VM below
         from cube.provision_store import ProvisionStore
 
         resource_info = ProvisionStore().get(resource, self)
