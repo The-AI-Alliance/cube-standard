@@ -24,7 +24,7 @@ from cube.infra_local import (
     _register_active,
 )
 from cube.infra_utils import build_volume_setup_script
-from cube.resource import DockerServiceConfig, VolumeSpec
+from cube.resource import DockerServiceConfig, VMResourceConfig, VolumeSpec
 
 # ── build_volume_setup_script ─────────────────────────────────────────────────
 
@@ -510,3 +510,24 @@ class TestMakeDockerClient:
     def test_active_docker_context_host_swallows_missing_cli(self) -> None:
         with patch.object(_mod.subprocess, "run", side_effect=FileNotFoundError("docker")):
             assert _mod._active_docker_context_host() is None
+
+
+class TestQemuLazyInstall:
+    """qemu is installed lazily, only for VM resources — never for Docker/browser cubes."""
+
+    def test_docker_provision_does_not_install_qemu(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[bool] = []
+        monkeypatch.setattr(_mod, "_ensure_qemu", lambda: calls.append(True))
+        monkeypatch.setattr(LocalInfraConfig, "_provision_docker_service", lambda self, r: None)
+        LocalInfraConfig().provision(DockerServiceConfig(name="svc", scope="task"))
+        assert calls == []
+
+    def test_vm_provision_installs_qemu(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[bool] = []
+        monkeypatch.setattr(_mod, "_ensure_qemu", lambda: calls.append(True))
+        monkeypatch.setattr(_mod, "_download", lambda url, dest: dest.write_bytes(b""))
+        monkeypatch.setattr(_mod, "_convert_to_qcow2", lambda src, dst: dst.write_bytes(b""))
+        monkeypatch.setattr(LocalInfraConfig, "register", lambda self, r, info: None)
+        cfg = LocalInfraConfig(image_dir=str(tmp_path))
+        cfg.provision(VMResourceConfig(name="vm", scope="benchmark", source_url="http://x/img.raw"))
+        assert calls == [True]
