@@ -115,28 +115,24 @@ class ChatTool(Tool):
 
     @tool_action
     def send_message(self, text: str) -> str:
-        """Send a message to the task.
+        """Submit your answer or response to the task. This is the primary output channel — always call this tool rather than writing answers as plain text. For retrieval and Q&A tasks (chart values, lookups, data queries), send the exact answer value. For conversational tasks, send your response to the user's message.
 
         Parameters
         ----------
         text : str
-            Message content to send.
+            The answer or message to send. For numeric answers send the bare number (e.g. '42', not 'The answer is 42'). For text answers send the exact value.
         """
         self._session.send_message(text)
         return self.chat_obs()
 
     @tool_action
     def report_infeasible(self, reason: str) -> str:
-        """Report that the current task instructions are infeasible.
-
-        Use this action when the task cannot be completed as described,
-        for example due to missing information, contradictory instructions,
-        or unavailable resources.
+        """Report that the task is genuinely impossible to complete. Use ONLY when the task is objectively infeasible: a required record does not exist, the instructions are contradictory, or a needed feature is absent. Do NOT use when the task is merely difficult or you are uncertain — attempt the task before concluding it is infeasible.
 
         Parameters
         ----------
         reason : str
-            Explanation of why the task is infeasible.
+            Brief explanation of why the task cannot be completed.
 
         Notes
         -----
