@@ -3,10 +3,20 @@
 # CUBE Standard
 
 > [!NOTE]
-> **CUBE is in active development (alpha).** Interfaces may change. We welcome early adopters and contributors who want to shape the standard, not just use it.
+> **CUBE is now in beta.** The protocol has stabilized through real-world use,
+> including a growing set of wrapped benchmarks and an active NVIDIA NeMo Gym
+> integration. Breaking changes should be rare from here.
 > See our [Roadmap](ROADMAP.md) and [Contributing Guide](CONTRIBUTING.md).
 >
-> **Have a benchmark to contribute?** [Fill out this short form](https://docs.google.com/forms/d/e/1FAIpQLSddMFyRXZJPpD0I2K27OEmIPUpj57w--u2NuMscrjNlkqy8rQ/viewform) — no commitment required. Want to go deeper? [Apply to join the core team](https://forms.gle/JFiBi4ynfVLMghAH8).
+> **CUBE is looking for maintainers.** CUBE started at ServiceNow Research; the
+> founding team has since moved on to new roles across the industry, and day-to-day
+> bandwidth has shrunk accordingly. The protocol works and the community around it is
+> real, it just needs more people with the time to keep growing it. Several
+> contributors have already reached out, see [what's open](https://github.com/The-AI-Alliance/cube-standard/discussions)
+> and join them. [Apply to join the core team](https://forms.gle/JFiBi4ynfVLMghAH8) or
+> comment on the discussion. Alex Lacoste (original lead) stays on as an advisor.
+>
+> **Have a benchmark to contribute?** [Fill out this short form](https://docs.google.com/forms/d/e/1FAIpQLSddMFyRXZJPpD0I2K27OEmIPUpj57w--u2NuMscrjNlkqy8rQ/viewform) — no commitment required.
 
 <!--
 [Published Documentation](https://the-ai-alliance.github.io/cube-standard/)
