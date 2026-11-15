@@ -3,7 +3,7 @@
 import logging
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,11 +29,16 @@ from cube.testing import RESET_REPRO_OBS_MISMATCH_MSG
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _make_entry_point(name: str, value: str, metadata=None):
-    """Return a mock entry point whose .load() returns a class with benchmark_metadata."""
+def _make_entry_point(name: str, value: str, metadata=None, dist_version: str | None = "0.0.0"):
+    """Return a mock entry point whose .load() returns a class with benchmark_metadata.
+
+    `dist_version` mocks the installed package version (`ep.dist.version`); pass None
+    to simulate an entry point whose distribution can't be resolved.
+    """
     ep = MagicMock()
     ep.name = name
     ep.value = value
+    ep.dist = SimpleNamespace(version=dist_version) if dist_version is not None else None
     if metadata is not None:
         benchmark_cls = MagicMock()
         benchmark_cls.benchmark_metadata = metadata
@@ -132,6 +137,29 @@ def test_cmd_list_shows_benchmarks():
         cmd_list()  # Should not raise
 
     ep.load.assert_called_once()
+
+
+def test_cmd_list_prefers_installed_package_version(capsys):
+    # metadata version drifts behind the package; the list must show the package version.
+    meta = _make_metadata(version="1.0", num_tasks=5)
+    ep = _make_entry_point("my-cube", "my_cube.benchmark:MyBenchmark", metadata=meta, dist_version="1.1.0")
+
+    with patch("cube.cli.importlib.metadata.entry_points", return_value=[ep]):
+        cmd_list()
+
+    out = capsys.readouterr().out
+    assert "1.1.0" in out
+
+
+def test_cmd_list_falls_back_to_metadata_version_without_dist(capsys):
+    meta = _make_metadata(version="2.3", num_tasks=5)
+    ep = _make_entry_point("my-cube", "my_cube.benchmark:MyBenchmark", metadata=meta, dist_version=None)
+
+    with patch("cube.cli.importlib.metadata.entry_points", return_value=[ep]):
+        cmd_list()
+
+    out = capsys.readouterr().out
+    assert "2.3" in out
 
 
 def test_cmd_list_handles_load_error_gracefully():

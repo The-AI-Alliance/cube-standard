@@ -346,14 +346,21 @@ def cmd_list() -> None:
 
     for ep in sorted(eps, key=lambda e: e.name):
         version = num_tasks = tags = description = ""
+        # Show the *installed package* version (always matches what was pip-installed).
+        # The benchmark's hand-maintained metadata version is only a fallback for when
+        # the distribution behind this entry point can't be resolved — it routinely
+        # drifts behind the package version.
+        dist = getattr(ep, "dist", None)
+        pkg_version = getattr(dist, "version", None) if dist is not None else None
         try:
             benchmark_cls = ep.load()
             meta = benchmark_cls.benchmark_metadata
-            version = meta.version
+            version = pkg_version or meta.version
             num_tasks = str(meta.num_tasks) if meta.num_tasks else ""
             tags = ", ".join(meta.tags) if meta.tags else ""
             description = meta.description
         except Exception:
+            version = pkg_version or ""
             description = "[error](failed to load)[/error]"
 
         table.add_row(ep.name, version, num_tasks, tags, description)
