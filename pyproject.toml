@@ -42,7 +42,7 @@ docker = [
     "tenacity>=9.1.4",
 ]
 daytona = [
-    "daytona>=0.142.0",
+    "daytona>=0.142.0,<1",
     "tenacity>=9.1.4",
 ]
 modal = [

@@ -702,7 +702,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cube-standard", editable = "." },
-    { name = "daytona", specifier = ">=0.21" },
+    { name = "daytona", specifier = ">=0.21,<1" },
     { name = "tenacity", specifier = ">=8.5.0" },
 ]
 
@@ -809,7 +809,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "counter-cube", marker = "extra == 'dev'", editable = "examples/counter-cube" },
-    { name = "daytona", marker = "extra == 'daytona'", specifier = ">=0.142.0" },
+    { name = "daytona", marker = "extra == 'daytona'", specifier = ">=0.142.0,<1" },
     { name = "docker", marker = "extra == 'docker'", specifier = ">=7.1.0" },
     { name = "docstring-parser", specifier = ">=0.16" },
     { name = "fastapi", specifier = ">=0.115.0" },
